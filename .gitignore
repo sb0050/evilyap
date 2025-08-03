@@ -1,0 +1,5 @@
+node_modules
+.history
+/stripe-doc
+/boxtal-doc
+.husky

@@ -1,0 +1,9 @@
+{
+  "items": [
+    {
+      "id": "test-item",
+      "amount": 5000
+    }
+  ],
+  "currency": "eur"
+}

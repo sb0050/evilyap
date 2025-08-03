@@ -1,0 +1,29 @@
+{
+  "name": "app-live-server",
+  "version": "1.0.0",
+  "description": "Backend server for app-live with Stripe Connect",
+  "main": "server.js",
+  "scripts": {
+    "start": "node dist/server.js",
+    "dev": "nodemon --exec ts-node server.ts",
+    "dev:full": "nodemon --exec ts-node server.ts",
+    "build": "tsc",
+    "dev:ts": "ts-node server.ts"
+  },
+  "dependencies": {
+    "@clerk/clerk-sdk-node": "5.1.6",
+    "cors": "^2.8.5",
+    "dotenv": "17.2.1",
+    "express": "5.1.0",
+    "node-fetch": "3.3.2",
+    "stripe": "18.3.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.1.0",
+    "nodemon": "^3.0.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}
