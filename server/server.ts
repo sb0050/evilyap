@@ -12,9 +12,11 @@ app.use(
   cors({
     origin: [
       process.env.CLIENT_URL || 'http://localhost:3000',
+      'https://gobbler-smiling-partly.ngrok-free.app',
       /\.ngrok\.io$/,
       /\.ngrok-free\.app$/,
       /\.ngrok\.app$/,
+      /\.loca\.lt$/,
     ],
     credentials: true,
   })
@@ -35,6 +37,16 @@ app.use('/api/boxtal', boxtalRoutes);
 // Route de test
 app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'OK', message: 'Server is running' });
+});
+
+// Route ping pour tester la connectivité
+app.get('/api/ping', (req: Request, res: Response) => {
+  res.json({
+    status: 'pong',
+    timestamp: new Date().toISOString(),
+    message: 'Backend is reachable',
+    origin: req.get('origin') || 'unknown',
+  });
 });
 
 // Gestion des erreurs

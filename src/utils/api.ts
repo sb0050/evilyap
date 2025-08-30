@@ -1,7 +1,35 @@
 // Configuration centralisée pour les appels API
 /// <reference types="vite/client" />
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+// Fonction pour détecter l'URL de l'API
+const getApiBaseUrl = () => {
+  // Si on est en mode ngrok (npm run dev:ngrok), utiliser l'URL du backend ngrok depuis les variables d'environnement
+  if (
+    (window.location.hostname.includes('ngrok') ||
+      window.location.hostname.includes('ngrok-free.app')) &&
+    import.meta.env.VITE_USE_NGROK === 'true'
+  ) {
+    // Utiliser VITE_API_URL_NGROK si définie, sinon fallback sur localhost
+    return (
+      import.meta.env.VITE_API_URL_NGROK ||
+      import.meta.env.VITE_API_URL ||
+      'http://localhost:5000'
+    );
+  }
+
+  // Sinon utiliser la configuration d'environnement ou localhost
+  return import.meta.env.VITE_API_URL || 'http://localhost:5000';
+};
+
+const API_BASE_URL = getApiBaseUrl();
+
+// Debug: Afficher l'URL API utilisée
+console.log('🔧 API Base URL:', API_BASE_URL);
+console.log('🌐 Current hostname:', window.location.hostname);
+console.log('📍 Environment variables:', {
+  VITE_API_URL: import.meta.env.VITE_API_URL,
+  VITE_API_URL_NGROK: import.meta.env.VITE_API_URL_NGROK,
+});
 
 /**
  * Utilitaire pour faire des appels API avec la bonne URL de base

@@ -32,7 +32,7 @@ export default function StripeWrapper({
         mode: 'payment',
         currency: 'eur',
         amount: 1000, // 10€ par défaut
-        paymentMethodTypes: ['card'],
+        paymentMethodTypes: ['card', 'link'],
         // Merge with provided options
         ...Object.fromEntries(
           Object.entries(options).filter(([key]) => key !== 'clientSecret')

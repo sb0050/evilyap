@@ -6,6 +6,11 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
 });
 const router = express.Router();
 
+// URL de base pour les redirections
+const BASE_URL = process.env.NODE_ENV === 'production' 
+  ? 'https://votre-domaine-production.com' 
+  : 'http://localhost:5173';
+
 // Types
 interface OrderItem {
   id: string;
@@ -133,6 +138,85 @@ router.get('/customer/:customerId/payment-methods', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch payment methods' });
   }
 });
+
+// Créer une session de checkout intégrée (embedded)
+router.post(
+  '/create-checkout-session',
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const {
+        items,
+        currency = 'eur',
+        customer,
+      }: CreatePaymentIntentRequest & {
+        currency?: string;
+        customer?: any;
+      } = req.body;
+
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        res.status(400).json({ error: 'Items are required' });
+        return;
+      }
+
+      let customerId = '';
+
+      // Créer ou récupérer le customer si fourni
+      if (customer && customer.email) {
+        try {
+          // Chercher un customer existant par email
+          const existingCustomers = await stripe.customers.list({
+            email: customer.email,
+            limit: 1,
+          });
+
+          if (existingCustomers.data.length > 0) {
+            customerId = existingCustomers.data[0].id;
+          } else {
+            // Créer un nouveau customer
+            const newCustomer = await stripe.customers.create({
+              email: customer.email,
+              name: customer.name,
+              metadata: {
+                created_via: 'live_shopping_app',
+              },
+            });
+            customerId = newCustomer.id;
+          }
+        } catch (customerError) {
+          console.error('Error handling customer:', customerError);
+          // Continuer sans customer si erreur
+        }
+      }
+
+      // Créer la session de checkout intégrée
+      const session = await stripe.checkout.sessions.create({
+        ui_mode: 'embedded',
+        line_items: items.map(item => ({
+          price_data: {
+            currency: currency,
+            product_data: {
+              name: 'Article Live Shopping',
+              description: 'Paiement via formulaire intégré',
+            },
+            unit_amount: item.amount,
+          },
+          quantity: 1,
+        })),
+        mode: 'payment',
+        return_url: `${BASE_URL}/complete?session_id={CHECKOUT_SESSION_ID}`,
+        ...(customerId && { customer: customerId }),
+      });
+
+      res.json({
+        clientSecret: session.client_secret,
+        sessionId: session.id,
+      });
+    } catch (error) {
+      console.error('Error creating checkout session:', error);
+      res.status(500).json({ error: 'Failed to create checkout session' });
+    }
+  }
+);
 
 // Webhook pour gérer les événements Stripe
 router.post(

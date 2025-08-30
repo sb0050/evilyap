@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useStripe } from '@stripe/react-stripe-js';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { CheckCircle, XCircle, Clock, ShoppingBag } from 'lucide-react';
 import StripeWrapper from '../components/StripeWrapper';
 
@@ -49,33 +49,68 @@ function CompletePageContent() {
   const [status, setStatus] = useState('default');
   const [intentId, setIntentId] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [searchParams] = useSearchParams();
 
   useEffect(() => {
     if (!stripe) {
       return;
     }
 
-    const clientSecret = new URLSearchParams(window.location.search).get(
-      'payment_intent_client_secret'
-    );
+    // Vérifier s'il s'agit d'un retour d'Embedded Checkout
+    const sessionId = searchParams.get('session_id');
 
-    if (!clientSecret) {
-      setLoading(false);
-      return;
-    }
-
-    stripe
-      .retrievePaymentIntent(clientSecret)
-      .then(({ paymentIntent }: any) => {
-        if (!paymentIntent) {
+    if (sessionId) {
+      // Traitement pour Embedded Checkout
+      stripe.retrieveCheckoutSession(sessionId).then(result => {
+        if (result.error) {
+          setStatus('default');
           setLoading(false);
           return;
         }
 
-        setStatus(paymentIntent.status);
-        setIntentId(paymentIntent.id);
+        const session = result.session;
+        if (!session) {
+          setLoading(false);
+          return;
+        }
+
+        switch (session.status) {
+          case 'complete':
+            setStatus('succeeded');
+            break;
+          case 'expired':
+            setStatus('requires_payment_method');
+            break;
+          default:
+            setStatus('default');
+            break;
+        }
+
+        setIntentId(session.payment_intent);
         setLoading(false);
       });
+    } else {
+      // Traitement pour PaymentIntent standard
+      const clientSecret = searchParams.get('payment_intent_client_secret');
+
+      if (!clientSecret) {
+        setLoading(false);
+        return;
+      }
+
+      stripe
+        .retrievePaymentIntent(clientSecret)
+        .then(({ paymentIntent }: any) => {
+          if (!paymentIntent) {
+            setLoading(false);
+            return;
+          }
+
+          setStatus(paymentIntent.status);
+          setIntentId(paymentIntent.id);
+          setLoading(false);
+        });
+    }
   }, [stripe]);
 
   if (loading) {

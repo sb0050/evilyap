@@ -6,14 +6,22 @@ import {
   ExpressCheckoutElement,
   AddressElement,
 } from '@stripe/react-stripe-js';
+import {
+  EmbeddedCheckoutProvider,
+  EmbeddedCheckout,
+} from '@stripe/react-stripe-js';
 import { useUser } from '@clerk/clerk-react';
-import { ShoppingBag, MapPin, User } from 'lucide-react';
+import { ShoppingBag, MapPin, User, ExternalLink } from 'lucide-react';
 import StripeWrapper from '../components/StripeWrapper';
 import ParcelPointMap from '../components/ParcelPointMap';
 import { apiPost } from '../utils/api';
 
 // Composant interne qui utilise les hooks Stripe
-function CheckoutForm() {
+interface CheckoutFormProps {
+  embeddedClientSecret: string;
+}
+
+function CheckoutForm({ embeddedClientSecret }: CheckoutFormProps) {
   const stripe = useStripe();
   const elements = useElements();
   const { user } = useUser();
@@ -26,12 +34,21 @@ function CheckoutForm() {
     email: user?.primaryEmailAddress?.emailAddress || '',
     firstName: user?.firstName || '',
     lastName: user?.lastName || '',
+    fullName: `${user?.firstName || ''} ${user?.lastName || ''}`.trim(),
     phone: '',
     acceptTerms: true,
   });
   const [shippingAddress, setShippingAddress] = useState<any>(null);
   const [selectedParcelPoint, setSelectedParcelPoint] = useState<any>(null);
-  const [savePaymentMethod, setSavePaymentMethod] = useState(false);
+  const [savePaymentMethod, setSavePaymentMethod] = useState(true);
+
+  // Générer l'URL Stripe avec l'email prérempli
+  const getStripePaymentUrl = () => {
+    const baseUrl = 'https://buy.stripe.com/test_4gMaEX1w54uNesKcz77AI02';
+    const email =
+      formData.email || user?.primaryEmailAddress?.emailAddress || '';
+    return `${baseUrl}?prefilled_email=${encodeURIComponent(email)}`;
+  };
 
   // Configuration pour l'autocomplétion Google Maps
   const getAutocompleteConfig = () => {
@@ -54,7 +71,7 @@ function CheckoutForm() {
     allowedShippingCountries: ['FR', 'BE', 'DE', 'ES', 'IT'],
     amount: 5000, // 50€ pour tester Alma
     currency: 'eur',
-    paymentMethodTypes: ['card'],
+    paymentMethodTypes: ['link', 'amazon_pay'],
     lineItems: [
       {
         name: 'Article Live Shopping',
@@ -150,7 +167,7 @@ function CheckoutForm() {
           return_url: `${window.location.origin}/complete`,
           payment_method_data: {
             billing_details: {
-              name: `${formData.firstName} ${formData.lastName}`,
+              name: formData.fullName,
               email: formData.email,
               phone: formData.phone,
             },
@@ -200,15 +217,16 @@ function CheckoutForm() {
           <div className='grid grid-cols-1 md:grid-cols-2 gap-4'>
             <div>
               <label className='block text-sm font-medium text-gray-700 mb-2'>
-                Référence
+                Nom complet *
               </label>
               <input
                 type='text'
-                value={formData.reference}
+                value={formData.fullName}
                 onChange={e =>
-                  setFormData({ ...formData, reference: e.target.value })
+                  setFormData({ ...formData, fullName: e.target.value })
                 }
                 className='w-full border border-gray-300 rounded-md px-4 py-3 focus:ring-2 focus:ring-slate-500 focus:border-transparent'
+                required
               />
             </div>
             <div>
@@ -223,6 +241,19 @@ function CheckoutForm() {
                 }
                 className='w-full border border-gray-300 rounded-md px-4 py-3 focus:ring-2 focus:ring-slate-500 focus:border-transparent'
                 required
+              />
+            </div>
+            <div>
+              <label className='block text-sm font-medium text-gray-700 mb-2'>
+                Référence
+              </label>
+              <input
+                type='text'
+                value={formData.reference}
+                onChange={e =>
+                  setFormData({ ...formData, reference: e.target.value })
+                }
+                className='w-full border border-gray-300 rounded-md px-4 py-3 focus:ring-2 focus:ring-slate-500 focus:border-transparent'
               />
             </div>
           </div>
@@ -313,16 +344,10 @@ function CheckoutForm() {
             <PaymentElement
               options={{
                 layout: 'accordion',
-                paymentMethodOrder: [
-                  'card',
-                  'link',
-                  'paypal',
-                  'amazon_pay',
-                  'alma',
-                ],
+                paymentMethodOrder: ['card', 'paypal', 'alma'],
                 defaultValues: {
                   billingDetails: {
-                    name: `${formData.firstName} ${formData.lastName}`,
+                    name: formData.fullName,
                     email: formData.email,
                     phone: formData.phone,
                   },
@@ -344,6 +369,34 @@ function CheckoutForm() {
                 Sauvegarder cette méthode de paiement pour les futurs achats
               </span>
             </label>
+          </div>
+
+          {/* Payer via Stripe */}
+          <div className='mb-6'>
+            <h4 className='font-medium text-gray-900 mb-3'>Payer via Stripe</h4>
+            <button
+              type='button'
+              onClick={() => window.open(getStripePaymentUrl(), '_blank')}
+              className='w-full bg-indigo-600 text-white py-3 px-4 rounded-md hover:bg-indigo-700 transition-colors flex items-center justify-center space-x-2'
+            >
+              <ExternalLink className='h-5 w-5' />
+              <span>Payer avec Stripe Checkout</span>
+            </button>
+          </div>
+
+          {/* Embedded Checkout */}
+          <div className='mb-6'>
+            <h4 className='font-medium text-gray-900 mb-3'>Paiement Intégré</h4>
+            {embeddedClientSecret && (
+              <div className='border border-gray-200 rounded-md overflow-hidden'>
+                <EmbeddedCheckoutProvider
+                  stripe={stripe}
+                  options={{ clientSecret: embeddedClientSecret }}
+                >
+                  <EmbeddedCheckout />
+                </EmbeddedCheckoutProvider>
+              </div>
+            )}
           </div>
 
           {/* Conditions générales */}
@@ -390,12 +443,14 @@ function CheckoutForm() {
 // Composant principal qui gère le clientSecret et wrap avec Stripe Elements
 export default function CheckoutPage() {
   const [clientSecret, setClientSecret] = useState('');
+  const [embeddedClientSecret, setEmbeddedClientSecret] = useState('');
   const { user } = useUser();
 
   // Créer le Payment Intent au chargement de la page
   useEffect(() => {
     if (user) {
       initializePayment();
+      initializeEmbeddedCheckout();
     }
   }, [user]);
 
@@ -422,6 +477,32 @@ export default function CheckoutPage() {
       setClientSecret(data.clientSecret);
     } catch (error) {
       console.error('Error creating payment intent:', error);
+    }
+  };
+
+  // Initialiser l'Embedded Checkout
+  const initializeEmbeddedCheckout = async () => {
+    if (!user) return;
+
+    try {
+      const response = await apiPost('/api/stripe/create-checkout-session', {
+        items: [
+          {
+            id: 'live-shopping-item',
+            amount: 5000, // 50€ en centimes
+          },
+        ],
+        currency: 'eur',
+        customer: {
+          email: user.primaryEmailAddress?.emailAddress,
+          name: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+        },
+      });
+
+      const data = await response.json();
+      setEmbeddedClientSecret(data.clientSecret);
+    } catch (error) {
+      console.error('Error creating embedded checkout session:', error);
     }
   };
 
@@ -454,7 +535,7 @@ export default function CheckoutPage() {
         }),
       }}
     >
-      <CheckoutForm />
+      <CheckoutForm embeddedClientSecret={embeddedClientSecret} />
     </StripeWrapper>
   );
 }
