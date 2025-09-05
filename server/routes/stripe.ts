@@ -7,9 +7,10 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
 const router = express.Router();
 
 // URL de base pour les redirections
-const BASE_URL = process.env.NODE_ENV === 'production' 
-  ? 'https://votre-domaine-production.com' 
-  : 'http://localhost:5173';
+const BASE_URL =
+  process.env.NODE_ENV === 'production'
+    ? 'https://votre-domaine-production.com'
+    : 'http://localhost:5173';
 
 // Types
 interface OrderItem {
@@ -145,16 +146,17 @@ router.post(
   async (req: Request, res: Response): Promise<void> => {
     try {
       const {
-        items,
+        amount,
         currency = 'eur',
         customer,
-      }: CreatePaymentIntentRequest & {
+      }: {
+        amount: number;
         currency?: string;
-        customer?: any;
+        customer?: { email: string; name: string };
       } = req.body;
 
-      if (!items || !Array.isArray(items) || items.length === 0) {
-        res.status(400).json({ error: 'Items are required' });
+      if (!amount || amount < 50) {
+        res.status(400).json({ error: 'Amount must be at least 0.50€' });
         return;
       }
 
@@ -191,17 +193,19 @@ router.post(
       // Créer la session de checkout intégrée
       const session = await stripe.checkout.sessions.create({
         ui_mode: 'embedded',
-        line_items: items.map(item => ({
-          price_data: {
-            currency: currency,
-            product_data: {
-              name: 'Article Live Shopping',
-              description: 'Paiement via formulaire intégré',
+        line_items: [
+          {
+            price_data: {
+              currency: currency,
+              product_data: {
+                name: 'Article Live Shopping',
+                description: 'Paiement via formulaire intégré',
+              },
+              unit_amount: amount,
             },
-            unit_amount: item.amount,
+            quantity: 1,
           },
-          quantity: 1,
-        })),
+        ],
         mode: 'payment',
         return_url: `${BASE_URL}/complete?session_id={CHECKOUT_SESSION_ID}`,
         ...(customerId && { customer: customerId }),

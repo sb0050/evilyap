@@ -19,12 +19,27 @@ import { apiPost } from '../utils/api';
 // Composant interne qui utilise les hooks Stripe
 interface CheckoutFormProps {
   embeddedClientSecret: string;
+  amount: number;
+  setAmount: (a: number) => void;
+  // now accepts the new payment amount in cents
+  onUpdateClick: (paymentAmount: number) => void;
+  updating?: boolean;
 }
 
-function CheckoutForm({ embeddedClientSecret }: CheckoutFormProps) {
+function CheckoutForm({
+  embeddedClientSecret,
+  amount,
+  setAmount,
+  onUpdateClick,
+  updating,
+}: CheckoutFormProps) {
   const stripe = useStripe();
   const elements = useElements();
   const { user } = useUser();
+  // initialize as integer euros string to match input behavior
+  const [amountInput, setAmountInput] = useState(
+    String(Math.round(amount / 100))
+  );
 
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -42,11 +57,9 @@ function CheckoutForm({ embeddedClientSecret }: CheckoutFormProps) {
   const [selectedParcelPoint, setSelectedParcelPoint] = useState<any>(null);
   const [savePaymentMethod, setSavePaymentMethod] = useState(true);
 
-  // Générer l'URL Stripe avec l'email prérempli
   const getStripePaymentUrl = () => {
     const baseUrl = 'https://buy.stripe.com/test_4gMaEX1w54uNesKcz77AI02';
-    const email =
-      formData.email || user?.primaryEmailAddress?.emailAddress || '';
+    const email = user?.primaryEmailAddress?.emailAddress || '';
     return `${baseUrl}?prefilled_email=${encodeURIComponent(email)}`;
   };
 
@@ -295,7 +308,7 @@ function CheckoutForm({ embeddedClientSecret }: CheckoutFormProps) {
         <div className='bg-white rounded-lg shadow-md p-6'>
           <h3 className='text-lg font-semibold mb-4'>Paiement</h3>
 
-          {/* Adresse de facturation */}
+          {/* Adresse de facturation 
           <div className='mb-6'>
             <h4 className='font-medium text-gray-900 mb-3'>
               Adresse de facturation
@@ -314,8 +327,9 @@ function CheckoutForm({ embeddedClientSecret }: CheckoutFormProps) {
               onChange={handleBillingAddressChange}
             />
           </div>
+          */}
 
-          {/* Express Checkout - Quick Payment */}
+          {/* Express Checkout - Quick Payment 
           <div className='mb-6'>
             <h4 className='font-medium text-gray-900 mb-3'>Paiement rapide</h4>
             <ExpressCheckoutElement
@@ -335,8 +349,10 @@ function CheckoutForm({ embeddedClientSecret }: CheckoutFormProps) {
               </span>
             </div>
           </div>
+          
+          */}
 
-          {/* Élément de paiement */}
+          {/* Élément de paiement 
           <div className='mb-6'>
             <h4 className='font-medium text-gray-900 mb-3'>
               Méthode de paiement
@@ -355,8 +371,12 @@ function CheckoutForm({ embeddedClientSecret }: CheckoutFormProps) {
               }}
             />
           </div>
+          
+          
+          */}
 
-          {/* Option de sauvegarde */}
+          {/* Option de sauvegarde 
+          
           <div className='mb-6'>
             <label className='flex items-center'>
               <input
@@ -370,10 +390,50 @@ function CheckoutForm({ embeddedClientSecret }: CheckoutFormProps) {
               </span>
             </label>
           </div>
+          */}
+
+          {/* Champ montant + bouton mise à jour */}
+          <div className='mb-6'>
+            <label className='block text-sm font-medium text-gray-700 mb-2'>
+              Montant (en €)
+            </label>
+            <div className='flex space-x-2'>
+              <input
+                type='number'
+                min='1'
+                step='1'
+                value={amountInput}
+                onChange={e => {
+                  const cleaned = e.target.value.replace(/[^0-9]/g, '');
+                  setAmountInput(cleaned);
+                }}
+                className='flex-1 border border-gray-300 rounded-md px-4 py-2'
+              />
+              <button
+                type='button'
+                onClick={() => {
+                  const parsedEuros = parseInt(amountInput, 10) || 0;
+                  const cents = parsedEuros * 100;
+                  if (cents < 100) {
+                    alert('Le montant doit être au moins 1€');
+                    return;
+                  }
+                  setAmount(cents);
+                  onUpdateClick(cents);
+                }}
+                disabled={Boolean(updating)}
+                className='px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed'
+              >
+                {updating ? 'Mise à jour...' : 'Mettre à jour'}
+              </button>
+            </div>
+          </div>
 
           {/* Payer via Stripe */}
           <div className='mb-6'>
-            <h4 className='font-medium text-gray-900 mb-3'>Payer via Stripe</h4>
+            <h4 className='font-medium text-gray-900 mb-3'>
+              Payer via Stripe Checkout
+            </h4>
             <button
               type='button'
               onClick={() => window.open(getStripePaymentUrl(), '_blank')}
@@ -399,7 +459,7 @@ function CheckoutForm({ embeddedClientSecret }: CheckoutFormProps) {
             )}
           </div>
 
-          {/* Conditions générales */}
+          {/* Conditions générales 
           <div className='mb-6'>
             <label className='flex items-center'>
               <input
@@ -416,8 +476,9 @@ function CheckoutForm({ embeddedClientSecret }: CheckoutFormProps) {
               </span>
             </label>
           </div>
+          */}
 
-          {/* Bouton de paiement */}
+          {/* Bouton de paiement 
           <div className='mt-6'>
             <button
               type='submit'
@@ -427,6 +488,7 @@ function CheckoutForm({ embeddedClientSecret }: CheckoutFormProps) {
               {loading ? 'Traitement...' : 'Confirmer le paiement'}
             </button>
           </div>
+          */}
         </div>
 
         {/* Messages d'erreur */}
@@ -444,13 +506,16 @@ function CheckoutForm({ embeddedClientSecret }: CheckoutFormProps) {
 export default function CheckoutPage() {
   const [clientSecret, setClientSecret] = useState('');
   const [embeddedClientSecret, setEmbeddedClientSecret] = useState('');
+  const [updating, setUpdating] = useState(false);
   const { user } = useUser();
 
   // Créer le Payment Intent au chargement de la page
+  const [amount, setAmount] = useState(5000); // 50€ par défaut en centimes
+
   useEffect(() => {
     if (user) {
       initializePayment();
-      initializeEmbeddedCheckout();
+      initializeEmbeddedCheckout(amount);
     }
   }, [user]);
 
@@ -481,17 +546,12 @@ export default function CheckoutPage() {
   };
 
   // Initialiser l'Embedded Checkout
-  const initializeEmbeddedCheckout = async () => {
+  const initializeEmbeddedCheckout = async (paymentAmount: number) => {
     if (!user) return;
 
     try {
       const response = await apiPost('/api/stripe/create-checkout-session', {
-        items: [
-          {
-            id: 'live-shopping-item',
-            amount: 5000, // 50€ en centimes
-          },
-        ],
+        amount: paymentAmount,
         currency: 'eur',
         customer: {
           email: user.primaryEmailAddress?.emailAddress,
@@ -506,8 +566,36 @@ export default function CheckoutPage() {
     }
   };
 
-  // Afficher un loading pendant que le clientSecret se charge
-  if (!clientSecret) {
+  // Force reload of embedded checkout with new amount: clear secret, call API, set new secret
+  const reloadEmbeddedCheckout = async (paymentAmount: number) => {
+    if (!user) return;
+    try {
+      setUpdating(true);
+      // Unmount existing embedded checkout
+      setEmbeddedClientSecret('');
+
+      const response = await apiPost('/api/stripe/create-checkout-session', {
+        amount: paymentAmount,
+        currency: 'eur',
+        customer: {
+          email: user.primaryEmailAddress?.emailAddress,
+          name: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+        },
+      });
+
+      const data = await response.json();
+      // Small delay to ensure unmount -> remount behavior in the browser
+      await new Promise(r => setTimeout(r, 150));
+      setEmbeddedClientSecret(data.clientSecret);
+    } catch (error) {
+      console.error('Error reloading embedded checkout session:', error);
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  // Afficher un loading uniquement si on n'a ni clientSecret ni embeddedClientSecret
+  if (!clientSecret && !embeddedClientSecret) {
     return (
       <div className='max-w-4xl mx-auto px-4 py-8'>
         <div className='text-center'>
@@ -535,7 +623,15 @@ export default function CheckoutPage() {
         }),
       }}
     >
-      <CheckoutForm embeddedClientSecret={embeddedClientSecret} />
+      <CheckoutForm
+        embeddedClientSecret={embeddedClientSecret}
+        amount={amount}
+        setAmount={setAmount}
+        onUpdateClick={(paymentAmount: number) =>
+          reloadEmbeddedCheckout(paymentAmount)
+        }
+        updating={updating}
+      />
     </StripeWrapper>
   );
 }
