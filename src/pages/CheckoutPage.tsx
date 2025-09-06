@@ -58,7 +58,7 @@ function CheckoutForm({
   const [savePaymentMethod, setSavePaymentMethod] = useState(true);
 
   const getStripePaymentUrl = () => {
-    const baseUrl = 'https://buy.stripe.com/test_4gMaEX1w54uNesKcz77AI02';
+    const baseUrl = 'https://buy.stripe.com/14AeVdcc5h1VeUb1n9cIE03';
     const email = user?.primaryEmailAddress?.emailAddress || '';
     return `${baseUrl}?prefilled_email=${encodeURIComponent(email)}`;
   };
@@ -87,7 +87,7 @@ function CheckoutForm({
     paymentMethodTypes: ['link', 'amazon_pay'],
     lineItems: [
       {
-        name: 'Article Live Shopping',
+        name: '',
         amount: 5000, // 50€ pour tester Alma
       },
       {
@@ -392,41 +392,55 @@ function CheckoutForm({
           </div>
           */}
 
-          {/* Champ montant + bouton mise à jour */}
+          {/* Embedded Checkout */}
           <div className='mb-6'>
-            <label className='block text-sm font-medium text-gray-700 mb-2'>
-              Montant (en €)
-            </label>
-            <div className='flex space-x-2'>
-              <input
-                type='number'
-                min='1'
-                step='1'
-                value={amountInput}
-                onChange={e => {
-                  const cleaned = e.target.value.replace(/[^0-9]/g, '');
-                  setAmountInput(cleaned);
-                }}
-                className='flex-1 border border-gray-300 rounded-md px-4 py-2'
-              />
-              <button
-                type='button'
-                onClick={() => {
-                  const parsedEuros = parseInt(amountInput, 10) || 0;
-                  const cents = parsedEuros * 100;
-                  if (cents < 100) {
-                    alert('Le montant doit être au moins 1€');
-                    return;
-                  }
-                  setAmount(cents);
-                  onUpdateClick(cents);
-                }}
-                disabled={Boolean(updating)}
-                className='px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed'
-              >
-                {updating ? 'Mise à jour...' : 'Mettre à jour'}
-              </button>
+            <h4 className='font-medium text-gray-900 mb-3'>Paiement Intégré</h4>
+            {/* Champ montant + bouton mise à jour */}
+            <div className='mb-6'>
+              <label className='block text-sm font-medium text-gray-700 mb-2'>
+                Montant (en €)
+              </label>
+              <div className='flex space-x-2'>
+                <input
+                  type='number'
+                  min='1'
+                  step='1'
+                  value={amountInput}
+                  onChange={e => {
+                    const cleaned = e.target.value.replace(/[^0-9]/g, '');
+                    setAmountInput(cleaned);
+                  }}
+                  className='flex-1 border border-gray-300 rounded-md px-4 py-2'
+                />
+                <button
+                  type='button'
+                  onClick={() => {
+                    const parsedEuros = parseInt(amountInput, 10) || 0;
+                    const cents = parsedEuros * 100;
+                    if (cents < 100) {
+                      alert('Le montant doit être au moins 1€');
+                      return;
+                    }
+                    setAmount(cents);
+                    onUpdateClick(cents);
+                  }}
+                  disabled={Boolean(updating)}
+                  className='px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed'
+                >
+                  {updating ? 'Mise à jour...' : 'Mettre à jour'}
+                </button>
+              </div>
             </div>
+            {embeddedClientSecret && (
+              <div className='border border-gray-200 rounded-md overflow-hidden'>
+                <EmbeddedCheckoutProvider
+                  stripe={stripe}
+                  options={{ clientSecret: embeddedClientSecret }}
+                >
+                  <EmbeddedCheckout />
+                </EmbeddedCheckoutProvider>
+              </div>
+            )}
           </div>
 
           {/* Payer via Stripe */}
@@ -442,21 +456,6 @@ function CheckoutForm({
               <ExternalLink className='h-5 w-5' />
               <span>Payer avec Stripe Checkout</span>
             </button>
-          </div>
-
-          {/* Embedded Checkout */}
-          <div className='mb-6'>
-            <h4 className='font-medium text-gray-900 mb-3'>Paiement Intégré</h4>
-            {embeddedClientSecret && (
-              <div className='border border-gray-200 rounded-md overflow-hidden'>
-                <EmbeddedCheckoutProvider
-                  stripe={stripe}
-                  options={{ clientSecret: embeddedClientSecret }}
-                >
-                  <EmbeddedCheckout />
-                </EmbeddedCheckoutProvider>
-              </div>
-            )}
           </div>
 
           {/* Conditions générales 
@@ -556,6 +555,7 @@ export default function CheckoutPage() {
         customer: {
           email: user.primaryEmailAddress?.emailAddress,
           name: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+          userId: user.id,
         },
       });
 
@@ -580,6 +580,7 @@ export default function CheckoutPage() {
         customer: {
           email: user.primaryEmailAddress?.emailAddress,
           name: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+          userId: user.id,
         },
       });
 

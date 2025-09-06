@@ -1,5 +1,7 @@
 import express, { Request, Response } from 'express';
 import Stripe from 'stripe';
+// Import clerkClient via require to avoid missing type declaration errors in this repo
+const { clerkClient } = require('@clerk/express');
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: '2025-06-30.basil',
@@ -67,12 +69,13 @@ router.post(
           if (existingCustomers.data.length > 0) {
             customerId = existingCustomers.data[0].id;
           } else {
-            // Créer un nouveau customer
+            // Créer un nouveau customer, inclure clerkUserId si fourni
             const newCustomer = await stripe.customers.create({
               email: customer.email,
               name: customer.name,
               metadata: {
                 created_via: 'live_shopping_app',
+                ...(customer.userId && { clerkUserId: customer.userId }),
               },
             });
             customerId = newCustomer.id;
@@ -192,14 +195,15 @@ router.post(
 
       // Créer la session de checkout intégrée
       const session = await stripe.checkout.sessions.create({
-        ui_mode: 'embedded',
+        //@ts-ignore
+        ui_mode: 'embedded' as any,
+        payment_method_types: ['card', 'klarna', 'paypal', 'amazon_pay'],
         line_items: [
           {
             price_data: {
               currency: currency,
               product_data: {
-                name: 'Article Live Shopping',
-                description: 'Paiement via formulaire intégré',
+                name: 'LIVE SHOPPING APP',
               },
               unit_amount: amount,
             },
@@ -226,7 +230,7 @@ router.post(
 router.post(
   '/webhook',
   express.raw({ type: 'application/json' }),
-  (req: Request, res: Response): void => {
+  async (req: Request, res: Response): Promise<void> => {
     const sig: any = req.headers['stripe-signature'];
     let event;
 
@@ -245,10 +249,94 @@ router.post(
     // Gérer les événements
     switch (event.type) {
       case 'payment_intent.succeeded':
-        // Paiement réussi
-        console.log('Payment succeeded:', event.data.object.id);
-        // Ici tu peux ajouter la logique pour traiter la commande
-        // Par exemple : mettre à jour le statut de la commande en base de données
+        // Paiement réussi (PaymentIntent)
+        console.log('PaymentIntent succeeded:', event.data.object.id);
+        break;
+
+      case 'checkout.session.completed':
+        // Session checkout complétée
+        try {
+          const session: any = event.data.object as any;
+
+          // customer peut être un id de customer ou null
+          const stripeCustomerId = (session.customer as string) || null;
+
+          // récupérer email/phone/adresse depuis la session
+          const email = session.customer_details?.email || null;
+          const phone = session.customer_details?.phone || null;
+          const shipping = session.shipping || null;
+
+          let clerkUserId: string | undefined;
+
+          // Si la session référence un customer Stripe, récupérer ses metadata
+          if (stripeCustomerId) {
+            try {
+              const stripeCustomer = (await stripe.customers.retrieve(
+                stripeCustomerId
+              )) as Stripe.Customer;
+              if (
+                (stripeCustomer as any).metadata &&
+                (stripeCustomer as any).metadata.clerkUserId
+              ) {
+                clerkUserId = (stripeCustomer as any).metadata.clerkUserId;
+              }
+            } catch (custErr) {
+              console.error(
+                'Error retrieving stripe customer for clerk mapping:',
+                custErr
+              );
+            }
+          }
+
+          // Si on n'a pas clerkUserId, on peut essayer de chercher par email via Clerk (limité)
+          if (!clerkUserId && email) {
+            try {
+              // clerkClient doesn't provide a getUserByEmail in some SDKs; we attempt a safe search via listUsers
+              const users = await clerkClient.users.getUserList({
+                emailAddress: email,
+                limit: 1,
+              } as any);
+              if (users && users.length > 0) {
+                clerkUserId = users[0].id;
+              }
+            } catch (findErr) {
+              console.error('Error finding Clerk user by email:', findErr);
+            }
+          }
+
+          if (clerkUserId) {
+            // Construire l'objet d'adresse à stocker
+            const address: any = shipping
+              ? {
+                  name: shipping.name,
+                  address: shipping.address,
+                }
+              : null;
+
+            // Mettre à jour les metadata publiques du user
+            try {
+              await clerkClient.users.updateUserMetadata(clerkUserId, {
+                publicMetadata: {
+                  paid_email: email,
+                  paid_phone: phone,
+                  paid_address: address,
+                },
+              });
+              console.log(`Updated Clerk metadata for user ${clerkUserId}`);
+            } catch (clerkErr) {
+              console.error('Error updating Clerk user metadata:', clerkErr);
+            }
+          } else {
+            console.log(
+              'No Clerk user id found for session, skipping metadata update'
+            );
+          }
+        } catch (sessionErr) {
+          console.error(
+            'Error handling checkout.session.completed:',
+            sessionErr
+          );
+        }
         break;
       case 'payment_intent.payment_failed':
         // Paiement échoué
