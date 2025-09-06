@@ -10,14 +10,7 @@ const PORT = process.env.PORT || 5000;
 // Middleware
 app.use(
   cors({
-    origin: [
-      process.env.CLIENT_URL || 'http://localhost:3000',
-      'https://gobbler-smiling-partly.ngrok-free.app',
-      /\.ngrok\.io$/,
-      /\.ngrok-free\.app$/,
-      /\.ngrok\.app$/,
-      /\.loca\.lt$/,
-    ],
+    origin: [process.env.CLIENT_URL || 'http://localhost:3000'],
     credentials: true,
   })
 );
