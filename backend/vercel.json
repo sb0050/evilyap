@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "server.ts",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/server.ts"
+    }
+  ],
+  "env": {
+    "PORT": "8080",
+    "CLIENT_URL": "https://app-live-frontend.vercel.app"
+  }
+}

@@ -1,76 +1,30 @@
 {
-  "name": "lm-outlet-app",
-  "version": "0.1.0",
+  "name": "app-live",
+  "version": "1.0.0",
+  "description": "Application complète avec frontend et backend",
   "private": true,
-  "dependencies": {
-    "@clerk/clerk-react": "5.38.0",
-    "@stripe/react-stripe-js": "^3.8.1",
-    "@stripe/stripe-js": "7.7.0",
-    "leaflet": "^1.9.4",
-    "lucide-react": "^0.534.0",
-    "ngrok": "^5.0.0-beta.2",
-    "react": "19.1.1",
-    "react-dom": "19.1.1",
-    "react-leaflet": "^5.0.0-rc.2",
-    "react-router-dom": "7.7.1"
-  },
   "scripts": {
-    "start": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "dev": "concurrently \"npm run server\" \"vite\"",
-    "dev:ngrok": "concurrently \"npm run server:ngrok\" \"cross-env VITE_USE_NGROK=true vite\"",
-    "server": "cd server && npm run dev",
-    "server:ngrok": "cd server && cross-env CLIENT_URL=https://gobbler-smiling-partly.ngrok-free.app npm run dev",
-    "dev:windows": "concurrently \"cd server && npm run dev\" \"vite\"",
-    "install-all": "npm install && cd server && npm install && cd ..",
-    "postinstall": "cd server && npm install",
-    "format": "prettier --write src/**/*.{ts,tsx,js,jsx,json,css,md}",
-    "format:check": "prettier --check src/**/*.{ts,tsx,js,jsx,json,css,md}",
-    "type-check": "tsc --noEmit",
-    "prepare": "husky"
+    "start": "npm run dev",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "dev:windows": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "cd backend && npm run dev",
+    "client": "cd frontend && npm run dev",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "cd backend && npm run build",
+    "build:client": "cd frontend && npm run build",
+    "install-all": "npm install && npm run install:server && npm run install:client",
+    "install:server": "cd backend && npm install",
+    "install:client": "cd frontend && npm install",
+    "clean": "rimraf node_modules && npm run clean:server && npm run clean:client",
+    "clean:server": "cd backend && rimraf node_modules dist",
+    "clean:client": "cd frontend && rimraf node_modules dist"
   },
-  "devDependencies": {
-    "@types/leaflet": "^1.9.20",
-    "@types/node": "^24.1.0",
-    "@types/react": "^19.1.8",
-    "@types/react-dom": "^19.1.6",
-    "@typescript-eslint/eslint-plugin": "8.38.0",
-    "@typescript-eslint/parser": "8.38.0",
-    "@vitejs/plugin-react": "^4.7.0",
-    "autoprefixer": "^10.4.21",
-    "buffer": "^6.0.3",
-    "concurrently": "^9.2.0",
-    "cross-env": "^10.0.0",
-    "eslint": "9.32.0",
-    "eslint-config-prettier": "10.1.8",
-    "eslint-plugin-prettier": "5.5.3",
-    "eslint-plugin-react": "^7.37.5",
-    "eslint-plugin-react-hooks": "5.2.0",
-    "husky": "^9.1.7",
-    "lint-staged": "^16.1.2",
-    "postcss": "^8.4.32",
-    "prettier": "3.6.2",
-    "process": "^0.11.10",
-    "tailwindcss": "^3.4.17",
-    "typescript": "^5.8.3",
-    "vite": "^7.0.6"
+  "dependencies": {
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "rimraf": "^5.0.5"
   },
-  "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
-  },
-  "lint-staged": {
-    "src/**/*.{ts,tsx,js,jsx,json,css,md}": [
-      "prettier --write"
-    ]
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

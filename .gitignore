@@ -1,4 +1,10 @@
 node_modules
 .history
 /doc
+.vscode/
+frontend/node_modules/
+backend/node_modules/
+frontend/dist/
+backend/dist/
 .husky
+/.vscode
