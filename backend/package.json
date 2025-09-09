@@ -8,7 +8,8 @@
     "dev": "nodemon --exec ts-node server.ts",
     "dev:full": "nodemon --exec ts-node server.ts",
     "build": "tsc",
-    "dev:ts": "ts-node server.ts"
+    "dev:ts": "ts-node server.ts",
+    "vercel:dev": "vercel dev --listen 8080 --yes"
   },
   "dependencies": {
     "@clerk/clerk-sdk-node": "5.1.6",
