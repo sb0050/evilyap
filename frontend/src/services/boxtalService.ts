@@ -5,7 +5,7 @@ import {
 } from '../types';
 
 const BOXTAL_AUTH_ENDPOINT = `${
-  process.env.REACT_APP_API_URL || 'http://localhost:5000'
+  import.meta.env.VITE_API_URL || 'http://localhost:5000'
 }/api/boxtal/auth`;
 
 class BoxtalService {
@@ -62,7 +62,7 @@ class BoxtalService {
     networks: string[] = ['SOGP', 'MONR', 'CHRP']
   ): Promise<BoxtalParcelPointsResponse> {
     try {
-      const apiUrl = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
       const response = await fetch(`${apiUrl}/api/boxtal/parcel-points`, {
         method: 'POST',

@@ -61,6 +61,8 @@ function CompletePageContent() {
 
     if (sessionId) {
       // Traitement pour Embedded Checkout
+      // @ts-ignore
+      // TO-DO
       stripe.retrieveCheckoutSession(sessionId).then(result => {
         if (result.error) {
           setStatus('default');
