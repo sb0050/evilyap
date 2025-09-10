@@ -5,8 +5,5 @@
   "buildCommand": "npm run build",
   "outputDirectory": "build",
   "framework": "vite",
-  "installCommand": "npm install",
-  "env": {
-    "VITE_API_URL": "https://paylive-server.vercel.app"
-  }
+  "installCommand": "npm install"
 }
