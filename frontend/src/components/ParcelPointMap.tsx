@@ -384,8 +384,9 @@ export default function ParcelPointMap({
         searchNetworks: 'SOGP,MONR,CHRP,COPR,UPSE,DHLE',
       };
 
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
       const response = await fetch(
-        'http://localhost:5000/api/boxtal/parcel-points',
+        `${apiUrl}/api/boxtal/parcel-points`,
         {
           method: 'POST',
           headers: {
