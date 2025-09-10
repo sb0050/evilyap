@@ -20,7 +20,10 @@
     "clean:client": "cd frontend && rimraf node_modules dist",
     "vercel:dev": "powershell -ExecutionPolicy Bypass -File .\\test-vercel-local.ps1",
     "vercel:dev:backend": "powershell -ExecutionPolicy Bypass -File .\\backend\\test-vercel-local.ps1",
-    "vercel:dev:frontend": "powershell -ExecutionPolicy Bypass -File .\\frontend\\test-vercel-local.ps1"
+    "vercel:dev:frontend": "powershell -ExecutionPolicy Bypass -File .\\frontend\\test-vercel-local.ps1",
+    "start:local": "concurrently \"npm run server:local\" \"npm run client:start\"",
+    "server:local": "cd backend && npm run dev",
+    "client:start": "cd frontend && npm run start"
   },
   "dependencies": {
     "concurrently": "^8.2.2",

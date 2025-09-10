@@ -7,6 +7,6 @@
   "framework": "vite",
   "installCommand": "npm install",
   "env": {
-    "VITE_API_URL": "https://app-live-backend.vercel.app/api"
+    "VITE_API_URL": "https://paylive-server.vercel.app"
   }
 }
