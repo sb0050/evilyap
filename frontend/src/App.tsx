@@ -4,9 +4,8 @@ import {
   SignedOut,
   RedirectToSignIn,
 } from '@clerk/clerk-react';
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Header from './components/Header';
-import HomePage from './pages/HomePage';
 import CheckoutPage from './pages/CheckoutPage';
 import CompletePage from './pages/CompletePage';
 import AccountPage from './pages/AccountPage';
@@ -25,7 +24,7 @@ function App() {
         <div className='min-h-screen bg-gray-50'>
           <Header />
           <Routes>
-            <Route path='/' element={<HomePage />} />
+            <Route path='/' element={<Navigate to='/checkout' replace />} />
             <Route
               path='/checkout'
               element={

@@ -394,7 +394,6 @@ function CheckoutForm({
 
           {/* Embedded Checkout */}
           <div className='mb-6'>
-            <h4 className='font-medium text-gray-900 mb-3'>Paiement Intégré</h4>
             {/* Champ montant + bouton mise à jour */}
             <div className='mb-6'>
               <label className='block text-sm font-medium text-gray-700 mb-2'>
@@ -441,6 +440,13 @@ function CheckoutForm({
                 </EmbeddedCheckoutProvider>
               </div>
             )}
+          </div>
+
+          {/* Ligne de séparation */}
+          <div className='mb-6 flex items-center'>
+            <hr className='flex-grow border-gray-300' />
+            <span className='px-4 text-gray-500 text-sm font-medium'>Ou</span>
+            <hr className='flex-grow border-gray-300' />
           </div>
 
           {/* Payer via Stripe */}
