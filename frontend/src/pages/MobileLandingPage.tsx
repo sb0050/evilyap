@@ -9,12 +9,14 @@ import {
   Share,
   User,
 } from 'lucide-react';
+import OnboardingForm from '../components/OnboardingForm';
 
 const MobileLandingPage = () => {
   const [currentSlide, setCurrentSlide] = useState(0);
   const [isAutoPlaying, setIsAutoPlaying] = useState(true);
   const [likedVideos, setLikedVideos] = useState<Set<number>>(new Set());
   const [isDesktop, setIsDesktop] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   // Check if desktop
   useEffect(() => {
@@ -280,12 +282,12 @@ const MobileLandingPage = () => {
       {!isDesktop && (
         <div className='absolute bottom-0 left-0 right-0 bg-black/70 backdrop-blur-sm p-4 z-30'>
           <div className='space-y-2'>
-            <Link
-              to='/checkout'
-              className='block w-full bg-blue-600 text-white py-2 px-4 rounded-lg font-bold text-sm text-center hover:bg-blue-700 transition-all duration-300 animate-pulse hover:animate-none hover:scale-105'
-            >
-              Essayez PayLive Gratuitement !
-            </Link>
+            <button
+               onClick={() => setShowOnboarding(true)}
+               className='block w-full bg-gradient-to-r from-purple-600 to-blue-600 text-white py-2 px-4 rounded-lg font-bold text-sm text-center hover:from-purple-700 hover:to-blue-700 transition-all duration-300 transform hover:scale-105 shadow-lg animate-pulse hover:animate-none'
+             >
+               Essayez PayLive Gratuitement !
+             </button>
             <a
               href='#'
               className='block text-center text-blue-400 text-sm underline hover:text-blue-300 transition-colors'
@@ -300,12 +302,12 @@ const MobileLandingPage = () => {
       {isDesktop && (
         <div className='absolute bottom-0 left-0 bg-black/70 backdrop-blur-sm p-6 z-30 rounded-tr-lg'>
           <div className='space-y-3'>
-            <Link
-              to='/checkout'
-              className='block bg-blue-600 text-white py-3 px-6 rounded-lg font-semibold text-lg hover:bg-blue-700 transition-all duration-300 animate-pulse hover:animate-none hover:scale-105'
-            >
-              Essayez PayLive Gratuitement !
-            </Link>
+            <button
+               onClick={() => setShowOnboarding(true)}
+               className='block bg-gradient-to-r from-purple-600 to-blue-600 text-white py-3 px-6 rounded-lg font-semibold text-lg hover:from-purple-700 hover:to-blue-700 transition-all duration-300 transform hover:scale-105 shadow-lg animate-pulse hover:animate-none'
+             >
+               Essayez PayLive Gratuitement !
+             </button>
             <a
               href='#'
               className='block text-blue-400 underline hover:text-blue-300 transition-colors'
@@ -315,6 +317,11 @@ const MobileLandingPage = () => {
           </div>
         </div>
       )}
+      
+      <OnboardingForm 
+        isVisible={showOnboarding} 
+        onBack={() => setShowOnboarding(false)} 
+      />
     </div>
   );
 };
