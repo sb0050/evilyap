@@ -18,12 +18,28 @@ const MobileLandingPage = () => {
   const [isDesktop, setIsDesktop] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
 
-  // Check if desktop
+  // Check if desktop and mobile capabilities
   useEffect(() => {
     const checkDesktop = () => {
       setIsDesktop(window.innerWidth >= 768);
     };
+    
+    // Force video autoplay policy for mobile
+    const enableMobileVideo = () => {
+      if ('serviceWorker' in navigator) {
+        // Enable hardware acceleration for better video performance
+        document.documentElement.style.setProperty('--webkit-transform', 'translateZ(0)');
+      }
+      
+      // Add mobile-specific meta tags for video optimization
+      const viewport = document.querySelector('meta[name="viewport"]');
+      if (viewport) {
+        viewport.setAttribute('content', 'width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no');
+      }
+    };
+    
     checkDesktop();
+    enableMobileVideo();
     window.addEventListener('resize', checkDesktop);
     return () => window.removeEventListener('resize', checkDesktop);
   }, []);
@@ -69,6 +85,35 @@ const MobileLandingPage = () => {
 
     return () => clearInterval(interval);
   }, [isAutoPlaying, videos.length]);
+
+  // Preload current and next video for better mobile performance
+  useEffect(() => {
+    const preloadVideo = (url: string) => {
+      const link = document.createElement('link');
+      link.rel = 'prefetch';
+      link.href = url;
+      link.as = 'document';
+      document.head.appendChild(link);
+      
+      // Remove after 10 seconds to avoid the warning
+      setTimeout(() => {
+        if (document.head.contains(link)) {
+          document.head.removeChild(link);
+        }
+      }, 10000);
+    };
+
+    // Preload current video
+    if (videos[currentSlide]) {
+      preloadVideo(videos[currentSlide].url);
+    }
+
+    // Preload next video
+    const nextIndex = (currentSlide + 1) % videos.length;
+    if (videos[nextIndex]) {
+      preloadVideo(videos[nextIndex].url);
+    }
+  }, [currentSlide, videos]);
 
   const nextSlide = () => {
     setCurrentSlide(prev => (prev + 1) % videos.length);
@@ -146,9 +191,17 @@ const MobileLandingPage = () => {
               src={video.url}
               className='w-full h-full object-cover'
               frameBorder='0'
-              allow='autoplay; fullscreen'
+              allow='autoplay; fullscreen; accelerometer; gyroscope; picture-in-picture'
               allowFullScreen
+              loading={index === currentSlide ? 'eager' : 'lazy'}
+              sandbox='allow-scripts allow-same-origin allow-presentation'
               onContextMenu={e => e.preventDefault()}
+              style={{
+                border: 'none',
+                outline: 'none',
+                WebkitTransform: 'translateZ(0)',
+                transform: 'translateZ(0)'
+              }}
             />
           </div>
         ))}
