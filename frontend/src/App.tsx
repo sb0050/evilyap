@@ -5,7 +5,9 @@ import {
   RedirectToSignIn,
 } from '@clerk/clerk-react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import Header from './components/Header';
+
+import LandingPage from './pages/LandingPage';
+import MobileLandingPage from './pages/MobileLandingPage';
 import CheckoutPage from './pages/CheckoutPage';
 import CompletePage from './pages/CompletePage';
 import AccountPage from './pages/AccountPage';
@@ -22,9 +24,10 @@ function App() {
     <ClerkProvider publishableKey={publishableKey}>
       <Router>
         <div className='min-h-screen bg-gray-50'>
-          <Header />
           <Routes>
-            <Route path='/' element={<Navigate to='/checkout' replace />} />
+            <Route path='/' element={<MobileLandingPage />} />
+            <Route path='/landing' element={<LandingPage />} />
+            <Route path='/mobile' element={<MobileLandingPage />} />
             <Route
               path='/checkout'
               element={
