@@ -3,11 +3,17 @@ import {
   SignedIn,
   SignedOut,
   RedirectToSignIn,
+  RedirectToSignUp,
 } from '@clerk/clerk-react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Navigate,
+} from 'react-router-dom';
+import { dark, neobrutalism } from '@clerk/themes';
 
 import LandingPage from './pages/LandingPage';
-import MobileLandingPage from './pages/MobileLandingPage';
 import CheckoutPage from './pages/CheckoutPage';
 import CompletePage from './pages/CompletePage';
 import AccountPage from './pages/AccountPage';
@@ -21,19 +27,27 @@ function App() {
   }
 
   return (
-    <ClerkProvider publishableKey={publishableKey}>
+    <ClerkProvider
+      publishableKey={publishableKey}
+      appearance={{
+        baseTheme: [dark, neobrutalism],
+      }}
+    >
       <Router>
         <div className='min-h-screen bg-gray-50'>
           <Routes>
-            <Route path='/' element={<MobileLandingPage />} />
-            <Route path='/landing' element={<LandingPage />} />
-            <Route path='/mobile' element={<MobileLandingPage />} />
+            <Route path='/' element={<LandingPage />} />
             <Route
-              path='/checkout'
+              path='/stores'
               element={
-                <SignedIn>
-                  <CheckoutPage />
-                </SignedIn>
+                <>
+                  <SignedIn>
+                    <CheckoutPage />
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
               }
             />
             <Route
@@ -61,9 +75,6 @@ function App() {
               }
             />
           </Routes>
-          <SignedOut>
-            <RedirectToSignIn />
-          </SignedOut>
         </div>
       </Router>
     </ClerkProvider>

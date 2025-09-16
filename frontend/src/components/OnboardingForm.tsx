@@ -7,7 +7,6 @@ interface OnboardingFormProps {
 }
 
 interface FormData {
-  firstName: string;
   lastName: string;
   email: string;
   shopName: string;
@@ -22,7 +21,6 @@ const OnboardingForm: React.FC<OnboardingFormProps> = ({
   isVisible,
 }) => {
   const [formData, setFormData] = useState<FormData>({
-    firstName: '',
     lastName: '',
     email: '',
     shopName: '',
@@ -90,8 +88,6 @@ const OnboardingForm: React.FC<OnboardingFormProps> = ({
   const validateForm = (): boolean => {
     const newErrors: Partial<FormData> = {};
 
-    if (!formData.firstName.trim())
-      newErrors.firstName = 'Le prénom est requis';
     if (!formData.lastName.trim()) newErrors.lastName = 'Le nom est requis';
     if (!formData.email.trim()) newErrors.email = "L'email est requis";
     if (formData.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
@@ -119,7 +115,6 @@ const OnboardingForm: React.FC<OnboardingFormProps> = ({
 
   const isFormValid = (): boolean => {
     return (
-      formData.firstName.trim() !== '' &&
       formData.lastName.trim() !== '' &&
       formData.email.trim() !== '' &&
       /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email) &&
@@ -168,26 +163,9 @@ const OnboardingForm: React.FC<OnboardingFormProps> = ({
       </button>
 
       {/* Form container */}
-      <div className='relative z-10 min-h-screen flex items-center justify-center p-6'>
-        <div className='w-full max-w-md bg-white/10 backdrop-blur-lg border border-white/20 rounded-2xl p-8 shadow-2xl'>
-          <form onSubmit={handleSubmit} className='space-y-6'>
-            {/* Prénom */}
-            <div>
-              <label className='block text-white text-sm font-medium mb-2'>
-                Prénom *
-              </label>
-              <input
-                type='text'
-                value={formData.firstName}
-                onChange={e => handleInputChange('firstName', e.target.value)}
-                className='w-full px-4 py-3 bg-white/10 border border-white/30 rounded-lg text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all'
-                placeholder='Votre prénom'
-              />
-              {errors.firstName && (
-                <p className='text-red-400 text-sm mt-1'>{errors.firstName}</p>
-              )}
-            </div>
-
+      <div className='relative z-10 min-h-screen flex items-center justify-center p-4 py-20'>
+        <div className='w-full max-w-md bg-white/10 backdrop-blur-lg border border-white/20 rounded-2xl p-6 shadow-2xl'>
+          <form onSubmit={handleSubmit} className='space-y-4'>
             {/* Nom */}
             <div>
               <label className='block text-white text-sm font-medium mb-2'>
@@ -246,11 +224,11 @@ const OnboardingForm: React.FC<OnboardingFormProps> = ({
               </label>
               <div className='relative'>
                 {logoPreview ? (
-                  <div className='relative bg-white/10 border border-white/30 rounded-lg p-4 flex items-center justify-center'>
+                  <div className='relative bg-white/10 border border-white/30 rounded-lg p-2 flex items-center justify-center h-16'>
                     <img
                       src={logoPreview}
                       alt='Logo preview'
-                      className='max-h-20 max-w-full object-contain'
+                      className='max-h-12 max-w-full object-contain'
                     />
                     <button
                       type='button'
@@ -262,9 +240,9 @@ const OnboardingForm: React.FC<OnboardingFormProps> = ({
                   </div>
                 ) : (
                   <label className='cursor-pointer'>
-                    <div className='bg-white/10 border border-white/30 border-dashed rounded-lg p-8 text-center hover:bg-white/20 transition-colors'>
-                      <Upload className='w-8 h-8 text-white/60 mx-auto mb-2' />
-                      <p className='text-white/60 text-sm'>
+                    <div className='bg-white/10 border border-white/30 border-dashed rounded-lg p-4 text-center hover:bg-white/20 transition-colors h-16 flex flex-col items-center justify-center'>
+                      <Upload className='w-6 h-6 text-white/60 mb-1' />
+                      <p className='text-white/60 text-xs'>
                         Cliquez pour ajouter votre logo
                       </p>
                     </div>
