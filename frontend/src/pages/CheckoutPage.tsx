@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useParams } from 'react-router-dom';
 import {
   useStripe,
   useElements,
@@ -16,6 +17,15 @@ import StripeWrapper from '../components/StripeWrapper';
 import ParcelPointMap from '../components/ParcelPointMap';
 import { apiPost } from '../utils/api';
 
+interface Store {
+  id: number;
+  name: string;
+  logo: string;
+  description: string;
+  theme: string;
+  owner_email: string;
+}
+
 // Composant interne qui utilise les hooks Stripe
 interface CheckoutFormProps {
   embeddedClientSecret: string;
@@ -24,6 +34,7 @@ interface CheckoutFormProps {
   // now accepts the new payment amount in cents
   onUpdateClick: (paymentAmount: number) => void;
   updating?: boolean;
+  store: Store | null;
 }
 
 function CheckoutForm({
@@ -32,6 +43,7 @@ function CheckoutForm({
   setAmount,
   onUpdateClick,
   updating,
+  store,
 }: CheckoutFormProps) {
   const stripe = useStripe();
   const elements = useElements();
@@ -212,13 +224,43 @@ function CheckoutForm({
   };
 
   return (
-    <div className='max-w-4xl mx-auto px-4 py-8'>
-      {/* En-tête */}
-      <div className='text-center mb-8'>
-        <ShoppingBag className='h-12 w-12 text-amber-600 mx-auto mb-4' />
-        <h1 className='text-3xl font-bold text-gray-900 mb-2'>LM OUTLET</h1>
-        <p className='text-gray-600'>LIVE SHOP - Checkout</p>
+    <div 
+      className='min-h-screen'
+      style={{ background: store?.theme || '#f8fafc' }}
+    >
+      <div className="bg-black bg-opacity-20 backdrop-blur-sm">
+        <div className='max-w-4xl mx-auto px-4 py-8'>
+          {/* En-tête avec branding de la boutique */}
+          <div className='text-center mb-8'>
+            <div className="flex items-center justify-center space-x-6 mb-6">
+              {/* Logo de la boutique */}
+              {store?.logo ? (
+                <img 
+                  src={store.logo} 
+                  alt={`Logo ${store.name}`}
+                  className="w-16 h-16 rounded-full object-cover border-4 border-white shadow-lg"
+                />
+              ) : (
+                <div className="w-16 h-16 rounded-full bg-white bg-opacity-20 flex items-center justify-center border-4 border-white shadow-lg">
+                  <ShoppingBag className="w-8 h-8 text-white" />
+                </div>
+              )}
+              
+              <div className="text-left">
+                <h1 className='text-3xl font-bold text-white mb-2'>
+                  {store?.name || 'Boutique'}
+                </h1>
+                {store?.description && (
+                  <p className='text-white text-opacity-90'>{store.description}</p>
+                )}
+                <p className='text-white text-opacity-75 text-sm mt-1'>Checkout</p>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
+
+      <div className='max-w-4xl mx-auto px-4 py-8'>
 
       <form onSubmit={handleSubmit} className='space-y-8'>
         {/* Informations personnelles */}
@@ -503,26 +545,58 @@ function CheckoutForm({
           </div>
         )}
       </form>
+      </div>
     </div>
   );
 }
 
 // Composant principal qui gère le clientSecret et wrap avec Stripe Elements
 export default function CheckoutPage() {
+  const { storeName } = useParams<{ storeName: string }>();
   const [clientSecret, setClientSecret] = useState('');
   const [embeddedClientSecret, setEmbeddedClientSecret] = useState('');
   const [updating, setUpdating] = useState(false);
+  const [store, setStore] = useState<Store | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const { user } = useUser();
 
   // Créer le Payment Intent au chargement de la page
   const [amount, setAmount] = useState(5000); // 50€ par défaut en centimes
 
   useEffect(() => {
-    if (user) {
+    const fetchStore = async () => {
+      if (!storeName) {
+        setError('Nom de boutique manquant');
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const response = await fetch(`http://localhost:5000/api/stores/${encodeURIComponent(storeName)}`);
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Erreur lors du chargement de la boutique');
+        }
+
+        setStore(data.store);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Erreur inconnue');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchStore();
+  }, [storeName]);
+
+  useEffect(() => {
+    if (user && store) {
       initializePayment();
       initializeEmbeddedCheckout(amount);
     }
-  }, [user]);
+  }, [user, store]);
 
   // Créer le Payment Intent avec support des customers
   const initializePayment = async () => {
@@ -601,13 +675,40 @@ export default function CheckoutPage() {
     }
   };
 
+  // Afficher un loading si on charge les données de la boutique
+  if (loading) {
+    return (
+      <div className='min-h-screen flex items-center justify-center'>
+        <div className='text-center'>
+          <div className='animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4'></div>
+          <p className='text-gray-600'>Chargement de la boutique...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Afficher une erreur si la boutique n'est pas trouvée
+  if (error || !store) {
+    return (
+      <div className='min-h-screen flex items-center justify-center'>
+        <div className='text-center'>
+          <h1 className='text-2xl font-bold text-gray-900 mb-4'>Boutique non trouvée</h1>
+          <p className='text-gray-600'>{error || 'Cette boutique n\'existe pas.'}</p>
+        </div>
+      </div>
+    );
+  }
+
   // Afficher un loading uniquement si on n'a ni clientSecret ni embeddedClientSecret
   if (!clientSecret && !embeddedClientSecret) {
     return (
-      <div className='max-w-4xl mx-auto px-4 py-8'>
+      <div 
+        className='min-h-screen flex items-center justify-center'
+        style={{ background: store?.theme || '#f8fafc' }}
+      >
         <div className='text-center'>
           <div className='animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4'></div>
-          <p className='text-gray-600'>Initialisation du paiement...</p>
+          <p className='text-white'>Initialisation du paiement...</p>
         </div>
       </div>
     );
@@ -638,6 +739,7 @@ export default function CheckoutPage() {
           reloadEmbeddedCheckout(paymentAmount)
         }
         updating={updating}
+        store={store}
       />
     </StripeWrapper>
   );

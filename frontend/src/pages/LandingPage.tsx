@@ -1,9 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useUser } from '@clerk/clerk-react';
 import { ChevronUp, ChevronDown, Heart } from 'lucide-react';
-import OnboardingForm from '../components/OnboardingForm';
-import { apiGet } from '../utils/api';
 
 const LandingPage = () => {
   const navigate = useNavigate();
@@ -11,8 +8,6 @@ const LandingPage = () => {
   const [isAutoPlaying, setIsAutoPlaying] = useState(true);
   const [likedVideos, setLikedVideos] = useState<Set<number>>(new Set());
   const [isDesktop, setIsDesktop] = useState(false);
-  const [showOnboarding, setShowOnboarding] = useState(false);
-
 
   // Handle CTA button click
   const handleCTAClick = () => {
@@ -377,11 +372,6 @@ const LandingPage = () => {
           </div>
         </div>
       )}
-
-      <OnboardingForm
-        isVisible={showOnboarding}
-        onBack={() => setShowOnboarding(false)}
-      />
     </div>
   );
 };

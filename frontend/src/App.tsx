@@ -18,6 +18,9 @@ import CheckoutPage from './pages/CheckoutPage';
 import CompletePage from './pages/CompletePage';
 import AccountPage from './pages/AccountPage';
 import OrdersPage from './pages/OrdersPage';
+import OnboardingPage from './pages/OnboardingPage';
+import StorePage from './pages/StorePage';
+import AuthRedirect from './components/AuthRedirect';
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -42,12 +45,30 @@ function App() {
               element={
                 <>
                   <SignedIn>
-                    <CheckoutPage />
+                    <AuthRedirect>
+                      <CheckoutPage />
+                    </AuthRedirect>
                   </SignedIn>
                   <SignedOut>
                     <RedirectToSignUp />
                   </SignedOut>
                 </>
+              }
+            />
+            <Route
+              path='/store/:storeName'
+              element={
+                <SignedIn>
+                  <StorePage />
+                </SignedIn>
+              }
+            />
+            <Route
+              path='/checkout/:storeName'
+              element={
+                <SignedIn>
+                  <CheckoutPage />
+                </SignedIn>
               }
             />
             <Route
@@ -71,6 +92,14 @@ function App() {
               element={
                 <SignedIn>
                   <OrdersPage />
+                </SignedIn>
+              }
+            />
+            <Route
+              path='/onboarding'
+              element={
+                <SignedIn>
+                  <OnboardingPage />
                 </SignedIn>
               }
             />
