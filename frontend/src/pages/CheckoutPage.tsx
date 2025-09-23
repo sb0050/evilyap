@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import {
   useStripe,
   useElements,
@@ -62,8 +62,16 @@ function CheckoutForm({
     firstName: user?.firstName || '',
     lastName: user?.lastName || '',
     fullName: `${user?.firstName || ''} ${user?.lastName || ''}`.trim(),
-    phone: '',
+    phone: user?.primaryPhoneNumber || '',
     acceptTerms: true,
+    address: {
+      line1: user?.publicMetadata?.addressLine1 || '',
+      line2: user?.publicMetadata?.addressLine2 || '',
+      city: user?.publicMetadata?.addressCity || '',
+      postal_code: user?.publicMetadata?.addressPostalCode || '',
+      pointRelais: user?.publicMetadata?.addressPointRelais || '',
+      country: user?.publicMetadata?.addressCountry || '',
+    },
   });
   const [shippingAddress, setShippingAddress] = useState<any>(null);
   const [selectedParcelPoint, setSelectedParcelPoint] = useState<any>(null);
@@ -194,7 +202,7 @@ function CheckoutForm({
             billing_details: {
               name: formData.fullName,
               email: formData.email,
-              phone: formData.phone,
+              phone: formData.phone.toString(),
             },
           },
           shipping: shippingAddress
@@ -224,36 +232,40 @@ function CheckoutForm({
   };
 
   return (
-    <div 
+    <div
       className='min-h-screen'
       style={{ background: store?.theme || '#f8fafc' }}
     >
-      <div className="bg-black bg-opacity-20 backdrop-blur-sm">
+      <div className='bg-black bg-opacity-20 backdrop-blur-sm'>
         <div className='max-w-4xl mx-auto px-4 py-8'>
           {/* En-tête avec branding de la boutique */}
           <div className='text-center mb-8'>
-            <div className="flex items-center justify-center space-x-6 mb-6">
+            <div className='flex items-center justify-center space-x-6 mb-6'>
               {/* Logo de la boutique */}
               {store?.logo ? (
-                <img 
-                  src={store.logo} 
+                <img
+                  src={store.logo}
                   alt={`Logo ${store.name}`}
-                  className="w-16 h-16 rounded-full object-cover border-4 border-white shadow-lg"
+                  className='w-16 h-16 rounded-full object-cover border-4 border-white shadow-lg'
                 />
               ) : (
-                <div className="w-16 h-16 rounded-full bg-white bg-opacity-20 flex items-center justify-center border-4 border-white shadow-lg">
-                  <ShoppingBag className="w-8 h-8 text-white" />
+                <div className='w-16 h-16 rounded-full bg-white bg-opacity-20 flex items-center justify-center border-4 border-white shadow-lg'>
+                  <ShoppingBag className='w-8 h-8 text-white' />
                 </div>
               )}
-              
-              <div className="text-left">
+
+              <div className='text-left'>
                 <h1 className='text-3xl font-bold text-white mb-2'>
                   {store?.name || 'Boutique'}
                 </h1>
                 {store?.description && (
-                  <p className='text-white text-opacity-90'>{store.description}</p>
+                  <p className='text-white text-opacity-90'>
+                    {store.description}
+                  </p>
                 )}
-                <p className='text-white text-opacity-75 text-sm mt-1'>Checkout</p>
+                <p className='text-white text-opacity-75 text-sm mt-1'>
+                  Checkout
+                </p>
               </div>
             </div>
           </div>
@@ -261,96 +273,107 @@ function CheckoutForm({
       </div>
 
       <div className='max-w-4xl mx-auto px-4 py-8'>
-
-      <form onSubmit={handleSubmit} className='space-y-8'>
-        {/* Informations personnelles */}
-        <div className='bg-white rounded-lg shadow-md p-6'>
-          <h3 className='text-lg font-semibold mb-4 flex items-center'>
-            <User className='h-5 w-5 mr-2 text-blue-600' />
-            Informations personnelles
-          </h3>
-          <div className='grid grid-cols-1 md:grid-cols-2 gap-4'>
-            <div>
-              <label className='block text-sm font-medium text-gray-700 mb-2'>
-                Nom complet *
-              </label>
-              <input
-                type='text'
-                value={formData.fullName}
-                onChange={e =>
-                  setFormData({ ...formData, fullName: e.target.value })
-                }
-                className='w-full border border-gray-300 rounded-md px-4 py-3 focus:ring-2 focus:ring-slate-500 focus:border-transparent'
-                required
-              />
-            </div>
-            <div>
-              <label className='block text-sm font-medium text-gray-700 mb-2'>
-                Email *
-              </label>
-              <input
-                type='email'
-                value={formData.email}
-                onChange={e =>
-                  setFormData({ ...formData, email: e.target.value })
-                }
-                className='w-full border border-gray-300 rounded-md px-4 py-3 focus:ring-2 focus:ring-slate-500 focus:border-transparent'
-                required
-              />
-            </div>
-            <div>
-              <label className='block text-sm font-medium text-gray-700 mb-2'>
-                Référence
-              </label>
-              <input
-                type='text'
-                value={formData.reference}
-                onChange={e =>
-                  setFormData({ ...formData, reference: e.target.value })
-                }
-                className='w-full border border-gray-300 rounded-md px-4 py-3 focus:ring-2 focus:ring-slate-500 focus:border-transparent'
-              />
+        <form onSubmit={handleSubmit} className='space-y-8'>
+          {/* Informations personnelles */}
+          <div className='bg-white rounded-lg shadow-md p-6'>
+            <h3 className='text-lg font-semibold mb-4 flex items-center'>
+              <User className='h-5 w-5 mr-2 text-blue-600' />
+              Informations personnelles
+            </h3>
+            <div className='grid grid-cols-1 md:grid-cols-2 gap-4'>
+              <div>
+                <label className='block text-sm font-medium text-gray-700 mb-2'>
+                  Nom complet *
+                </label>
+                <input
+                  type='text'
+                  value={formData.fullName}
+                  onChange={e =>
+                    setFormData({ ...formData, fullName: e.target.value })
+                  }
+                  className='w-full border border-gray-300 rounded-md px-4 py-3 focus:ring-2 focus:ring-slate-500 focus:border-transparent'
+                  required
+                />
+              </div>
+              <div>
+                <label className='block text-sm font-medium text-gray-700 mb-2'>
+                  Email *
+                </label>
+                <input
+                  type='email'
+                  value={formData.email}
+                  onChange={e =>
+                    setFormData({ ...formData, email: e.target.value })
+                  }
+                  className='w-full border border-gray-300 rounded-md px-4 py-3 focus:ring-2 focus:ring-slate-500 focus:border-transparent'
+                  required
+                />
+              </div>
+              <div>
+                <label className='block text-sm font-medium text-gray-700 mb-2'>
+                  Référence *
+                </label>
+                <input
+                  type='text'
+                  value={formData.reference}
+                  onChange={e =>
+                    setFormData({ ...formData, reference: e.target.value })
+                  }
+                  className='w-full border border-gray-300 rounded-md px-4 py-3 focus:ring-2 focus:ring-slate-500 focus:border-transparent'
+                  required
+                />
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Adresse de livraison */}
-        <div className='bg-white rounded-lg shadow-md p-6'>
-          <h3 className='text-lg font-semibold mb-4 flex items-center'>
-            <MapPin className='h-5 w-5 mr-2 text-blue-600' />
-            Adresse de livraison
-          </h3>
-          <AddressElement
-            options={{
-              mode: 'shipping',
-              fields: {
-                phone: 'always',
-              },
-              validation: {
-                phone: {
-                  required: 'never',
+          {/* Adresse de livraison */}
+          <div className='bg-white rounded-lg shadow-md p-6'>
+            <h3 className='text-lg font-semibold mb-4 flex items-center'>
+              <MapPin className='h-5 w-5 mr-2 text-blue-600' />
+              Adresse de livraison
+            </h3>
+            <AddressElement
+              options={{
+                mode: 'shipping',
+                fields: {
+                  phone: 'always',
                 },
-              },
-              allowedCountries: ['FR', 'BE', 'DE', 'ES', 'IT'],
-              autocomplete: getAutocompleteConfig(),
-            }}
-            onChange={handleShippingAddressChange}
-          />
-
-          {/* Carte des points relais */}
-          <div className='mt-6'>
-            <ParcelPointMap
-              address={shippingAddress?.address}
-              onParcelPointSelect={setSelectedParcelPoint}
+                defaultValues: {
+                  phone: formData.phone.toString(),
+                  name: formData.fullName,
+                  address: {
+                    line1: formData?.address?.line1?.toString(),
+                    line2: formData.address.line2?.toString(),
+                    city: formData.address.city?.toString(),
+                    postal_code: formData.address.postal_code?.toString(),
+                    country: formData.address.country?.toString(),
+                  },
+                },
+                validation: {
+                  phone: {
+                    required: 'always',
+                  },
+                },
+                allowedCountries: ['FR', 'BE', 'DE', 'ES', 'IT'],
+                autocomplete: getAutocompleteConfig(),
+              }}
+              onChange={handleShippingAddressChange}
             />
+
+            {/* Carte des points relais */}
+            <div className='mt-6'>
+              <ParcelPointMap
+                address={shippingAddress?.address}
+                onParcelPointSelect={setSelectedParcelPoint}
+              />
+            </div>
           </div>
-        </div>
 
-        {/* Paiement */}
-        <div className='bg-white rounded-lg shadow-md p-6'>
-          <h3 className='text-lg font-semibold mb-4'>Paiement</h3>
+          {/* Paiement */}
+          <div className='bg-white rounded-lg shadow-md p-6'>
+            <h3 className='text-lg font-semibold mb-4'>Paiement</h3>
 
-          {/* Adresse de facturation 
+            {/* Adresse de facturation 
           <div className='mb-6'>
             <h4 className='font-medium text-gray-900 mb-3'>
               Adresse de facturation
@@ -371,7 +394,7 @@ function CheckoutForm({
           </div>
           */}
 
-          {/* Express Checkout - Quick Payment 
+            {/* Express Checkout - Quick Payment 
           <div className='mb-6'>
             <h4 className='font-medium text-gray-900 mb-3'>Paiement rapide</h4>
             <ExpressCheckoutElement
@@ -394,7 +417,7 @@ function CheckoutForm({
           
           */}
 
-          {/* Élément de paiement 
+            {/* Élément de paiement 
           <div className='mb-6'>
             <h4 className='font-medium text-gray-900 mb-3'>
               Méthode de paiement
@@ -417,7 +440,7 @@ function CheckoutForm({
           
           */}
 
-          {/* Option de sauvegarde 
+            {/* Option de sauvegarde 
           
           <div className='mb-6'>
             <label className='flex items-center'>
@@ -434,79 +457,79 @@ function CheckoutForm({
           </div>
           */}
 
-          {/* Embedded Checkout */}
-          <div className='mb-6'>
-            {/* Champ montant + bouton mise à jour */}
+            {/* Embedded Checkout */}
             <div className='mb-6'>
-              <label className='block text-sm font-medium text-gray-700 mb-2'>
-                Montant (en €)
-              </label>
-              <div className='flex space-x-2'>
-                <input
-                  type='number'
-                  min='1'
-                  step='1'
-                  value={amountInput}
-                  onChange={e => {
-                    const cleaned = e.target.value.replace(/[^0-9]/g, '');
-                    setAmountInput(cleaned);
-                  }}
-                  className='flex-1 border border-gray-300 rounded-md px-4 py-2'
-                />
-                <button
-                  type='button'
-                  onClick={() => {
-                    const parsedEuros = parseInt(amountInput, 10) || 0;
-                    const cents = parsedEuros * 100;
-                    if (cents < 100) {
-                      alert('Le montant doit être au moins 1€');
-                      return;
-                    }
-                    setAmount(cents);
-                    onUpdateClick(cents);
-                  }}
-                  disabled={Boolean(updating)}
-                  className='px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed'
-                >
-                  {updating ? 'Mise à jour...' : 'Mettre à jour'}
-                </button>
+              {/* Champ montant + bouton mise à jour */}
+              <div className='mb-6'>
+                <label className='block text-sm font-medium text-gray-700 mb-2'>
+                  Montant (en €)
+                </label>
+                <div className='flex space-x-2'>
+                  <input
+                    type='number'
+                    min='1'
+                    step='1'
+                    value={amountInput}
+                    onChange={e => {
+                      const cleaned = e.target.value.replace(/[^0-9]/g, '');
+                      setAmountInput(cleaned);
+                    }}
+                    className='flex-1 border border-gray-300 rounded-md px-4 py-2'
+                  />
+                  <button
+                    type='button'
+                    onClick={() => {
+                      const parsedEuros = parseInt(amountInput, 10) || 0;
+                      const cents = parsedEuros * 100;
+                      if (cents < 100) {
+                        alert('Le montant doit être au moins 1€');
+                        return;
+                      }
+                      setAmount(cents);
+                      onUpdateClick(cents);
+                    }}
+                    disabled={Boolean(updating)}
+                    className='px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed'
+                  >
+                    {updating ? 'Mise à jour...' : 'Mettre à jour'}
+                  </button>
+                </div>
               </div>
+              {embeddedClientSecret && (
+                <div className='border border-gray-200 rounded-md overflow-hidden'>
+                  <EmbeddedCheckoutProvider
+                    stripe={stripe}
+                    options={{ clientSecret: embeddedClientSecret }}
+                  >
+                    <EmbeddedCheckout />
+                  </EmbeddedCheckoutProvider>
+                </div>
+              )}
             </div>
-            {embeddedClientSecret && (
-              <div className='border border-gray-200 rounded-md overflow-hidden'>
-                <EmbeddedCheckoutProvider
-                  stripe={stripe}
-                  options={{ clientSecret: embeddedClientSecret }}
-                >
-                  <EmbeddedCheckout />
-                </EmbeddedCheckoutProvider>
-              </div>
-            )}
-          </div>
 
-          {/* Ligne de séparation */}
-          <div className='mb-6 flex items-center'>
-            <hr className='flex-grow border-gray-300' />
-            <span className='px-4 text-gray-500 text-sm font-medium'>Ou</span>
-            <hr className='flex-grow border-gray-300' />
-          </div>
+            {/* Ligne de séparation */}
+            <div className='mb-6 flex items-center'>
+              <hr className='flex-grow border-gray-300' />
+              <span className='px-4 text-gray-500 text-sm font-medium'>Ou</span>
+              <hr className='flex-grow border-gray-300' />
+            </div>
 
-          {/* Payer via Stripe */}
-          <div className='mb-6'>
-            <h4 className='font-medium text-gray-900 mb-3'>
-              Payer via Stripe Checkout
-            </h4>
-            <button
-              type='button'
-              onClick={() => window.open(getStripePaymentUrl(), '_blank')}
-              className='w-full bg-indigo-600 text-white py-3 px-4 rounded-md hover:bg-indigo-700 transition-colors flex items-center justify-center space-x-2'
-            >
-              <ExternalLink className='h-5 w-5' />
-              <span>Payer avec Stripe Checkout</span>
-            </button>
-          </div>
+            {/* Payer via Stripe */}
+            <div className='mb-6'>
+              <h4 className='font-medium text-gray-900 mb-3'>
+                Payer via Stripe Checkout
+              </h4>
+              <button
+                type='button'
+                onClick={() => window.open(getStripePaymentUrl(), '_blank')}
+                className='w-full bg-indigo-600 text-white py-3 px-4 rounded-md hover:bg-indigo-700 transition-colors flex items-center justify-center space-x-2'
+              >
+                <ExternalLink className='h-5 w-5' />
+                <span>Payer avec Stripe Checkout</span>
+              </button>
+            </div>
 
-          {/* Conditions générales 
+            {/* Conditions générales 
           <div className='mb-6'>
             <label className='flex items-center'>
               <input
@@ -525,7 +548,7 @@ function CheckoutForm({
           </div>
           */}
 
-          {/* Bouton de paiement 
+            {/* Bouton de paiement 
           <div className='mt-6'>
             <button
               type='submit'
@@ -536,15 +559,15 @@ function CheckoutForm({
             </button>
           </div>
           */}
-        </div>
-
-        {/* Messages d'erreur */}
-        {message && (
-          <div className='bg-red-50 border border-red-200 rounded-md p-4'>
-            <p className='text-red-600 text-sm'>{message}</p>
           </div>
-        )}
-      </form>
+
+          {/* Messages d'erreur */}
+          {message && (
+            <div className='bg-red-50 border border-red-200 rounded-md p-4'>
+              <p className='text-red-600 text-sm'>{message}</p>
+            </div>
+          )}
+        </form>
       </div>
     </div>
   );
@@ -553,16 +576,35 @@ function CheckoutForm({
 // Composant principal qui gère le clientSecret et wrap avec Stripe Elements
 export default function CheckoutPage() {
   const { storeName } = useParams<{ storeName: string }>();
+  const [searchParams] = useSearchParams();
   const [clientSecret, setClientSecret] = useState('');
   const [embeddedClientSecret, setEmbeddedClientSecret] = useState('');
   const [updating, setUpdating] = useState(false);
   const [store, setStore] = useState<Store | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
   const { user } = useUser();
 
   // Créer le Payment Intent au chargement de la page
   const [amount, setAmount] = useState(5000); // 50€ par défaut en centimes
+
+  // Vérifier s'il y a une erreur de paiement dans l'URL
+  useEffect(() => {
+    const errorParam = searchParams.get('error');
+    if (errorParam === 'payment_failed') {
+      setPaymentError(
+        'Une erreur est survenue lors de votre paiement, veuillez réessayer'
+      );
+      // Nettoyer l'URL après avoir affiché l'erreur
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, '', newUrl);
+    } else if (errorParam === 'payment_error') {
+      setPaymentError('Une erreur technique est survenue, veuillez réessayer');
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, '', newUrl);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     const fetchStore = async () => {
@@ -573,11 +615,15 @@ export default function CheckoutPage() {
       }
 
       try {
-        const response = await fetch(`http://localhost:5000/api/stores/${encodeURIComponent(storeName)}`);
+        const response = await fetch(
+          `http://localhost:5000/api/stores/${encodeURIComponent(storeName)}`
+        );
         const data = await response.json();
 
         if (!response.ok) {
-          throw new Error(data.error || 'Erreur lors du chargement de la boutique');
+          throw new Error(
+            data.error || 'Erreur lors du chargement de la boutique'
+          );
         }
 
         setStore(data.store);
@@ -629,9 +675,22 @@ export default function CheckoutPage() {
     if (!user) return;
 
     try {
+      console.log('[Checkout] Creating embedded checkout session with:', {
+        storeName: store?.name,
+        userEmail: user.primaryEmailAddress?.emailAddress,
+        amount: paymentAmount,
+      });
+
       const response = await apiPost('/api/stripe/create-checkout-session', {
         amount: paymentAmount,
         currency: 'eur',
+        // Passer explicitement le nom de la boutique au backend
+        storeName: store?.name,
+        // Transmettre l'email du client via la clé attendue par le backend
+        customerEmail: user.primaryEmailAddress?.emailAddress,
+        // Optionnel: référence produit pour les descriptions/metadata
+        productReference: 'Checkout Live Shopping',
+        // Conserver l'objet customer si utilisé ailleurs
         customer: {
           email: user.primaryEmailAddress?.emailAddress,
           name: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
@@ -640,6 +699,7 @@ export default function CheckoutPage() {
       });
 
       const data = await response.json();
+      console.log('[Checkout] Embedded session created response:', data);
       setEmbeddedClientSecret(data.clientSecret);
     } catch (error) {
       console.error('Error creating embedded checkout session:', error);
@@ -654,9 +714,22 @@ export default function CheckoutPage() {
       // Unmount existing embedded checkout
       setEmbeddedClientSecret('');
 
+      console.log('[Checkout] Reloading embedded checkout with:', {
+        storeName: store?.name,
+        userEmail: user.primaryEmailAddress?.emailAddress,
+        amount: paymentAmount,
+      });
+
       const response = await apiPost('/api/stripe/create-checkout-session', {
         amount: paymentAmount,
         currency: 'eur',
+        // Passer explicitement le nom de la boutique au backend
+        storeName: store?.name,
+        // Transmettre l'email du client via la clé attendue par le backend
+        customerEmail: user.primaryEmailAddress?.emailAddress,
+        // Optionnel: référence produit pour les descriptions/metadata
+        productReference: 'Checkout Live Shopping',
+        // Conserver l'objet customer si utilisé ailleurs
         customer: {
           email: user.primaryEmailAddress?.emailAddress,
           name: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
@@ -665,6 +738,7 @@ export default function CheckoutPage() {
       });
 
       const data = await response.json();
+      console.log('[Checkout] Reloaded session created response:', data);
       // Small delay to ensure unmount -> remount behavior in the browser
       await new Promise(r => setTimeout(r, 150));
       setEmbeddedClientSecret(data.clientSecret);
@@ -692,8 +766,12 @@ export default function CheckoutPage() {
     return (
       <div className='min-h-screen flex items-center justify-center'>
         <div className='text-center'>
-          <h1 className='text-2xl font-bold text-gray-900 mb-4'>Boutique non trouvée</h1>
-          <p className='text-gray-600'>{error || 'Cette boutique n\'existe pas.'}</p>
+          <h1 className='text-2xl font-bold text-gray-900 mb-4'>
+            Boutique non trouvée
+          </h1>
+          <p className='text-gray-600'>
+            {error || "Cette boutique n'existe pas."}
+          </p>
         </div>
       </div>
     );
@@ -702,7 +780,7 @@ export default function CheckoutPage() {
   // Afficher un loading uniquement si on n'a ni clientSecret ni embeddedClientSecret
   if (!clientSecret && !embeddedClientSecret) {
     return (
-      <div 
+      <div
         className='min-h-screen flex items-center justify-center'
         style={{ background: store?.theme || '#f8fafc' }}
       >
@@ -715,32 +793,80 @@ export default function CheckoutPage() {
   }
 
   return (
-    <StripeWrapper
-      clientSecret={clientSecret}
-      options={{
-        appearance: {
-          theme: 'stripe',
-          variables: {
-            borderRadius: '8px',
-            colorPrimary: '#334155',
+    <>
+      {/* Alerte d'erreur de paiement */}
+      {paymentError && (
+        <div className='fixed top-4 left-1/2 transform -translate-x-1/2 z-50 max-w-md w-full mx-4'>
+          <div className='bg-red-50 border border-red-200 rounded-lg p-4 shadow-lg'>
+            <div className='flex items-center'>
+              <div className='flex-shrink-0'>
+                <svg
+                  className='h-5 w-5 text-red-400'
+                  viewBox='0 0 20 20'
+                  fill='currentColor'
+                >
+                  <path
+                    fillRule='evenodd'
+                    d='M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z'
+                    clipRule='evenodd'
+                  />
+                </svg>
+              </div>
+              <div className='ml-3 flex-1'>
+                <p className='text-sm font-medium text-red-800'>
+                  {paymentError}
+                </p>
+              </div>
+              <div className='ml-4 flex-shrink-0'>
+                <button
+                  onClick={() => setPaymentError(null)}
+                  className='inline-flex text-red-400 hover:text-red-600 focus:outline-none'
+                >
+                  <svg
+                    className='h-5 w-5'
+                    viewBox='0 0 20 20'
+                    fill='currentColor'
+                  >
+                    <path
+                      fillRule='evenodd'
+                      d='M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z'
+                      clipRule='evenodd'
+                    />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <StripeWrapper
+        clientSecret={clientSecret}
+        options={{
+          appearance: {
+            theme: 'stripe',
+            variables: {
+              borderRadius: '8px',
+              colorPrimary: '#334155',
+            },
           },
-        },
-        // Configuration Google Maps pour l'autocomplétion des adresses
-        ...(import.meta.env.VITE_GOOGLE_MAPS_API_KEY && {
-          googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
-        }),
-      }}
-    >
-      <CheckoutForm
-        embeddedClientSecret={embeddedClientSecret}
-        amount={amount}
-        setAmount={setAmount}
-        onUpdateClick={(paymentAmount: number) =>
-          reloadEmbeddedCheckout(paymentAmount)
-        }
-        updating={updating}
-        store={store}
-      />
-    </StripeWrapper>
+          // Configuration Google Maps pour l'autocomplétion des adresses
+          ...(import.meta.env.VITE_GOOGLE_MAPS_API_KEY && {
+            googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
+          }),
+        }}
+      >
+        <CheckoutForm
+          embeddedClientSecret={embeddedClientSecret}
+          amount={amount}
+          setAmount={setAmount}
+          onUpdateClick={(paymentAmount: number) =>
+            reloadEmbeddedCheckout(paymentAmount)
+          }
+          updating={updating}
+          store={store}
+        />
+      </StripeWrapper>
+    </>
   );
 }

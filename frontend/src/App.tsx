@@ -15,12 +15,12 @@ import { dark, neobrutalism } from '@clerk/themes';
 
 import LandingPage from './pages/LandingPage';
 import CheckoutPage from './pages/CheckoutPage';
-import CompletePage from './pages/CompletePage';
 import AccountPage from './pages/AccountPage';
 import OrdersPage from './pages/OrdersPage';
 import OnboardingPage from './pages/OnboardingPage';
 import StorePage from './pages/StorePage';
 import AuthRedirect from './components/AuthRedirect';
+import PaymentReturnPage from './pages/PaymentReturnPage';
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -72,14 +72,6 @@ function App() {
               }
             />
             <Route
-              path='/complete'
-              element={
-                <SignedIn>
-                  <CompletePage />
-                </SignedIn>
-              }
-            />
-            <Route
               path='/account'
               element={
                 <SignedIn>
@@ -102,6 +94,10 @@ function App() {
                   <OnboardingPage />
                 </SignedIn>
               }
+            />
+            <Route
+              path='/payment/return'
+              element={<PaymentReturnPage />}
             />
           </Routes>
         </div>
