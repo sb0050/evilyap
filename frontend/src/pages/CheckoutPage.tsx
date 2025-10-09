@@ -770,16 +770,15 @@ function CheckoutForm({
         {(() => {
           const defaultName =
             (customerData?.address as any)?.name ||
-            formData.name ||
             user?.fullName ||
             '';
-          const defaultPhone = customerData?.phone || formData.phone || '';
+          const defaultPhone = customerData?.phone || '';
           const defaultAddress =
             (customerData?.address as any) || (address as any) || undefined;
 
           return (
             <AddressElement
-              key={`addr-${defaultAddress?.line1 || ''}-${defaultAddress?.postal_code || ''}-${defaultName}-${defaultPhone}`}
+              key={`addr-${defaultAddress?.line1 || ''}-${defaultAddress?.postal_code || ''}`}
               options={{
                 mode: 'shipping',
                 allowedCountries: ['FR', 'BE', 'ES', 'DE', 'IT', 'NL'],

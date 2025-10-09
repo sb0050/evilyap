@@ -176,7 +176,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         });
       } else {
         // Créer un nouveau client
-        customer = await stripe.customers.create({
+        const data: any = {
           email: customerEmail,
           name: customerName,
           phone: phone,
@@ -221,7 +221,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
             ...(parcelPoint && { parcel_point_name: parcelPoint.name }),
             ...(parcelPoint && { parcel_point_network: parcelPoint.network }),
           },
-        });
+        };
+
+        customer = await stripe.customers.create(data);
+
+        console.log("========= debug", data);
       }
 
       customerId = customer.id;
@@ -236,7 +240,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     // Créer la session de checkout intégrée
     const session = await stripe.checkout.sessions.create({
       ui_mode: "embedded",
-      payment_method_types: ["card", "klarna", "paypal", "amazon_pay"],
+      payment_method_types: ["card", "paypal"],
       payment_intent_data: {
         description: `store: ${storeName || ""} - reference: ${
           productReference || ""
@@ -251,10 +255,6 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
               // Vous pouvez ajouter une description et des images optionnellement
               description: `Les frais de port de ${deliveryCost} ont été ajouté au montant associé à la référence`,
               // images: ['https://exemple.com/image.png'],
-              metadata: {
-                product_reference: productReference || "N/A",
-                store_name: storeName || "",
-              },
             },
             unit_amount: amount, // Convertir en centimes (ex: 19.99€ devient 1999)
           },

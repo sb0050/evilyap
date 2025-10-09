@@ -677,7 +677,7 @@ export default function ParcelPointMap({
                 )}
                 {error && <span className='text-red-600'>❌ Erreur</span>}
               </div>
-              {address?.line1 && (
+              {address?.line1 && needsRefresh && canShowRefreshMessages && (
                 <button
                   ref={refreshBtnRef}
                   onClick={handleManualRefresh}
@@ -685,15 +685,11 @@ export default function ParcelPointMap({
                   className={`px-2 py-1 text-xs rounded border transition-colors ${
                     loading
                       ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                      : needsRefresh && canShowRefreshMessages
-                        ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
-                        : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50 hover:text-gray-800'
+                      : 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
                   }`}
                   title='Rafraîchir les points relais'
                 >
-                  {needsRefresh &&
-                    canShowRefreshMessages &&
-                    '🔄 Rafraîchir (adresse modifiée)'}
+                  {'🔄 Rafraîchir (adresse modifiée)'}
                 </button>
               )}
             </div>
