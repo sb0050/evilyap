@@ -92,18 +92,21 @@ export default function OnboardingPage() {
 
     setLoading(true);
     try {
-      const response = await fetch('http://localhost:5000/api/stores', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          storeName: formData.storeName,
-          storeTheme: selectedGradient.value,
-          storeDescription: formData.description,
-          ownerEmail: user.primaryEmailAddress.emailAddress,
-        }),
-      });
+      const response = await fetch(
+        `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            storeName: formData.storeName,
+            storeTheme: selectedGradient.value,
+            storeDescription: formData.description,
+            ownerEmail: user.primaryEmailAddress.emailAddress,
+          }),
+        }
+      );
 
       const result = await response.json();
 
@@ -112,7 +115,9 @@ export default function OnboardingPage() {
         // Rediriger vers la page de la boutique
         window.location.href = `/store/${encodeURIComponent(formData.storeName)}`;
       } else {
-        throw new Error(result.error || 'Erreur lors de la création de la boutique');
+        throw new Error(
+          result.error || 'Erreur lors de la création de la boutique'
+        );
       }
     } catch (error) {
       console.error('Erreur lors de la création de la boutique:', error);

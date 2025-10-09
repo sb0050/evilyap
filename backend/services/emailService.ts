@@ -1,4 +1,4 @@
-import nodemailer from 'nodemailer';
+import nodemailer from "nodemailer";
 
 interface EmailConfig {
   host: string;
@@ -20,6 +20,26 @@ interface CustomerEmailData {
   amount: number;
   currency: string;
   paymentId: string;
+  deliveryMethod?: "pickup_point" | "home_delivery" | "unknown";
+  shippingAddress?: {
+    name?: string;
+    address?: {
+      line1?: string;
+      line2?: string;
+      city?: string;
+      state?: string;
+      postal_code?: string;
+      country?: string;
+    };
+  };
+  address?: {
+    line1?: string;
+    line2?: string;
+    city?: string;
+    state?: string;
+    postal_code?: string;
+    country?: string;
+  };
 }
 
 interface StoreOwnerEmailData {
@@ -28,7 +48,29 @@ interface StoreOwnerEmailData {
   customerEmail: string;
   customerName: string;
   customerPhone?: string;
-  customerAddress?: any;
+  // NEW: delivery method and shipping info
+  deliveryMethod?: "pickup_point" | "home_delivery" | "unknown";
+  shippingAddress?: {
+    name?: string;
+    address?: {
+      line1?: string;
+      line2?: string;
+      city?: string;
+      state?: string;
+      postal_code?: string;
+      country?: string;
+    };
+  };
+  pickupPoint?: {
+    id?: string;
+    name?: string;
+    network?: string;
+    address?: {
+      line1?: string;
+      city?: string;
+      postal_code?: string;
+    };
+  };
   productReference: string;
   amount: number;
   currency: string;
@@ -41,34 +83,45 @@ class EmailService {
   constructor() {
     // Configuration SMTP - utiliser les variables d'environnement
     const emailConfig: EmailConfig = {
-      host: process.env.SMTP_HOST || 'smtp.gmail.com',
-      port: parseInt(process.env.SMTP_PORT || '587'),
-      secure: process.env.SMTP_SECURE === 'true', // true pour 465, false pour autres ports
+      host: process.env.SMTP_HOST || "smtp.gmail.com",
+      port: parseInt(process.env.SMTP_PORT || "587"),
+      secure: process.env.SMTP_SECURE === "true", // true pour 465, false pour autres ports
       auth: {
-        user: process.env.SMTP_USER || '',
-        pass: process.env.SMTP_PASS || '', // Mot de passe d'application pour Gmail
+        user: process.env.SMTP_USER || "",
+        pass: process.env.SMTP_PASS || "", // Mot de passe d'application pour Gmail
       },
     };
 
+    console.log("✉️ SMTP config:", {
+      host: emailConfig.host,
+      port: emailConfig.port,
+      secure: emailConfig.secure,
+      user: emailConfig.auth.user,
+      pass: emailConfig.auth.pass ? "***" : "(empty)",
+    });
+
     this.transporter = nodemailer.createTransport(emailConfig);
+    this.verifyConnection().catch((err) => {
+      console.error("❌ SMTP verify failed at startup:", err);
+    });
   }
 
   // Vérifier la configuration email
   async verifyConnection(): Promise<boolean> {
     try {
       await this.transporter.verify();
-      console.log('✅ Service email configuré correctement');
+      console.log("✅ Service email configuré correctement");
       return true;
     } catch (error) {
-      console.error('❌ Erreur de configuration email:', error);
+      console.error("❌ Erreur de configuration email:", error);
       return false;
     }
   }
 
   // Formater le montant
   private formatAmount(amount: number, currency: string): string {
-    return new Intl.NumberFormat('fr-FR', {
-      style: 'currency',
+    return new Intl.NumberFormat("fr-FR", {
+      style: "currency",
       currency: currency.toUpperCase(),
     }).format(amount / 100);
   }
@@ -77,7 +130,7 @@ class EmailService {
   async sendCustomerConfirmation(data: CustomerEmailData): Promise<boolean> {
     try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
-      
+
       const htmlContent = `
         <!DOCTYPE html>
         <html>
@@ -98,7 +151,11 @@ class EmailService {
         <body>
           <div class="container">
             <div class="header">
-              ${data.storeLogo ? `<img src="${data.storeLogo}" alt="${data.storeName}" class="logo">` : ''}
+              ${
+                data.storeLogo
+                  ? `<img src="${data.storeLogo}" alt="${data.storeName}" class="logo">`
+                  : ""
+              }
               <h1>Merci pour votre commande !</h1>
               <p>Votre paiement a été traité avec succès</p>
             </div>
@@ -111,8 +168,14 @@ class EmailService {
               <div class="order-details">
                 <h3>Détails de votre commande</h3>
                 <p><strong>Boutique :</strong> ${data.storeName}</p>
-                ${data.storeDescription ? `<p><strong>Description :</strong> ${data.storeDescription}</p>` : ''}
-                <p><strong>Référence produit :</strong> ${data.productReference}</p>
+                ${
+                  data.storeDescription
+                    ? `<p><strong>Description :</strong> ${data.storeDescription}</p>`
+                    : ""
+                }
+                <p><strong>Référence produit :</strong> ${
+                  data.productReference
+                }</p>
                 <p><strong>Montant payé :</strong> <span class="amount">${formattedAmount}</span></p>
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
               </div>
@@ -127,7 +190,9 @@ class EmailService {
             
             <div class="footer">
               <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
-              <p>© ${new Date().getFullYear()} ${data.storeName} - Tous droits réservés</p>
+              <p>© ${new Date().getFullYear()} ${
+        data.storeName
+      } - Tous droits réservés</p>
             </div>
           </div>
         </body>
@@ -141,20 +206,92 @@ class EmailService {
         html: htmlContent,
       };
 
-      await this.transporter.sendMail(mailOptions);
+      const info = await this.transporter.sendMail(mailOptions);
       console.log(`✅ Email de confirmation envoyé à ${data.customerEmail}`);
+      console.log("📨 sendMail result (customer):", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
       return true;
     } catch (error) {
-      console.error('❌ Erreur envoi email client:', error);
+      console.error("❌ Erreur envoi email client:", error);
       return false;
     }
   }
 
   // Email de notification pour le propriétaire de la boutique
-  async sendStoreOwnerNotification(data: StoreOwnerEmailData): Promise<boolean> {
+  async sendStoreOwnerNotification(
+    data: StoreOwnerEmailData
+  ): Promise<boolean> {
     try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
-      
+
+      // Compose shipping info HTML depending on delivery method
+      const shippingInfoHtml = (() => {
+        if (data.deliveryMethod === "pickup_point" && data.pickupPoint) {
+          return `
+            <div class="order-details">
+              <h3>🏪 Retrait en point relais</h3>
+              <p><strong>Point relais :</strong> ${
+                data.pickupPoint.name || ""
+              } (${data.pickupPoint.network || ""})</p>
+              <p><strong>Adresse :</strong><br>
+                ${data.pickupPoint.address?.line1 || ""}<br>
+                ${data.pickupPoint.address?.postal_code || ""} ${
+            data.pickupPoint.address?.city || ""
+          }
+              </p>
+            </div>
+          `;
+        }
+        if (data.deliveryMethod === "home_delivery" && data.shippingAddress) {
+          return `
+            <div class="order-details">
+              <h3>🏠 Livraison à domicile</h3>
+              <p><strong>Adresse de livraison :</strong><br>
+                ${data.shippingAddress.name || data.customerName}<br>
+                ${data.shippingAddress.address?.line1 || ""}<br>
+                ${
+                  data.shippingAddress.address?.line2
+                    ? data.shippingAddress.address.line2 + "<br>"
+                    : ""
+                }
+                ${data.shippingAddress.address?.postal_code || ""} ${
+            data.shippingAddress.address?.city || ""
+          }<br>
+                ${data.shippingAddress.address?.country || ""}
+              </p>
+            </div>
+          `;
+        }
+        // Unknown method: show what we have
+        if (data.shippingAddress) {
+          return `
+            <div class="order-details">
+              <h3>📮 Informations de livraison</h3>
+              <p><strong>Nom :</strong> ${
+                data.shippingAddress.name || data.customerName
+              }</p>
+              <p><strong>Adresse :</strong><br>
+                ${data.shippingAddress.address?.line1 || ""}<br>
+                ${
+                  data.shippingAddress.address?.line2
+                    ? data.shippingAddress.address.line2 + "<br>"
+                    : ""
+                }
+                ${data.shippingAddress.address?.postal_code || ""} ${
+            data.shippingAddress.address?.city || ""
+          }<br>
+                ${data.shippingAddress.address?.country || ""}
+              </p>
+            </div>
+          `;
+        }
+        return "";
+      })();
+
       const htmlContent = `
         <!DOCTYPE html>
         <html>
@@ -182,36 +319,41 @@ class EmailService {
             <div class="content">
               <h2>Bonjour,</h2>
               
-              <p>Excellente nouvelle ! Vous venez de recevoir une nouvelle commande sur votre boutique <strong>${data.storeName}</strong>.</p>
+              <p>Excellente nouvelle ! Vous venez de recevoir une nouvelle commande sur votre boutique <strong>${
+                data.storeName
+              }</strong>.</p>
               
               <div class="order-details">
                 <h3>📦 Détails de la commande</h3>
-                <p><strong>Référence produit :</strong> ${data.productReference}</p>
+                <p><strong>Référence produit :</strong> ${
+                  data.productReference
+                }</p>
                 <p><strong>Montant :</strong> <span class="amount">${formattedAmount}</span></p>
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
-                <p><strong>Date :</strong> ${new Date().toLocaleDateString('fr-FR', { 
-                  year: 'numeric', 
-                  month: 'long', 
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit'
-                })}</p>
+                <p><strong>Date :</strong> ${new Date().toLocaleDateString(
+                  "fr-FR",
+                  {
+                    year: "numeric",
+                    month: "long",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  }
+                )}</p>
               </div>
               
               <div class="customer-details">
                 <h3>👤 Informations client</h3>
                 <p><strong>Nom :</strong> ${data.customerName}</p>
                 <p><strong>Email :</strong> ${data.customerEmail}</p>
-                ${data.customerPhone ? `<p><strong>Téléphone :</strong> ${data.customerPhone}</p>` : ''}
-                ${data.customerAddress ? `
-                  <p><strong>Adresse de livraison :</strong></p>
-                  <p>${data.customerAddress.name || data.customerName}<br>
-                  ${data.customerAddress.address?.line1 || ''}<br>
-                  ${data.customerAddress.address?.line2 ? data.customerAddress.address.line2 + '<br>' : ''}
-                  ${data.customerAddress.address?.postal_code || ''} ${data.customerAddress.address?.city || ''}<br>
-                  ${data.customerAddress.address?.country || ''}</p>
-                ` : ''}
+                ${
+                  data.customerPhone
+                    ? `<p><strong>Téléphone :</strong> ${data.customerPhone}</p>`
+                    : ""
+                }
               </div>
+
+              ${shippingInfoHtml}
               
               <p>Le client a été automatiquement notifié par email de la confirmation de sa commande.</p>
               
@@ -222,7 +364,9 @@ class EmailService {
             </div>
             
             <div class="footer">
-              <p>Cet email a été envoyé automatiquement depuis votre boutique ${data.storeName}</p>
+              <p>Cet email a été envoyé automatiquement depuis votre boutique ${
+                data.storeName
+              }</p>
               <p>© ${new Date().getFullYear()} Live Shopping App - Tous droits réservés</p>
             </div>
           </div>
@@ -237,11 +381,19 @@ class EmailService {
         html: htmlContent,
       };
 
-      await this.transporter.sendMail(mailOptions);
-      console.log(`✅ Email de notification envoyé au propriétaire ${data.ownerEmail}`);
+      const info = await this.transporter.sendMail(mailOptions);
+      console.log(
+        `✅ Email de notification envoyé au propriétaire ${data.ownerEmail}`
+      );
+      console.log("📨 sendMail result (owner):", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
       return true;
     } catch (error) {
-      console.error('❌ Erreur envoi email propriétaire:', error);
+      console.error("❌ Erreur envoi email propriétaire:", error);
       return false;
     }
   }

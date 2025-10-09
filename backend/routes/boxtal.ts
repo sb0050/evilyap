@@ -84,8 +84,6 @@ router.post("/parcel-points", async (req, res) => {
         params.append(key, req.body[key].toString());
       }
     });
-
-    console.log("URL finale:", `${url}?${params.toString()}`);
     const options = {
       method: "GET",
       headers: {

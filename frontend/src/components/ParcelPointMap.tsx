@@ -34,7 +34,7 @@ interface ParcelPointLocation {
   countryIsoCode: string;
 }
 
-interface ParcelPointData {
+export interface ParcelPointData {
   code: string;
   name: string;
   status: string;
@@ -283,7 +283,18 @@ interface ParcelPointMapProps {
     postal_code?: string;
     country?: string;
   };
-  onParcelPointSelect?: (parcelPoint: ParcelPointData) => void;
+  onParcelPointSelect?: (
+    parcelPoint: ParcelPointData | null,
+    deliveryMethod: 'home_delivery' | 'pickup_point',
+    deliveryCost?: number,
+    selectedWeight?: string,
+    homeDeliveryNetwork?: string
+  ) => void;
+  defaultDeliveryMethod?: 'home_delivery' | 'pickup_point';
+  defaultParcelPoint?: ParcelPointData | null;
+  defaultParcelPointCode?: string;
+  disablePopupsOnMobile?: boolean;
+  initialHomeDeliveryNetwork?: string;
 }
 
 // Composant pour gérer l'animation panTo
@@ -311,6 +322,9 @@ function MapController({
 export default function ParcelPointMap({
   address,
   onParcelPointSelect,
+  defaultDeliveryMethod = 'home_delivery',
+  disablePopupsOnMobile = false,
+  initialHomeDeliveryNetwork,
 }: ParcelPointMapProps) {
   const [parcelPoints, setParcelPoints] = useState<ParcelPointResponse[]>([]);
   const [loading, setLoading] = useState(false);
@@ -320,10 +334,28 @@ export default function ParcelPointMap({
   );
   const [networkFilter, setNetworkFilter] = useState<string>('ALL');
   const [selectedWeight, setSelectedWeight] = useState<string>('250g');
-  const [deliveryType, setDeliveryType] = useState<string>('PICKUP'); // PICKUP ou HOME
-  const [selectedHomeDelivery, setSelectedHomeDelivery] = useState<string>(''); // Pour la sélection domicile
+  const [deliveryType, setDeliveryType] = useState<string>(
+    defaultDeliveryMethod === 'pickup_point' ? 'PICKUP' : 'HOME'
+  );
+  const [selectedHomeDelivery, setSelectedHomeDelivery] = useState<string>('');
   const [isCreatingOrder, setIsCreatingOrder] = useState<boolean>(false);
   const [orderSuccess, setOrderSuccess] = useState<boolean>(false);
+  const [isMobileTailwind, setIsMobileTailwind] = useState<boolean>(false);
+  const [needsRefresh, setNeedsRefresh] = useState<boolean>(false);
+  const refreshBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [canShowRefreshMessages, setCanShowRefreshMessages] =
+    useState<boolean>(true);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const checkMobile = () => {
+        setIsMobileTailwind(window.innerWidth < 768);
+      };
+      checkMobile();
+      window.addEventListener('resize', checkMobile);
+      return () => window.removeEventListener('resize', checkMobile);
+    }
+  }, []);
 
   // Coordonnées par défaut (Paris - Place Vendôme)
   const defaultCoordinates: [number, number] = [48.8566, 2.3522];
@@ -384,9 +416,8 @@ export default function ParcelPointMap({
         searchNetworks: 'SOGP,MONR,CHRP,COPR,UPSE,DHLE',
       };
 
-      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
       const response = await fetch(
-        `${apiUrl}/api/boxtal/parcel-points`,
+        `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/boxtal/parcel-points`,
         {
           method: 'POST',
           headers: {
@@ -411,16 +442,49 @@ export default function ParcelPointMap({
   };
 
   // Effet pour charger les points relais quand l'adresse change
+  const lastLine1Ref = useRef<string | undefined>(undefined);
+  const autoSelectRef = useRef<boolean>(false);
+
   useEffect(() => {
-    if (address && address.line1 && address.city && address.postal_code) {
-      fetchParcelPoints(address);
-    } else if (address === null) {
+    const markSelection = (e: Event) => {
+      const container = document.getElementById('autocomplete-search');
+      if (
+        container &&
+        e.target instanceof Node &&
+        container.contains(e.target)
+      ) {
+        autoSelectRef.current = true;
+      }
+    };
+    document.addEventListener('mousedown', markSelection, true);
+    document.addEventListener('click', markSelection, true);
+    return () => {
+      document.removeEventListener('mousedown', markSelection, true);
+      document.removeEventListener('click', markSelection, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    const currentLine1 = address?.line1;
+    if (currentLine1 && currentLine1 !== lastLine1Ref.current) {
+      lastLine1Ref.current = currentLine1;
+      // Ne pas fetch automatiquement, demander un refresh manuel
+      setNeedsRefresh(true);
+    } else if (!currentLine1) {
       // Réinitialiser quand l'adresse est effacée
       setParcelPoints([]);
       setAddressCoordinates(null);
       setError(null);
+      setNeedsRefresh(false);
     }
-  }, [address]);
+  }, [address?.line1]);
+
+  const handleManualRefresh = () => {
+    if (address && address.line1) {
+      fetchParcelPoints(address);
+      setNeedsRefresh(false);
+    }
+  };
 
   // Formatage des horaires d'ouverture
   const formatOpeningHours = (openingDays: OpeningDays): string => {
@@ -446,10 +510,73 @@ export default function ParcelPointMap({
       .join(', ');
   };
 
-  const handleParcelPointClick = (parcelPoint: ParcelPointData) => {
+  // Effet pour initialiser les valeurs par défaut
+  useEffect(() => {
+    if (defaultDeliveryMethod) {
+      setDeliveryType(
+        defaultDeliveryMethod === 'pickup_point' ? 'PICKUP' : 'HOME'
+      );
+    }
+  }, [defaultDeliveryMethod]);
+
+  // Gestion de la sélection d'un point relais
+  const handleMarkerClick = (parcelPoint: ParcelPointData) => {
     setSelectedPoint(parcelPoint);
+    const cost = getDeliveryPrice(parcelPoint.network, false);
     if (onParcelPointSelect) {
-      onParcelPointSelect(parcelPoint);
+      onParcelPointSelect(
+        parcelPoint,
+        'pickup_point',
+        cost,
+        selectedWeight,
+        undefined
+      );
+    }
+  };
+
+  // Gestion du changement de type de livraison
+  const handleDeliveryTypeChange = (type: string) => {
+    setDeliveryType(type);
+    if (type === 'HOME') {
+      setSelectedPoint(null);
+      // Ne pas notifier avec coût tant qu'une option n'est pas choisie
+      if (onParcelPointSelect) {
+        onParcelPointSelect(
+          null,
+          'home_delivery',
+          undefined,
+          selectedWeight,
+          selectedHomeDelivery || undefined
+        );
+      }
+    } else if (type === 'PICKUP' && selectedPoint && onParcelPointSelect) {
+      const cost = getDeliveryPrice(selectedPoint.network, false);
+      onParcelPointSelect(
+        selectedPoint,
+        'pickup_point',
+        cost,
+        selectedWeight,
+        undefined
+      );
+    }
+  };
+
+  // Gestion de la sélection d'une option de livraison à domicile
+  const handleHomeDeliverySelect = (deliveryKey: string) => {
+    setSelectedHomeDelivery(deliveryKey);
+    // Calculer coût via homeDeliveryConfig
+    const config =
+      homeDeliveryConfig[deliveryKey as keyof typeof homeDeliveryConfig];
+    const price =
+      config?.prices[selectedWeight as keyof typeof config.prices] || 0;
+    if (onParcelPointSelect) {
+      onParcelPointSelect(
+        null,
+        'home_delivery',
+        price,
+        selectedWeight,
+        deliveryKey
+      );
     }
   };
 
@@ -494,129 +621,6 @@ export default function ParcelPointMap({
     }
   };
 
-  // Créer une commande d'expédition
-  const handleCreateShippingOrder = async () => {
-    if (!address) {
-      alert('Adresse de livraison manquante');
-      return;
-    }
-
-    // Vérifier qu'un point relais est sélectionné ou qu'une option domicile est choisie
-    if (deliveryType === 'PICKUP' && !selectedPoint) {
-      alert('Veuillez sélectionner un point relais');
-      return;
-    }
-
-    if (deliveryType === 'HOME' && !selectedHomeDelivery) {
-      alert('Veuillez sélectionner une option de livraison à domicile');
-      return;
-    }
-
-    setIsCreatingOrder(true);
-
-    try {
-      // Convertir le poids en nombre
-      const weightInKg =
-        parseFloat(selectedWeight.replace('g', '').replace('kg', '')) /
-        (selectedWeight.includes('kg') ? 1 : 1000);
-
-      // Construire la requête selon l'exemple
-      const orderData: CreateShippingOrderRequest = {
-        insured: false,
-        shipment: {
-          packages: [
-            {
-              type: 'PARCEL',
-              value: {
-                value: 30, // Valeur par défaut
-                currency: 'EUR',
-              },
-              width: 15,
-              height: 11,
-              length: 16,
-              weight: weightInKg,
-              content: {
-                id: 'content:v1:40110',
-                description: 'Tissus, vêtements neufs',
-              },
-              stackable: true,
-              externalId: `ORDER-${Date.now()}`,
-            },
-          ],
-          toAddress: {
-            type: 'RESIDENTIAL',
-            contact: {
-              email: 'customer@example.com', // À remplacer par les vraies données
-              phone: '33612341234',
-              lastName: 'Client',
-              firstName: 'Nom',
-            },
-            location: {
-              city: address.city || '',
-              street: address.line1 || '',
-              postalCode: address.postal_code || '',
-              countryIsoCode: 'FR',
-            },
-          },
-          fromAddress: {
-            type: 'BUSINESS',
-            contact: {
-              email: 'expediteur@example.com',
-              phone: '33612341234',
-              company: 'Mon Entreprise',
-              lastName: 'Expéditeur',
-              firstName: 'Service',
-            },
-            location: {
-              city: 'Paris',
-              number: '4',
-              street: 'boulevard des Capucines',
-              postalCode: '75009',
-              countryIsoCode: 'FR',
-            },
-          },
-          externalId: `SHIPMENT-${Date.now()}`,
-        },
-        labelType: 'PDF_A4',
-        expectedTakingOverDate: new Date().toISOString().split('T')[0],
-      };
-
-      // Ajouter le code du point relais si nécessaire
-      if (deliveryType === 'PICKUP' && selectedPoint) {
-        orderData.shipment.pickupPointCode = selectedPoint.code;
-        // Déterminer le shippingOfferCode selon le réseau
-        const networkCodes: { [key: string]: string } = {
-          SOGP: 'SOGP-RelaisColis',
-          MONR: 'MONR-CpourToi',
-          CHRP: 'CHRP-Chrono2ShopDirect',
-          COPR: 'COPR-CoprRelaisRelaisNat',
-        };
-        orderData.shippingOfferCode =
-          networkCodes[selectedPoint.network] || 'MONR-CpourToi';
-      } else if (deliveryType === 'HOME' && selectedHomeDelivery) {
-        // Mode domicile - utiliser le code selon l'option sélectionnée
-        const homeCodes: { [key: string]: string } = {
-          COPR_HOME: 'COPR-CoprRelaisDomicileNat',
-          MONR_HOME: 'MONR-DomicileFrance',
-          COLI_HOME: 'POFR-ColissimoAccess',
-        };
-        orderData.shippingOfferCode =
-          homeCodes[selectedHomeDelivery] || 'MONR-DomicileFrance';
-      }
-
-      const response = await createShippingOrder(orderData);
-      console.log('Commande créée:', response);
-
-      setOrderSuccess(true);
-      alert("Commande d'expédition créée avec succès !");
-    } catch (error) {
-      console.error('Erreur lors de la création de la commande:', error);
-      alert("Erreur lors de la création de la commande d'expédition");
-    } finally {
-      setIsCreatingOrder(false);
-    }
-  };
-
   if (!address?.line1) {
     return (
       <div className='bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg p-8 text-center'>
@@ -653,500 +657,493 @@ export default function ParcelPointMap({
   }
 
   return (
-    <div className='bg-white rounded-lg border border-gray-200'>
-      {/* Header */}
-      <div className='bg-slate-50 px-4 py-3 border-b border-gray-200'>
-        <div className='flex items-center justify-between mb-3'>
-          <h4 className='text-sm font-medium text-gray-900'>
-            Points relais à proximité
-          </h4>
-          <div className='flex items-center space-x-2'>
-            <div className='flex items-center space-x-2 text-xs text-gray-500'>
-              {loading && (
-                <span className='text-blue-600'>🔄 Chargement...</span>
-              )}
-              {error && <span className='text-red-600'>❌ Erreur</span>}
-            </div>
-            {address?.line1 && (
-              <button
-                onClick={() => fetchParcelPoints(address)}
-                disabled={loading}
-                className={`px-2 py-1 text-xs rounded border transition-colors ${
-                  loading
-                    ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                    : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50 hover:text-gray-800'
-                }`}
-                title='Rafraîchir les points relais'
-              >
-                {loading ? '🔄' : '🔄 Rafraîchir'}
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Filtres */}
-        <div className='space-y-3 mb-3'>
-          {/* Première ligne : Type de livraison */}
-          <div className='flex items-center space-x-4'>
-            <label className='text-xs font-medium text-gray-700'>
-              Type de livraison:
-            </label>
-            <div className='flex space-x-4'>
-              <label className='flex items-center space-x-1'>
-                <input
-                  type='radio'
-                  name='deliveryType'
-                  value='PICKUP'
-                  checked={deliveryType === 'PICKUP'}
-                  onChange={e => setDeliveryType(e.target.value)}
-                  className='text-blue-600'
-                />
-                <span className='text-xs text-gray-700'>Point relais</span>
-              </label>
-              <label className='flex items-center space-x-1'>
-                <input
-                  type='radio'
-                  name='deliveryType'
-                  value='HOME'
-                  checked={deliveryType === 'HOME'}
-                  onChange={e => setDeliveryType(e.target.value)}
-                  className='text-blue-600'
-                />
-                <span className='text-xs text-gray-700'>
-                  Livraison à domicile
+    <div className='relative'>
+      <div className='bg-white rounded-lg border border-gray-200'>
+        {/* Header */}
+        <div className='bg-slate-50 px-4 py-3 border-b border-gray-200'>
+          <div className='flex items-center justify-between mb-3'>
+            <h4 className='text-sm font-medium text-gray-900'>
+              Points relais à proximité
+              {needsRefresh && canShowRefreshMessages && (
+                <span className='ml-2 inline-flex items-center rounded-full bg-yellow-100 text-yellow-800 px-2 py-0.5 text-[10px] border border-yellow-200'>
+                  à mettre à jour
                 </span>
-              </label>
+              )}
+            </h4>
+            <div className='flex items-center space-x-2'>
+              <div className='flex items-center space-x-2 text-xs text-gray-500'>
+                {loading && (
+                  <span className='text-blue-600'>🔄 Chargement...</span>
+                )}
+                {error && <span className='text-red-600'>❌ Erreur</span>}
+              </div>
+              {address?.line1 && (
+                <button
+                  ref={refreshBtnRef}
+                  onClick={handleManualRefresh}
+                  disabled={loading}
+                  className={`px-2 py-1 text-xs rounded border transition-colors ${
+                    loading
+                      ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                      : needsRefresh && canShowRefreshMessages
+                        ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+                        : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50 hover:text-gray-800'
+                  }`}
+                  title='Rafraîchir les points relais'
+                >
+                  {needsRefresh &&
+                    canShowRefreshMessages &&
+                    '🔄 Rafraîchir (adresse modifiée)'}
+                </button>
+              )}
             </div>
           </div>
+          {needsRefresh && canShowRefreshMessages && (
+            <div className='mb-3 px-3 py-2 rounded bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs'>
+              L'adresse a été modifiée. Cliquez sur "Rafraîchir" pour charger
+              les points relais à proximité.
+            </div>
+          )}
 
-          {/* Deuxième ligne : Filtres et poids */}
-          <div className='flex items-center flex-wrap gap-4'>
-            {deliveryType === 'PICKUP' && (
+          {/* Filtres */}
+          <div className='space-y-3 mb-3'>
+            {/* Première ligne : Type de livraison */}
+            <div className='flex items-center space-x-4'>
+              <label className='text-xs font-medium text-gray-700'>
+                Type de livraison:
+              </label>
+              <div className='flex space-x-4'>
+                <label className='flex items-center space-x-1'>
+                  <input
+                    type='radio'
+                    name='deliveryType'
+                    value='PICKUP'
+                    checked={deliveryType === 'PICKUP'}
+                    onChange={e => handleDeliveryTypeChange(e.target.value)}
+                    className='text-blue-600'
+                  />
+                  <span className='text-xs text-gray-700'>Point relais</span>
+                </label>
+                <label className='flex items-center space-x-1'>
+                  <input
+                    type='radio'
+                    name='deliveryType'
+                    value='HOME'
+                    checked={deliveryType === 'HOME'}
+                    onChange={e => handleDeliveryTypeChange(e.target.value)}
+                    className='text-blue-600'
+                  />
+                  <span className='text-xs text-gray-700'>
+                    Livraison à domicile
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            {/* Deuxième ligne : Filtres et poids */}
+            <div className='flex items-center flex-wrap gap-4'>
+              {deliveryType === 'PICKUP' && (
+                <div className='flex items-center space-x-2'>
+                  <label className='text-xs font-medium text-gray-700'>
+                    Filtrer par réseau:
+                  </label>
+                  <select
+                    value={networkFilter}
+                    onChange={e => setNetworkFilter(e.target.value)}
+                    className='text-xs border border-gray-300 rounded px-2 py-1 bg-white'
+                  >
+                    <option value='ALL'>Tous les réseaux</option>
+                    <option value='SOGP'>Relais Colis</option>
+                    <option value='MONR'>Mondial Relay</option>
+                    <option value='CHRP'>Chronopost</option>
+                    <option value='COPR'>Colis Privé</option>
+                  </select>
+                </div>
+              )}
               <div className='flex items-center space-x-2'>
                 <label className='text-xs font-medium text-gray-700'>
-                  Filtrer par réseau:
+                  Poids du colis:
                 </label>
                 <select
-                  value={networkFilter}
-                  onChange={e => setNetworkFilter(e.target.value)}
+                  value={selectedWeight}
+                  onChange={e => setSelectedWeight(e.target.value)}
                   className='text-xs border border-gray-300 rounded px-2 py-1 bg-white'
                 >
-                  <option value='ALL'>Tous les réseaux</option>
-                  <option value='SOGP'>Relais Colis</option>
-                  <option value='MONR'>Mondial Relay</option>
-                  <option value='CHRP'>Chronopost</option>
-                  <option value='COPR'>Colis Privé</option>
+                  <option value='250g'>250g</option>
+                  <option value='500g'>500g</option>
+                  <option value='1kg'>1kg</option>
+                  <option value='2kg'>2kg</option>
+                  <option value='3kg'>3kg</option>
+                  <option value='5kg'>5kg</option>
+                  <option value='7kg'>7kg</option>
+                  <option value='10kg'>10kg</option>
+                  <option value='15kg'>15kg</option>
+                  <option value='20kg'>20kg</option>
+                  <option value='30kg'>30kg</option>
                 </select>
               </div>
-            )}
-            <div className='flex items-center space-x-2'>
-              <label className='text-xs font-medium text-gray-700'>
-                Poids du colis:
-              </label>
-              <select
-                value={selectedWeight}
-                onChange={e => setSelectedWeight(e.target.value)}
-                className='text-xs border border-gray-300 rounded px-2 py-1 bg-white'
-              >
-                <option value='250g'>250g</option>
-                <option value='500g'>500g</option>
-                <option value='1kg'>1kg</option>
-                <option value='2kg'>2kg</option>
-                <option value='3kg'>3kg</option>
-                <option value='5kg'>5kg</option>
-                <option value='7kg'>7kg</option>
-                <option value='10kg'>10kg</option>
-                <option value='15kg'>15kg</option>
-                <option value='20kg'>20kg</option>
-                <option value='30kg'>30kg</option>
-              </select>
             </div>
           </div>
+
+          {/* Légende */}
+          <div className='flex flex-wrap items-center gap-3 text-xs mb-3'>
+            <div className='flex items-center space-x-1'>
+              <div className='w-3 h-3 bg-red-500 rounded-full'></div>
+              <span className='text-gray-600'>Votre adresse</span>
+            </div>
+            <div className='flex items-center space-x-1'>
+              <div className='w-3 h-3 bg-blue-500 rounded-full'></div>
+              <span className='text-gray-600'>Relais Colis</span>
+            </div>
+            <div className='flex items-center space-x-1'>
+              <div className='w-3 h-3 bg-green-500 rounded-full'></div>
+              <span className='text-gray-600'>Mondial Relay</span>
+            </div>
+            <div className='flex items-center space-x-1'>
+              <div className='w-3 h-3 bg-orange-500 rounded-full'></div>
+              <span className='text-gray-600'>Chronopost</span>
+            </div>
+            <div className='flex items-center space-x-1'>
+              <div className='w-3 h-3 bg-purple-500 rounded-full'></div>
+              <span className='text-gray-600'>Colis Privé</span>
+            </div>
+          </div>
+
+          {address && (
+            <p className='text-xs text-gray-600'>
+              {address.line1}, {address.postal_code} {address.city}
+            </p>
+          )}
         </div>
 
-        {/* Légende */}
-        <div className='flex flex-wrap items-center gap-3 text-xs mb-3'>
-          <div className='flex items-center space-x-1'>
-            <div className='w-3 h-3 bg-red-500 rounded-full'></div>
-            <span className='text-gray-600'>Votre adresse</span>
-          </div>
-          <div className='flex items-center space-x-1'>
-            <div className='w-3 h-3 bg-blue-500 rounded-full'></div>
-            <span className='text-gray-600'>Relais Colis</span>
-          </div>
-          <div className='flex items-center space-x-1'>
-            <div className='w-3 h-3 bg-green-500 rounded-full'></div>
-            <span className='text-gray-600'>Mondial Relay</span>
-          </div>
-          <div className='flex items-center space-x-1'>
-            <div className='w-3 h-3 bg-orange-500 rounded-full'></div>
-            <span className='text-gray-600'>Chronopost</span>
-          </div>
-          <div className='flex items-center space-x-1'>
-            <div className='w-3 h-3 bg-purple-500 rounded-full'></div>
-            <span className='text-gray-600'>Colis Privé</span>
-          </div>
-        </div>
-
-        {address && (
-          <p className='text-xs text-gray-600'>
-            {address.line1}, {address.postal_code} {address.city}
-          </p>
-        )}
-      </div>
-
-      {/* Contenu principal */}
-      <div className='relative'>
-        {deliveryType === 'PICKUP' && (
-          <>
-            {loading && (
-              <div className='absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-10'>
-                <div className='text-center'>
-                  <div className='inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-slate-700'></div>
-                  <p className='mt-2 text-sm text-gray-600'>
-                    Recherche des points relais...
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {error && (
-              <div className='p-4 bg-red-50 border-l-4 border-red-400'>
-                <div className='flex'>
-                  <div className='ml-3'>
-                    <p className='text-sm text-red-700'>
-                      <strong>Erreur:</strong> {error}
+        {/* Contenu principal */}
+        <div className='relative'>
+          {deliveryType === 'PICKUP' && (
+            <>
+              {loading && (
+                <div className='absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-10'>
+                  <div className='text-center'>
+                    <div className='inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-slate-700'></div>
+                    <p className='mt-2 text-sm text-gray-600'>
+                      Recherche des points relais...
                     </p>
-                    <button
-                      onClick={() => fetchParcelPoints(address)}
-                      className='mt-2 text-sm text-red-600 hover:text-red-800 underline'
-                    >
-                      Réessayer
-                    </button>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            <div style={{ height: '400px', width: '100%' }}>
-              <MapContainer
-                center={defaultCoordinates}
-                zoom={14}
-                scrollWheelZoom={true}
-                style={{ height: '100%', width: '100%' }}
-              >
-                {/* Contrôleur pour l'animation panTo */}
-                <MapController targetCoordinates={addressCoordinates} />
+              {error && (
+                <div className='p-4 bg-red-50 border-l-4 border-red-400'>
+                  <div className='flex'>
+                    <div className='ml-3'>
+                      <p className='text-sm text-red-700'>
+                        <strong>Erreur:</strong> {error}
+                      </p>
+                      <button
+                        onClick={handleManualRefresh}
+                        className='mt-2 text-sm text-red-600 hover:text-red-800 underline'
+                      >
+                        Réessayer
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
-                <TileLayer
-                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                  url='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
-                />
-
-                {/* Marker rouge pour l'adresse de livraison */}
-                {addressCoordinates && (
-                  <Marker position={addressCoordinates} icon={redIcon}>
-                    <Popup>
-                      <div className='min-w-[200px]'>
-                        <strong>🏠 Adresse de livraison</strong>
-                        <br />
-                        <div className='mt-1 text-sm'>
-                          {address?.line1}
-                          <br />
-                          {address?.line2 && (
-                            <>
-                              {address.line2}
-                              <br />
-                            </>
-                          )}
-                          {address?.postal_code} {address?.city}
-                          {address?.country && <>, {address.country}</>}
-                        </div>
-                        <div className='mt-2 text-xs text-gray-600'>
-                          <strong>Coordonnées:</strong>{' '}
-                          {addressCoordinates[0].toFixed(6)},{' '}
-                          {addressCoordinates[1].toFixed(6)}
-                        </div>
-                      </div>
-                    </Popup>
-                  </Marker>
-                )}
-
-                {/* Markers des points relais */}
-                {filteredParcelPoints.map(pointResponse => {
-                  // Vérification de sécurité
-                  if (!pointResponse || !pointResponse.parcelPoint) {
-                    return null;
-                  }
-
-                  const point = pointResponse.parcelPoint;
-                  const distance = pointResponse.distanceFromSearchLocation;
-
-                  // Vérification des coordonnées
-                  if (!point.location || !point.location.position) {
-                    return null;
-                  }
-
-                  const isSelected = selectedPoint?.code === point.code;
-                  const networkIcon =
-                    networkIcons[point.network as keyof typeof networkIcons] ||
-                    networkIcons.SOGP;
-
-                  return (
-                    <Marker
-                      key={point.code}
-                      position={[
-                        point.location.position.latitude,
-                        point.location.position.longitude,
-                      ]}
-                      icon={networkIcon}
-                      eventHandlers={{
-                        click: () => handleParcelPointClick(point),
-                      }}
-                    >
-                      <Popup>
-                        <div className='min-w-[250px]'>
-                          <strong>📦 {point.name}</strong>
-                          <br />
-                          <div className='mt-1 text-sm'>
-                            {point.location.number &&
-                              `${point.location.number} `}
-                            {point.location.street}
-                            <br />
-                            {point.location.postalCode} {point.location.city}
-                            {point.location.state && (
-                              <>, {point.location.state}</>
-                            )}
-                          </div>
-                          <div className='mt-2 text-xs text-gray-600'>
-                            <strong>Code:</strong> {point.code}
-                            <br />
-                            <div className='flex items-center space-x-1 mt-1'>
-                              <strong>Réseau:</strong>
-                              <div
-                                className='w-3 h-3 rounded-full'
-                                style={{
-                                  backgroundColor:
-                                    networkConfig[
-                                      point.network as keyof typeof networkConfig
-                                    ]?.color || '#3B82F6',
-                                }}
-                              ></div>
-                              <span>
-                                {networkConfig[
-                                  point.network as keyof typeof networkConfig
-                                ]?.name || point.network}
-                              </span>
-                            </div>
-                            <strong>Statut:</strong> {point.status}
-                            <br />
-                            <strong>Distance:</strong> {distance}m<br />
-                            <div className='flex items-center space-x-1 mt-1'>
-                              <strong>
-                                Prix livraison ({selectedWeight}):
-                              </strong>
-                              <span className='text-green-600 font-semibold'>
-                                {getDeliveryPrice(point.network).toFixed(2)}€
-                              </span>
-                            </div>
-                            <div className='flex items-center space-x-1 mt-1'>
-                              <strong>Délai:</strong>
-                              <span className='text-blue-600 font-medium'>
-                                {getDeliveryDelay(point.network)}
-                              </span>
-                            </div>
-                            <div className='mt-1'>
-                              <strong>Horaires:</strong>
-                              <br />
-                              <div className='text-xs max-h-20 overflow-y-auto'>
-                                {formatOpeningHours(point.openingDays)}
-                              </div>
-                            </div>
-                          </div>
-                          <button
-                            onClick={() => handleParcelPointClick(point)}
-                            className={`mt-2 w-full px-3 py-1 text-xs rounded transition-colors ${
-                              isSelected
-                                ? 'bg-green-600 text-white cursor-default'
-                                : 'bg-gray-600 text-white hover:bg-gray-700'
-                            }`}
-                            disabled={isSelected}
-                          >
-                            {isSelected
-                              ? '✓ Point relais sélectionné'
-                              : 'Sélectionner ce point relais'}
-                          </button>
-                        </div>
-                      </Popup>
-                    </Marker>
-                  );
-                })}
-              </MapContainer>
-            </div>
-          </>
-        )}
-
-        {deliveryType === 'HOME' && (
-          /* Options de livraison à domicile */
-          <div className='space-y-3 p-4'>
-            <h3 className='text-lg font-medium text-gray-900 mb-4'>
-              Options de livraison à domicile
-            </h3>
-            {Object.entries(homeDeliveryConfig).map(([key, config]) => {
-              const network = key.replace('_HOME', '');
-              const price = getDeliveryPrice(network, true);
-              const delay = getDeliveryDelay(network, true);
-              const isSelected = selectedHomeDelivery === key;
-
-              return (
-                <div
-                  key={key}
-                  onClick={() => setSelectedHomeDelivery(key)}
-                  className={`border rounded-lg p-4 cursor-pointer transition-colors ${
-                    isSelected
-                      ? 'border-blue-500 bg-blue-50'
-                      : 'border-gray-200 hover:border-blue-300'
-                  }`}
+              <div style={{ height: '400px', width: '100%' }}>
+                <MapContainer
+                  center={defaultCoordinates}
+                  zoom={14}
+                  scrollWheelZoom={true}
+                  style={{ height: '100%', width: '100%' }}
                 >
-                  <div className='flex items-center justify-between'>
-                    <div className='flex items-center space-x-3'>
-                      <div
-                        className='w-4 h-4 rounded-full'
-                        style={{ backgroundColor: config.color }}
-                      ></div>
-                      <div>
-                        <h4 className='text-sm font-medium text-gray-900'>
-                          {config.name}
-                        </h4>
-                        <div className='flex items-center space-x-4 mt-1'>
-                          <span className='text-xs text-blue-600 font-medium'>
-                            Délai: {delay}
-                          </span>
-                          <span className='text-xs text-gray-500'>
-                            Livraison à votre domicile
-                          </span>
+                  {/* Contrôleur pour l'animation panTo */}
+                  <MapController targetCoordinates={addressCoordinates} />
+
+                  <TileLayer
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                    url='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
+                  />
+
+                  {/* Marker rouge pour l'adresse de livraison */}
+                  {addressCoordinates && (
+                    <Marker position={addressCoordinates} icon={redIcon}>
+                      {!(disablePopupsOnMobile && isMobileTailwind) && (
+                        <Popup>
+                          <div className='min-w-[200px]'>
+                            <strong>🏠 Adresse de livraison</strong>
+                            <br />
+                            <div className='mt-1 text-sm'>
+                              {address?.line1}
+                              <br />
+                              {address?.line2 && (
+                                <>
+                                  {address.line2}
+                                  <br />
+                                </>
+                              )}
+                              {address?.postal_code} {address?.city}
+                              {address?.country && <>, {address.country}</>}
+                            </div>
+                            <div className='mt-2 text-xs text-gray-600'>
+                              <strong>Coordonnées:</strong>{' '}
+                              {addressCoordinates[0].toFixed(6)},{' '}
+                              {addressCoordinates[1].toFixed(6)}
+                            </div>
+                          </div>
+                        </Popup>
+                      )}
+                    </Marker>
+                  )}
+
+                  {/* Markers des points relais */}
+                  {filteredParcelPoints.map(pointResponse => {
+                    // Vérification de sécurité
+                    if (!pointResponse || !pointResponse.parcelPoint) {
+                      return null;
+                    }
+
+                    const point = pointResponse.parcelPoint;
+                    const distance = pointResponse.distanceFromSearchLocation;
+
+                    // Vérification des coordonnées
+                    if (!point.location || !point.location.position) {
+                      return null;
+                    }
+
+                    const isSelected = selectedPoint?.code === point.code;
+                    const networkIcon =
+                      networkIcons[
+                        point.network as keyof typeof networkIcons
+                      ] || networkIcons.SOGP;
+
+                    return (
+                      <Marker
+                        key={point.code}
+                        position={[
+                          point.location.position.latitude,
+                          point.location.position.longitude,
+                        ]}
+                        icon={networkIcon}
+                        eventHandlers={{
+                          click: () => handleMarkerClick(point),
+                        }}
+                      >
+                        {!(disablePopupsOnMobile && isMobileTailwind) && (
+                          <Popup>
+                            <div className='min-w-[250px]'>
+                              <strong>📦 {point.name}</strong>
+                              <br />
+                              <div className='mt-1 text-sm'>
+                                {point.location.number &&
+                                  `${point.location.number} `}
+                                {point.location.street}
+                                <br />
+                                {point.location.postalCode}{' '}
+                                {point.location.city}
+                                {point.location.state && (
+                                  <>, {point.location.state}</>
+                                )}
+                              </div>
+                              <div className='mt-2 text-xs text-gray-600'>
+                                <strong>Code:</strong> {point.code}
+                                <br />
+                                <div className='flex items-center space-x-1 mt-1'>
+                                  <strong>Réseau:</strong>
+                                  <div
+                                    className='w-3 h-3 rounded-full'
+                                    style={{
+                                      backgroundColor:
+                                        networkConfig[
+                                          point.network as keyof typeof networkConfig
+                                        ]?.color || '#3B82F6',
+                                    }}
+                                  ></div>
+                                  <span>
+                                    {networkConfig[
+                                      point.network as keyof typeof networkConfig
+                                    ]?.name || point.network}
+                                  </span>
+                                </div>
+                                <strong>Statut:</strong> {point.status}
+                                <br />
+                                <strong>Distance:</strong> {distance}m<br />
+                                <div className='flex items-center space-x-1 mt-1'>
+                                  <strong>
+                                    Prix livraison ({selectedWeight}):
+                                  </strong>
+                                  <span className='text-green-600 font-semibold'>
+                                    {getDeliveryPrice(point.network).toFixed(2)}
+                                    €
+                                  </span>
+                                </div>
+                                <div className='flex items-center space-x-1 mt-1'>
+                                  <strong>Délai:</strong>
+                                  <span className='text-blue-600 font-medium'>
+                                    {getDeliveryDelay(point.network)}
+                                  </span>
+                                </div>
+                                <div className='mt-1'>
+                                  <strong>Horaires:</strong>
+                                  <br />
+                                  <div className='text-xs max-h-20 overflow-y-auto'>
+                                    {formatOpeningHours(point.openingDays)}
+                                  </div>
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => handleMarkerClick(point)}
+                                className={`mt-2 w-full px-3 py-1 text-xs rounded transition-colors ${
+                                  isSelected
+                                    ? 'bg-green-600 text-white cursor-default'
+                                    : 'bg-gray-600 text-white hover:bg-gray-700'
+                                }`}
+                                disabled={isSelected}
+                              >
+                                {isSelected
+                                  ? '✓ Point relais sélectionné'
+                                  : 'Sélectionner ce point relais'}
+                              </button>
+                            </div>
+                          </Popup>
+                        )}
+                      </Marker>
+                    );
+                  })}
+                </MapContainer>
+              </div>
+            </>
+          )}
+
+          {deliveryType === 'HOME' && (
+            /* Options de livraison à domicile */
+            <div className='space-y-3 p-4'>
+              <h3 className='text-lg font-medium text-gray-900 mb-4'>
+                Options de livraison à domicile
+              </h3>
+              {Object.entries(homeDeliveryConfig).map(([key, config]) => {
+                const network = key.replace('_HOME', '');
+                const price = getDeliveryPrice(network, true);
+                const delay = getDeliveryDelay(network, true);
+                const isSelected = selectedHomeDelivery === key;
+
+                return (
+                  <div
+                    key={key}
+                    onClick={() => handleHomeDeliverySelect(key)}
+                    className={`border rounded-lg p-4 cursor-pointer transition-colors ${
+                      isSelected
+                        ? 'border-blue-500 bg-blue-50'
+                        : 'border-gray-200 hover:border-blue-300'
+                    }`}
+                  >
+                    <div className='flex items-center justify-between'>
+                      <div className='flex items-center space-x-3'>
+                        <div
+                          className='w-4 h-4 rounded-full'
+                          style={{ backgroundColor: config.color }}
+                        ></div>
+                        <div>
+                          <h4 className='text-sm font-medium text-gray-900'>
+                            {config.name}
+                          </h4>
+                          <div className='flex items-center space-x-4 mt-1'>
+                            <span className='text-xs text-blue-600 font-medium'>
+                              Délai: {delay}
+                            </span>
+                            <span className='text-xs text-gray-500'>
+                              Livraison à votre domicile
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className='text-right'>
+                        <div className='text-lg font-semibold text-green-600'>
+                          {price.toFixed(2)}€
+                        </div>
+                        <div className='text-xs text-gray-500'>
+                          pour {selectedWeight}
                         </div>
                       </div>
                     </div>
-                    <div className='text-right'>
-                      <div className='text-lg font-semibold text-green-600'>
-                        {price.toFixed(2)}€
+                    {isSelected && (
+                      <div className='mt-2 text-xs text-blue-600 font-medium'>
+                        ✓ Option sélectionnée
                       </div>
-                      <div className='text-xs text-gray-500'>
-                        pour {selectedWeight}
-                      </div>
-                    </div>
+                    )}
                   </div>
-                  {isSelected && (
-                    <div className='mt-2 text-xs text-blue-600 font-medium'>
-                      ✓ Option sélectionnée
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          )}
+        </div>
 
-        {/* Bouton de commande pour la livraison à domicile */}
-        {deliveryType === 'HOME' && (
-          <div className='p-4 border-t border-gray-200'>
-            <button
-              onClick={handleCreateShippingOrder}
-              disabled={isCreatingOrder || !selectedHomeDelivery}
-              className={`w-full px-4 py-3 text-white text-sm font-medium rounded-lg transition-colors ${
-                !selectedHomeDelivery
-                  ? 'bg-gray-400 cursor-not-allowed'
-                  : isCreatingOrder
-                    ? 'bg-gray-400 cursor-not-allowed'
-                    : 'bg-blue-600 hover:bg-blue-700'
-              }`}
-            >
-              {isCreatingOrder
-                ? 'Création en cours...'
-                : selectedHomeDelivery
-                  ? 'Commander la livraison à domicile'
-                  : 'Sélectionnez une option de livraison'}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Footer avec informations - seulement pour les points relais */}
-      {deliveryType === 'PICKUP' &&
-        !loading &&
-        !error &&
-        parcelPoints.length > 0 && (
-          <div className='px-4 py-3 bg-gray-50 border-t border-gray-200'>
-            {selectedPoint ? (
-              <div className='bg-white border border-green-200 rounded-lg p-3 mb-3'>
-                <div className='flex items-start justify-between'>
-                  <div className='flex-1'>
-                    <div className='flex items-center space-x-2 mb-2'>
-                      <div
-                        className='w-4 h-4 rounded-full'
-                        style={{
-                          backgroundColor:
-                            networkConfig[
-                              selectedPoint.network as keyof typeof networkConfig
-                            ]?.color || '#3B82F6',
-                        }}
-                      ></div>
-                      <h5 className='text-sm font-medium text-green-800'>
-                        Point relais sélectionné
-                      </h5>
-                    </div>
-                    <div className='text-sm text-gray-900'>
-                      <strong>{selectedPoint.name}</strong>
-                    </div>
-                    <div className='text-xs text-gray-600 mt-1'>
-                      {selectedPoint.location.number &&
-                        `${selectedPoint.location.number} `}
-                      {selectedPoint.location.street},{' '}
-                      {selectedPoint.location.postalCode}{' '}
-                      {selectedPoint.location.city}
-                    </div>
-                    <div className='text-xs text-gray-500 mt-1'>
-                      {networkConfig[
-                        selectedPoint.network as keyof typeof networkConfig
-                      ]?.name || selectedPoint.network}{' '}
-                      • Code: {selectedPoint.code}
-                    </div>
-                    <div className='flex items-center justify-between mt-2'>
-                      <div className='text-sm font-semibold text-green-700'>
-                        Livraison ({selectedWeight}):{' '}
-                        {getDeliveryPrice(selectedPoint.network).toFixed(2)}€
+        {/* Footer avec informations - seulement pour les points relais */}
+        {deliveryType === 'PICKUP' &&
+          !loading &&
+          !error &&
+          parcelPoints.length > 0 && (
+            <div className='px-4 py-3 bg-gray-50 border-t border-gray-200'>
+              {selectedPoint ? (
+                <div className='bg-white border border-green-200 rounded-lg p-3 mb-3'>
+                  <div className='flex items-start justify-between'>
+                    <div className='flex-1'>
+                      <div className='flex items-center space-x-2 mb-2'>
+                        <div
+                          className='w-4 h-4 rounded-full'
+                          style={{
+                            backgroundColor:
+                              networkConfig[
+                                selectedPoint.network as keyof typeof networkConfig
+                              ]?.color || '#3B82F6',
+                          }}
+                        ></div>
+                        <h5 className='text-sm font-medium text-green-800'>
+                          Point relais sélectionné
+                        </h5>
                       </div>
-                      <div className='text-xs text-blue-600 font-medium'>
-                        Délai: {getDeliveryDelay(selectedPoint.network)}
+                      <div className='text-sm text-gray-900'>
+                        <strong>{selectedPoint.name}</strong>
+                      </div>
+                      <div className='text-xs text-gray-600 mt-1'>
+                        {selectedPoint.location.number &&
+                          `${selectedPoint.location.number} `}
+                        {selectedPoint.location.street},{' '}
+                        {selectedPoint.location.postalCode}{' '}
+                        {selectedPoint.location.city}
+                      </div>
+                      <div className='text-xs text-gray-500 mt-1'>
+                        {networkConfig[
+                          selectedPoint.network as keyof typeof networkConfig
+                        ]?.name || selectedPoint.network}{' '}
+                        • Code: {selectedPoint.code}
+                      </div>
+                      <div className='flex items-center justify-between mt-2'>
+                        <div className='text-sm font-semibold text-green-700'>
+                          Livraison ({selectedWeight}):{' '}
+                          {getDeliveryPrice(selectedPoint.network).toFixed(2)}€
+                        </div>
+                        <div className='text-xs text-blue-600 font-medium'>
+                          Délai: {getDeliveryDelay(selectedPoint.network)}
+                        </div>
                       </div>
                     </div>
                     <button
-                      onClick={handleCreateShippingOrder}
-                      disabled={isCreatingOrder}
-                      className='mt-3 w-full px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors'
+                      onClick={() => setSelectedPoint(null)}
+                      className='text-gray-400 hover:text-gray-600 ml-2'
+                      title='Désélectionner'
                     >
-                      {isCreatingOrder
-                        ? 'Création en cours...'
-                        : "Commander l'expédition"}
+                      ✕
                     </button>
                   </div>
-                  <button
-                    onClick={() => setSelectedPoint(null)}
-                    className='text-gray-400 hover:text-gray-600 ml-2'
-                    title='Désélectionner'
-                  >
-                    ✕
-                  </button>
                 </div>
-              </div>
-            ) : (
-              <p className='text-xs text-gray-500'>
-                💡 Cliquez sur un marqueur pour sélectionner un point relais
-              </p>
-            )}
-          </div>
-        )}
+              ) : (
+                <p className='text-xs text-gray-500'>
+                  💡 Cliquez sur un marqueur pour sélectionner un point relais
+                </p>
+              )}
+            </div>
+          )}
+      </div>
     </div>
   );
 }

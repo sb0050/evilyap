@@ -15,28 +15,53 @@ export default function StripeWrapper({
   clientSecret,
   options = {},
 }: StripeWrapperProps) {
-  // Create properly typed options based on whether clientSecret is provided
+  // Default appearance to increase input height and readability
+  const defaultAppearance: StripeElementsOptions['appearance'] = {
+    theme: 'stripe',
+    variables: {
+      fontFamily:
+        'Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto',
+      fontSizeBase: '16px',
+      borderRadius: '8px',
+      spacingUnit: '8px',
+      colorPrimary: '#334155',
+    },
+    rules: {
+      '.Input': {
+        padding: '14px 12px',
+        lineHeight: '1.5',
+      },
+      '.Input--invalid': {
+        borderColor: '#ef4444', // rouge Tailwind 500
+      },
+      '.Label': {
+        fontSize: '14px',
+      },
+    },
+  };
+
+  const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+
+  // Build elements options, merging defaults and incoming options
   const elementsOptions: StripeElementsOptions = clientSecret
     ? {
         clientSecret,
-        // When using clientSecret, only merge appearance and other compatible options
-        // paymentMethodTypes is handled automatically by the Payment Intent
-        ...Object.fromEntries(
-          Object.entries(options).filter(
-            ([key]) => key !== 'mode' && key !== 'paymentMethodTypes'
-          )
-        ),
+        appearance: {
+          ...defaultAppearance,
+          ...(options.appearance || {}),
+        },
+        ...(googleMapsApiKey ? { googleMapsApiKey } : {}),
       }
     : {
-        // When not using clientSecret, use minimal safe options
-        mode: 'payment',
-        currency: 'eur',
-        amount: 1000, // 10€ par défaut
-        paymentMethodTypes: ['card', 'link'],
-        // Merge with provided options
-        ...Object.fromEntries(
-          Object.entries(options).filter(([key]) => key !== 'clientSecret')
-        ),
+        // Ensure LinkAuthenticationElement requirements: provide mode/currency/amount
+        mode: (options as any)?.mode || 'payment',
+        currency: (options as any)?.currency || 'eur',
+        amount: (options as any)?.amount || 1000,
+        appearance: {
+          ...defaultAppearance,
+          ...(options.appearance || {}),
+        },
+        ...(googleMapsApiKey ? { googleMapsApiKey } : {}),
       };
 
   return (

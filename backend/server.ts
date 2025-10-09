@@ -8,6 +8,7 @@ dotenv.config();
 import stripeRoutes from "./routes/stripe";
 import boxtalRoutes from "./routes/boxtal";
 import storeRoutes from "./routes/store";
+import { emailService } from "./services/emailService";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -25,6 +26,16 @@ app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
 
 // Pour les autres routes, utiliser JSON
 app.use(express.json());
+
+// Vérifier la configuration SMTP au démarrage (utile pour les tests)
+(async () => {
+  const ok = await emailService.verifyConnection();
+  if (!ok) {
+    console.warn(
+      "⚠️ La connexion SMTP a échoué. Vérifiez SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS dans backend/.env"
+    );
+  }
+})();
 
 // Routes
 app.use("/api/stripe", stripeRoutes);

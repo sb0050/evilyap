@@ -24,21 +24,11 @@ const PaymentReturnPage: React.FC = () => {
   >('loading');
   const [session, setSession] = useState<PaymentSession | null>(null);
 
-  console.log('🚀 PaymentReturnPage component rendered');
-  console.log('  Current status:', status);
-  console.log('  Current session:', session);
-
   useEffect(() => {
     const sessionId = searchParams.get('session_id');
     const storeName = searchParams.get('store_name') || 'default';
 
-    console.log('🔍 PaymentReturnPage - Debug Info:');
-    console.log('  sessionId:', sessionId);
-    console.log('  storeName:', storeName);
-    console.log('  searchParams:', Object.fromEntries(searchParams.entries()));
-
     if (!sessionId) {
-      console.log('❌ No sessionId found, setting status to error');
       setStatus('error');
       const sessionStoreName =
         session?.metadata?.store_name || (session as any)?.storeName;
@@ -46,7 +36,6 @@ const PaymentReturnPage: React.FC = () => {
       const storeSlug = (chosenStoreName || 'default')
         .toLowerCase()
         .replace(/\s+/g, '-');
-      console.log('↩️ Redirecting due to missing sessionId to:', storeSlug);
       // Rediriger vers la page checkout avec une alerte d'erreur
       setTimeout(() => {
         navigate(`/checkout/${storeSlug}?error=payment_failed`);
@@ -54,28 +43,19 @@ const PaymentReturnPage: React.FC = () => {
       return;
     }
 
-    console.log('🔄 Fetching session details from API...');
     // Récupérer les détails de la session
-    fetch(`http://localhost:5000/api/stripe/session/${sessionId}`)
+    fetch(
+      `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stripe/session/${sessionId}`
+    )
       .then(response => {
-        console.log('📡 API Response status:', response.status);
         return response.json();
       })
       .then(data => {
-        console.log('📦 Session data received:', data);
-        console.log('  data.status:', data.status);
-        console.log('  data.payment_status:', data.payment_status);
-        console.log('  data.metadata:', data.metadata);
-
         setSession(data);
         // Déterminer le statut basé sur la réponse
         if (data.status === 'complete' || data.status === 'paid') {
-          console.log('✅ Payment complete, setting status to complete');
-          console.log('  Status received:', data.status);
           setStatus('complete');
         } else {
-          console.log('❌ Payment not complete, setting status to failed');
-          console.log('  Actual status received:', data.status);
           setStatus('failed');
           const sessionStoreName =
             data?.metadata?.store_name || (data as any)?.storeName;
@@ -83,18 +63,13 @@ const PaymentReturnPage: React.FC = () => {
           const storeSlug = (chosenStoreName || 'default')
             .toLowerCase()
             .replace(/\s+/g, '-');
-          console.log('↩️ Redirecting after failed status to:', {
-            chosenStoreName,
-            storeSlug,
-          });
           // Rediriger vers la page checkout avec une alerte d'erreur
           setTimeout(() => {
             navigate(`/checkout/${storeSlug}?error=payment_failed`);
           }, 3000);
         }
       })
-      .catch(error => {
-        console.error('💥 Error fetching session:', error);
+      .catch(() => {
         setStatus('error');
         const sessionStoreName =
           session?.metadata?.store_name || (session as any)?.storeName;
@@ -103,10 +78,6 @@ const PaymentReturnPage: React.FC = () => {
         const storeSlug = (chosenStoreName || 'default')
           .toLowerCase()
           .replace(/\s+/g, '-');
-        console.log('↩️ Redirecting after error to:', {
-          chosenStoreName,
-          storeSlug,
-        });
         // Rediriger vers la page checkout avec une alerte d'erreur
         setTimeout(() => {
           navigate(`/checkout/${storeSlug}?error=payment_failed`);
@@ -121,12 +92,7 @@ const PaymentReturnPage: React.FC = () => {
     }).format(amount / 100);
   };
 
-  useEffect(() => {
-    console.log('🧭 Status changed:', status);
-  }, [status]);
-
   if (status === 'loading') {
-    console.log('🔄 Rendering loading state');
     return (
       <div className='min-h-screen bg-gray-50 flex items-center justify-center'>
         <div className='text-center'>
@@ -137,26 +103,102 @@ const PaymentReturnPage: React.FC = () => {
     );
   }
 
-  // @ts-ignore
-  if (status === 'complete0000') {
-    console.log('✅ Rendering complete state');
+  const DeliveryInfo: React.FC = () => {
+    if (!session) return null;
+    const dm = (session as any).deliveryMethod;
+    const code = (session as any).parcelPointCode;
+    const name = (session as any).parcelPointName;
+    const network = (session as any).parcelPointNetwork;
+    if (dm === 'pickup_point') {
+      return (
+        <div className='mt-4 text-sm text-gray-700'>
+          <p>
+            <strong>Méthode de livraison:</strong> Point relais
+          </p>
+          {name && (
+            <p>
+              <strong>Point relais:</strong> {name}
+              {code ? ` (code ${code})` : ''}
+              {network ? ` - réseau ${network}` : ''}
+            </p>
+          )}
+          <p className='text-gray-600'>
+            Vous recevrez régulièrement des emails de suivi du colis.
+          </p>
+          <p className='text-gray-600'>
+            Délai indicatif: 3 à 5 jours selon le réseau sélectionné.
+          </p>
+        </div>
+      );
+    }
+    if (dm === 'home_delivery') {
+      return (
+        <div className='mt-4 text-sm text-gray-700'>
+          <p>
+            <strong>Méthode de livraison:</strong> À domicile
+          </p>
+          {network && (
+            <p>
+              <strong>Réseau de livraison:</strong> {network}
+            </p>
+          )}
+          <p className='text-gray-600'>
+            Vous recevrez régulièrement des emails de suivi du colis.
+          </p>
+          <p className='text-gray-600'>
+            Délai indicatif: 48h à 6 jours selon le réseau choisi.
+          </p>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  if (status === 'complete') {
     return (
       <div className='min-h-screen bg-gray-50 flex items-center justify-center p-4'>
         <div className='max-w-md w-full bg-white rounded-lg shadow-lg p-8 text-center'>
           <CheckCircleIcon className='h-16 w-16 text-green-500 mx-auto mb-4' />
           <h1 className='text-2xl font-bold text-gray-900 mb-2'>
-            Paiement effectué !
+            Paiement réussi
           </h1>
-          <p className='text-gray-600 mb-6'>
-            Merci pour votre paiement. Votre commande a été confirmée.
-          </p>
-          <div className='bg-green-50 border border-green-200 rounded-lg p-4 mb-6'>
-            <p className='text-green-800 text-sm'>
+          <p className='text-gray-600 mb-6'>Merci pour votre commande.</p>
+          <div className='text-left space-y-2'>
+            <p>
+              <strong>Montant payé:</strong>{' '}
               {formatAmount(
-                session?.amount_total || 0,
-                session?.currency || 'eur'
+                (session as any).amount || (session as any).amount_total || 0,
+                (session as any).currency || 'EUR'
               )}
             </p>
+            <p>
+              <strong>Boutique:</strong>{' '}
+              {(session as any).storeName ||
+                session?.metadata?.store_name ||
+                '—'}
+            </p>
+            <p>
+              <strong>Référence:</strong>{' '}
+              {(session as any).reference ||
+                session?.metadata?.product_reference ||
+                '—'}
+            </p>
+          </div>
+          <DeliveryInfo />
+          <div className='mt-6 text-sm text-gray-600'>
+            <p>Un email de confirmation vous a été envoyé.</p>
+            <p>
+              Vous recevrez également des mises à jour régulières par email
+              concernant le suivi de votre colis.
+            </p>
+          </div>
+          <div className='mt-6'>
+            <button
+              onClick={() => navigate('/')}
+              className='w-full bg-blue-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-blue-700 transition-colors'
+            >
+              Retour à l’accueil
+            </button>
           </div>
         </div>
       </div>

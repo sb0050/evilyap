@@ -1,7 +1,6 @@
 import express from "express";
 import Stripe from "stripe";
 import { clerkClient } from "@clerk/clerk-sdk-node";
-import { Request, Response } from "express";
 import { emailService } from "../services/emailService";
 import { createClient } from "@supabase/supabase-js";
 
@@ -40,81 +39,46 @@ interface CreatePaymentIntentRequest {
   customerName?: string;
 }
 
-// Fonction pour calculer le montant total
-const calculateOrderAmount = (items: OrderItem[]): number => {
-  return items.reduce((total, item) => total + item.price * item.quantity, 0);
-};
+// Endpoint to get customer details
+router.get("/get-customer-details", async (req, res) => {
+  const { customerEmail } = req.query;
 
-// Route pour créer un Payment Intent
-router.post("/create-payment-intent", async (req, res): Promise<void> => {
+  if (!customerEmail) {
+    res.status(400).json({ error: "Customer email is required" });
+    return;
+  }
+
   try {
-    const {
-      amount,
-      currency = "eur",
-      orderItems,
-      customerEmail,
-      customerName,
-    }: CreatePaymentIntentRequest = req.body;
+    // Rechercher le client existant par email
+    const existingCustomers = await stripe.customers.list({
+      email: customerEmail as string,
+      limit: 1,
+    });
 
-    // Validation des données
-    if (!amount || amount <= 0) {
-      res.status(400).json({ error: "Montant invalide" });
+    if (existingCustomers.data.length === 0) {
+      res.status(404).json({ error: "Customer not found" });
       return;
     }
 
-    // Créer ou récupérer le client Stripe
-    let customerId: string | undefined;
-    if (customerEmail) {
-      const existingCustomers = await stripe.customers.list({
-        email: customerEmail,
-        limit: 1,
-      });
+    const customer = existingCustomers.data[0];
 
-      if (existingCustomers.data.length > 0) {
-        customerId = existingCustomers.data[0].id;
-      } else {
-        const customer = await stripe.customers.create({
-          email: customerEmail,
-          name: customerName,
-        });
-        customerId = customer.id;
-      }
-    }
+    // Extract relevant details
+    const customerData = {
+      name: customer.name,
+      phone: customer.phone,
+      email: customer.email,
+      address: customer.address,
+      shipping: customer.shipping,
+      deliveryMethod: customer.metadata.delivery_method,
+      parcelPointCode: customer.metadata.parcel_point_code,
+      homeDeliveryNetwork: customer.metadata.home_delivery_network,
+    };
 
-    // Créer le Payment Intent
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount * 100), // Convertir en centimes
-      currency: currency.toLowerCase(),
-      customer: customerId,
-      metadata: {
-        order_items: JSON.stringify(orderItems),
-      },
-    });
-
-    res.json({
-      clientSecret: paymentIntent.client_secret,
-      paymentIntentId: paymentIntent.id,
-    });
+    res.json({ customer: customerData });
   } catch (error) {
-    console.error("Erreur lors de la création du Payment Intent:", error);
-    res.status(500).json({ error: "Erreur interne du serveur" });
-  }
-});
-
-// Route pour récupérer les méthodes de paiement d'un client
-router.get("/customer/:customerId/payment-methods", async (req, res) => {
-  try {
-    const { customerId } = req.params;
-
-    const paymentMethods = await stripe.paymentMethods.list({
-      customer: customerId,
-      type: "card",
-    });
-
-    res.json({ paymentMethods: paymentMethods.data });
-  } catch (error) {
-    console.error("Erreur lors de la récupération des méthodes:", error);
-    res.status(500).json({ error: "Erreur interne du serveur" });
+    console.log("Error retrieving customer:", error);
+    console.error("Error retrieving customer:", error);
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
@@ -124,18 +88,17 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     const {
       amount,
       currency = "eur",
+      customerName,
       customerEmail,
+      clerkUserId,
       storeName,
       productReference,
+      address,
+      deliveryMethod,
+      parcelPoint,
+      phone,
+      deliveryCost,
     } = req.body;
-
-    console.log("🔧 [create-checkout-session] received body:", {
-      amount,
-      currency,
-      customerEmail,
-      storeName,
-      productReference,
-    });
 
     // Validation
     if (!amount || amount <= 0) {
@@ -143,84 +106,219 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       return;
     }
 
-    // Créer ou récupérer le client Stripe
+    if (!customerEmail) {
+      res.status(400).json({ error: "Email client requis" });
+      return;
+    }
+
+    if (!address) {
+      res.status(400).json({ error: "Adresse requise" });
+      return;
+    }
+
     let customerId: string | undefined;
-    if (customerEmail) {
+
+    try {
+      // Vérifier si le client existe déjà
       const existingCustomers = await stripe.customers.list({
         email: customerEmail,
         limit: 1,
       });
 
+      let customer: Stripe.Customer;
+
       if (existingCustomers.data.length > 0) {
-        customerId = existingCustomers.data[0].id;
-      } else {
-        const customer = await stripe.customers.create({
-          email: customerEmail,
+        // Mettre à jour le client existant
+        customer = await stripe.customers.update(existingCustomers.data[0].id, {
+          name: customerName,
+          phone: phone,
+          address: {
+            line1: address.line1,
+            line2: address.line2 || "",
+            city: address.city,
+            state: address.state || "",
+            postal_code: address.postal_code,
+            country: address.country || "FR",
+          },
+          shipping:
+            deliveryMethod === "pickup_point" && parcelPoint
+              ? {
+                  name: customerName,
+                  phone: phone,
+                  address: {
+                    line1: parcelPoint.location.street,
+                    line2: parcelPoint.location.number || "",
+                    city: parcelPoint.location.city,
+                    state: parcelPoint.location.state || "",
+                    postal_code: parcelPoint.location.postalCode,
+                    country: parcelPoint.location.countryIsoCode || "FR",
+                  },
+                }
+              : {
+                  name: customerName,
+                  phone: phone,
+                  address: {
+                    line1: address.line1,
+                    line2: address.line2 || "",
+                    city: address.city,
+                    state: address.state || "",
+                    postal_code: address.postal_code,
+                    country: address.country || "FR",
+                  },
+                },
+          metadata: {
+            delivery_method: deliveryMethod,
+            clerk_user_id: clerkUserId || "",
+            ...(parcelPoint && { parcel_point_code: parcelPoint.code }),
+            ...(parcelPoint && { parcel_point_name: parcelPoint.name }),
+            ...(parcelPoint && { parcel_point_network: parcelPoint.network }),
+          },
         });
-        customerId = customer.id;
+      } else {
+        // Créer un nouveau client
+        customer = await stripe.customers.create({
+          email: customerEmail,
+          name: customerName,
+          phone: phone,
+          address: {
+            line1: address.line1,
+            line2: address.line2 || "",
+            city: address.city,
+            state: address.state || "",
+            postal_code: address.postal_code,
+            country: address.country || "FR",
+          },
+          shipping:
+            deliveryMethod === "pickup_point" && parcelPoint
+              ? {
+                  name: customerName,
+                  phone: phone,
+                  address: {
+                    line1: parcelPoint.location.street,
+                    line2: parcelPoint.location.number || "",
+                    city: parcelPoint.location.city,
+                    state: parcelPoint.location.state || "",
+                    postal_code: parcelPoint.location.postalCode,
+                    country: parcelPoint.location.countryIsoCode || "FR",
+                  },
+                }
+              : {
+                  name: customerName,
+                  phone: phone,
+                  address: {
+                    line1: address.line1,
+                    line2: address.line2 || "",
+                    city: address.city,
+                    state: address.state || "",
+                    postal_code: address.postal_code,
+                    country: address.country || "FR",
+                  },
+                },
+          metadata: {
+            delivery_method: deliveryMethod,
+            clerk_user_id: clerkUserId || "",
+            ...(parcelPoint && { parcel_point_code: parcelPoint.code }),
+            ...(parcelPoint && { parcel_point_name: parcelPoint.name }),
+            ...(parcelPoint && { parcel_point_network: parcelPoint.network }),
+          },
+        });
       }
+
+      customerId = customer.id;
+    } catch (customerError) {
+      console.error("Erreur lors de la gestion du client:", customerError);
+      res
+        .status(500)
+        .json({ error: "Erreur lors de la création/mise à jour du client" });
+      return;
     }
 
     // Créer la session de checkout intégrée
     const session = await stripe.checkout.sessions.create({
-      //@ts-ignore
-      ui_mode: "embedded" as any,
+      ui_mode: "embedded",
       payment_method_types: ["card", "klarna", "paypal", "amazon_pay"],
       payment_intent_data: {
-        description: storeName
-          ? `Commande ${productReference || "sans référence"} - ${storeName}`
-          : `Commande ${
-              productReference || "sans référence"
-            } - LIVE SHOPPING APP`,
-        // Add metadata to the payment intent
-        metadata: {
-          store_name: storeName || "LIVE SHOPPING APP",
-          product_reference: productReference || "N/A",
-          order_source: "live_shopping_checkout",
-        },
-      },
-      // Duplicate useful metadata at the session level for easier retrieval
-      metadata: {
-        store_name: storeName || "LIVE SHOPPING APP",
-        product_reference: productReference || "N/A",
-        order_source: "live_shopping_checkout",
+        description: `store: ${storeName || ""} - reference: ${
+          productReference || ""
+        }`,
       },
       line_items: [
         {
           price_data: {
-            currency: currency,
+            currency: "eur",
             product_data: {
-              name: productReference || "Produit Live Shopping",
-              description: `Achat depuis ${storeName || "LIVE SHOPPING APP"}`,
+              name: productReference || "N/A",
+              // Vous pouvez ajouter une description et des images optionnellement
+              description: `Les frais de port de ${deliveryCost} ont été ajouté au montant associé à la référence`,
+              // images: ['https://exemple.com/image.png'],
+              metadata: {
+                product_reference: productReference || "N/A",
+                store_name: storeName || "",
+              },
             },
-            unit_amount: amount,
+            unit_amount: amount, // Convertir en centimes (ex: 19.99€ devient 1999)
           },
           quantity: 1,
         },
       ],
+      metadata: {
+        product_reference: productReference || "N/A",
+        store_name: storeName || "",
+      },
       mode: "payment",
       return_url: `${
         process.env.FRONTEND_URL
       }/payment/return?session_id={CHECKOUT_SESSION_ID}&store_name=${encodeURIComponent(
         storeName || "default"
       )}`,
-      ...(customerId && { customer: customerId }),
-    });
-
-    console.log("✅ [create-checkout-session] session created:", {
-      id: session.id,
-      customer: session.customer,
-      return_url: session.return_url,
-      metadata: (session as any).metadata,
-    });
+      customer: customerId,
+    } as any);
 
     res.json({
       clientSecret: session.client_secret,
       sessionId: session.id,
+      customerId: customerId,
     });
   } catch (error) {
     console.error("Erreur lors de la création de la session:", error);
     res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+router.post("/save-customer-address", async (req, res) => {
+  const { customerId, address, shippingAddress } = req.body;
+
+  try {
+    let customer;
+    // Update existing customer
+    customer = await stripe.customers.update(customerId, {
+      name: address.name,
+      phone: address.phone,
+      address: {
+        line1: address.address.line1,
+        line2: address.address.line2 || "",
+        city: address.address.city,
+        state: address.address.state,
+        postal_code: address.address.postal_code,
+        country: address.address.country,
+      },
+      shipping: {
+        name: shippingAddress.name,
+        phone: shippingAddress.phone,
+        address: {
+          line1: shippingAddress.address.line1,
+          line2: shippingAddress.address.line2 || "",
+          city: shippingAddress.address.city,
+          state: shippingAddress.address.state,
+          postal_code: shippingAddress.address.postal_code,
+          country: shippingAddress.address.country,
+        },
+      },
+    });
+    res.json({ success: true, customerId: customer.id });
+  } catch (error) {
+    console.error("Error saving customer address:", error);
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
@@ -239,29 +337,30 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
     }
 
     // Extraire les informations nécessaires
-    const paymentIntent = session.payment_intent as Stripe.PaymentIntent;
     const customer = session.customer as Stripe.Customer;
-
-    // Logs pour diagnostique
-    console.log("🔍 [get session] retrieved:", {
-      id: session.id,
-      status: session.payment_status,
-      sessionMetadata: (session as any)?.metadata,
-      paymentIntentMetadata: paymentIntent?.metadata,
-    });
-
     // Préférer le store_name au niveau de la session
     const storeNameFromSession = (session as any)?.metadata?.store_name;
-    const storeNameFromPI = paymentIntent?.metadata?.store_name;
-
+    const referenceFromSession = (session as any)?.metadata?.product_reference;
+    const deliveryMethodFromSession = (session as any)?.metadata
+      ?.delivery_method;
+    const parcelPointCodeFromSession = (session as any)?.metadata
+      ?.parcel_point_code;
+    const parcelPointNameFromSession = (session as any)?.metadata
+      ?.parcel_point_name;
+    const parcelPointNetworkFromSession = (session as any)?.metadata
+      ?.parcel_point_network;
     const paymentDetails = {
       amount: session.amount_total || 0,
       currency: session.currency || "eur",
-      reference: paymentIntent?.metadata?.product_reference || "N/A",
-      storeName: storeNameFromSession || storeNameFromPI || "LIVE SHOPPING APP",
-      customerEmail:
-        session.customer_details?.email || customer?.email || "N/A",
+      reference: referenceFromSession || "N/A",
+      storeName: storeNameFromSession || "LIVE SHOPPING APP",
+      customerEmail: customer.email || "N/A",
+      customerPhone: customer.phone || "N/A",
       status: session.payment_status,
+      deliveryMethod: deliveryMethodFromSession || undefined,
+      parcelPointCode: parcelPointCodeFromSession || undefined,
+      parcelPointName: parcelPointNameFromSession || undefined,
+      parcelPointNetwork: parcelPointNetworkFromSession || undefined,
     };
 
     res.json(paymentDetails);
@@ -297,133 +396,56 @@ router.post(
         // Paiement réussi (PaymentIntent)
         console.log("PaymentIntent succeeded:", event.data.object.id);
         break;
-
+      case "payment_intent.created":
+        console.log("PaymentIntent created:", (event.data.object as any).id);
+        break;
       case "checkout.session.completed":
         // Session checkout complétée
+
         try {
           const session: any = event.data.object as any;
+          console.log("checkout.session.completed received:", session.id);
 
           // customer peut être un id de customer ou null
-          const stripeCustomerId = (session.customer as string) || null;
+          //const stripeCustomerId = (session.customer as string) || null;
 
           // récupérer email/phone/adresse depuis la session
           const email = session.customer_details?.email || null;
           const phone = session.customer_details?.phone || null;
-          const shipping = session.shipping || null;
-
-          let clerkUserId: string | undefined;
-
-          // Si la session référence un customer Stripe, récupérer ses metadata
-          if (stripeCustomerId) {
-            try {
-              const stripeCustomer = (await stripe.customers.retrieve(
-                stripeCustomerId
-              )) as Stripe.Customer;
-              if (
-                (stripeCustomer as any).metadata &&
-                (stripeCustomer as any).metadata.clerkUserId
-              ) {
-                clerkUserId = (stripeCustomer as any).metadata.clerkUserId;
-              }
-            } catch (custErr) {
-              console.error(
-                "Error retrieving stripe customer for clerk mapping:",
-                custErr
-              );
-            }
-          }
-
-          // Si on n'a pas clerkUserId, on peut essayer de chercher par email via Clerk (limité)
-          if (!clerkUserId && email) {
-            try {
-              // clerkClient doesn't provide a getUserByEmail in some SDKs; we attempt a safe search via listUsers
-              const users = await clerkClient.users.getUserList({
-                emailAddress: [email],
-                limit: 1,
-              });
-              if (users && users.data && users.data.length > 0) {
-                clerkUserId = users.data[0].id;
-              }
-            } catch (findErr) {
-              console.error("Error finding Clerk user by email:", findErr);
-            }
-          }
-
-          if (clerkUserId) {
-            // Construire l'objet d'adresse à stocker
-            const address: any = shipping
-              ? {
-                  name: shipping.name,
-                  address: shipping.address,
-                }
-              : null;
-
-            // Mettre à jour les metadata publiques du user et le numéro de téléphone principal
-            try {
-              // Mettre à jour les métadonnées publiques
-              await clerkClient.users.updateUserMetadata(clerkUserId, {
-                publicMetadata: {
-                  paid_email: email,
-                  paid_phone: phone,
-                  paid_address: address,
-                },
-              });
-
-              // Mettre à jour le numéro de téléphone principal si disponible
-              if (phone) {
-                try {
-                  // Essayer d'ajouter le numéro de téléphone comme nouveau numéro
-                  await clerkClient.phoneNumbers.createPhoneNumber({
-                    userId: clerkUserId,
-                    phoneNumber: phone,
-                    verified: true,
-                    primary: true,
-                  });
-                  console.log(
-                    `Added new primary phone number for user ${clerkUserId}`
-                  );
-                } catch (addPhoneErr) {
-                  console.error("Error adding phone number:", addPhoneErr);
-                }
-              }
-
-              console.log(`Updated Clerk metadata for user ${clerkUserId}`);
-            } catch (clerkErr) {
-              console.error("Error updating Clerk user metadata:", clerkErr);
-            }
-          } else {
-            console.log(
-              "No Clerk user id found for session, skipping metadata update"
-            );
-          }
+          const shipping = session.customer_details?.shipping || null;
+          const customerEmail = session.customer_details?.email || null;
+          const customerName = session.customer_details?.name || "Client";
+          const address = session.customer_details.address || null;
+          const deliveryMethod =
+            (session.metadata?.delivery_method as string) || "N/A";
+          const parcelPointCode =
+            session.metadata?.parcel_point_code || undefined;
+          const storeName = session.metadata?.store_name || null;
+          const productReference = session.metadata?.product_reference || "N/A";
+          const clerkUserId =
+            (session.metadata?.clerk_user_id as string) || null;
 
           // Récupérer le payment intent pour les informations de paiement
-          const paymentIntent = await stripe.paymentIntents.retrieve(
-            session.payment_intent as string
-          );
-
-          // Récupérer les informations client depuis la session
-          const customerName = session.customer_details?.name || "Client";
-          const address = session.customer_details?.address
-            ? `${session.customer_details.address.line1 || ""} ${
-                session.customer_details.address.line2 || ""
-              }, ${session.customer_details.address.city || ""} ${
-                session.customer_details.address.postal_code || ""
-              }, ${session.customer_details.address.country || ""}`.trim()
-            : "Adresse non fournie";
-
-          // Récupérer les informations de la boutique depuis les métadonnées
-          const storeName =
-            paymentIntent.metadata?.store_name || "LIVE SHOPPING APP";
-          const productReference =
-            paymentIntent.metadata?.product_reference || "N/A";
+          let paymentIntent: Stripe.PaymentIntent | null = null;
+          try {
+            if (session.payment_intent) {
+              paymentIntent = await stripe.paymentIntents.retrieve(
+                session.payment_intent as string
+              );
+            }
+          } catch (e) {
+            console.warn(
+              "⚠️ Unable to retrieve PaymentIntent, falling back to session fields:",
+              (e as any)?.message || e
+            );
+          }
 
           // Récupérer les informations complètes de la boutique depuis Supabase
           let storeOwnerEmail = null;
           let storeDescription = null;
           let storeLogo = null;
 
-          if (storeName && storeName !== "LIVE SHOPPING APP") {
+          if (storeName) {
             try {
               const { data: storeData, error: storeError } = await supabase
                 .from("stores")
@@ -442,19 +464,26 @@ router.post(
           }
 
           // Envoyer l'email de confirmation au client
-          if (email && customerName) {
+          if (session.customer_details?.email && customerName) {
             try {
               await emailService.sendCustomerConfirmation({
-                customerEmail: email,
+                customerEmail: paymentIntent?.receipt_email || customerEmail,
                 customerName: customerName,
                 storeName: storeName,
                 storeDescription: storeDescription,
                 storeLogo: storeLogo,
                 productReference: productReference,
-                amount: paymentIntent.amount,
-                currency: paymentIntent.currency,
-                paymentId: paymentIntent.id,
+                amount: paymentIntent?.amount ?? session.amount_total ?? 0,
+                currency: paymentIntent?.currency ?? session.currency ?? "eur",
+                paymentId: paymentIntent?.id ?? session.id,
+                //deliveryMethod: deliveryMethod,
+                shippingAddress: shipping || undefined,
+                address: address || undefined,
               });
+              console.log(
+                "Customer confirmation email sent",
+                paymentIntent?.receipt_email || customerEmail
+              );
             } catch (emailErr) {
               console.error(
                 "Error sending customer confirmation email:",
@@ -464,20 +493,29 @@ router.post(
           }
 
           // Envoyer l'email de notification au propriétaire de la boutique
-          if (storeOwnerEmail && email && customerName) {
+          if (
+            storeOwnerEmail &&
+            session.customer_details?.email &&
+            customerName
+          ) {
             try {
               await emailService.sendStoreOwnerNotification({
                 ownerEmail: storeOwnerEmail,
                 storeName: storeName,
-                customerEmail: email,
+                customerEmail: paymentIntent?.receipt_email || customerEmail,
                 customerName: customerName,
-                customerPhone: phone,
-                customerAddress: address,
+                customerPhone: phone || undefined,
+                shippingAddress: shipping || undefined,
+                //deliveryMethod: deliveryMethod,
                 productReference: productReference,
-                amount: paymentIntent.amount,
-                currency: paymentIntent.currency,
-                paymentId: paymentIntent.id,
+                amount: paymentIntent?.amount ?? session.amount_total ?? 0,
+                currency: paymentIntent?.currency ?? session.currency ?? "eur",
+                paymentId: paymentIntent?.id ?? session.id,
               });
+              console.log(
+                "Store owner notification email sent to",
+                storeOwnerEmail
+              );
             } catch (emailErr) {
               console.error(
                 "Error sending store owner notification email:",

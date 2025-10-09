@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { ShoppingCart, Star, Package, Truck, Shield, ArrowLeft, ShoppingBag, Users, TrendingUp, Settings } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
-import { ShoppingBag, Users, TrendingUp, Settings } from 'lucide-react';
 
 interface Store {
   id: number;
@@ -15,6 +16,7 @@ interface Store {
 const StorePage: React.FC = () => {
   const { storeName } = useParams<{ storeName: string }>();
   const { user } = useUser();
+  const navigate = useNavigate();
   const [store, setStore] = useState<Store | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +31,7 @@ const StorePage: React.FC = () => {
 
       try {
         const response = await fetch(
-          `http://localhost:5000/api/stores/${encodeURIComponent(storeName)}`
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores/${encodeURIComponent(storeName)}`
         );
         const data = await response.json();
 
