@@ -20,26 +20,9 @@ interface CustomerEmailData {
   amount: number;
   currency: string;
   paymentId: string;
-  deliveryMethod?: "pickup_point" | "home_delivery" | "unknown";
-  shippingAddress?: {
-    name?: string;
-    address?: {
-      line1?: string;
-      line2?: string;
-      city?: string;
-      state?: string;
-      postal_code?: string;
-      country?: string;
-    };
-  };
-  address?: {
-    line1?: string;
-    line2?: string;
-    city?: string;
-    state?: string;
-    postal_code?: string;
-    country?: string;
-  };
+  deliveryMethod: "pickup_point" | "home_delivery" | "unknown";
+  parcelPointNetwork: string;
+  homeDeliveryNetwork: string;
 }
 
 interface StoreOwnerEmailData {
@@ -49,8 +32,10 @@ interface StoreOwnerEmailData {
   customerName: string;
   customerPhone?: string;
   // NEW: delivery method and shipping info
-  deliveryMethod?: "pickup_point" | "home_delivery" | "unknown";
-  shippingAddress?: {
+  deliveryMethod: "pickup_point" | "home_delivery" | "unknown";
+  parcelPointNetwork: string;
+  homeDeliveryNetwork: string;
+  shippingAddress: {
     name?: string;
     address?: {
       line1?: string;
@@ -61,7 +46,7 @@ interface StoreOwnerEmailData {
       country?: string;
     };
   };
-  pickupPoint?: {
+  pickupPoint: {
     id?: string;
     name?: string;
     network?: string;
@@ -136,7 +121,7 @@ class EmailService {
         <html>
         <head>
           <meta charset="utf-8">
-          <title>Confirmation de commande</title>
+          <title>🎉 Confirmation de commande</title>
           <style>
             body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
             .container { max-width: 600px; margin: 0 auto; padding: 20px; }
@@ -156,8 +141,8 @@ class EmailService {
                   ? `<img src="${data.storeLogo}" alt="${data.storeName}" class="logo">`
                   : ""
               }
-              <h1>Merci pour votre commande !</h1>
-              <p>Votre paiement a été traité avec succès</p>
+              <h1>🎉 Merci pour votre commande !</h1>
+              <p>✅ Votre paiement a été traité avec succès</p>
             </div>
             
             <div class="content">
@@ -166,7 +151,7 @@ class EmailService {
               <p>Nous vous confirmons que votre commande a été validée et que votre paiement a été traité avec succès.</p>
               
               <div class="order-details">
-                <h3>Détails de votre commande</h3>
+                <h3>📦 Détails de votre commande</h3>
                 <p><strong>Boutique :</strong> ${data.storeName}</p>
                 ${
                   data.storeDescription
@@ -178,13 +163,26 @@ class EmailService {
                 }</p>
                 <p><strong>Montant payé :</strong> <span class="amount">${formattedAmount}</span></p>
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
+                <p><strong>Méthode de livraison :</strong> ${
+                  data.deliveryMethod === "pickup_point"
+                    ? "Point relais"
+                    : data.deliveryMethod === "home_delivery"
+                    ? "À domicile"
+                    : "Inconnue"
+                } ${
+        data.deliveryMethod === "pickup_point" && data.parcelPointNetwork
+          ? `(réseau ${data.parcelPointNetwork})`
+          : data.deliveryMethod === "home_delivery" && data.homeDeliveryNetwork
+          ? `(réseau ${data.homeDeliveryNetwork})`
+          : ""
+      }</p>
               </div>
               
-              <p>Vous recevrez prochainement un email avec les détails de livraison de votre commande.</p>
+              <p>📬 Vous recevrez prochainement un email avec les détails de livraison de votre commande.</p>
               
-              <p>Si vous avez des questions, n'hésitez pas à nous contacter.</p>
+              <p>❓ Si vous avez des questions, n'hésitez pas à nous contacter.</p>
               
-              <p>Merci de votre confiance !</p>
+              <p>🙏 Merci de votre confiance !</p>
               <p><strong>L'équipe ${data.storeName}</strong></p>
             </div>
             
@@ -202,7 +200,7 @@ class EmailService {
       const mailOptions = {
         from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
         to: data.customerEmail,
-        subject: `Confirmation de commande - ${data.storeName}`,
+        subject: `🎉 Confirmation de commande - ${data.storeName}`,
         html: htmlContent,
       };
 
@@ -351,6 +349,23 @@ class EmailService {
                     ? `<p><strong>Téléphone :</strong> ${data.customerPhone}</p>`
                     : ""
                 }
+              </div>
+
+              <div class="order-details">
+                <h3>🚚 Méthode de livraison</h3>
+                <p><strong>Méthode :</strong> ${
+                  data.deliveryMethod === "pickup_point"
+                    ? "Point relais"
+                    : data.deliveryMethod === "home_delivery"
+                    ? "À domicile"
+                    : "Inconnue"
+                } ${
+        data.deliveryMethod === "pickup_point" && data.parcelPointNetwork
+          ? `(réseau ${data.parcelPointNetwork})`
+          : data.deliveryMethod === "home_delivery" && data.homeDeliveryNetwork
+          ? `(réseau ${data.homeDeliveryNetwork})`
+          : ""
+      }</p>
               </div>
 
               ${shippingInfoHtml}

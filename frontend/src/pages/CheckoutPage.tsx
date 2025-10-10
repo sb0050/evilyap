@@ -219,10 +219,8 @@ export default function CheckoutPage() {
         ? Boolean(address && (address as any)?.line1)
         : Boolean(selectedParcelPoint);
     const hasContactInfo =
-      deliveryMethod === 'home_delivery'
-        ? Boolean((formData.name || '').trim()) &&
-          Boolean((formData.phone || '').trim())
-        : true;
+      Boolean((formData.name || '').trim()) &&
+      Boolean((formData.phone || '').trim());
 
     return (
       hasReference && hasEmail && hasAmount && hasDeliveryInfo && hasContactInfo
@@ -443,9 +441,6 @@ export default function CheckoutPage() {
                 className={`p-6 border-b cursor-pointer flex items-center justify-between ${
                   orderCompleted ? 'bg-gray-50' : ''
                 }`}
-                onClick={() =>
-                  !orderCompleted && setOrderAccordionOpen(!orderAccordionOpen)
-                }
               >
                 <div className='flex items-center space-x-3'>
                   <ShoppingBag
@@ -468,12 +463,6 @@ export default function CheckoutPage() {
                     </button>
                   )}
                 </div>
-                {!orderCompleted &&
-                  (orderAccordionOpen ? (
-                    <ChevronUp className='w-5 h-5 text-gray-400' />
-                  ) : (
-                    <ChevronDown className='w-5 h-5 text-gray-400' />
-                  ))}
               </div>
 
               <div
@@ -769,50 +758,60 @@ function CheckoutForm({
         </label>
         {(() => {
           const defaultName =
-            (customerData?.address as any)?.name ||
-            user?.fullName ||
-            '';
+            (customerData?.address as any)?.name || user?.fullName || '';
           const defaultPhone = customerData?.phone || '';
           const defaultAddress =
             (customerData?.address as any) || (address as any) || undefined;
+          const addressIncomplete = !(
+            (formData.name || '').trim() &&
+            (formData.phone || '').trim() &&
+            (address as any)?.line1 &&
+            (address as any)?.postal_code
+          );
 
           return (
-            <AddressElement
-              key={`addr-${defaultAddress?.line1 || ''}-${defaultAddress?.postal_code || ''}`}
-              options={{
-                mode: 'shipping',
-                allowedCountries: ['FR', 'BE', 'ES', 'DE', 'IT', 'NL'],
-                fields: {
-                  phone: 'always',
-                },
-                defaultValues: {
-                  name: defaultName,
-                  phone: defaultPhone,
-                  address: defaultAddress,
-                },
-              }}
-              onChange={(event: any) => {
-                const { name, phone, address: addr } = event.value || {};
-                if (typeof name === 'string') {
-                  setFormData((prev: any) => ({ ...prev, name }));
-                }
-                if (typeof phone === 'string') {
-                  setFormData((prev: any) => ({ ...prev, phone }));
-                }
+            <div
+              className={`rounded-md border ${
+                addressIncomplete ? 'border-red-500' : 'border-gray-300'
+              } p-2`}
+            >
+              <AddressElement
+                key={`addr-${defaultAddress?.line1 || ''}-${defaultAddress?.postal_code || ''}`}
+                options={{
+                  mode: 'shipping',
+                  allowedCountries: ['FR', 'BE', 'ES', 'DE', 'IT', 'NL'],
+                  fields: {
+                    phone: 'always',
+                  },
+                  defaultValues: {
+                    name: defaultName,
+                    phone: defaultPhone,
+                    address: defaultAddress,
+                  },
+                }}
+                onChange={(event: any) => {
+                  const { name, phone, address: addr } = event.value || {};
+                  if (typeof name === 'string') {
+                    setFormData((prev: any) => ({ ...prev, name }));
+                  }
+                  if (typeof phone === 'string') {
+                    setFormData((prev: any) => ({ ...prev, phone }));
+                  }
 
-                setAddress(addr || undefined);
-                setIsFormValid(!!event.complete);
+                  setAddress(addr || undefined);
+                  setIsFormValid(!!event.complete);
 
-                // Calcul du coût de livraison à domicile si la méthode active est home_delivery
-                if (deliveryMethod === 'home_delivery') {
-                  const cost = computeHomeDeliveryCost(
-                    addr as Address | undefined,
-                    selectedWeight
-                  );
-                  setDeliveryCost(cost);
-                }
-              }}
-            />
+                  // Calcul du coût de livraison à domicile si la méthode active est home_delivery
+                  if (deliveryMethod === 'home_delivery') {
+                    const cost = computeHomeDeliveryCost(
+                      addr as Address | undefined,
+                      selectedWeight
+                    );
+                    setDeliveryCost(cost);
+                  }
+                }}
+              />
+            </div>
           );
         })()}
       </div>

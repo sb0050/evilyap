@@ -98,6 +98,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       parcelPoint,
       phone,
       deliveryCost,
+      homeDeliveryNetwork,
     } = req.body;
 
     // Validation
@@ -169,6 +170,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           metadata: {
             delivery_method: deliveryMethod,
             clerk_user_id: clerkUserId || "",
+            home_delivery_network: homeDeliveryNetwork || "",
             ...(parcelPoint && { parcel_point_code: parcelPoint.code }),
             ...(parcelPoint && { parcel_point_name: parcelPoint.name }),
             ...(parcelPoint && { parcel_point_network: parcelPoint.network }),
@@ -217,6 +219,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           metadata: {
             delivery_method: deliveryMethod,
             clerk_user_id: clerkUserId || "",
+            home_delivery_network: homeDeliveryNetwork || "",
             ...(parcelPoint && { parcel_point_code: parcelPoint.code }),
             ...(parcelPoint && { parcel_point_name: parcelPoint.name }),
             ...(parcelPoint && { parcel_point_network: parcelPoint.network }),
@@ -417,13 +420,13 @@ router.post(
           const customerName = session.customer_details?.name || "Client";
           const address = session.customer_details.address || null;
           const deliveryMethod =
-            (session.metadata?.delivery_method as string) || "N/A";
-          const parcelPointCode =
-            session.metadata?.parcel_point_code || undefined;
+            session.customer_details.delivery_method || "N/A";
+          const parcelPointNetwork =
+            session.customer_details.parcel_point_network || undefined;
+          const homeDeliveryNetwork =
+            session.customer_details.home_delivery_network || undefined;
           const storeName = session.metadata?.store_name || null;
           const productReference = session.metadata?.product_reference || "N/A";
-          const clerkUserId =
-            (session.metadata?.clerk_user_id as string) || null;
 
           // Récupérer le payment intent pour les informations de paiement
           let paymentIntent: Stripe.PaymentIntent | null = null;
@@ -476,9 +479,9 @@ router.post(
                 amount: paymentIntent?.amount ?? session.amount_total ?? 0,
                 currency: paymentIntent?.currency ?? session.currency ?? "eur",
                 paymentId: paymentIntent?.id ?? session.id,
-                //deliveryMethod: deliveryMethod,
-                shippingAddress: shipping || undefined,
-                address: address || undefined,
+                deliveryMethod: deliveryMethod,
+                parcelPointNetwork: parcelPointNetwork,
+                homeDeliveryNetwork: homeDeliveryNetwork,
               });
               console.log(
                 "Customer confirmation email sent",
@@ -505,8 +508,11 @@ router.post(
                 customerEmail: paymentIntent?.receipt_email || customerEmail,
                 customerName: customerName,
                 customerPhone: phone || undefined,
+                deliveryMethod: deliveryMethod,
+                parcelPointNetwork: parcelPointNetwork,
+                homeDeliveryNetwork: homeDeliveryNetwork,
                 shippingAddress: shipping || undefined,
-                //deliveryMethod: deliveryMethod,
+                pickupPoint: address || undefined,
                 productReference: productReference,
                 amount: paymentIntent?.amount ?? session.amount_total ?? 0,
                 currency: paymentIntent?.currency ?? session.currency ?? "eur",
