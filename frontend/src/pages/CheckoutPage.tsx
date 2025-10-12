@@ -441,6 +441,7 @@ export default function CheckoutPage() {
                 className={`p-6 border-b cursor-pointer flex items-center justify-between ${
                   orderCompleted ? 'bg-gray-50' : ''
                 }`}
+                
               >
                 <div className='flex items-center space-x-3'>
                   <ShoppingBag
@@ -463,6 +464,7 @@ export default function CheckoutPage() {
                     </button>
                   )}
                 </div>
+                
               </div>
 
               <div
@@ -758,7 +760,9 @@ function CheckoutForm({
         </label>
         {(() => {
           const defaultName =
-            (customerData?.address as any)?.name || user?.fullName || '';
+            (customerData?.address as any)?.name ||
+            user?.fullName ||
+            '';
           const defaultPhone = customerData?.phone || '';
           const defaultAddress =
             (customerData?.address as any) || (address as any) || undefined;
