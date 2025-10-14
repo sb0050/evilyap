@@ -270,8 +270,9 @@ export default function CheckoutPage() {
             phone: formData.phone || '',
             deliveryCost,
             selectedWeight,
-            homeDeliveryNetwork:
-              (formData as any).homeDeliveryNetwork || undefined,
+            deliveryNetwork:
+              selectedParcelPoint?.shippingOfferCode ||
+              (formData as any).shippingOfferCode,
           }),
         }
       );
@@ -441,7 +442,6 @@ export default function CheckoutPage() {
                 className={`p-6 border-b cursor-pointer flex items-center justify-between ${
                   orderCompleted ? 'bg-gray-50' : ''
                 }`}
-                
               >
                 <div className='flex items-center space-x-3'>
                   <ShoppingBag
@@ -464,7 +464,6 @@ export default function CheckoutPage() {
                     </button>
                   )}
                 </div>
-                
               </div>
 
               <div
@@ -760,9 +759,7 @@ function CheckoutForm({
         </label>
         {(() => {
           const defaultName =
-            (customerData?.address as any)?.name ||
-            user?.fullName ||
-            '';
+            (customerData?.address as any)?.name || user?.fullName || '';
           const defaultPhone = customerData?.phone || '';
           const defaultAddress =
             (customerData?.address as any) || (address as any) || undefined;
@@ -836,17 +833,24 @@ function CheckoutForm({
                 method,
                 cost,
                 weight,
-                homeDeliveryNetwork
+                shippingOfferCode
               ) => {
-                setSelectedParcelPoint(point);
+                if (point && typeof shippingOfferCode === 'string') {
+                  setSelectedParcelPoint({
+                    ...point,
+                    shippingOfferCode,
+                  });
+                } else {
+                  setSelectedParcelPoint(point);
+                }
                 setDeliveryMethod(method);
                 if (typeof cost === 'number') setDeliveryCost(cost);
                 if (typeof weight === 'string') setSelectedWeight(weight);
-                if (typeof homeDeliveryNetwork === 'string') {
+                if (typeof shippingOfferCode === 'string') {
                   // Stocker pour succès page et metadata
                   setFormData((prev: any) => ({
                     ...prev,
-                    homeDeliveryNetwork,
+                    shippingOfferCode,
                   }));
                 }
                 setIsFormValid(true);
@@ -858,8 +862,8 @@ function CheckoutForm({
                 (customerData as any)?.metadata?.parcel_point_code ||
                 (customerData?.parcel_point?.code ?? undefined)
               }
-              initialHomeDeliveryNetwork={
-                (customerData as any)?.metadata?.home_delivery_network
+              initialDeliveryNetwork={
+                (customerData as any)?.metadata?.delivery_network
               }
               disablePopupsOnMobile={true}
             />

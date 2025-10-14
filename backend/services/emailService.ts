@@ -20,9 +20,8 @@ interface CustomerEmailData {
   amount: number;
   currency: string;
   paymentId: string;
-  deliveryMethod: "pickup_point" | "home_delivery" | "unknown";
-  parcelPointNetwork: string;
-  homeDeliveryNetwork: string;
+  deliveryMethod: "pickup_point" | "home_delivery" | string;
+  deliveryNetwork: string;
 }
 
 interface StoreOwnerEmailData {
@@ -32,9 +31,8 @@ interface StoreOwnerEmailData {
   customerName: string;
   customerPhone?: string;
   // NEW: delivery method and shipping info
-  deliveryMethod: "pickup_point" | "home_delivery" | "unknown";
-  parcelPointNetwork: string;
-  homeDeliveryNetwork: string;
+  deliveryMethod: "pickup_point" | "home_delivery" | string;
+  deliveryNetwork: string;
   shippingAddress: {
     name?: string;
     address?: {
@@ -46,16 +44,15 @@ interface StoreOwnerEmailData {
       country?: string;
     };
   };
-  pickupPoint: {
-    id?: string;
-    name?: string;
-    network?: string;
-    address?: {
-      line1?: string;
-      city?: string;
-      postal_code?: string;
-    };
+  customerAddress: {
+    line1?: string;
+    line2?: string;
+    city?: string;
+    state?: string;
+    postal_code?: string;
+    country?: string;
   };
+  pickupPointCode: string;
   productReference: string;
   amount: number;
   currency: string;
@@ -76,14 +73,6 @@ class EmailService {
         pass: process.env.SMTP_PASS || "", // Mot de passe d'application pour Gmail
       },
     };
-
-    console.log("✉️ SMTP config:", {
-      host: emailConfig.host,
-      port: emailConfig.port,
-      secure: emailConfig.secure,
-      user: emailConfig.auth.user,
-      pass: emailConfig.auth.pass ? "***" : "(empty)",
-    });
 
     this.transporter = nodemailer.createTransport(emailConfig);
     this.verifyConnection().catch((err) => {
@@ -169,13 +158,7 @@ class EmailService {
                     : data.deliveryMethod === "home_delivery"
                     ? "À domicile"
                     : "Inconnue"
-                } ${
-        data.deliveryMethod === "pickup_point" && data.parcelPointNetwork
-          ? `(réseau ${data.parcelPointNetwork})`
-          : data.deliveryMethod === "home_delivery" && data.homeDeliveryNetwork
-          ? `(réseau ${data.homeDeliveryNetwork})`
-          : ""
-      }</p>
+                } ${`(réseau ${data.deliveryNetwork})`}</p>
               </div>
               
               <p>📬 Vous recevrez prochainement un email avec les détails de livraison de votre commande.</p>
@@ -228,19 +211,13 @@ class EmailService {
 
       // Compose shipping info HTML depending on delivery method
       const shippingInfoHtml = (() => {
-        if (data.deliveryMethod === "pickup_point" && data.pickupPoint) {
+        if (data.deliveryMethod === "pickup_point" && data.pickupPointCode) {
           return `
             <div class="order-details">
               <h3>🏪 Retrait en point relais</h3>
-              <p><strong>Point relais :</strong> ${
-                data.pickupPoint.name || ""
-              } (${data.pickupPoint.network || ""})</p>
-              <p><strong>Adresse :</strong><br>
-                ${data.pickupPoint.address?.line1 || ""}<br>
-                ${data.pickupPoint.address?.postal_code || ""} ${
-            data.pickupPoint.address?.city || ""
-          }
-              </p>
+              <p><strong>Code Point relais :</strong> ${
+                data.pickupPointCode || ""
+              }</p>
             </div>
           `;
         }
@@ -359,13 +336,7 @@ class EmailService {
                     : data.deliveryMethod === "home_delivery"
                     ? "À domicile"
                     : "Inconnue"
-                } ${
-        data.deliveryMethod === "pickup_point" && data.parcelPointNetwork
-          ? `(réseau ${data.parcelPointNetwork})`
-          : data.deliveryMethod === "home_delivery" && data.homeDeliveryNetwork
-          ? `(réseau ${data.homeDeliveryNetwork})`
-          : ""
-      }</p>
+                } ${`(réseau ${data.deliveryNetwork})`}</p>
               </div>
 
               ${shippingInfoHtml}

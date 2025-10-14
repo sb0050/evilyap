@@ -41,6 +41,7 @@ export interface ParcelPointData {
   network: string;
   location: ParcelPointLocation;
   openingDays: OpeningDays;
+  shippingOfferCode: string;
 }
 
 interface ParcelPointResponse {
@@ -141,12 +142,13 @@ const networkIcons = {
   }),
 };
 
-// Configuration des réseaux avec tarifs et délais
+// Configuration des réseaux avec tarifs, délais et codes d'offres
 const networkConfig = {
   SOGP: {
     name: 'Relais Colis',
     color: '#3B82F6',
     delay: '3 à 5 jours',
+    shippingOfferCode: 'SOGP-RelaisColis',
     prices: {
       '250g': 3.63,
       '500g': 3.63,
@@ -165,6 +167,7 @@ const networkConfig = {
     name: 'Mondial Relay',
     color: '#10B981',
     delay: '3 à 4 jours',
+    shippingOfferCode: 'MONR-CpourToi',
     prices: {
       '250g': 3.18,
       '500g': 3.26,
@@ -183,6 +186,7 @@ const networkConfig = {
     name: 'Chronopost',
     color: '#F59E0B',
     delay: '2 à 4 jours',
+    shippingOfferCode: 'CHRP-Chrono2ShopDirect',
     prices: {
       '250g': 2.99,
       '500g': 3.1,
@@ -201,6 +205,7 @@ const networkConfig = {
     name: 'Colis Privé',
     color: '#8B5CF6',
     delay: '6 jours',
+    shippingOfferCode: 'COPR-CoprRelaisRelaisNat',
     prices: {
       '250g': 3.54,
       '500g': 3.54,
@@ -223,6 +228,7 @@ const homeDeliveryConfig = {
     name: 'Colis Privé - Domicile Sans Signature',
     color: '#8B5CF6',
     delay: '6 jours',
+    shippingOfferCode: 'COPR-CoprRelaisDomicileNat',
     prices: {
       '250g': 5.3,
       '500g': 6.08,
@@ -241,6 +247,7 @@ const homeDeliveryConfig = {
     name: 'Colissimo - Domicile Sans Signature',
     color: '#FF6B35',
     delay: '48h',
+    shippingOfferCode: 'POFR-ColissimoAccess',
     prices: {
       '250g': 7.24,
       '500g': 8.15,
@@ -259,6 +266,7 @@ const homeDeliveryConfig = {
     name: 'Mondial Relay - Domicile France',
     color: '#10B981',
     delay: '5 jours',
+    shippingOfferCode: 'MONR-DomicileFrance',
     prices: {
       '250g': 6.27,
       '500g': 6.83,
@@ -288,13 +296,13 @@ interface ParcelPointMapProps {
     deliveryMethod: 'home_delivery' | 'pickup_point',
     deliveryCost?: number,
     selectedWeight?: string,
-    homeDeliveryNetwork?: string
+    shippingOfferCode?: string
   ) => void;
   defaultDeliveryMethod?: 'home_delivery' | 'pickup_point';
   defaultParcelPoint?: ParcelPointData | null;
   defaultParcelPointCode?: string;
   disablePopupsOnMobile?: boolean;
-  initialHomeDeliveryNetwork?: string;
+  initialDeliveryNetwork?: string;
 }
 
 // Composant pour gérer l'animation panTo
@@ -324,7 +332,6 @@ export default function ParcelPointMap({
   onParcelPointSelect,
   defaultDeliveryMethod = 'home_delivery',
   disablePopupsOnMobile = false,
-  initialHomeDeliveryNetwork,
 }: ParcelPointMapProps) {
   const [parcelPoints, setParcelPoints] = useState<ParcelPointResponse[]>([]);
   const [loading, setLoading] = useState(false);
@@ -523,13 +530,16 @@ export default function ParcelPointMap({
   const handleMarkerClick = (parcelPoint: ParcelPointData) => {
     setSelectedPoint(parcelPoint);
     const cost = getDeliveryPrice(parcelPoint.network, false);
+    const shippingOfferCode =
+      networkConfig[parcelPoint.network as keyof typeof networkConfig]
+        ?.shippingOfferCode;
     if (onParcelPointSelect) {
       onParcelPointSelect(
         parcelPoint,
         'pickup_point',
         cost,
         selectedWeight,
-        undefined
+        shippingOfferCode
       );
     }
   };
@@ -541,22 +551,31 @@ export default function ParcelPointMap({
       setSelectedPoint(null);
       // Ne pas notifier avec coût tant qu'une option n'est pas choisie
       if (onParcelPointSelect) {
+        // Récupérer le shippingOfferCode pour l'option sélectionnée
+        const config =
+          homeDeliveryConfig[
+            selectedHomeDelivery as keyof typeof homeDeliveryConfig
+          ];
+        const shippingOfferCode = config?.shippingOfferCode;
         onParcelPointSelect(
           null,
           'home_delivery',
           undefined,
           selectedWeight,
-          selectedHomeDelivery || undefined
+          shippingOfferCode
         );
       }
     } else if (type === 'PICKUP' && selectedPoint && onParcelPointSelect) {
       const cost = getDeliveryPrice(selectedPoint.network, false);
+      const shippingOfferCode =
+        networkConfig[selectedPoint.network as keyof typeof networkConfig]
+          ?.shippingOfferCode;
       onParcelPointSelect(
         selectedPoint,
         'pickup_point',
         cost,
         selectedWeight,
-        undefined
+        shippingOfferCode
       );
     }
   };
@@ -569,13 +588,14 @@ export default function ParcelPointMap({
       homeDeliveryConfig[deliveryKey as keyof typeof homeDeliveryConfig];
     const price =
       config?.prices[selectedWeight as keyof typeof config.prices] || 0;
+    const shippingOfferCode = config?.shippingOfferCode;
     if (onParcelPointSelect) {
       onParcelPointSelect(
         null,
         'home_delivery',
         price,
         selectedWeight,
-        deliveryKey
+        shippingOfferCode
       );
     }
   };

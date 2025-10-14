@@ -1,6 +1,5 @@
 import express from "express";
 import Stripe from "stripe";
-import { clerkClient } from "@clerk/clerk-sdk-node";
 import { emailService } from "../services/emailService";
 import { createClient } from "@supabase/supabase-js";
 
@@ -98,8 +97,10 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       parcelPoint,
       phone,
       deliveryCost,
-      homeDeliveryNetwork,
+      deliveryNetwork,
     } = req.body;
+
+    console.log("Creating checkout session with data:", req.body);
 
     // Validation
     if (!amount || amount <= 0) {
@@ -168,12 +169,10 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
                   },
                 },
           metadata: {
-            delivery_method: deliveryMethod,
             clerk_user_id: clerkUserId || "",
-            home_delivery_network: homeDeliveryNetwork || "",
+            delivery_method: deliveryMethod,
+            delivery_network: deliveryNetwork || "",
             ...(parcelPoint && { parcel_point_code: parcelPoint.code }),
-            ...(parcelPoint && { parcel_point_name: parcelPoint.name }),
-            ...(parcelPoint && { parcel_point_network: parcelPoint.network }),
           },
         });
       } else {
@@ -217,18 +216,14 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
                   },
                 },
           metadata: {
-            delivery_method: deliveryMethod,
             clerk_user_id: clerkUserId || "",
-            home_delivery_network: homeDeliveryNetwork || "",
+            delivery_method: deliveryMethod,
+            delivery_network: deliveryNetwork || "",
             ...(parcelPoint && { parcel_point_code: parcelPoint.code }),
-            ...(parcelPoint && { parcel_point_name: parcelPoint.name }),
-            ...(parcelPoint && { parcel_point_network: parcelPoint.network }),
           },
         };
 
         customer = await stripe.customers.create(data);
-
-        console.log("========= debug", data);
       }
 
       customerId = customer.id;
@@ -249,6 +244,13 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           productReference || ""
         }`,
       },
+      // Duplicate useful metadata at the session level for easier retrieval
+      metadata: {
+        store_name: storeName || "LIVE SHOPPING APP",
+        product_reference: productReference || "N/A",
+        delivery_method: deliveryMethod,
+        delivery_network: deliveryNetwork || "",
+      },
       line_items: [
         {
           price_data: {
@@ -264,10 +266,6 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           quantity: 1,
         },
       ],
-      metadata: {
-        product_reference: productReference || "N/A",
-        store_name: storeName || "",
-      },
       mode: "payment",
       return_url: `${
         process.env.FRONTEND_URL
@@ -339,9 +337,7 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
       return;
     }
 
-    // Extraire les informations nécessaires
     const customer = session.customer as Stripe.Customer;
-    // Préférer le store_name au niveau de la session
     const storeNameFromSession = (session as any)?.metadata?.store_name;
     const referenceFromSession = (session as any)?.metadata?.product_reference;
     const deliveryMethodFromSession = (session as any)?.metadata
@@ -352,13 +348,14 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
       ?.parcel_point_name;
     const parcelPointNetworkFromSession = (session as any)?.metadata
       ?.parcel_point_network;
+
     const paymentDetails = {
       amount: session.amount_total || 0,
       currency: session.currency || "eur",
       reference: referenceFromSession || "N/A",
       storeName: storeNameFromSession || "LIVE SHOPPING APP",
-      customerEmail: customer.email || "N/A",
-      customerPhone: customer.phone || "N/A",
+      customerEmail: customer?.email || "N/A",
+      customerPhone: customer?.phone || "N/A",
       status: session.payment_status,
       deliveryMethod: deliveryMethodFromSession || undefined,
       parcelPointCode: parcelPointCodeFromSession || undefined,
@@ -408,25 +405,7 @@ router.post(
         try {
           const session: any = event.data.object as any;
           console.log("checkout.session.completed received:", session.id);
-
-          // customer peut être un id de customer ou null
-          //const stripeCustomerId = (session.customer as string) || null;
-
-          // récupérer email/phone/adresse depuis la session
-          const email = session.customer_details?.email || null;
-          const phone = session.customer_details?.phone || null;
-          const shipping = session.customer_details?.shipping || null;
-          const customerEmail = session.customer_details?.email || null;
-          const customerName = session.customer_details?.name || "Client";
-          const address = session.customer_details.address || null;
-          const deliveryMethod =
-            session.customer_details.delivery_method || "N/A";
-          const parcelPointNetwork =
-            session.customer_details.parcel_point_network || undefined;
-          const homeDeliveryNetwork =
-            session.customer_details.home_delivery_network || undefined;
-          const storeName = session.metadata?.store_name || null;
-          const productReference = session.metadata?.product_reference || "N/A";
+          const customer = await stripe.customers.retrieve(session.customer);
 
           // Récupérer le payment intent pour les informations de paiement
           let paymentIntent: Stripe.PaymentIntent | null = null;
@@ -443,45 +422,163 @@ router.post(
             );
           }
 
-          // Récupérer les informations complètes de la boutique depuis Supabase
-          let storeOwnerEmail = null;
-          let storeDescription = null;
-          let storeLogo = null;
+          // customer peut être un id de customer ou null
+          //const stripeCustomerId = (session.customer as string) || null;
 
-          if (storeName) {
-            try {
-              const { data: storeData, error: storeError } = await supabase
-                .from("stores")
-                .select("owner_email, description, logo")
-                .eq("name", storeName)
-                .single();
+          if (customer && !("deleted" in customer)) {
+            // récupérer email/phone/adresse depuis la session
+            const customerPhone = customer.phone || null;
+            const customerId = customer.id;
+            const customerShippingAddress: any = customer.shipping?.address;
+            const customerEmail = customer.email || null;
+            const customerName = customer.name || "Client";
+            const customerBillingAddress: any = customer.address;
+            const deliveryMethod = customer.metadata.delivery_method || "N/A";
+            const deliveryNetwork = customer.metadata.delivery_network || "N/A";
+            const clerkUserId = customer.metadata.clerk_user_id || null;
+            const pickupPointCode =
+              session.metadata.parcel_point_code || undefined;
+            const dropOffPointCode =
+              session.metadata.drop_off_point_code || undefined;
+            const storeName = session.metadata?.store_name || null;
+            const productReference =
+              session.metadata?.product_reference || "N/A";
+            const amount = paymentIntent?.amount ?? session.amount_total ?? 0;
+            const currency =
+              paymentIntent?.currency ?? session.currency ?? "eur";
+            const paymentId = paymentIntent?.id ?? session.id;
 
-              if (!storeError && storeData) {
-                storeOwnerEmail = storeData.owner_email;
-                storeDescription = storeData.description;
-                storeLogo = storeData.logo;
+            // Récupérer les informations complètes de la boutique depuis Supabase
+            let storeOwnerEmail = null;
+            let storeDescription = null;
+            let storeLogo = null;
+
+            if (storeName) {
+              try {
+                const { data: storeData, error: storeError } = await supabase
+                  .from("stores")
+                  .select("owner_email, description, logo")
+                  .eq("name", storeName)
+                  .single();
+
+                if (!storeError && storeData) {
+                  storeOwnerEmail = storeData.owner_email;
+                  storeDescription = storeData.description;
+                  storeLogo = storeData.logo;
+                }
+              } catch (storeErr) {
+                console.error("Error fetching store data:", storeErr);
               }
-            } catch (storeErr) {
-              console.error("Error fetching store data:", storeErr);
             }
-          }
 
-          // Envoyer l'email de confirmation au client
-          if (session.customer_details?.email && customerName) {
+            const toAddress = {
+              type: "RESIDENTIAL",
+              contact: {
+                email: customerEmail,
+                phone: customerPhone,
+                lastName: (customerName || "").split(" ").slice(-1)[0] || "",
+                firstName:
+                  (customerName || "").split(" ").slice(0, -1).join(" ") ||
+                  customerName ||
+                  "",
+              },
+              location: {
+                city: customerBillingAddress?.city,
+                street: customerBillingAddress?.line1,
+                postalCode: customerBillingAddress?.postal_code,
+                countryIsoCode: customerBillingAddress?.country || "FR",
+              },
+            };
+
+            // From address - prefer env variables if set, otherwise use a generic placeholder
+            const fromAddress = {
+              type: "BUSINESS",
+              contact: {
+                email:
+                  process.env.BOXTAL_SENDER_EMAIL || "no-reply@example.com",
+                phone: process.env.BOXTAL_SENDER_PHONE || "+33000000000",
+                lastName: process.env.BOXTAL_SENDER_NAME || "LM Outlet",
+                firstName: process.env.BOXTAL_SENDER_NAME || "LM Outlet",
+              },
+              location: {
+                city: process.env.BOXTAL_SENDER_CITY || "Paris",
+                street: process.env.BOXTAL_SENDER_STREET || "1 Rue Exemple",
+                number: process.env.BOXTAL_SENDER_NUMBER || "1",
+                postalCode: process.env.BOXTAL_SENDER_POSTAL || "75001",
+                countryIsoCode: process.env.BOXTAL_SENDER_COUNTRY || "FR",
+              },
+            };
+
+            // Compose shipment
+            const shipment = {
+              packages: [
+                {
+                  type: "PARCEL",
+                  value: {
+                    value: amount || 0,
+                    currency: "EUR",
+                  },
+                  width: 10,
+                  length: 10,
+                  height: 5,
+                  weight: 1000,
+                  content: {
+                    id: "content:v1:40110", //40110	Tissus, vêtements neufs
+                    description: storeName,
+                  },
+                },
+              ],
+              toAddress,
+              fromAddress,
+              // add pickup point code when present in metadata
+              pickupPointCode: pickupPointCode,
+              dropOffPointCode: dropOffPointCode,
+            };
+
+            const createOrderPayload: any = {
+              insured: false,
+              shipment,
+              labelType: "PDF_A4",
+              shippingOfferCode: deliveryNetwork,
+            };
+
+            // Call internal Boxtal shipping-orders endpoint
+            const apiBase =
+              process.env.INTERNAL_API_BASE ||
+              `http://localhost:${process.env.PORT || 5000}`;
+            const resp = await fetch(`${apiBase}/api/boxtal/shipping-orders`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(createOrderPayload),
+            });
+
+            if (!resp.ok) {
+              const text = await resp.text();
+              console.error(
+                "Failed to create Boxtal shipping order:",
+                resp.status,
+                text
+              );
+            } else {
+              const data = await resp.json();
+              console.log("Boxtal shipping order created:", data);
+            }
+
+            // Envoyer l'email de confirmation au client
             try {
               await emailService.sendCustomerConfirmation({
-                customerEmail: paymentIntent?.receipt_email || customerEmail,
+                customerEmail:
+                  paymentIntent?.receipt_email || customerEmail || "",
                 customerName: customerName,
                 storeName: storeName,
                 storeDescription: storeDescription,
                 storeLogo: storeLogo,
                 productReference: productReference,
-                amount: paymentIntent?.amount ?? session.amount_total ?? 0,
-                currency: paymentIntent?.currency ?? session.currency ?? "eur",
-                paymentId: paymentIntent?.id ?? session.id,
+                amount: amount,
+                currency: currency,
+                paymentId: paymentId,
                 deliveryMethod: deliveryMethod,
-                parcelPointNetwork: parcelPointNetwork,
-                homeDeliveryNetwork: homeDeliveryNetwork,
+                deliveryNetwork: deliveryNetwork,
               });
               console.log(
                 "Customer confirmation email sent",
@@ -493,40 +590,36 @@ router.post(
                 emailErr
               );
             }
-          }
 
-          // Envoyer l'email de notification au propriétaire de la boutique
-          if (
-            storeOwnerEmail &&
-            session.customer_details?.email &&
-            customerName
-          ) {
-            try {
-              await emailService.sendStoreOwnerNotification({
-                ownerEmail: storeOwnerEmail,
-                storeName: storeName,
-                customerEmail: paymentIntent?.receipt_email || customerEmail,
-                customerName: customerName,
-                customerPhone: phone || undefined,
-                deliveryMethod: deliveryMethod,
-                parcelPointNetwork: parcelPointNetwork,
-                homeDeliveryNetwork: homeDeliveryNetwork,
-                shippingAddress: shipping || undefined,
-                pickupPoint: address || undefined,
-                productReference: productReference,
-                amount: paymentIntent?.amount ?? session.amount_total ?? 0,
-                currency: paymentIntent?.currency ?? session.currency ?? "eur",
-                paymentId: paymentIntent?.id ?? session.id,
-              });
-              console.log(
-                "Store owner notification email sent to",
-                storeOwnerEmail
-              );
-            } catch (emailErr) {
-              console.error(
-                "Error sending store owner notification email:",
-                emailErr
-              );
+            // Envoyer l'email de notification au propriétaire de la boutique
+            if (storeOwnerEmail && customerEmail && customerName) {
+              try {
+                await emailService.sendStoreOwnerNotification({
+                  ownerEmail: storeOwnerEmail,
+                  storeName: storeName,
+                  customerEmail: paymentIntent?.receipt_email || customerEmail,
+                  customerName: customerName,
+                  customerPhone: customerPhone || undefined,
+                  deliveryMethod: deliveryMethod,
+                  deliveryNetwork: deliveryNetwork,
+                  shippingAddress: customerShippingAddress,
+                  customerAddress: customerBillingAddress,
+                  pickupPointCode: pickupPointCode,
+                  productReference: productReference,
+                  amount: amount,
+                  currency: currency,
+                  paymentId: paymentId,
+                });
+                console.log(
+                  "Store owner notification email sent to",
+                  storeOwnerEmail
+                );
+              } catch (emailErr) {
+                console.error(
+                  "Error sending store owner notification email:",
+                  emailErr
+                );
+              }
             }
           }
         } catch (sessionErr) {
