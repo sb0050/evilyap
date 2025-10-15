@@ -489,6 +489,8 @@ router.post(
               paymentIntent?.currency ?? session.currency ?? "eur";
             const paymentId = paymentIntent?.id ?? session.id;
             const weight = formatWeight(session.metadata?.weight);
+            let estimatedDeliveryDate: string = "";
+            let boxtalId = "";
 
             // Récupérer les informations complètes de la boutique depuis Supabase
             let storeOwnerEmail = null;
@@ -606,7 +608,9 @@ router.post(
                 text
               );
             } else {
-              const data = await resp.json();
+              const data: any = await resp.json();
+              estimatedDeliveryDate = data.estimatedDeliveryDate;
+              boxtalId = data.content.id;
               console.log("Boxtal shipping order created:", data);
             }
 
@@ -625,7 +629,8 @@ router.post(
                 paymentId: paymentId,
                 deliveryMethod: deliveryMethod,
                 deliveryNetwork: deliveryNetwork,
-                pickupPointCode: pickupPointCode
+                pickupPointCode: pickupPointCode,
+                estimatedDeliveryDate: estimatedDeliveryDate,
               });
               console.log(
                 "Customer confirmation email sent",
@@ -656,6 +661,7 @@ router.post(
                   amount: amount,
                   currency: currency,
                   paymentId: paymentId,
+                  boxtalId: boxtalId,
                 });
                 console.log(
                   "Store owner notification email sent to",

@@ -23,6 +23,7 @@ interface CustomerEmailData {
   deliveryMethod: "pickup_point" | "home_delivery" | string;
   deliveryNetwork: string;
   pickupPointCode: string;
+  estimatedDeliveryDate: string;
 }
 
 interface StoreOwnerEmailData {
@@ -58,6 +59,7 @@ interface StoreOwnerEmailData {
   amount: number;
   currency: string;
   paymentId: string;
+  boxtalId: string;
 }
 
 class EmailService {
@@ -159,6 +161,9 @@ class EmailService {
                     : data.deliveryMethod === "home_delivery"
                     ? "À domicile"
                     : "Inconnue"
+                }</p>
+                <p><strong>Date de livraison estimée :</strong> ${
+                  data.estimatedDeliveryDate
                 }</p>
               </div>
               
@@ -263,6 +268,7 @@ class EmailService {
                 }</p>
                 <p><strong>Montant :</strong> <span class="amount">${formattedAmount}</span></p>
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
+                <p><strong>ID de boxtal :</strong> ${data.boxtalId}</p>
                 <p><strong>Date :</strong> ${new Date().toLocaleDateString(
                   "fr-FR",
                   {
@@ -314,8 +320,7 @@ class EmailService {
               <p>Le client a été automatiquement notifié par email de la confirmation de sa commande.</p>
               
               <p><strong>Action requise :</strong> Veuillez préparer et expédier la commande dans les plus brefs délais.</p>
-              
-              <p>Bonne vente !</p>
+        
               <p><strong>L'équipe Live Shopping</strong></p>
             </div>
             
