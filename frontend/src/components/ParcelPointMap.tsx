@@ -353,6 +353,10 @@ export default function ParcelPointMap({
   const [canShowRefreshMessages, setCanShowRefreshMessages] =
     useState<boolean>(true);
 
+  // useEffect de debug pour surveiller les changements d'état
+  useEffect(() => {
+  }, [selectedPoint, selectedHomeDelivery, deliveryType, selectedWeight, networkFilter]);
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const checkMobile = () => {
@@ -533,6 +537,7 @@ export default function ParcelPointMap({
     const shippingOfferCode =
       networkConfig[parcelPoint.network as keyof typeof networkConfig]
         ?.shippingOfferCode;
+    
     if (onParcelPointSelect) {
       onParcelPointSelect(
         parcelPoint,
@@ -547,36 +552,24 @@ export default function ParcelPointMap({
   // Gestion du changement de type de livraison
   const handleDeliveryTypeChange = (type: string) => {
     setDeliveryType(type);
+    
     if (type === 'HOME') {
       setSelectedPoint(null);
-      // Ne pas notifier avec coût tant qu'une option n'est pas choisie
+      setSelectedHomeDelivery(''); // Remettre à null la sélection de livraison à domicile
+      
+      // Notifier le parent que le point relais est désélectionné et qu'on passe à la livraison à domicile
       if (onParcelPointSelect) {
-        // Récupérer le shippingOfferCode pour l'option sélectionnée
-        const config =
-          homeDeliveryConfig[
-            selectedHomeDelivery as keyof typeof homeDeliveryConfig
-          ];
-        const shippingOfferCode = config?.shippingOfferCode;
-        onParcelPointSelect(
-          null,
-          'home_delivery',
-          undefined,
-          selectedWeight,
-          shippingOfferCode
-        );
+        onParcelPointSelect(null, 'home_delivery', 0, selectedWeight, undefined);
       }
-    } else if (type === 'PICKUP' && selectedPoint && onParcelPointSelect) {
-      const cost = getDeliveryPrice(selectedPoint.network, false);
-      const shippingOfferCode =
-        networkConfig[selectedPoint.network as keyof typeof networkConfig]
-          ?.shippingOfferCode;
-      onParcelPointSelect(
-        selectedPoint,
-        'pickup_point',
-        cost,
-        selectedWeight,
-        shippingOfferCode
-      );
+    } else if (type === 'PICKUP') {
+      setSelectedHomeDelivery(''); // Remettre à null la sélection de livraison à domicile
+      // Réinitialiser aussi le point relais sélectionné pour forcer une nouvelle sélection
+      setSelectedPoint(null);
+      
+      // Notifier le parent qu'aucun point relais n'est sélectionné
+      if (onParcelPointSelect) {
+        onParcelPointSelect(null, 'pickup_point', 0, selectedWeight, undefined);
+      }
     }
   };
 
@@ -589,6 +582,7 @@ export default function ParcelPointMap({
     const price =
       config?.prices[selectedWeight as keyof typeof config.prices] || 0;
     const shippingOfferCode = config?.shippingOfferCode;
+    
     if (onParcelPointSelect) {
       onParcelPointSelect(
         null,
@@ -1144,7 +1138,12 @@ export default function ParcelPointMap({
                       </div>
                     </div>
                     <button
-                      onClick={() => setSelectedPoint(null)}
+                      onClick={() => {
+                        setSelectedPoint(null);
+                        if (onParcelPointSelect) {
+                          onParcelPointSelect(null, 'pickup_point');
+                        }
+                      }}
                       className='text-gray-400 hover:text-gray-600 ml-2'
                       title='Désélectionner'
                     >

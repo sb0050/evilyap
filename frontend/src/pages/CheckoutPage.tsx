@@ -86,6 +86,11 @@ export default function CheckoutPage() {
     type: 'error' | 'info' | 'success';
   } | null>(null);
 
+  // useEffect de debug pour surveiller selectedParcelPoint
+  useEffect(() => {
+    // Debug supprimé
+  }, [selectedParcelPoint, deliveryMethod, isFormValid]);
+
   const showToast = (
     message: string,
     type: 'error' | 'info' | 'success' = 'error'
@@ -216,7 +221,7 @@ export default function CheckoutPage() {
     const hasAmount = amount > 0;
     const hasDeliveryInfo =
       deliveryMethod === 'home_delivery'
-        ? Boolean(address && (address as any)?.line1)
+        ? Boolean(address && (address as any)?.line1 && (formData as any).shippingOfferCode)
         : Boolean(selectedParcelPoint);
     const hasContactInfo =
       Boolean((formData.name || '').trim()) &&
@@ -244,36 +249,42 @@ export default function CheckoutPage() {
           deliveryMethod === 'pickup_point' ? selectedParcelPoint : null,
       };
 
+
+
+      const payloadData = {
+        amount: amount,
+        currency: 'eur',
+        customerName: formData.name || user.fullName || 'Client',
+        customerEmail: customerInfo.email,
+        clerkUserId: user.id,
+        storeName: store.name,
+        productReference: formData.reference,
+        address: address || {
+          line1: '',
+          line2: '',
+          city: '',
+          state: '',
+          postal_code: '',
+          country: 'FR',
+        },
+        deliveryMethod,
+        parcelPoint: selectedParcelPoint || null,
+        phone: formData.phone || '',
+        deliveryCost,
+        selectedWeight,
+        deliveryNetwork:
+          selectedParcelPoint?.shippingOfferCode ||
+          (formData as any).shippingOfferCode,
+      };
+
+      console.log('💳 PAYLOAD envoyé au backend:', payloadData);
+
       const response = await fetch(
         `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stripe/create-checkout-session`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            amount: Math.round(amount * 100),
-            currency: 'eur',
-            customerName: formData.name || user.fullName || 'Client',
-            customerEmail: customerInfo.email,
-            clerkUserId: user.id,
-            storeName: store.name,
-            productReference: formData.reference,
-            address: address || {
-              line1: '',
-              line2: '',
-              city: '',
-              state: '',
-              postal_code: '',
-              country: 'FR',
-            },
-            deliveryMethod,
-            parcelPoint: selectedParcelPoint || null,
-            phone: formData.phone || '',
-            deliveryCost,
-            selectedWeight,
-            deliveryNetwork:
-              selectedParcelPoint?.shippingOfferCode ||
-              (formData as any).shippingOfferCode,
-          }),
+          body: JSON.stringify(payloadData),
         }
       );
 
@@ -386,54 +397,7 @@ export default function CheckoutPage() {
             </div>
           </div>
 
-          {/* Alerte d'erreur de paiement */}
-          {paymentError && (
-            <div className='bg-red-50 border border-red-200 rounded-lg p-4 mb-6'>
-              <div className='flex'>
-                <div className='flex-shrink-0'>
-                  <svg
-                    className='h-5 w-5 text-red-400'
-                    viewBox='0 0 20 20'
-                    fill='currentColor'
-                  >
-                    <path
-                      fillRule='evenodd'
-                      d='M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z'
-                      clipRule='evenodd'
-                    />
-                  </svg>
-                </div>
-                <div className='ml-3'>
-                  <h3 className='text-sm font-medium text-red-800'>
-                    Erreur de paiement
-                  </h3>
-                  <div className='mt-2 text-sm text-red-700'>
-                    <p>{paymentError}</p>
-                  </div>
-                  <div className='mt-4'>
-                    <button
-                      type='button'
-                      className='bg-red-50 text-red-800 rounded-md p-1.5 hover:bg-red-100'
-                      onClick={() => setPaymentError(null)}
-                    >
-                      <span className='sr-only'>Fermer</span>
-                      <svg
-                        className='h-3 w-3'
-                        viewBox='0 0 20 20'
-                        fill='currentColor'
-                      >
-                        <path
-                          fillRule='evenodd'
-                          d='M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z'
-                          clipRule='evenodd'
-                        />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+        
 
           <div className='grid grid-cols-1 gap-8'>
             {/* Accordéon Votre Commande */}
@@ -835,24 +799,33 @@ function CheckoutForm({
                 weight,
                 shippingOfferCode
               ) => {
-                if (point && typeof shippingOfferCode === 'string') {
-                  setSelectedParcelPoint({
-                    ...point,
-                    shippingOfferCode,
-                  });
-                } else {
-                  setSelectedParcelPoint(point);
-                }
-                setDeliveryMethod(method);
-                if (typeof cost === 'number') setDeliveryCost(cost);
-                if (typeof weight === 'string') setSelectedWeight(weight);
                 if (typeof shippingOfferCode === 'string') {
-                  // Stocker pour succès page et metadata
+                  // Stocker le shippingOfferCode pour succès page et metadata
                   setFormData((prev: any) => ({
                     ...prev,
                     shippingOfferCode,
                   }));
+                  
+                  if (point) {
+                    setSelectedParcelPoint({
+                      ...point,
+                      shippingOfferCode,
+                    });
+                  } else {
+                    setSelectedParcelPoint(null);
+                  }
+                } else {
+                  setSelectedParcelPoint(point);
+                  // IMPORTANT: Réinitialiser le shippingOfferCode dans formData quand pas de shippingOfferCode
+                  setFormData((prev: any) => ({
+                    ...prev,
+                    shippingOfferCode: null,
+                  }));
                 }
+                
+                setDeliveryMethod(method);
+                if (typeof cost === 'number') setDeliveryCost(cost);
+                if (typeof weight === 'string') setSelectedWeight(weight);
                 setIsFormValid(true);
               }}
               defaultDeliveryMethod={preferredDeliveryMethod}

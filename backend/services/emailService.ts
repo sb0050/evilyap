@@ -22,6 +22,7 @@ interface CustomerEmailData {
   paymentId: string;
   deliveryMethod: "pickup_point" | "home_delivery" | string;
   deliveryNetwork: string;
+  pickupPointCode: string;
 }
 
 interface StoreOwnerEmailData {
@@ -154,11 +155,11 @@ class EmailService {
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
                 <p><strong>Méthode de livraison :</strong> ${
                   data.deliveryMethod === "pickup_point"
-                    ? "Point relais"
+                    ? `Point relais : ${data.pickupPointCode}`
                     : data.deliveryMethod === "home_delivery"
                     ? "À domicile"
                     : "Inconnue"
-                } ${`(réseau ${data.deliveryNetwork})`}</p>
+                }</p>
               </div>
               
               <p>📬 Vous recevrez prochainement un email avec les détails de livraison de votre commande.</p>
@@ -218,49 +219,6 @@ class EmailService {
               <p><strong>Code Point relais :</strong> ${
                 data.pickupPointCode || ""
               }</p>
-            </div>
-          `;
-        }
-        if (data.deliveryMethod === "home_delivery" && data.shippingAddress) {
-          return `
-            <div class="order-details">
-              <h3>🏠 Livraison à domicile</h3>
-              <p><strong>Adresse de livraison :</strong><br>
-                ${data.shippingAddress.name || data.customerName}<br>
-                ${data.shippingAddress.address?.line1 || ""}<br>
-                ${
-                  data.shippingAddress.address?.line2
-                    ? data.shippingAddress.address.line2 + "<br>"
-                    : ""
-                }
-                ${data.shippingAddress.address?.postal_code || ""} ${
-            data.shippingAddress.address?.city || ""
-          }<br>
-                ${data.shippingAddress.address?.country || ""}
-              </p>
-            </div>
-          `;
-        }
-        // Unknown method: show what we have
-        if (data.shippingAddress) {
-          return `
-            <div class="order-details">
-              <h3>📮 Informations de livraison</h3>
-              <p><strong>Nom :</strong> ${
-                data.shippingAddress.name || data.customerName
-              }</p>
-              <p><strong>Adresse :</strong><br>
-                ${data.shippingAddress.address?.line1 || ""}<br>
-                ${
-                  data.shippingAddress.address?.line2
-                    ? data.shippingAddress.address.line2 + "<br>"
-                    : ""
-                }
-                ${data.shippingAddress.address?.postal_code || ""} ${
-            data.shippingAddress.address?.city || ""
-          }<br>
-                ${data.shippingAddress.address?.country || ""}
-              </p>
             </div>
           `;
         }
@@ -326,6 +284,18 @@ class EmailService {
                     ? `<p><strong>Téléphone :</strong> ${data.customerPhone}</p>`
                     : ""
                 }
+                <p><strong>Adresse :</strong><br>
+                ${data.shippingAddress.address?.line1 || ""}<br>
+                ${
+                  data.shippingAddress.address?.line2
+                    ? data.shippingAddress.address.line2 + "<br>"
+                    : ""
+                }
+                ${data.shippingAddress.address?.postal_code || ""} ${
+        data.shippingAddress.address?.city || ""
+      }<br>
+                ${data.shippingAddress.address?.country || ""}
+              </p>
               </div>
 
               <div class="order-details">
@@ -336,7 +306,7 @@ class EmailService {
                     : data.deliveryMethod === "home_delivery"
                     ? "À domicile"
                     : "Inconnue"
-                } ${`(réseau ${data.deliveryNetwork})`}</p>
+                }</p>
               </div>
 
               ${shippingInfoHtml}

@@ -5,6 +5,44 @@ import { createClient } from "@supabase/supabase-js";
 
 const router = express.Router();
 
+// Fonction pour formater les montants en devise
+const formatToCurrency = (amount: number): string => {
+  return new Intl.NumberFormat("fr-FR", {
+    style: "currency",
+    currency: "EUR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amount);
+};
+
+// Fonction pour convertir le poids en string vers un nombre en kg
+const formatWeight = (weight?: string): number => {
+  if (!weight) return 0;
+
+  // Nettoyer la chaîne et la convertir en minuscules
+  const cleanWeight = weight.toString().toLowerCase().trim();
+
+  // Extraire le nombre et l'unité
+  const match = cleanWeight.match(/^(\d+(?:\.\d+)?)\s*(g|kg)?$/);
+
+  if (!match) {
+    console.warn(`Format de poids non reconnu: ${weight}`);
+    return 0;
+  }
+
+  const value = parseFloat(match[1]);
+  const unit = match[2] || "g"; // Par défaut en grammes si pas d'unité
+
+  // Convertir en kg
+  if (unit === "kg") {
+    return value;
+  } else if (unit === "g") {
+    return value / 1000;
+  }
+
+  return 0;
+};
+
 // Configuration Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
@@ -87,6 +125,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     const {
       amount,
       currency = "eur",
+      selectedWeight = 0.25,
       customerName,
       customerEmail,
       clerkUserId,
@@ -248,20 +287,23 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       metadata: {
         store_name: storeName || "LIVE SHOPPING APP",
         product_reference: productReference || "N/A",
-        delivery_method: deliveryMethod,
+        delivery_method: deliveryMethod || "",
         delivery_network: deliveryNetwork || "",
+        weight: selectedWeight || "",
       },
       line_items: [
         {
           price_data: {
             currency: "eur",
             product_data: {
-              name: productReference || "N/A",
+              name: `Référence: ${productReference || "N/A"}`,
               // Vous pouvez ajouter une description et des images optionnellement
-              description: `Les frais de port de ${deliveryCost} ont été ajouté au montant associé à la référence`,
+              description: `Les frais de port de ${formatToCurrency(
+                deliveryCost
+              )} ont été ajouté au montant associé à la référence`,
               // images: ['https://exemple.com/image.png'],
             },
-            unit_amount: amount, // Convertir en centimes (ex: 19.99€ devient 1999)
+            unit_amount: (amount + deliveryCost) * 100, // Convertir en centimes (ex: 19.99€ devient 1999)
           },
           quantity: 1,
         },
@@ -436,10 +478,9 @@ router.post(
             const deliveryMethod = customer.metadata.delivery_method || "N/A";
             const deliveryNetwork = customer.metadata.delivery_network || "N/A";
             const clerkUserId = customer.metadata.clerk_user_id || null;
-            const pickupPointCode =
-              session.metadata.parcel_point_code || undefined;
+            const pickupPointCode = session.metadata.parcel_point_code || "N/A";
             const dropOffPointCode =
-              session.metadata.drop_off_point_code || undefined;
+              session.metadata.parcel_point_code || "N/A"; // todo: a modifier
             const storeName = session.metadata?.store_name || null;
             const productReference =
               session.metadata?.product_reference || "N/A";
@@ -447,6 +488,7 @@ router.post(
             const currency =
               paymentIntent?.currency ?? session.currency ?? "eur";
             const paymentId = paymentIntent?.id ?? session.id;
+            const weight = formatWeight(session.metadata?.weight);
 
             // Récupérer les informations complètes de la boutique depuis Supabase
             let storeOwnerEmail = null;
@@ -475,7 +517,7 @@ router.post(
               type: "RESIDENTIAL",
               contact: {
                 email: customerEmail,
-                phone: customerPhone,
+                phone: customerPhone?.split("+")[1],
                 lastName: (customerName || "").split(" ").slice(-1)[0] || "",
                 firstName:
                   (customerName || "").split(" ").slice(0, -1).join(" ") ||
@@ -496,7 +538,7 @@ router.post(
               contact: {
                 email:
                   process.env.BOXTAL_SENDER_EMAIL || "no-reply@example.com",
-                phone: process.env.BOXTAL_SENDER_PHONE || "+33000000000",
+                phone: process.env.BOXTAL_SENDER_PHONE || "33666366588",
                 lastName: process.env.BOXTAL_SENDER_NAME || "LM Outlet",
                 firstName: process.env.BOXTAL_SENDER_NAME || "LM Outlet",
               },
@@ -515,22 +557,21 @@ router.post(
                 {
                   type: "PARCEL",
                   value: {
-                    value: amount || 0,
+                    value: (amount || 0) / 100,
                     currency: "EUR",
                   },
-                  width: 10,
-                  length: 10,
-                  height: 5,
-                  weight: 1000,
+                  width: 10, //en cm
+                  length: 10, //en cm
+                  height: 5, // en cm
+                  weight: weight, // poids en Kg
                   content: {
                     id: "content:v1:40110", //40110	Tissus, vêtements neufs
-                    description: storeName,
+                    description: `${storeName} - ${productReference}`,
                   },
                 },
               ],
               toAddress,
               fromAddress,
-              // add pickup point code when present in metadata
               pickupPointCode: pickupPointCode,
               dropOffPointCode: dropOffPointCode,
             };
@@ -541,6 +582,11 @@ router.post(
               labelType: "PDF_A4",
               shippingOfferCode: deliveryNetwork,
             };
+
+            console.log(
+              "createOrderPayload:",
+              JSON.stringify(createOrderPayload)
+            );
 
             // Call internal Boxtal shipping-orders endpoint
             const apiBase =
@@ -579,6 +625,7 @@ router.post(
                 paymentId: paymentId,
                 deliveryMethod: deliveryMethod,
                 deliveryNetwork: deliveryNetwork,
+                pickupPointCode: pickupPointCode
               });
               console.log(
                 "Customer confirmation email sent",
