@@ -24,6 +24,9 @@ app.use(
 // Pour les webhooks Stripe, nous devons traiter le raw body
 app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
 
+// Pour les webhooks Boxtal, traiter aussi le raw body avant express.json
+app.use("/api/boxtal/webhook", express.raw({ type: "application/json" }));
+
 // Pour les autres routes, utiliser JSON
 app.use(express.json());
 

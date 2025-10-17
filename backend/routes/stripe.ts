@@ -2,6 +2,7 @@ import express from "express";
 import Stripe from "stripe";
 import { emailService } from "../services/emailService";
 import { createClient } from "@supabase/supabase-js";
+import { isStringOneByteRepresentation } from "v8";
 
 const router = express.Router();
 
@@ -109,6 +110,7 @@ router.get("/get-customer-details", async (req, res) => {
       deliveryMethod: customer.metadata.delivery_method,
       parcelPointCode: customer.metadata.parcel_point_code,
       homeDeliveryNetwork: customer.metadata.home_delivery_network,
+      shippingOrderIds: customer.metadata.shipping_order_ids,
     };
 
     res.json({ customer: customerData });
@@ -138,6 +140,9 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       deliveryCost,
       deliveryNetwork,
     } = req.body;
+
+    const pickupPointCode = parcelPoint?.code || "";
+    const dropOffPointCode = parcelPoint?.code || "";
 
     console.log("Creating checkout session with data:", req.body);
 
@@ -274,6 +279,21 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       return;
     }
 
+    // 1. Créer un produit
+    const product = await stripe.products.create({
+      name: `Référence: ${productReference || "N/A"}`,
+      description: `Boutique: ${storeName || ""}`,
+      type: "good",
+      shippable: true,
+    });
+
+    // 2. Créer un prix pour ce produit
+    const price = await stripe.prices.create({
+      product: product.id,
+      unit_amount: amount * 100, // Montant en centimes (20€)
+      currency: "eur",
+    });
+
     // Créer la session de checkout intégrée
     const session = await stripe.checkout.sessions.create({
       ui_mode: "embedded",
@@ -282,6 +302,15 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         description: `store: ${storeName || ""} - reference: ${
           productReference || ""
         }`,
+        metadata: {
+          store_name: storeName || "LIVE SHOPPING APP",
+          product_reference: productReference || "N/A",
+          delivery_method: deliveryMethod || "",
+          delivery_network: deliveryNetwork || "",
+          weight: selectedWeight || "",
+          pickup_point_code: pickupPointCode || "",
+          drop_off_point_code: dropOffPointCode || "",
+        },
       },
       // Duplicate useful metadata at the session level for easier retrieval
       metadata: {
@@ -290,20 +319,23 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         delivery_method: deliveryMethod || "",
         delivery_network: deliveryNetwork || "",
         weight: selectedWeight || "",
+        pickup_point_code: pickupPointCode || "",
+        drop_off_point_code: dropOffPointCode || "",
       },
       line_items: [
+        {
+          price: price.id,
+          quantity: 1,
+        },
         {
           price_data: {
             currency: "eur",
             product_data: {
-              name: `Référence: ${productReference || "N/A"}`,
-              // Vous pouvez ajouter une description et des images optionnellement
-              description: `Les frais de port de ${formatToCurrency(
-                deliveryCost
-              )} ont été ajouté au montant associé à la référence`,
-              // images: ['https://exemple.com/image.png'],
+              name: "Frais asscoiés à votre méthode de livraison",
+              type: "service",
+              shippable: false,
             },
-            unit_amount: (amount + deliveryCost) * 100, // Convertir en centimes (ex: 19.99€ devient 1999)
+            unit_amount: deliveryCost * 100, // Frais de livraison en centimes (5€)
           },
           quantity: 1,
         },
@@ -446,7 +478,7 @@ router.post(
 
         try {
           const session: any = event.data.object as any;
-          console.log("checkout.session.completed received:", session.id);
+          console.log("Session metadata:", session.metadata);
           const customer = await stripe.customers.retrieve(session.customer);
 
           // Récupérer le payment intent pour les informations de paiement
@@ -471,16 +503,16 @@ router.post(
             // récupérer email/phone/adresse depuis la session
             const customerPhone = customer.phone || null;
             const customerId = customer.id;
-            const customerShippingAddress: any = customer.shipping?.address;
+            const customerShippingAddress: any = customer.shipping;
             const customerEmail = customer.email || null;
             const customerName = customer.name || "Client";
             const customerBillingAddress: any = customer.address;
             const deliveryMethod = customer.metadata.delivery_method || "N/A";
             const deliveryNetwork = customer.metadata.delivery_network || "N/A";
             const clerkUserId = customer.metadata.clerk_user_id || null;
-            const pickupPointCode = session.metadata.parcel_point_code || "N/A";
+            const pickupPointCode = session.metadata.pickup_point_code || "N/A";
             const dropOffPointCode =
-              session.metadata.parcel_point_code || "N/A"; // todo: a modifier
+              session.metadata.drop_off_point_code || "N/A";
             const storeName = session.metadata?.store_name || null;
             const productReference =
               session.metadata?.product_reference || "N/A";
@@ -491,17 +523,37 @@ router.post(
             const weight = formatWeight(session.metadata?.weight);
             let estimatedDeliveryDate: string = "";
             let boxtalId = "";
+            // Extraire les produits des line_items
+            const products = session.line_items.data
+              .filter(
+                (item: any) =>
+                  item.price.product.type === "good" &&
+                  item.price.product.shippable
+              )
+              .map((item: any) => ({
+                id: item.price.product.id,
+                name: item.price.product.name,
+                description: item.price.product.description,
+                image: item.price.product.images?.[0],
+                quantity: item.quantity,
+                amount_total: item.amount_total / 100, // Convertir centimes en unités
+                currency: item.currency,
+                unit_price: item.price.unit_amount / 100,
+                price_id: item.price.id,
+              }));
+            const product_amount = products[0].amount_total;
 
             // Récupérer les informations complètes de la boutique depuis Supabase
             let storeOwnerEmail = null;
             let storeDescription = null;
             let storeLogo = null;
+            let storeShoppingOrderIds = null;
 
             if (storeName) {
               try {
                 const { data: storeData, error: storeError } = await supabase
                   .from("stores")
-                  .select("owner_email, description, logo")
+                  .select("owner_email, description, logo, shipping_order_ids")
                   .eq("name", storeName)
                   .single();
 
@@ -509,6 +561,7 @@ router.post(
                   storeOwnerEmail = storeData.owner_email;
                   storeDescription = storeData.description;
                   storeLogo = storeData.logo;
+                  storeShoppingOrderIds = storeData.shipping_order_ids;
                 }
               } catch (storeErr) {
                 console.error("Error fetching store data:", storeErr);
@@ -609,13 +662,277 @@ router.post(
               );
             } else {
               const data: any = await resp.json();
-              estimatedDeliveryDate = data.estimatedDeliveryDate;
+              estimatedDeliveryDate = data.content.estimatedDeliveryDate;
               boxtalId = data.content.id;
               console.log("Boxtal shipping order created:", data);
+
+              // Mettre à jour Supabase (stores.shipping_order_ids uniquement)
+              try {
+                const shippingOrderId = boxtalId;
+                const appendDelimited = (
+                  existing: string | null | undefined,
+                  add: string
+                ) => {
+                  const arr = (existing || "")
+                    .split(";")
+                    .map((s) => s.trim())
+                    .filter((s) => s.length > 0);
+                  if (add && !arr.includes(add)) arr.push(add);
+                  return arr.join(";");
+                };
+
+                if (storeName) {
+                  const { data: storeRow, error: storeSelectError } =
+                    await supabase
+                      .from("stores")
+                      .select("id, shipping_order_ids")
+                      .eq("name", storeName)
+                      .single();
+
+                  if (!storeSelectError && storeRow) {
+                    const newShoppingOrderIds = appendDelimited(
+                      storeRow.shipping_order_ids,
+                      shippingOrderId
+                    );
+                    const { error: storeUpdateError } = await supabase
+                      .from("stores")
+                      .update({
+                        shipping_order_ids: newShoppingOrderIds,
+                      })
+                      .eq("id", storeRow.id);
+                    if (storeUpdateError) {
+                      console.error(
+                        "Failed to update store ids:",
+                        storeUpdateError
+                      );
+                    } else {
+                      console.log("Store ids updated (Supabase)", {
+                        shipping_order_ids: newShoppingOrderIds,
+                      });
+                    }
+                  } else {
+                    console.warn(
+                      "Store not found for updating ids:",
+                      storeSelectError
+                    );
+                  }
+                }
+
+                // Mettre à jour les metadata du customer (shipping_order_ids uniquement)
+                //const customer = session.customer as Stripe.Customer;
+                //const customerIdForMeta = customer?.id;
+                const existingCustomers = await stripe.customers.list({
+                  email: customerEmail as string,
+                  limit: 1,
+                });
+                const customerIdForMeta = existingCustomers.data[0]?.id;
+
+                console.log("customerIdForMeta:", customerIdForMeta);
+                if (customerIdForMeta) {
+                  const existingShoppingOrderIds =
+                    (customer?.metadata as any)?.shipping_order_ids || "";
+                  const newCustomerShippingOrderIds = appendDelimited(
+                    existingShoppingOrderIds,
+                    shippingOrderId
+                  );
+                  try {
+                    await stripe.customers.update(customerIdForMeta, {
+                      metadata: {
+                        ...(customer.metadata || {}),
+                        shipping_order_ids: newCustomerShippingOrderIds,
+                      },
+                    } as any);
+                    console.log("Stripe customer metadata updated", {
+                      shipping_order_ids: newCustomerShippingOrderIds,
+                    });
+                  } catch (metaErr) {
+                    console.error(
+                      "Failed to update Stripe customer metadata:",
+                      metaErr
+                    );
+                  }
+                }
+              } catch (idsErr) {
+                console.error("Error updating store/customer ids:", idsErr);
+              }
+
+              // Attendre, tenter récupération du document 2× avec 2s de délai et notifier le propriétaire
+              try {
+                const shippingOrderIdForDoc = boxtalId;
+                const base =
+                  process.env.INTERNAL_API_BASE ||
+                  `http://localhost:${process.env.PORT || 5000}`;
+                console.log("shippingOrderIdForDoc:", shippingOrderIdForDoc);
+
+                let attachments: Array<{
+                  filename: string;
+                  content: Buffer;
+                  contentType?: string;
+                }> = [];
+
+                for (let attempt = 1; attempt <= 2; attempt++) {
+                  // Attente 2s avant chaque tentative pour laisser Boxtal générer le document
+                  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+                  const docApiResp = await fetch(
+                    `${base}/api/boxtal/shipping-orders/${encodeURIComponent(
+                      shippingOrderIdForDoc
+                    )}/shipping-document`,
+                    { method: "GET" }
+                  );
+
+                  if (docApiResp.ok) {
+                    const docJson: any = await docApiResp.json();
+                    const docs: any[] = docJson?.content || [];
+                    const labelDoc =
+                      docs.find((d) => d.type === "LABEL") || docs[0];
+
+                    if (labelDoc?.url) {
+                      const docResp = await fetch(labelDoc.url);
+                      if (docResp.ok) {
+                        const buf = Buffer.from(await docResp.arrayBuffer());
+                        attachments = [
+                          {
+                            filename: `${
+                              labelDoc.type || "LABEL"
+                            }_${shippingOrderIdForDoc}.pdf`,
+                            content: buf,
+                            contentType: "application/pdf",
+                          },
+                        ];
+                        break; // pièce jointe prête, on sort
+                      } else {
+                        console.warn(
+                          "Failed to download shipping document PDF:",
+                          labelDoc.url,
+                          docResp.status
+                        );
+                      }
+                    } else {
+                      console.warn(
+                        "No shipping document available in Boxtal response"
+                      );
+                    }
+                  } else {
+                    const errText = await docApiResp.text();
+                    try {
+                      await emailService.sendSupportShippingDocMissing({
+                        storeOwnerEmail: storeOwnerEmail || "",
+                        storeName: storeName || "Votre Boutique",
+                        boxtalId: boxtalId || shippingOrderIdForDoc,
+                        shippingOrderId: shippingOrderIdForDoc,
+                        paymentId,
+                        customerName: customerName || "",
+                        customerEmail: customerEmail || "",
+                        customerPhone: customerPhone || "",
+                        deliveryMethod,
+                        deliveryNetwork,
+                        pickupPointCode,
+                        shippingAddress: {
+                          name: (customerShippingAddress as any)?.name,
+                          address: {
+                            line1: (customerShippingAddress as any)?.address
+                              ?.line1,
+                            line2:
+                              (customerShippingAddress as any)?.address
+                                ?.line2 || "",
+                            city: (customerShippingAddress as any)?.address
+                              ?.city,
+                            state: (customerShippingAddress as any)?.address
+                              ?.state,
+                            postal_code: (customerShippingAddress as any)
+                              ?.address?.postal_code,
+                            country: (customerShippingAddress as any)?.address
+                              ?.country,
+                          },
+                        },
+                        productReference,
+                        amount,
+                        currency,
+                        errorDetails: errText,
+                      });
+                      console.log(
+                        "Support SAV notified for missing Boxtal document"
+                      );
+                    } catch (savErr) {
+                      console.error("Error sending SAV email:", savErr);
+                    }
+                    console.warn(
+                      "Failed to get shipping documents via internal route:",
+                      docApiResp.status,
+                      errText
+                    );
+                    // autres erreurs : on log et on sort de la boucle
+                    break;
+                  }
+                }
+
+                // Envoyer l'email au propriétaire (avec ou sans pièce jointe)
+                if (storeOwnerEmail) {
+                  const sentOwner =
+                    await emailService.sendStoreOwnerNotification({
+                      ownerEmail: storeOwnerEmail,
+                      storeName: storeName || "Votre Boutique",
+                      customerEmail: customerEmail || "",
+                      customerName: customerName || "",
+                      customerPhone: customerPhone || "",
+                      deliveryMethod,
+                      deliveryNetwork,
+                      shippingAddress: {
+                        name: (customerShippingAddress as any)?.name,
+                        address: {
+                          line1: (customerShippingAddress as any)?.address
+                            ?.line1,
+                          line2:
+                            (customerShippingAddress as any)?.address?.line2 ||
+                            "",
+                          city: (customerShippingAddress as any)?.address?.city,
+                          state: (customerShippingAddress as any)?.address
+                            ?.state,
+                          postal_code: (customerShippingAddress as any)?.address
+                            ?.postal_code,
+                          country: (customerShippingAddress as any)?.address
+                            ?.country,
+                        },
+                      },
+                      customerAddress: {
+                        line1: (customerBillingAddress as any)?.line1,
+                        line2: (customerBillingAddress as any)?.line2 || "",
+                        city: (customerBillingAddress as any)?.city,
+                        state: (customerBillingAddress as any)?.state,
+                        postal_code: (customerBillingAddress as any)
+                          ?.postal_code,
+                        country: (customerBillingAddress as any)?.country,
+                      },
+                      pickupPointCode,
+                      productReference,
+                      amount,
+                      currency,
+                      paymentId,
+                      boxtalId,
+                      attachments,
+                    });
+                  console.log(
+                    "Store owner notification sent",
+                    sentOwner,
+                    storeOwnerEmail
+                  );
+                } else {
+                  console.warn(
+                    "No storeOwnerEmail found, skipping owner notification"
+                  );
+                }
+              } catch (e) {
+                console.error(
+                  "Error sending store owner notification with document:",
+                  e
+                );
+              }
             }
 
             // Envoyer l'email de confirmation au client
             try {
+              console.log("estimatedDeliveryDate:", estimatedDeliveryDate);
               await emailService.sendCustomerConfirmation({
                 customerEmail:
                   paymentIntent?.receipt_email || customerEmail || "",
@@ -643,37 +960,7 @@ router.post(
               );
             }
 
-            // Envoyer l'email de notification au propriétaire de la boutique
-            if (storeOwnerEmail && customerEmail && customerName) {
-              try {
-                await emailService.sendStoreOwnerNotification({
-                  ownerEmail: storeOwnerEmail,
-                  storeName: storeName,
-                  customerEmail: paymentIntent?.receipt_email || customerEmail,
-                  customerName: customerName,
-                  customerPhone: customerPhone || undefined,
-                  deliveryMethod: deliveryMethod,
-                  deliveryNetwork: deliveryNetwork,
-                  shippingAddress: customerShippingAddress,
-                  customerAddress: customerBillingAddress,
-                  pickupPointCode: pickupPointCode,
-                  productReference: productReference,
-                  amount: amount,
-                  currency: currency,
-                  paymentId: paymentId,
-                  boxtalId: boxtalId,
-                });
-                console.log(
-                  "Store owner notification email sent to",
-                  storeOwnerEmail
-                );
-              } catch (emailErr) {
-                console.error(
-                  "Error sending store owner notification email:",
-                  emailErr
-                );
-              }
-            }
+            // Notification storeowner supprimée: l’envoi des documents se fait via webhook Boxtal
           }
         } catch (sessionErr) {
           console.error(

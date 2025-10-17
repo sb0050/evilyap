@@ -60,6 +60,65 @@ interface StoreOwnerEmailData {
   currency: string;
   paymentId: string;
   boxtalId: string;
+  // Pièces jointes optionnelles (ex: bordereau PDF)
+  attachments?: Array<{
+    filename: string;
+    content: Buffer;
+    contentType?: string;
+  }>;
+}
+
+interface CustomerTrackingEmailData {
+  customerEmail: string;
+  customerName: string;
+  storeName: string;
+  shippingOrderId: string;
+  status: string;
+  message?: string;
+  trackingNumber?: string;
+  packageId?: string;
+  packageTrackingUrl?: string;
+}
+
+interface StoreOwnerShippingDocEmailData {
+  ownerEmail: string;
+  storeName: string;
+  shippingOrderId: string;
+  boxtalId?: string;
+  attachments: Array<{
+    filename: string;
+    content: Buffer;
+    contentType?: string;
+  }>;
+}
+
+interface SupportShippingDocMissingData {
+  storeOwnerEmail: string;
+  storeName: string;
+  boxtalId: string;
+  shippingOrderId?: string;
+  paymentId?: string;
+  customerName?: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  deliveryMethod?: string;
+  deliveryNetwork?: string;
+  pickupPointCode?: string;
+  shippingAddress?: {
+    name?: string;
+    address?: {
+      line1?: string;
+      line2?: string;
+      city?: string;
+      state?: string;
+      postal_code?: string;
+      country?: string;
+    };
+  };
+  productReference?: string;
+  amount?: number;
+  currency?: string;
+  errorDetails?: string;
 }
 
 class EmailService {
@@ -103,10 +162,33 @@ class EmailService {
     }).format(amount / 100);
   }
 
+  private formatEstimatedDate(dateStr?: string): string {
+    if (!dateStr) return "N/A";
+    try {
+      const [yStr, mStr, dStr] = dateStr.split("-");
+      const y = Number(yStr),
+        m = Number(mStr),
+        d = Number(dStr);
+      if (!y || !m || !d) return dateStr;
+      // Construire la date en local pour éviter les décalages de fuseau
+      const date = new Date(y, m - 1, d);
+      const day = date.getDate();
+      const monthName = date.toLocaleString("fr-FR", { month: "long" });
+      const capMonth = monthName.charAt(0).toUpperCase() + monthName.slice(1);
+      const year = date.getFullYear();
+      return `${day} ${capMonth} ${year}`;
+    } catch {
+      return dateStr;
+    }
+  }
+
   // Email de confirmation pour le client
   async sendCustomerConfirmation(data: CustomerEmailData): Promise<boolean> {
     try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
+      const formattedEstimatedDate = this.formatEstimatedDate(
+        data.estimatedDeliveryDate
+      );
 
       const htmlContent = `
         <!DOCTYPE html>
@@ -157,14 +239,12 @@ class EmailService {
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
                 <p><strong>Méthode de livraison :</strong> ${
                   data.deliveryMethod === "pickup_point"
-                    ? `Point relais : ${data.pickupPointCode}`
+                    ? `Point relais (${data.pickupPointCode})`
                     : data.deliveryMethod === "home_delivery"
                     ? "À domicile"
                     : "Inconnue"
                 }</p>
-                <p><strong>Date de livraison estimée :</strong> ${
-                  data.estimatedDeliveryDate
-                }</p>
+                <p><strong>Date de livraison estimée :</strong> ${formattedEstimatedDate}</p>
               </div>
               
               <p>📬 Vous recevrez prochainement un email avec les détails de livraison de votre commande.</p>
@@ -215,21 +295,6 @@ class EmailService {
     try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
 
-      // Compose shipping info HTML depending on delivery method
-      const shippingInfoHtml = (() => {
-        if (data.deliveryMethod === "pickup_point" && data.pickupPointCode) {
-          return `
-            <div class="order-details">
-              <h3>🏪 Retrait en point relais</h3>
-              <p><strong>Code Point relais :</strong> ${
-                data.pickupPointCode || ""
-              }</p>
-            </div>
-          `;
-        }
-        return "";
-      })();
-
       const htmlContent = `
         <!DOCTYPE html>
         <html>
@@ -268,7 +333,7 @@ class EmailService {
                 }</p>
                 <p><strong>Montant :</strong> <span class="amount">${formattedAmount}</span></p>
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
-                <p><strong>ID de boxtal :</strong> ${data.boxtalId}</p>
+                <p><strong>ID de commande :</strong> ${data.boxtalId}</p>
                 <p><strong>Date :</strong> ${new Date().toLocaleDateString(
                   "fr-FR",
                   {
@@ -308,14 +373,14 @@ class EmailService {
                 <h3>🚚 Méthode de livraison</h3>
                 <p><strong>Méthode :</strong> ${
                   data.deliveryMethod === "pickup_point"
-                    ? "Point relais"
+                    ? `Point relais (${data.pickupPointCode})`
                     : data.deliveryMethod === "home_delivery"
                     ? "À domicile"
                     : "Inconnue"
                 }</p>
               </div>
 
-              ${shippingInfoHtml}
+      
               
               <p>Le client a été automatiquement notifié par email de la confirmation de sa commande.</p>
               
@@ -340,6 +405,10 @@ class EmailService {
         to: data.ownerEmail,
         subject: `💰 Nouvelle commande reçue - ${formattedAmount} - ${data.storeName}`,
         html: htmlContent,
+        // Ajouter les pièces jointes si présentes
+        ...(data.attachments && data.attachments.length
+          ? { attachments: data.attachments }
+          : {}),
       };
 
       const info = await this.transporter.sendMail(mailOptions);
@@ -358,8 +427,328 @@ class EmailService {
       return false;
     }
   }
+
+  private getTrackingStatusDescription(status: string): string {
+    const map: Record<string, string> = {
+      ANNOUNCED:
+        "Le bordereau d'expédition est créé mais le colis n'est pas encore expédié",
+      SHIPPED:
+        "Le colis est soit récupéré par le transporteur, soit déposé dans un point de proximité",
+      IN_TRANSIT: "Le colis a été scanné par le transporteur et est en transit",
+      OUT_FOR_DELIVERY: "Le colis est en cours de livraison",
+      FAILED_ATTEMPT: "Quelque chose a empêché la livraison du colis",
+      REACHED_DELIVERY_PICKUP_POINT:
+        "Le colis est disponible pour être récupéré dans un point de proximité",
+      DELIVERED:
+        "Le colis a été livré au destinataire ou le destinataire a récupéré le colis dans un point de proximité",
+      RETURNED: "Le colis est renvoyé à l'expéditeur",
+      EXCEPTION:
+        "Un problème est survenu pendant le transit qui nécessite une action de l'expéditeur",
+    };
+    return map[status] || "Statut de suivi non reconnu";
+  }
+
+  // Email de mise à jour de suivi pour le client
+  async sendCustomerTrackingUpdate(
+    data: CustomerTrackingEmailData
+  ): Promise<boolean> {
+    try {
+      const statusDescription = this.getTrackingStatusDescription(data.status);
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Mise à jour du suivi</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #007bff 0%, #00b0ff 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .order-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+            .status { font-weight: bold; color: #007bff; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>🚚 Mise à jour du suivi</h1>
+            </div>
+            <div class="content">
+              <h2>Bonjour ${data.customerName},</h2>
+              <p>Nous vous informons d'une mise à jour concernant votre envoi.</p>
+              <div class="order-details">
+                <p><strong>ID d'expédition :</strong> ${
+                  data.shippingOrderId
+                }</p>
+                <p><strong>Statut :</strong> <span class="status">${
+                  data.status
+                }</span></p>
+                <p><em>${statusDescription}</em></p>
+                ${
+                  data.message
+                    ? `<p><strong>Détails :</strong> ${data.message}</p>`
+                    : ""
+                }
+                ${
+                  data.trackingNumber
+                    ? `<p><strong>Numéro de suivi :</strong> ${data.trackingNumber}</p>`
+                    : ""
+                }
+                ${
+                  data.packageTrackingUrl
+                    ? `<p><a href="${data.packageTrackingUrl}" target="_blank">🔗 Suivre le colis en ligne</a></p>`
+                    : ""
+                }
+              </div>
+              <p>Merci pour votre confiance.</p>
+              <p><strong>L'équipe ${data.storeName}</strong></p>
+            </div>
+            <div class="footer">
+              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const mailOptions = {
+        from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
+        to: data.customerEmail,
+        subject: `🚚 Mise à jour du suivi`,
+        html: htmlContent,
+      };
+
+      const info = await this.transporter.sendMail(mailOptions);
+      console.log(`✅ Email de suivi envoyé à ${data.customerEmail}`);
+      console.log("📨 sendMail result (tracking):", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email suivi client:", error);
+      return false;
+    }
+  }
+
+  // Email d'envoi de document d'expédition au propriétaire
+  async sendStoreOwnerShippingDocument(
+    data: StoreOwnerShippingDocEmailData
+  ): Promise<boolean> {
+    try {
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Document d'expédition disponible</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .order-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>📄 Document d'expédition prêt</h1>
+              <p>${data.storeName}</p>
+            </div>
+            <div class="content">
+              <p>Le PDF d'étiquette/bordereau pour la commande est disponible.</p>
+              <div class="order-details">
+                <p><strong>ID Boxtal :</strong> ${data.boxtalId || "N/A"}</p>
+                <p><strong>Shipping Order ID :</strong> ${
+                  data.shippingOrderId
+                }</p>
+              </div>
+              <p>Le document est joint à cet email.</p>
+              <p><strong>L'équipe ${data.storeName}</strong></p>
+            </div>
+            <div class="footer">
+              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const mailOptions = {
+        from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
+        to: data.ownerEmail,
+        subject: `📄 Document d'expédition prêt - ${data.storeName}`,
+        html: htmlContent,
+        attachments: data.attachments,
+      };
+
+      const info = await this.transporter.sendMail(mailOptions);
+      console.log(`✅ Email document expédition envoyé à ${data.ownerEmail}`);
+      console.log("📨 sendMail result (owner doc):", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email document propriétaire:", error);
+      return false;
+    }
+  }
+
+  // Email d'alerte SAV quand le document Boxtal n'est pas disponible (422)
+  async sendSupportShippingDocMissing(
+    data: SupportShippingDocMissingData
+  ): Promise<boolean> {
+    try {
+      const savEmail = process.env.SAV_EMAIL || "";
+      if (!savEmail) {
+        console.warn("SAV_EMAIL non configuré, email SAV non envoyé.");
+        return false;
+      }
+
+      const formattedAmount =
+        typeof data.amount === "number" && data.currency
+          ? this.formatAmount(data.amount, data.currency)
+          : undefined;
+
+      const shippingAddressHtml = (() => {
+        const a = data.shippingAddress?.address || {};
+        const lines = [
+          a.line1,
+          a.line2,
+          `${a.postal_code || ""} ${a.city || ""}`,
+          a.country,
+        ]
+          .filter(Boolean)
+          .join("<br>");
+        return lines || "N/A";
+      })();
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>SAV - Document d'expédition indisponible</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #dc3545 0%, #ff6b6b 100%); color: white; padding: 24px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
+            .section { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #dc3545; }
+            .footer { text-align: center; margin-top: 20px; color: #666; font-size: 14px; }
+            .kv { margin: 0; }
+            .kv strong { display: inline-block; width: 220px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>🚨 SAV: Document d'expédition indisponible (422)</h1>
+              <p>${data.storeName}</p>
+            </div>
+            <div class="content">
+              <div class="section">
+                <h3>Résumé</h3>
+                <p class="kv"><strong>Store owner email :</strong> ${
+                  data.storeOwnerEmail
+                }</p>
+                <p class="kv"><strong>Boxtal ID :</strong> ${data.boxtalId}</p>
+                <p class="kv"><strong>Shipping Order ID :</strong> ${
+                  data.shippingOrderId || "N/A"
+                }</p>
+                <p class="kv"><strong>Payment ID :</strong> ${
+                  data.paymentId || "N/A"
+                }</p>
+              </div>
+
+              <div class="section">
+                <h3>Infos commande</h3>
+                <p class="kv"><strong>Référence produit :</strong> ${
+                  data.productReference || "N/A"
+                }</p>
+                <p class="kv"><strong>Montant :</strong> ${
+                  formattedAmount || "N/A"
+                }</p>
+                <p class="kv"><strong>Méthode de livraison :</strong> ${
+                  data.deliveryMethod || "N/A"
+                }</p>
+                <p class="kv"><strong>Réseau :</strong> ${
+                  data.deliveryNetwork || "N/A"
+                }</p>
+                <p class="kv"><strong>Point relais </strong>(${
+                  data.pickupPointCode || "N/A"
+                })</p>
+              </div>
+
+              <div class="section">
+                <h3>Infos client</h3>
+                <p class="kv"><strong>Nom :</strong> ${
+                  data.customerName || "N/A"
+                }</p>
+                <p class="kv"><strong>Email :</strong> ${
+                  data.customerEmail || "N/A"
+                }</p>
+                <p class="kv"><strong>Téléphone :</strong> ${
+                  data.customerPhone || "N/A"
+                }</p>
+                <p class="kv"><strong>Adresse :</strong><br>${shippingAddressHtml}</p>
+              </div>
+
+              <div class="section">
+                <h3>Détails d'erreur</h3>
+                <p>${
+                  data.errorDetails || "Document Boxtal non disponible (422)"
+                }</p>
+              </div>
+
+              <p>Merci de vérifier la disponibilité des documents côté Boxtal et de relancer la génération si nécessaire.</p>
+              <p><strong>Live Shopping - Service SAV</strong></p>
+            </div>
+            <div class="footer">
+              <p>Cet email a été envoyé automatiquement suite à une indisponibilité de document d'expédition.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const mailOptions = {
+        from: `"Live Shopping SAV" <${process.env.SMTP_USER}>`,
+        to: savEmail,
+        subject: `🚨 SAV: Document Boxtal indisponible (422) - ${data.storeName}`,
+        html: htmlContent,
+      };
+
+      const info = await this.transporter.sendMail(mailOptions);
+      console.log(`✅ Email SAV envoyé à ${savEmail}`);
+      console.log("📨 sendMail result (SAV):", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email SAV:", error);
+      return false;
+    }
+  }
 }
 
 // Exporter une instance unique du service
 export const emailService = new EmailService();
-export { CustomerEmailData, StoreOwnerEmailData };
+export {
+  CustomerEmailData,
+  StoreOwnerEmailData,
+  CustomerTrackingEmailData,
+  StoreOwnerShippingDocEmailData,
+};

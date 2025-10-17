@@ -221,7 +221,11 @@ export default function CheckoutPage() {
     const hasAmount = amount > 0;
     const hasDeliveryInfo =
       deliveryMethod === 'home_delivery'
-        ? Boolean(address && (address as any)?.line1 && (formData as any).shippingOfferCode)
+        ? Boolean(
+            address &&
+              (address as any)?.line1 &&
+              (formData as any).shippingOfferCode
+          )
         : Boolean(selectedParcelPoint);
     const hasContactInfo =
       Boolean((formData.name || '').trim()) &&
@@ -248,8 +252,6 @@ export default function CheckoutPage() {
         parcel_point:
           deliveryMethod === 'pickup_point' ? selectedParcelPoint : null,
       };
-
-
 
       const payloadData = {
         amount: amount,
@@ -396,8 +398,6 @@ export default function CheckoutPage() {
               </div>
             </div>
           </div>
-
-        
 
           <div className='grid grid-cols-1 gap-8'>
             {/* Accordéon Votre Commande */}
@@ -805,7 +805,7 @@ function CheckoutForm({
                     ...prev,
                     shippingOfferCode,
                   }));
-                  
+
                   if (point) {
                     setSelectedParcelPoint({
                       ...point,
@@ -822,7 +822,7 @@ function CheckoutForm({
                     shippingOfferCode: null,
                   }));
                 }
-                
+
                 setDeliveryMethod(method);
                 if (typeof cost === 'number') setDeliveryCost(cost);
                 if (typeof weight === 'string') setSelectedWeight(weight);

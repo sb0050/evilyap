@@ -111,7 +111,7 @@ const PaymentReturnPage: React.FC = () => {
     const network = (session as any).parcelPointNetwork;
     if (dm === 'pickup_point') {
       return (
-        <div className='mt-4 text-sm text-gray-700'>
+        <div>
           <p>
             <strong>Méthode de livraison:</strong> Point relais
           </p>
@@ -122,18 +122,12 @@ const PaymentReturnPage: React.FC = () => {
               {network ? ` - réseau ${network}` : ''}
             </p>
           )}
-          <p className='text-gray-600'>
-            Vous recevrez régulièrement des emails de suivi du colis.
-          </p>
-          <p className='text-gray-600'>
-            Délai indicatif: 3 à 5 jours selon le réseau sélectionné.
-          </p>
         </div>
       );
     }
     if (dm === 'home_delivery') {
       return (
-        <div className='mt-4 text-sm text-gray-700'>
+        <div>
           <p>
             <strong>Méthode de livraison:</strong> À domicile
           </p>
@@ -142,12 +136,6 @@ const PaymentReturnPage: React.FC = () => {
               <strong>Réseau de livraison:</strong> {network}
             </p>
           )}
-          <p className='text-gray-600'>
-            Vous recevrez régulièrement des emails de suivi du colis.
-          </p>
-          <p className='text-gray-600'>
-            Délai indicatif: 48h à 6 jours selon le réseau choisi.
-          </p>
         </div>
       );
     }
@@ -183,8 +171,9 @@ const PaymentReturnPage: React.FC = () => {
                 session?.metadata?.product_reference ||
                 '—'}
             </p>
+            <DeliveryInfo />
           </div>
-          <DeliveryInfo />
+
           <div className='mt-6 text-sm text-gray-600'>
             <p>Un email de confirmation vous a été envoyé.</p>
             <p>
