@@ -49,7 +49,7 @@ const LandingPage = () => {
   const videos = [
     {
       id: 1,
-      url: 'https://app.videas.fr/embed/media/8d45dc3d-27e0-4e55-a67a-78caf64937c1/?title=false&logo=false&thumbnail_duration=false&controls=false&autoplay=true&loop=true',
+      url: 'https://app.videas.fr/embed/media/f4a7bfde-3f77-4fe7-bffa-20447c90f877/?title=false&logo=false&thumbnail_duration=false&controls=false&autoplay=true&loop=true',
       title: 'PayLive Demo 1',
       description:
         'Découvrez comment PayLive révolutionne vos paiements en ligne',
@@ -59,7 +59,7 @@ const LandingPage = () => {
     },
     {
       id: 2,
-      url: 'https://app.videas.fr/embed/media/3c65ff0b-6aef-47ac-92aa-32669b8310a2/?title=false&logo=false&thumbnail_duration=false&controls=false&autoplay=true&loop=true',
+      url: 'https://app.videas.fr/embed/media/e3c464d8-a1ab-4e87-817b-927c7c115da6/?title=false&logo=false&thumbnail_duration=false&controls=false&autoplay=true&loop=true',
       title: 'PayLive Demo 2',
       description: 'Intégration Stripe et Boxtal en quelques clics',
       likes: '1.8K',
@@ -68,12 +68,21 @@ const LandingPage = () => {
     },
     {
       id: 3,
-      url: 'https://app.videas.fr/embed/media/fbb19bd4-0ea1-48b7-a1ac-3874f881402f/?title=false&logo=false&thumbnail_duration=false&controls=false&autoplay=true&loop=true',
+      url: 'https://app.videas.fr/embed/media/7d080e96-a0e0-46da-83bc-8a6cc055684c/?title=false&logo=false&thumbnail_duration=false&controls=false&autoplay=true&loop=true',
       title: 'PayLive Demo 3',
       description: 'Gestion clients simplifiée avec PayLive',
       likes: '3.1K',
       comments: '203',
       shares: '124',
+    },
+    {
+      id: 4,
+      url: 'https://app.videas.fr/embed/media/5f5a0aa3-d7cd-47b2-97d6-93ae985d38dd/?title=false&logo=false&thumbnail_duration=false&controls=false&autoplay=true&loop=true',
+      title: 'PayLive Demo 3',
+      description: 'Gestion clients simplifiée avec PayLive',
+      likes: '10.4K',
+      comments: '300',
+      shares: '200',
     },
   ];
 

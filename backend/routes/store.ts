@@ -3,19 +3,6 @@ import { createClient } from "@supabase/supabase-js";
 
 const router = express.Router();
 
-// Fonction pour normaliser le nom de boutique pour les URLs
-// Convertit les espaces en tirets, garde les accents
-function normalizeStoreName(storeName: string): string {
-  return storeName
-    .trim()
-    .replace(/\s+/g, '-') // Remplace les espaces (un ou plusieurs) par des tirets
-    .toLowerCase();
-}
-
-// Fonction pour vérifier si deux noms de boutique sont équivalents
-function areStoreNamesEquivalent(name1: string, name2: string): boolean {
-  return normalizeStoreName(name1) === normalizeStoreName(name2);
-}
 
 // Configuration Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -41,6 +28,32 @@ router.get("/", async (req, res) => {
     }
 
     return res.json(data || []);
+  } catch (error) {
+    console.error("Erreur serveur:", error);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+// GET /api/stores/exists?slug=... - Vérifier l'existence d'un slug
+router.get("/exists", async (req, res) => {
+  try {
+    const slug = (req.query.slug as string) || "";
+    if (!slug) {
+      return res.status(400).json({ error: "Slug requis" });
+    }
+
+    const { data, error } = await supabase
+      .from("stores")
+      .select("id")
+      .eq("slug", slug)
+      .maybeSingle();
+
+    if (error && (error as any)?.code !== "PGRST116") {
+      console.error("Erreur Supabase:", error);
+      return res.status(500).json({ error: "Erreur lors de la vérification du slug" });
+    }
+
+    return res.json({ exists: Boolean(data) });
   } catch (error) {
     console.error("Erreur serveur:", error);
     return res.status(500).json({ error: "Erreur interne du serveur" });
@@ -104,22 +117,24 @@ router.post("/", async (req, res) => {
       return res.status(409).json({ error: "Cet email a déjà une boutique" });
     }
 
-    // Vérifier l'unicité du nom de boutique (normalisé)
-    const normalizedStoreName = normalizeStoreName(storeName);
-    const { data: allStores } = await supabase
+    // Générer le slug et vérifier l'unicité par slug
+    const slug = req.body?.slug as string;
+    if (!slug) {
+      return res.status(400).json({ error: "Slug requis" });
+    }
+    const { data: existingBySlug, error: slugCheckError } = await supabase
       .from("stores")
-      .select("name");
+      .select("id")
+      .eq("slug", slug)
+      .maybeSingle();
 
-    if (allStores) {
-      const nameExists = allStores.some(store => 
-        areStoreNamesEquivalent(store.name, storeName)
-      );
-      
-      if (nameExists) {
-        return res.status(409).json({ 
-          error: "Ce nom de boutique existe déjà (ou un nom similaire)" 
-        });
-      }
+    if (slugCheckError && slugCheckError.code !== 'PGRST116') {
+      console.error("Erreur Supabase (vérif slug):", slugCheckError);
+      return res.status(500).json({ error: "Erreur lors de la vérification du slug" });
+    }
+
+    if (existingBySlug) {
+      return res.status(409).json({ error: "Ce nom de boutique existe déjà" });
     }
 
     const { data, error } = await supabase
@@ -127,6 +142,7 @@ router.post("/", async (req, res) => {
       .insert([
         {
           name: storeName,
+          slug: slug,
           theme: storeTheme || '#667eea',
           description: storeDescription || '',
           owner_email: ownerEmail
@@ -152,45 +168,33 @@ router.post("/", async (req, res) => {
   }
 });
 
-// GET /api/stores/:storeName - Récupérer une boutique par son nom
-router.get("/:storeName", async (req, res) => {
+// GET /api/stores/:storeSlug - Récupérer une boutique par son slug
+router.get("/:storeSlug", async (req, res) => {
   try {
-    const { storeName } = req.params;
+    const { storeSlug } = req.params as { storeSlug?: string };
 
-    if (!storeName) {
-      return res.status(400).json({ error: "Nom de boutique requis" });
+    if (!storeSlug) {
+      return res.status(400).json({ error: "Slug de boutique requis" });
     }
 
-    // Décoder l'URL pour gérer les caractères spéciaux et accents
-    const decodedStoreName = decodeURIComponent(storeName);
-    
-    // Récupérer toutes les boutiques pour faire la comparaison normalisée
-    const { data: allStores, error: fetchError } = await supabase
+    const decodedSlug = decodeURIComponent(storeSlug);
+    const { data: store, error } = await supabase
       .from("stores")
-      .select("*");
+      .select("*")
+      .eq("slug", decodedSlug)
+      .single();
 
-    if (fetchError) {
-      console.error("Erreur Supabase:", fetchError);
-      return res
-        .status(500)
-        .json({ error: "Erreur lors de la récupération de la boutique" });
+    if (error) {
+      if ((error as any)?.code === 'PGRST116') {
+        return res.status(404).json({ error: "Boutique non trouvée" });
+      }
+      console.error("Erreur Supabase:", error);
+      return res.status(500).json({ error: "Erreur lors de la récupération de la boutique" });
     }
 
-    // Trouver la boutique avec le nom normalisé correspondant
-    const matchingStore = allStores?.find(store => 
-      areStoreNamesEquivalent(store.name, decodedStoreName)
-    );
-
-    if (!matchingStore) {
-      return res.status(404).json({ error: "Boutique non trouvée" });
-    }
-
-    return res.json({ 
-      success: true, 
-      store: matchingStore 
-    });
-  } catch (error) {
-    console.error("Erreur serveur:", error);
+    return res.json({ success: true, store });
+  } catch (err) {
+    console.error("Erreur serveur:", err);
     return res.status(500).json({ error: "Erreur interne du serveur" });
   }
 });

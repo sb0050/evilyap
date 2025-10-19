@@ -279,8 +279,6 @@ export default function CheckoutPage() {
           (formData as any).shippingOfferCode,
       };
 
-      console.log('💳 PAYLOAD envoyé au backend:', payloadData);
-
       const response = await fetch(
         `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stripe/create-checkout-session`,
         {

@@ -3,6 +3,9 @@ import { useUser } from '@clerk/clerk-react';
 import { useNavigate } from 'react-router-dom';
 import { Upload, Palette } from 'lucide-react';
 
+import slugify from 'slugify';
+import { apiGet, apiPost } from '../utils/api';
+
 interface OnboardingFormData {
   storeName: string;
   logo: File | null;
@@ -65,6 +68,12 @@ export default function OnboardingPage() {
   });
   const [selectedGradient, setSelectedGradient] = useState(gradientOptions[0]);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [isCheckingSlug, setIsCheckingSlug] = useState(false);
+  const [slugExists, setSlugExists] = useState(false);
+  const [generatedSlug, setGeneratedSlug] = useState('');
+  const [wasStoreNameFocused, setWasStoreNameFocused] = useState(false);
+  const [isStoreNameDirty, setIsStoreNameDirty] = useState(false);
+  const [lastCheckedSlug, setLastCheckedSlug] = useState('');
 
   const handleLogoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -92,28 +101,23 @@ export default function OnboardingPage() {
 
     setLoading(true);
     try {
-      const response = await fetch(
-        `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            storeName: formData.storeName,
-            storeTheme: selectedGradient.value,
-            storeDescription: formData.description,
-            ownerEmail: user.primaryEmailAddress.emailAddress,
-          }),
-        }
-      );
+      const slug =
+        generatedSlug ||
+        slugify(formData.storeName, { lower: true, strict: true });
+      const response = await apiPost('/api/stores', {
+        storeName: formData.storeName,
+        storeTheme: selectedGradient.value,
+        storeDescription: formData.description,
+        ownerEmail: user.primaryEmailAddress.emailAddress,
+        slug,
+      });
 
       const result = await response.json();
 
       if (response.ok) {
         console.log('Store created successfully:', result);
-        // Rediriger vers la page de la boutique
-        window.location.href = `/store/${encodeURIComponent(formData.storeName)}`;
+        // Rediriger vers la page de la boutique via le slug
+        window.location.href = `/store/${encodeURIComponent(slug)}`;
       } else {
         throw new Error(
           result.error || 'Erreur lors de la création de la boutique'
@@ -128,6 +132,58 @@ export default function OnboardingPage() {
       );
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleStoreNameFocus = () => {
+    setWasStoreNameFocused(true);
+  };
+
+  const handleStoreNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFormData({ ...formData, storeName: e.target.value });
+    setIsStoreNameDirty(true);
+  };
+
+  const handleStoreNameBlur = async () => {
+    const name = formData.storeName.trim();
+    if (!wasStoreNameFocused || !name) {
+      setWasStoreNameFocused(false);
+      return;
+    }
+    if (!isStoreNameDirty) {
+      setWasStoreNameFocused(false);
+      return;
+    }
+    const slug = slugify(name, { lower: true, strict: true });
+    if (lastCheckedSlug === slug) {
+      setWasStoreNameFocused(false);
+      setIsStoreNameDirty(false);
+      return;
+    }
+    await checkSlugUniqueness();
+    setWasStoreNameFocused(false);
+    setIsStoreNameDirty(false);
+  };
+
+  const checkSlugUniqueness = async () => {
+    const name = formData.storeName.trim();
+    if (!name) return;
+    const slug = slugify(name, { lower: true, strict: true });
+    setGeneratedSlug(slug);
+    setIsCheckingSlug(true);
+    try {
+      const resp = await apiGet(
+        `/api/stores/exists?slug=${encodeURIComponent(slug)}`
+      );
+      if (!resp.ok) throw new Error('Erreur lors de la vérification du slug');
+      const json = await resp.json();
+      setSlugExists(Boolean(json?.exists));
+      setLastCheckedSlug(slug);
+    } catch (err) {
+      console.error('Vérification du slug échouée:', err);
+      setSlugExists(false);
+    } finally {
+      setIsCheckingSlug(false);
     }
   };
 
@@ -159,17 +215,27 @@ export default function OnboardingPage() {
               >
                 Nom de votre boutique *
               </label>
-              <input
-                type='text'
-                id='storeName'
-                required
-                value={formData.storeName}
-                onChange={e =>
-                  setFormData({ ...formData, storeName: e.target.value })
-                }
-                className='w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500'
-                placeholder='Ma Super Boutique'
-              />
+              <div className='relative'>
+                <input
+                  type='text'
+                  id='storeName'
+                  required
+                  value={formData.storeName}
+                  onChange={handleStoreNameChange}
+                  onFocus={handleStoreNameFocus}
+                  onBlur={handleStoreNameBlur}
+                  className={`w-full px-4 py-3 pr-10 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border ${slugExists ? 'border-red-500' : 'text-gray-700'}`}
+                  placeholder='Ma Super Boutique'
+                />
+                {isCheckingSlug && (
+                  <div className='absolute right-3 inset-y-0 flex items-center'>
+                    <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
+                  </div>
+                )}
+              </div>
+              {slugExists && (
+                <p className='mt-2 text-sm text-red-600'>Ce nom existe déjà.</p>
+              )}
             </div>
 
             {/* Description/Slogan */}
@@ -264,7 +330,7 @@ export default function OnboardingPage() {
             {/* Bouton de soumission */}
             <button
               type='submit'
-              disabled={loading || !formData.storeName.trim()}
+              disabled={loading || !formData.storeName.trim() || slugExists}
               className='w-full bg-indigo-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
             >
               {loading ? 'Création en cours...' : 'Créer ma boutique'}
