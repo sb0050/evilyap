@@ -24,9 +24,8 @@ let boxtalTokenExpiry: number = 0;
 const supabaseUrl = process.env.SUPABASE_URL || "";
 const supabaseKey =
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "";
-const supabase = supabaseUrl && supabaseKey
-  ? createClient(supabaseUrl, supabaseKey)
-  : null;
+const supabase =
+  supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
 
 // Stripe Client (pour rechercher le client par metadata)
 const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
@@ -323,10 +322,154 @@ router.post(
       // Gérer les différents types d'événements
       switch (event.type) {
         case "DOCUMENT_CREATED":
-          // Désactivé: les emails avec documents sont envoyés depuis stripe.ts après création
+          console.log("DOCUMENT_CREATED event:", JSON.stringify(event));
+          try {
+            const shippingOrderId: string | undefined = event?.shippingOrderId;
+            if (!shippingOrderId) {
+              console.warn("DOCUMENT_CREATED: shippingOrderId manquant dans l'événement");
+              break;
+            }
+
+            // 1) Vérifier d'abord si COPR est contenu dans l'ID reçu
+            if (!String(shippingOrderId).includes("COPR")) {
+              console.log(
+                `DOCUMENT_CREATED: shippingOrderId (${shippingOrderId}) ne contient pas 'COPR', on ignore cet événement pour l'instant.`
+              );
+              break;
+            }
+
+            // 2) Récupérer la liste des stores et chercher une occurrence dans document_not_created
+            let foundStore: any | null = null;
+            if (!supabase) {
+              console.warn("Supabase non configuré, impossible de rechercher le store");
+              break;
+            }
+
+            const { data: stores, error: storesError } = await supabase
+              .from("stores")
+              .select("id, name, owner_email, document_not_created")
+              .order("id", { ascending: true });
+
+            if (storesError) {
+              console.error("DOCUMENT_CREATED: erreur récupération stores:", storesError);
+              break;
+            }
+
+            if (Array.isArray(stores)) {
+              for (const s of stores) {
+                const docnc = (s as any)?.document_not_created || "";
+                const items = docnc
+                  .split(";")
+                  .map((x: string) => x.trim())
+                  .filter((x: string) => x.length > 0);
+                if (items.includes(shippingOrderId) || docnc.includes(shippingOrderId)) {
+                  foundStore = s;
+                  break; // ID unique, on arrête dès qu'on trouve
+                }
+              }
+            }
+
+            if (!foundStore) {
+              console.warn(
+                `DOCUMENT_CREATED: aucun store trouvé avec document_not_created contenant ${shippingOrderId}`
+              );
+              break;
+            }
+
+            // 3) Rechercher le client Stripe associé via metadata['shipping_order_ids']
+            if (!stripe) {
+              console.warn("Stripe non configuré, impossible de rechercher le client");
+              break;
+            }
+
+            const searchRes = await stripe.customers.search({
+              query: `metadata['shipping_order_ids']:'${shippingOrderId}'`,
+              limit: 1,
+            });
+            const customer = searchRes?.data?.[0] || null;
+            if (!customer) {
+              console.warn(
+                `DOCUMENT_CREATED: aucun client Stripe trouvé avec shipping_order_ids contenant ${shippingOrderId}`
+              );
+            } else {
+              const metaStr = (customer.metadata as any)?.shipping_order_ids || "";
+              if (!String(metaStr).includes(shippingOrderId)) {
+                console.warn(
+                  `DOCUMENT_CREATED: shippingOrderId non présent dans la metadata du client Stripe (id=${customer.id})`
+                );
+              }
+            }
+
+            // 4) Télécharger le bordereau depuis l'API interne
+            const apiBase =
+              process.env.INTERNAL_API_BASE || `http://localhost:${process.env.PORT || 5000}`;
+            const docApi = await fetch(
+              `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(shippingOrderId)}/shipping-document`,
+              { method: "GET", headers: { "Content-Type": "application/json" } }
+            );
+
+            if (!docApi.ok) {
+              const errText = await docApi.text();
+              console.warn(
+                "DOCUMENT_CREATED: échec récupération documents d'expédition:",
+                docApi.status,
+                errText
+              );
+              break;
+            }
+
+            const docJson: any = await docApi.json();
+            const docs: any[] = Array.isArray(docJson?.content) ? docJson.content : [];
+            const labelDoc = docs.find((d) => d.type === "LABEL") || docs[0];
+
+            if (!labelDoc?.url) {
+              console.warn("DOCUMENT_CREATED: aucun document LABEL disponible pour", shippingOrderId);
+              break;
+            }
+
+            const pdfResp = await fetch(labelDoc.url);
+            if (!pdfResp.ok) {
+              console.warn(
+                "DOCUMENT_CREATED: échec téléchargement du PDF:",
+                labelDoc.url,
+                pdfResp.status
+              );
+              break;
+            }
+
+            const buf = Buffer.from(await pdfResp.arrayBuffer());
+            const attachments = [
+              {
+                filename: `${labelDoc.type || "LABEL"}_${shippingOrderId}.pdf`,
+                content: buf,
+                contentType: "application/pdf",
+              },
+            ];
+
+            // 5) Envoyer un email au store owner avec les infos store+client et le bordereau
+            try {
+              await emailService.sendStoreOwnerShippingDocument({
+                ownerEmail: (foundStore as any)?.owner_email,
+                storeName: (foundStore as any)?.name,
+                shippingOrderId,
+                boxtalId: shippingOrderId,
+                attachments,
+                customerEmail: customer?.email,
+                customerName: (customer?.name || "").toString(),
+              } as any);
+              console.log(
+                `DOCUMENT_CREATED: email envoyé au store owner ${(foundStore as any)?.owner_email} pour ${shippingOrderId}`
+              );
+            } catch (mailErr) {
+              console.error("DOCUMENT_CREATED: erreur envoi email store owner:", mailErr);
+            }
+          } catch (e) {
+            console.error("DOCUMENT_CREATED processing error:", e);
+          }
           break;
 
         case "TRACKING_CHANGED":
+          console.log("TRACKING_CHANGED event:", JSON.stringify(event));
           try {
             const shippingOrderId: string = event?.shippingOrderId;
             const tracking = event?.payload?.trackings?.[0];
@@ -356,28 +499,31 @@ router.post(
               break;
             }
 
-              // Rechercher le client Stripe dont la metadata shipping_order_ids contient l'ID
+            // Rechercher le client Stripe dont la metadata shipping_order_ids contient l'ID
             let customer: Stripe.Customer | null = null;
             try {
               const searchRes = await stripe.customers.search({
-              query: `metadata['shipping_order_ids']:'${shippingOrderId}'`,
+                query: `metadata['shipping_order_ids']:'${shippingOrderId}'`,
                 limit: 1,
               });
               if (searchRes?.data?.length) {
                 customer = searchRes.data[0] as any;
               }
             } catch (searchErr) {
-              console.warn("Stripe search failed, fallback to list:", searchErr);
+              console.warn(
+                "Stripe search failed, fallback to list:",
+                searchErr
+              );
             }
 
             if (!customer) {
               // Fallback: lister quelques clients et filtrer
               const list = await stripe.customers.list({ limit: 100 });
               customer = (list.data as any[]).find((c) => {
-              const ids = ((c.metadata?.shipping_order_ids as any) || "")
-                .split(";")
-                .map((x: string) => x.trim())
-                .filter(Boolean);
+                const ids = ((c.metadata?.shipping_order_ids as any) || "")
+                  .split(";")
+                  .map((x: string) => x.trim())
+                  .filter(Boolean);
                 return ids.includes(shippingOrderId);
               }) as any;
             }
@@ -394,7 +540,9 @@ router.post(
             const emailData: CustomerTrackingEmailData = {
               customerEmail: customer.email,
               customerName:
-                (customer.name as any) || (customer.metadata?.name as any) || "",
+                (customer.name as any) ||
+                (customer.metadata?.name as any) ||
+                "",
               storeName: customer.metadata?.storeName || "Votre Boutique",
               shippingOrderId,
               status: tracking?.status || "Mise à jour",

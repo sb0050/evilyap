@@ -703,10 +703,24 @@ function CheckoutForm({
           min='0.01'
           value={amountInput}
           onChange={e => {
-            setAmountInput(e.target.value);
-            const value = parseFloat(e.target.value);
+            let raw = e.target.value.replace(',', '.');
+            // Empêcher plus de 2 décimales
+            const parts = raw.split('.');
+            if (parts.length === 2) {
+              parts[1] = parts[1].slice(0, 2);
+              raw = `${parts[0]}.${parts[1]}`;
+            }
+            setAmountInput(raw);
+            const value = parseFloat(raw);
             if (!isNaN(value) && value > 0) {
               setAmount(value);
+            } else {
+              setAmount(0);
+            }
+          }}
+          onBlur={() => {
+            if (amount > 0) {
+              setAmountInput(amount.toFixed(2));
             }
           }}
           className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border ${parseFloat(amountInput) > 0 ? 'border-gray-300' : 'border-red-500'}`}

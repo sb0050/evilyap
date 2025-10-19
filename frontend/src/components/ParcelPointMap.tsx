@@ -228,6 +228,7 @@ const homeDeliveryConfig = {
     name: 'Colis Privé - Domicile Sans Signature',
     color: '#8B5CF6',
     delay: '6 jours',
+    disabled: false,
     shippingOfferCode: 'COPR-CoprRelaisDomicileNat',
     prices: {
       '250g': 5.3,
@@ -248,6 +249,7 @@ const homeDeliveryConfig = {
     color: '#FF6B35',
     delay: '48h',
     shippingOfferCode: 'POFR-ColissimoAccess',
+    disabled: true,
     prices: {
       '250g': 7.24,
       '500g': 8.15,
@@ -267,6 +269,7 @@ const homeDeliveryConfig = {
     color: '#10B981',
     delay: '5 jours',
     shippingOfferCode: 'MONR-DomicileFrance',
+    disabled: false,
     prices: {
       '250g': 6.27,
       '500g': 6.83,
@@ -354,8 +357,13 @@ export default function ParcelPointMap({
     useState<boolean>(true);
 
   // useEffect de debug pour surveiller les changements d'état
-  useEffect(() => {
-  }, [selectedPoint, selectedHomeDelivery, deliveryType, selectedWeight, networkFilter]);
+  useEffect(() => {}, [
+    selectedPoint,
+    selectedHomeDelivery,
+    deliveryType,
+    selectedWeight,
+    networkFilter,
+  ]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -537,7 +545,7 @@ export default function ParcelPointMap({
     const shippingOfferCode =
       networkConfig[parcelPoint.network as keyof typeof networkConfig]
         ?.shippingOfferCode;
-    
+
     if (onParcelPointSelect) {
       onParcelPointSelect(
         parcelPoint,
@@ -552,20 +560,26 @@ export default function ParcelPointMap({
   // Gestion du changement de type de livraison
   const handleDeliveryTypeChange = (type: string) => {
     setDeliveryType(type);
-    
+
     if (type === 'HOME') {
       setSelectedPoint(null);
       setSelectedHomeDelivery(''); // Remettre à null la sélection de livraison à domicile
-      
+
       // Notifier le parent que le point relais est désélectionné et qu'on passe à la livraison à domicile
       if (onParcelPointSelect) {
-        onParcelPointSelect(null, 'home_delivery', 0, selectedWeight, undefined);
+        onParcelPointSelect(
+          null,
+          'home_delivery',
+          0,
+          selectedWeight,
+          undefined
+        );
       }
     } else if (type === 'PICKUP') {
       setSelectedHomeDelivery(''); // Remettre à null la sélection de livraison à domicile
       // Réinitialiser aussi le point relais sélectionné pour forcer une nouvelle sélection
       setSelectedPoint(null);
-      
+
       // Notifier le parent qu'aucun point relais n'est sélectionné
       if (onParcelPointSelect) {
         onParcelPointSelect(null, 'pickup_point', 0, selectedWeight, undefined);
@@ -575,14 +589,17 @@ export default function ParcelPointMap({
 
   // Gestion de la sélection d'une option de livraison à domicile
   const handleHomeDeliverySelect = (deliveryKey: string) => {
-    setSelectedHomeDelivery(deliveryKey);
-    // Calculer coût via homeDeliveryConfig
     const config =
       homeDeliveryConfig[deliveryKey as keyof typeof homeDeliveryConfig];
+    if (config?.disabled) {
+      return;
+    }
+    setSelectedHomeDelivery(deliveryKey);
+    // Calculer coût via homeDeliveryConfig
     const price =
       config?.prices[selectedWeight as keyof typeof config.prices] || 0;
     const shippingOfferCode = config?.shippingOfferCode;
-    
+
     if (onParcelPointSelect) {
       onParcelPointSelect(
         null,
@@ -775,8 +792,47 @@ export default function ParcelPointMap({
                   Poids du colis:
                 </label>
                 <select
+                  id='weight'
                   value={selectedWeight}
-                  onChange={e => setSelectedWeight(e.target.value)}
+                  onChange={e => {
+                    const newWeight = e.target.value;
+                    setSelectedWeight(newWeight);
+                    // Propager immédiatement le poids au parent afin qu'il soit pris en compte au paiement
+                    if (onParcelPointSelect) {
+                      if (deliveryType === 'PICKUP') {
+                        if (selectedPoint) {
+                          const cost = getDeliveryPrice(selectedPoint.network);
+                          const shippingOfferCode =
+                            networkConfig[selectedPoint.network as keyof typeof networkConfig]?.shippingOfferCode;
+                          onParcelPointSelect(
+                            selectedPoint,
+                            'pickup_point',
+                            cost,
+                            newWeight,
+                            shippingOfferCode
+                          );
+                        } else {
+                          onParcelPointSelect(null, 'pickup_point', 0, newWeight, undefined);
+                        }
+                      } else {
+                        if (selectedHomeDelivery) {
+                          const network = selectedHomeDelivery.replace('_HOME', '');
+                          const cost = getDeliveryPrice(network, true);
+                          const shippingOfferCode =
+                            homeDeliveryConfig[selectedHomeDelivery as keyof typeof homeDeliveryConfig]?.shippingOfferCode;
+                          onParcelPointSelect(
+                            null,
+                            'home_delivery',
+                            cost,
+                            newWeight,
+                            shippingOfferCode
+                          );
+                        } else {
+                          onParcelPointSelect(null, 'home_delivery', 0, newWeight, undefined);
+                        }
+                      }
+                    }
+                  }}
                   className='text-xs border border-gray-300 rounded px-2 py-1 bg-white'
                 >
                   <option value='250g'>250g</option>
@@ -1035,15 +1091,22 @@ export default function ParcelPointMap({
                 const price = getDeliveryPrice(network, true);
                 const delay = getDeliveryDelay(network, true);
                 const isSelected = selectedHomeDelivery === key;
+                const isDisabled = !!config.disabled;
 
                 return (
                   <div
                     key={key}
-                    onClick={() => handleHomeDeliverySelect(key)}
-                    className={`border rounded-lg p-4 cursor-pointer transition-colors ${
+                    onClick={
+                      isDisabled
+                        ? undefined
+                        : () => handleHomeDeliverySelect(key)
+                    }
+                    className={`border rounded-lg p-4 ${isDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'} transition-colors ${
                       isSelected
                         ? 'border-blue-500 bg-blue-50'
-                        : 'border-gray-200 hover:border-blue-300'
+                        : isDisabled
+                          ? 'border-gray-200'
+                          : 'border-gray-200 hover:border-blue-300'
                     }`}
                   >
                     <div className='flex items-center justify-between'>
@@ -1075,6 +1138,11 @@ export default function ParcelPointMap({
                         </div>
                       </div>
                     </div>
+                    {isDisabled && (
+                      <div className='mt-2 text-xs text-gray-500 font-medium'>
+                        Indisponible pour le moment
+                      </div>
+                    )}
                     {isSelected && (
                       <div className='mt-2 text-xs text-blue-600 font-medium'>
                         ✓ Option sélectionnée

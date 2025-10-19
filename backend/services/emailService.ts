@@ -65,7 +65,9 @@ interface StoreOwnerEmailData {
     filename: string;
     content: Buffer;
     contentType?: string;
-  }>;
+  }>; 
+  // Note additionnelle (ex: bordereau envoyé ultérieurement)
+  documentPendingNote?: string;
 }
 
 interface CustomerTrackingEmailData {
@@ -85,6 +87,9 @@ interface StoreOwnerShippingDocEmailData {
   storeName: string;
   shippingOrderId: string;
   boxtalId?: string;
+  // Infos client optionnelles
+  customerEmail?: string;
+  customerName?: string;
   attachments: Array<{
     filename: string;
     content: Buffer;
@@ -119,47 +124,50 @@ interface SupportShippingDocMissingData {
   amount?: number;
   currency?: string;
   errorDetails?: string;
+  // Note additionnelle (ex: bordereau envoyé ultérieurement)
+  additionalNote?: string;
 }
 
 class EmailService {
   private transporter: nodemailer.Transporter;
 
   constructor() {
-    // Configuration SMTP - utiliser les variables d'environnement
-    const emailConfig: EmailConfig = {
-      host: process.env.SMTP_HOST || "smtp.gmail.com",
-      port: parseInt(process.env.SMTP_PORT || "587"),
-      secure: process.env.SMTP_SECURE === "true", // true pour 465, false pour autres ports
+    const config: EmailConfig = {
+      host: process.env.SMTP_HOST || "",
+      port: parseInt(process.env.SMTP_PORT || "587", 10),
+      secure: process.env.SMTP_SECURE === "true",
       auth: {
         user: process.env.SMTP_USER || "",
-        pass: process.env.SMTP_PASS || "", // Mot de passe d'application pour Gmail
+        pass: process.env.SMTP_PASS || "",
       },
     };
 
-    this.transporter = nodemailer.createTransport(emailConfig);
-    this.verifyConnection().catch((err) => {
-      console.error("❌ SMTP verify failed at startup:", err);
-    });
+    this.transporter = nodemailer.createTransport(config as any);
   }
 
-  // Vérifier la configuration email
   async verifyConnection(): Promise<boolean> {
     try {
       await this.transporter.verify();
-      console.log("✅ Service email configuré correctement");
+      console.log("SMTP connection verified");
       return true;
     } catch (error) {
-      console.error("❌ Erreur de configuration email:", error);
+      console.error("SMTP verification failed:", error);
       return false;
     }
   }
 
-  // Formater le montant
-  private formatAmount(amount: number, currency: string): string {
-    return new Intl.NumberFormat("fr-FR", {
-      style: "currency",
-      currency: currency.toUpperCase(),
-    }).format(amount / 100);
+  private formatAmount(amount?: number, currency?: string): string | undefined {
+    if (typeof amount !== "number" || !currency) return undefined;
+    try {
+      return new Intl.NumberFormat("fr-FR", {
+        style: "currency",
+        currency: (currency || "EUR").toUpperCase(),
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(amount);
+    } catch {
+      return undefined;
+    }
   }
 
   private formatEstimatedDate(dateStr?: string): string {
@@ -235,7 +243,7 @@ class EmailService {
                 <p><strong>Référence produit :</strong> ${
                   data.productReference
                 }</p>
-                <p><strong>Montant payé :</strong> <span class="amount">${formattedAmount}</span></p>
+                <p><strong>Montant payé :</strong> <span class="amount">${formattedAmount}</span> (frais de livraison inclus)</p>
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
                 <p><strong>Méthode de livraison :</strong> ${
                   data.deliveryMethod === "pickup_point"
@@ -310,6 +318,7 @@ class EmailService {
             .customer-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #17a2b8; }
             .amount { font-size: 24px; font-weight: bold; color: #28a745; }
             .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+            .note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; border-radius: 6px; margin-top: 12px; }
           </style>
         </head>
         <body>
@@ -344,6 +353,11 @@ class EmailService {
                     minute: "2-digit",
                   }
                 )}</p>
+                ${
+                  data.documentPendingNote
+                    ? `<div class="note">${data.documentPendingNote}</div>`
+                    : ""
+                }
               </div>
               
               <div class="customer-details">
@@ -428,114 +442,6 @@ class EmailService {
     }
   }
 
-  private getTrackingStatusDescription(status: string): string {
-    const map: Record<string, string> = {
-      ANNOUNCED:
-        "Le bordereau d'expédition est créé mais le colis n'est pas encore expédié",
-      SHIPPED:
-        "Le colis est soit récupéré par le transporteur, soit déposé dans un point de proximité",
-      IN_TRANSIT: "Le colis a été scanné par le transporteur et est en transit",
-      OUT_FOR_DELIVERY: "Le colis est en cours de livraison",
-      FAILED_ATTEMPT: "Quelque chose a empêché la livraison du colis",
-      REACHED_DELIVERY_PICKUP_POINT:
-        "Le colis est disponible pour être récupéré dans un point de proximité",
-      DELIVERED:
-        "Le colis a été livré au destinataire ou le destinataire a récupéré le colis dans un point de proximité",
-      RETURNED: "Le colis est renvoyé à l'expéditeur",
-      EXCEPTION:
-        "Un problème est survenu pendant le transit qui nécessite une action de l'expéditeur",
-    };
-    return map[status] || "Statut de suivi non reconnu";
-  }
-
-  // Email de mise à jour de suivi pour le client
-  async sendCustomerTrackingUpdate(
-    data: CustomerTrackingEmailData
-  ): Promise<boolean> {
-    try {
-      const statusDescription = this.getTrackingStatusDescription(data.status);
-      const htmlContent = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="utf-8">
-          <title>Mise à jour du suivi</title>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #007bff 0%, #00b0ff 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-            .order-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff; }
-            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
-            .status { font-weight: bold; color: #007bff; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>🚚 Mise à jour du suivi</h1>
-            </div>
-            <div class="content">
-              <h2>Bonjour ${data.customerName},</h2>
-              <p>Nous vous informons d'une mise à jour concernant votre envoi.</p>
-              <div class="order-details">
-                <p><strong>ID d'expédition :</strong> ${
-                  data.shippingOrderId
-                }</p>
-                <p><strong>Statut :</strong> <span class="status">${
-                  data.status
-                }</span></p>
-                <p><em>${statusDescription}</em></p>
-                ${
-                  data.message
-                    ? `<p><strong>Détails :</strong> ${data.message}</p>`
-                    : ""
-                }
-                ${
-                  data.trackingNumber
-                    ? `<p><strong>Numéro de suivi :</strong> ${data.trackingNumber}</p>`
-                    : ""
-                }
-                ${
-                  data.packageTrackingUrl
-                    ? `<p><a href="${data.packageTrackingUrl}" target="_blank">🔗 Suivre le colis en ligne</a></p>`
-                    : ""
-                }
-              </div>
-              <p>Merci pour votre confiance.</p>
-              <p><strong>L'équipe ${data.storeName}</strong></p>
-            </div>
-            <div class="footer">
-              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
-            </div>
-          </div>
-        </body>
-        </html>
-      `;
-
-      const mailOptions = {
-        from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
-        to: data.customerEmail,
-        subject: `🚚 Mise à jour du suivi`,
-        html: htmlContent,
-      };
-
-      const info = await this.transporter.sendMail(mailOptions);
-      console.log(`✅ Email de suivi envoyé à ${data.customerEmail}`);
-      console.log("📨 sendMail result (tracking):", {
-        messageId: info.messageId,
-        accepted: info.accepted,
-        rejected: info.rejected,
-        response: info.response,
-      });
-      return true;
-    } catch (error) {
-      console.error("❌ Erreur envoi email suivi client:", error);
-      return false;
-    }
-  }
-
-  // Email d'envoi de document d'expédition au propriétaire
   async sendStoreOwnerShippingDocument(
     data: StoreOwnerShippingDocEmailData
   ): Promise<boolean> {
@@ -568,6 +474,13 @@ class EmailService {
                 <p><strong>Shipping Order ID :</strong> ${
                   data.shippingOrderId
                 }</p>
+                ${
+                  data.customerEmail || data.customerName
+                    ? `<p><strong>Client :</strong> ${
+                        data.customerName || "N/A"
+                      } (${data.customerEmail || "N/A"})</p>`
+                    : ""
+                }
               </div>
               <p>Le document est joint à cet email.</p>
               <p><strong>L'équipe ${data.storeName}</strong></p>
@@ -647,6 +560,7 @@ class EmailService {
             .footer { text-align: center; margin-top: 20px; color: #666; font-size: 14px; }
             .kv { margin: 0; }
             .kv strong { display: inline-block; width: 220px; }
+            .note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; border-radius: 6px; margin-top: 12px; }
           </style>
         </head>
         <body>
@@ -684,9 +598,7 @@ class EmailService {
                 <p class="kv"><strong>Réseau :</strong> ${
                   data.deliveryNetwork || "N/A"
                 }</p>
-                <p class="kv"><strong>Point relais </strong>(${
-                  data.pickupPointCode || "N/A"
-                })</p>
+                <p class="kv"><strong>Point relais </strong>(${data.pickupPointCode || "N/A"})</p>
               </div>
 
               <div class="section">
@@ -705,9 +617,12 @@ class EmailService {
 
               <div class="section">
                 <h3>Détails d'erreur</h3>
-                <p>${
-                  data.errorDetails || "Document Boxtal non disponible (422)"
-                }</p>
+                <p>${data.errorDetails || "Document Boxtal non disponible (422)"}</p>
+                ${
+                  data.additionalNote
+                    ? `<div class="note">${data.additionalNote}</div>`
+                    : ""
+                }
               </div>
 
               <p>Merci de vérifier la disponibilité des documents côté Boxtal et de relancer la génération si nécessaire.</p>
@@ -739,6 +654,75 @@ class EmailService {
       return true;
     } catch (error) {
       console.error("❌ Erreur envoi email SAV:", error);
+      return false;
+    }
+  }
+  async sendCustomerTrackingUpdate(
+    data: CustomerTrackingEmailData
+  ): Promise<boolean> {
+    try {
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Mise à jour du suivi</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #007bff 0%, #00b4d8 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .order-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #007bff; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+            .btn { display: inline-block; padding: 10px 16px; background: #007bff; color: white; text-decoration: none; border-radius: 6px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>📦 Mise à jour du suivi</h1>
+              <p>${data.storeName}</p>
+            </div>
+            <div class="content">
+              <h2>Bonjour ${data.customerName || ""},</h2>
+              <p>Le suivi de votre envoi a été mis à jour.</p>
+              <div class="order-details">
+                <p><strong>Commande d'expédition :</strong> ${data.shippingOrderId}</p>
+                <p><strong>Statut :</strong> ${data.status}</p>
+                ${data.message ? `<p><strong>Message :</strong> ${data.message}</p>` : ""}
+                ${data.trackingNumber ? `<p><strong>Numéro de suivi :</strong> ${data.trackingNumber}</p>` : ""}
+                ${data.packageId ? `<p><strong>ID colis :</strong> ${data.packageId}</p>` : ""}
+                ${data.packageTrackingUrl ? `<p><a class="btn" href="${data.packageTrackingUrl}" target="_blank" rel="noopener">Voir le suivi</a></p>` : ""}
+              </div>
+              <p>Merci pour votre confiance.</p>
+              <p><strong>L'équipe ${data.storeName}</strong></p>
+            </div>
+            <div class="footer">
+              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const mailOptions = {
+        from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
+        to: data.customerEmail,
+        subject: `📦 Mise à jour de suivi - ${data.storeName}`,
+        html: htmlContent,
+      };
+
+      const info = await this.transporter.sendMail(mailOptions);
+      console.log(`✅ Email suivi envoyé à ${data.customerEmail}`);
+      console.log("📨 sendMail result (customer tracking):", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email suivi client:", error);
       return false;
     }
   }
