@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useUser } from '@clerk/clerk-react';
 import { Upload } from 'lucide-react';
 
@@ -17,6 +17,33 @@ interface OnboardingFormData {
 
 export default function OnboardingPage() {
   const { user } = useUser();
+  // Redirect owner to checkout if a store already exists
+  useEffect(() => {
+    const checkOwnerAndRedirect = async () => {
+      const email = user?.primaryEmailAddress?.emailAddress;
+      if (!email) return;
+      try {
+        const response = await fetch(
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores/check-owner/${encodeURIComponent(email)}`
+        );
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data?.exists) {
+          const storeSlug =
+            data.slug ||
+            (data.storeName
+              ? slugify(data.storeName, { lower: true, strict: true })
+              : undefined);
+          if (storeSlug) {
+            window.location.href = `/checkout/${encodeURIComponent(storeSlug)}`;
+          }
+        }
+      } catch (_err) {
+        // Ignore errors silently; onboarding remains accessible otherwise
+      }
+    };
+    checkOwnerAndRedirect();
+  }, [user]);
   const { toast, showToast } = useToast();
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState<OnboardingFormData>({

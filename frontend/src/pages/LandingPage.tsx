@@ -11,7 +11,7 @@ const LandingPage = () => {
 
   // Handle CTA button click
   const handleCTAClick = () => {
-    navigate('/stores');
+    navigate('/onboarding');
   };
 
   // Check if desktop and mobile capabilities

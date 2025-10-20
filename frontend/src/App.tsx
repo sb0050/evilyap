@@ -21,6 +21,7 @@ import OnboardingPage from './pages/OnboardingPage';
 import StorePage from './pages/StorePage';
 import AuthRedirect from './components/AuthRedirect';
 import PaymentReturnPage from './pages/PaymentReturnPage';
+import { frFR } from '@clerk/localizations';
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -30,7 +31,7 @@ function App() {
   }
 
   return (
-    <ClerkProvider publishableKey={publishableKey}>
+    <ClerkProvider publishableKey={publishableKey} localization={frFR}>
       <Router>
         <div className='min-h-screen bg-gray-50'>
           <Routes>

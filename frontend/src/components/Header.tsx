@@ -207,9 +207,6 @@ export default function Header() {
         <div className='flex justify-end items-center h-16'>
           <SignedIn>
             <UserButton userProfileMode='modal'>
-              <UserButton.UserProfilePage label='account' />
-              <UserButton.UserProfilePage label='security' />
-
               <UserButton.UserProfilePage
                 label='Balance'
                 url='balance'
@@ -217,6 +214,8 @@ export default function Header() {
               >
                 <BalancePanel />
               </UserButton.UserProfilePage>
+              <UserButton.UserProfilePage label='account' />
+              <UserButton.UserProfilePage label='security' />
             </UserButton>
           </SignedIn>
           <SignedOut>

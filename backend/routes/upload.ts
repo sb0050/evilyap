@@ -9,7 +9,16 @@ const awsRegion = process.env.AWS_REGION;
 const awsAccessKeyId = process.env.AWS_ACCESS_KEY_ID;
 const awsSecretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
 const awsBucket = process.env.AWS_S3_BUCKET;
-const cloudFrontUrl = (process.env.CLOUDFRONT_URL || "https://d1tmgyvizond6e.cloudfront.net").replace(/\/+$/, "");
+
+// Ensure CloudFront base URL includes protocol and no trailing slash
+const normalizeCdnBase = (raw?: string) => {
+  const base = (raw || "https://d1tmgyvizond6e.cloudfront.net").trim();
+  const withProto = base.startsWith("http://") || base.startsWith("https://")
+    ? base
+    : `https://${base.replace(/^\/+/, "")}`;
+  return withProto.replace(/\/+$/, "");
+};
+const cloudFrontUrl = normalizeCdnBase(process.env.CLOUDFRONT_URL);
 
 if (!awsRegion || !awsAccessKeyId || !awsSecretAccessKey || !awsBucket) {
   console.error("AWS S3 environment variables are missing (AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET)");
