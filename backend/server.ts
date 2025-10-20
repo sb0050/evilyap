@@ -9,6 +9,7 @@ import stripeRoutes from "./routes/stripe";
 import boxtalRoutes from "./routes/boxtal";
 import storeRoutes from "./routes/store";
 import { emailService } from "./services/emailService";
+import uploadRoutes from "./routes/upload";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -44,6 +45,7 @@ app.use(express.json());
 app.use("/api/stripe", stripeRoutes);
 app.use("/api/boxtal", boxtalRoutes);
 app.use("/api/stores", storeRoutes);
+app.use("/api/upload", uploadRoutes);
 
 // Route de test
 app.get("/api/health", (req: Request, res: Response) => {

@@ -357,7 +357,7 @@ export default function CheckoutPage() {
     );
   }
 
-  const themeColor = store.theme || '#667eea';
+  const themeColor = '#667eea';
 
   return (
     <StripeWrapper>

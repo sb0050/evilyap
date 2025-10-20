@@ -9,7 +9,6 @@ interface Store {
   name: string;
   logo: string;
   description: string;
-  theme: string;
   owner_email: string;
 }
 
@@ -78,7 +77,7 @@ const StorePage: React.FC = () => {
   const isOwner = user?.primaryEmailAddress?.emailAddress === store.owner_email;
 
   return (
-    <div className='min-h-screen' style={{ background: store.theme }}>
+    <div className='min-h-screen bg-gradient-to-b from-indigo-50 to-white'>
       {/* Header avec overlay pour la lisibilité */}
       <div className='bg-black bg-opacity-20 backdrop-blur-sm'>
         <div className='max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8'>

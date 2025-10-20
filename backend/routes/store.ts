@@ -100,7 +100,7 @@ router.get("/check-owner/:email", async (req, res) => {
 // POST /api/stores - Créer une nouvelle boutique
 router.post("/", async (req, res) => {
   try {
-    const { storeName, storeTheme, storeDescription, ownerEmail } = req.body;
+    const { storeName, storeDescription, ownerEmail, slug, logoUrl } = req.body;
 
     if (!storeName || !ownerEmail) {
       return res.status(400).json({ error: "Nom de boutique et email requis" });
@@ -117,8 +117,7 @@ router.post("/", async (req, res) => {
       return res.status(409).json({ error: "Cet email a déjà une boutique" });
     }
 
-    // Générer le slug et vérifier l'unicité par slug
-    const slug = req.body?.slug as string;
+    // Vérifier l'unicité par slug
     if (!slug) {
       return res.status(400).json({ error: "Slug requis" });
     }
@@ -143,9 +142,9 @@ router.post("/", async (req, res) => {
         {
           name: storeName,
           slug: slug,
-          theme: storeTheme || '#667eea',
           description: storeDescription || '',
-          owner_email: ownerEmail
+          owner_email: ownerEmail,
+          logo: logoUrl || null,
         }
       ])
       .select()

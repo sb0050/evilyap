@@ -1,72 +1,30 @@
 import { useState } from 'react';
 import { useUser } from '@clerk/clerk-react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Palette } from 'lucide-react';
+import { Upload } from 'lucide-react';
 
 import slugify from 'slugify';
-import { apiGet, apiPost } from '../utils/api';
+import { apiGet, apiPost, apiPostForm } from '../utils/api';
+import { Toast } from '../components/Toast';
+import { useToast } from '../utils/toast';
 
 interface OnboardingFormData {
   storeName: string;
   logo: File | null;
-  backgroundColor: string;
   description: string;
 }
 
-const gradientOptions = [
-  {
-    name: 'Ocean Blue',
-    value: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-    hex: '#667eea',
-  },
-  {
-    name: 'Sunset Orange',
-    value: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
-    hex: '#f093fb',
-  },
-  {
-    name: 'Forest Green',
-    value: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
-    hex: '#4facfe',
-  },
-  {
-    name: 'Purple Dream',
-    value: 'linear-gradient(135deg, #a8edea 0%, #fed6e3 100%)',
-    hex: '#a8edea',
-  },
-  {
-    name: 'Golden Hour',
-    value: 'linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%)',
-    hex: '#ffecd2',
-  },
-  {
-    name: 'Midnight Blue',
-    value: 'linear-gradient(135deg, #2193b0 0%, #6dd5ed 100%)',
-    hex: '#2193b0',
-  },
-  {
-    name: 'Rose Gold',
-    value: 'linear-gradient(135deg, #ee9ca7 0%, #ffdde1 100%)',
-    hex: '#ee9ca7',
-  },
-  {
-    name: 'Emerald',
-    value: 'linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%)',
-    hex: '#56ab2f',
-  },
-];
 
 export default function OnboardingPage() {
   const { user } = useUser();
   const navigate = useNavigate();
+  const { toast, showToast } = useToast();
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState<OnboardingFormData>({
     storeName: '',
     logo: null,
-    backgroundColor: gradientOptions[0].hex,
     description: '',
   });
-  const [selectedGradient, setSelectedGradient] = useState(gradientOptions[0]);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [isCheckingSlug, setIsCheckingSlug] = useState(false);
   const [slugExists, setSlugExists] = useState(false);
@@ -87,15 +45,11 @@ export default function OnboardingPage() {
     }
   };
 
-  const handleGradientSelect = (gradient: (typeof gradientOptions)[0]) => {
-    setSelectedGradient(gradient);
-    setFormData({ ...formData, backgroundColor: gradient.hex });
-  };
-
+  
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user?.primaryEmailAddress?.emailAddress) {
-      alert('Erreur: Email utilisateur non trouvé');
+      showToast('Erreur: Email utilisateur non trouvé', 'error');
       return;
     }
 
@@ -104,19 +58,38 @@ export default function OnboardingPage() {
       const slug =
         generatedSlug ||
         slugify(formData.storeName, { lower: true, strict: true });
+
+      // Uploader le logo si présent
+      let logoUrl: string | undefined;
+      if (formData.logo) {
+        try {
+          const fd = new FormData();
+          fd.append('image', formData.logo);
+          fd.append('slug', slug);
+          const uploadResp = await apiPostForm('/api/upload', fd);
+          const uploadJson = await uploadResp.json();
+          if (uploadResp.ok && uploadJson?.success && uploadJson?.url) {
+            logoUrl = uploadJson.url as string;
+          } else {
+            console.warn('Upload du logo échoué:', uploadJson?.error);
+          }
+        } catch (err) {
+          console.warn('Erreur lors de l\'upload du logo:', err);
+        }
+      }
+
       const response = await apiPost('/api/stores', {
         storeName: formData.storeName,
-        storeTheme: selectedGradient.value,
         storeDescription: formData.description,
         ownerEmail: user.primaryEmailAddress.emailAddress,
         slug,
+        logoUrl,
       });
 
       const result = await response.json();
 
       if (response.ok) {
         console.log('Store created successfully:', result);
-        // Rediriger vers la page de la boutique via le slug
         window.location.href = `/store/${encodeURIComponent(slug)}`;
       } else {
         throw new Error(
@@ -125,10 +98,9 @@ export default function OnboardingPage() {
       }
     } catch (error) {
       console.error('Erreur lors de la création de la boutique:', error);
-      alert(
-        error instanceof Error
-          ? error.message
-          : 'Erreur lors de la création de la boutique'
+      showToast(
+        error instanceof Error ? error.message : 'Erreur lors de la création de la boutique',
+        'error'
       );
     } finally {
       setLoading(false);
@@ -187,8 +159,11 @@ export default function OnboardingPage() {
     }
   };
 
+  // Toast notifications rendered when present
+
   return (
     <div className='min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8'>
+      {toast && <Toast message={toast.message} type={toast.type} />}
       <div className='max-w-2xl mx-auto'>
         <div className='text-center mb-8'>
           <img
@@ -292,41 +267,7 @@ export default function OnboardingPage() {
               </div>
             </div>
 
-            {/* Couleur de fond / Gradient */}
-            <div>
-              <label className='block text-sm font-medium text-gray-700 mb-4'>
-                <Palette className='inline w-4 h-4 mr-2' />
-                Choisissez un thème de couleur
-              </label>
-              <div className='grid grid-cols-2 md:grid-cols-4 gap-3'>
-                {gradientOptions.map(gradient => (
-                  <button
-                    key={gradient.name}
-                    type='button'
-                    onClick={() => handleGradientSelect(gradient)}
-                    className={`relative p-4 rounded-lg border-2 transition-all ${
-                      selectedGradient.name === gradient.name
-                        ? 'border-indigo-500 ring-2 ring-indigo-200'
-                        : 'border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <div
-                      className='w-full h-12 rounded-md mb-2'
-                      style={{ background: gradient.value }}
-                    />
-                    <p className='text-xs text-gray-600 text-center'>
-                      {gradient.name}
-                    </p>
-                    {selectedGradient.name === gradient.name && (
-                      <div className='absolute top-2 right-2 w-4 h-4 bg-indigo-500 rounded-full flex items-center justify-center'>
-                        <div className='w-2 h-2 bg-white rounded-full' />
-                      </div>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-
+            
             {/* Bouton de soumission */}
             <button
               type='submit'

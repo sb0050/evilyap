@@ -106,6 +106,28 @@ export const apiDelete = (endpoint: any, options = {}) => {
   return apiCall(endpoint, { ...options, method: 'DELETE' });
 };
 
+/**
+ * Raccourci pour POST de FormData (ne pas définir Content-Type)
+ */
+export const apiPostForm = async (endpoint: any, formData: FormData, options: any = {}) => {
+  const url = `${API_BASE_URL}${endpoint}`;
+  const finalOptions = {
+    method: 'POST',
+    body: formData,
+    // Ne pas fixer Content-Type pour laisser le navigateur gérer le boundary
+    headers: {
+      ...(options.headers || {}),
+    },
+    ...options,
+  };
+  const response = await fetch(url, finalOptions);
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`HTTP error! status: ${response.status} - ${text}`);
+  }
+  return response;
+};
+
 // API Boxtal
 export const createShippingOrder = (orderData: any) => {
   return apiPost('/api/boxtal/shipping-orders', orderData);
