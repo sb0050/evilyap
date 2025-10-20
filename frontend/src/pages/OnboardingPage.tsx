@@ -1,19 +1,23 @@
 import { useEffect, useState } from 'react';
 import { useUser } from '@clerk/clerk-react';
 import { Upload } from 'lucide-react';
+import { AddressElement } from '@stripe/react-stripe-js';
+import { Address } from '@stripe/stripe-js';
 
 import slugify from 'slugify';
 import { apiGet, apiPost, apiPostForm } from '../utils/api';
 import { Toast } from '../components/Toast';
 import { useToast } from '../utils/toast';
 import Header from '../components/Header';
+import StripeWrapper from '../components/StripeWrapper';
 
 interface OnboardingFormData {
   storeName: string;
   logo: File | null;
   description: string;
+  name: string;
+  phone: string;
 }
-
 
 export default function OnboardingPage() {
   const { user } = useUser();
@@ -44,12 +48,23 @@ export default function OnboardingPage() {
     };
     checkOwnerAndRedirect();
   }, [user]);
+
+  // Préremplir le nom complet depuis Clerk
+  useEffect(() => {
+    const fullName = user?.fullName || '';
+    if (fullName && !formData.name) {
+      setFormData(prev => ({ ...prev, name: fullName }));
+    }
+  }, [user?.fullName]);
+
   const { toast, showToast } = useToast();
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState<OnboardingFormData>({
     storeName: '',
     logo: null,
     description: '',
+    name: '',
+    phone: '',
   });
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [isCheckingSlug, setIsCheckingSlug] = useState(false);
@@ -58,6 +73,30 @@ export default function OnboardingPage() {
   const [wasStoreNameFocused, setWasStoreNameFocused] = useState(false);
   const [isStoreNameDirty, setIsStoreNameDirty] = useState(false);
   const [lastCheckedSlug, setLastCheckedSlug] = useState('');
+  const [showValidationErrors, setShowValidationErrors] = useState(false);
+
+  // États pour l'adresse Stripe
+  const [billingAddress, setBillingAddress] = useState<Address | null>(null);
+  const [isAddressComplete, setIsAddressComplete] = useState(false);
+
+  // Debug: tracer les raisons du disabled du bouton
+  useEffect(() => {
+    const disabled =
+      loading ||
+      !formData.storeName.trim() ||
+      slugExists ||
+      !isAddressComplete ||
+      !formData.name.trim() ||
+      !formData.phone.trim();
+  }, [
+    loading,
+    formData.storeName,
+    slugExists,
+    isAddressComplete,
+    formData.name,
+    formData.phone,
+    billingAddress,
+  ]);
 
   const handleLogoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -82,15 +121,42 @@ export default function OnboardingPage() {
     reader.readAsDataURL(file);
   };
 
-  
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setShowValidationErrors(true);
+
+    // Champs obligatoires
+    if (!formData.storeName.trim()) {
+      return;
+    }
+    if (!formData.logo) {
+      return;
+    }
+
     if (!user?.primaryEmailAddress?.emailAddress) {
       showToast('Erreur: Email utilisateur non trouvé', 'error');
       return;
     }
 
+    // Vérifier que l'adresse est complète
+    if (!isAddressComplete || !formData.name.trim() || !formData.phone.trim()) {
+      showToast(
+        'Veuillez compléter toutes les informations de facturation',
+        'error'
+      );
+      return;
+    }
+
     setLoading(true);
+    console.log('Submitting form with data:', {
+      storeName: formData.storeName,
+      description: formData.description,
+      logoPresent: !!formData.logo,
+      isAddressComplete,
+      name: formData.name,
+      phone: formData.phone,
+      billingAddress,
+    });
     try {
       const slug =
         generatedSlug ||
@@ -111,7 +177,7 @@ export default function OnboardingPage() {
             console.warn('Upload du logo échoué:', uploadJson?.error);
           }
         } catch (err) {
-          console.warn('Erreur lors de l\'upload du logo:', err);
+          console.warn("Erreur lors de l'upload du logo:", err);
         }
       }
 
@@ -121,6 +187,11 @@ export default function OnboardingPage() {
         ownerEmail: user.primaryEmailAddress.emailAddress,
         slug,
         logoUrl,
+        // Données de facturation pour créer le client Stripe
+        clerkUserId: user.id,
+        name: formData.name,
+        phone: formData.phone,
+        address: billingAddress,
       });
 
       const result = await response.json();
@@ -136,7 +207,9 @@ export default function OnboardingPage() {
     } catch (error) {
       console.error('Erreur lors de la création de la boutique:', error);
       showToast(
-        error instanceof Error ? error.message : 'Erreur lors de la création de la boutique',
+        error instanceof Error
+          ? error.message
+          : 'Erreur lors de la création de la boutique',
         'error'
       );
     } finally {
@@ -149,13 +222,23 @@ export default function OnboardingPage() {
   };
 
   const handleStoreNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData({ ...formData, storeName: e.target.value });
+    const value = e.target.value;
+    setFormData({ ...formData, storeName: value });
     setIsStoreNameDirty(true);
+    // Reset slugExists pour éviter un disabled persistant
+    if (slugExists) setSlugExists(false);
+    console.log('storeName change:', value);
   };
 
   const handleStoreNameBlur = async () => {
     const name = formData.storeName.trim();
-    if (!wasStoreNameFocused || !name) {
+    if (!name) {
+      console.log('storeName blur: empty');
+      setShowValidationErrors(true);
+      setWasStoreNameFocused(false);
+      return;
+    }
+    if (!wasStoreNameFocused) {
       setWasStoreNameFocused(false);
       return;
     }
@@ -204,121 +287,225 @@ export default function OnboardingPage() {
       <div className='py-12 px-4 sm:px-6 lg:px-8'>
         {toast && <Toast message={toast.message} type={toast.type} />}
         <div className='max-w-2xl mx-auto'>
-        <div className='text-center mb-8'>
-          <img
-            src='/logo_paylive.png'
-            alt='PayLive'
-            className='mx-auto h-12 w-auto'
-          />
-          <h1 className='mt-4 text-3xl font-bold text-gray-900'>
-            Créez votre boutique
-          </h1>
-          <p className='mt-2 text-gray-600'>
-            Bienvenue {user?.firstName} ! Configurons votre nouvelle boutique en
-            ligne.
-          </p>
-        </div>
+          <div className='text-center mb-8'>
+            <img
+              src='/logo_paylive.png'
+              alt='PayLive'
+              className='mx-auto h-12 w-auto'
+            />
+            <h1 className='mt-4 text-3xl font-bold text-gray-900'>
+              Créez votre boutique
+            </h1>
+            <p className='mt-2 text-gray-600'>
+              Bienvenue {user?.firstName} ! Configurons votre nouvelle boutique
+              en ligne.
+            </p>
+          </div>
 
-        <div className='bg-white shadow-lg rounded-lg p-8'>
-          <form onSubmit={handleSubmit} className='space-y-6'>
-            {/* Nom de la boutique */}
-            <div>
-              <label
-                htmlFor='storeName'
-                className='block text-sm font-medium text-gray-700 mb-2'
-              >
-                Nom de votre boutique *
-              </label>
-              <div className='relative'>
-                <input
-                  type='text'
-                  id='storeName'
-                  required
-                  value={formData.storeName}
-                  onChange={handleStoreNameChange}
-                  onFocus={handleStoreNameFocus}
-                  onBlur={handleStoreNameBlur}
-                  className={`w-full px-4 py-3 pr-10 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border ${slugExists ? 'border-red-500' : 'text-gray-700'}`}
-                  placeholder='Ma Super Boutique'
-                />
-                {isCheckingSlug && (
-                  <div className='absolute right-3 inset-y-0 flex items-center'>
-                    <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
-                  </div>
-                )}
-              </div>
-              {slugExists && (
-                <p className='mt-2 text-sm text-red-600'>Ce nom existe déjà.</p>
-              )}
-            </div>
-
-            {/* Description/Slogan */}
-            <div>
-              <label
-                htmlFor='description'
-                className='block text-sm font-medium text-gray-700 mb-2'
-              >
-                Description ou slogan (facultatif)
-              </label>
-              <textarea
-                id='description'
-                rows={3}
-                value={formData.description}
-                onChange={e =>
-                  setFormData({ ...formData, description: e.target.value })
-                }
-                className='w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500'
-                placeholder='Décrivez votre boutique en quelques mots...'
-              />
-            </div>
-
-            {/* Logo */}
-            <div>
-              <label className='block text-sm font-medium text-gray-700 mb-2'>
-                Logo de votre boutique
-              </label>
-              <div className='flex items-center space-x-4'>
-                <div className='flex-1'>
-                  <label className='flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100'>
-                    <div className='flex flex-col items-center justify-center pt-5 pb-6'>
-                      <Upload className='w-8 h-8 mb-2 text-gray-400' />
-                      <p className='text-sm text-gray-500'>
-                        Cliquez pour télécharger un logo
-                      </p>
+          <div className='bg-white shadow-lg rounded-lg p-8'>
+            <form onSubmit={handleSubmit} className='space-y-6'>
+              {/* Nom de la boutique */}
+              <div>
+                <label
+                  htmlFor='storeName'
+                  className='block text-sm font-medium text-gray-700 mb-2'
+                >
+                  Nom de votre boutique *
+                </label>
+                <div className='relative'>
+                  <input
+                    type='text'
+                    id='storeName'
+                    required
+                    value={formData.storeName}
+                    onChange={handleStoreNameChange}
+                    onFocus={handleStoreNameFocus}
+                    onBlur={handleStoreNameBlur}
+                    className={`w-full px-4 py-3 pr-10 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border ${slugExists || (showValidationErrors && !formData.storeName.trim()) ? 'border-red-500' : 'border-gray-300'} text-gray-700`}
+                    placeholder='Ma Super Boutique'
+                  />
+                  {isCheckingSlug && (
+                    <div className='absolute right-3 inset-y-0 flex items-center'>
+                      <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
                     </div>
-                    <input
-                      type='file'
-                      className='hidden'
-                      accept='image/png, image/jpeg'
-                      onChange={handleLogoChange}
-                    />
-                  </label>
+                  )}
                 </div>
-                {logoPreview && (
-                  <div className='w-32 h-32 border rounded-lg overflow-hidden'>
-                    <img
-                      src={logoPreview}
-                      alt='Aperçu du logo'
-                      className='w-full h-full object-cover'
-                    />
-                  </div>
+                {showValidationErrors && !formData.storeName.trim() && (
+                  <p className='mt-2 text-sm text-red-600'>
+                    Veuillez renseigner le nom de la boutique
+                  </p>
+                )}
+                {slugExists && (
+                  <p className='mt-2 text-sm text-red-600'>
+                    Ce nom existe déjà.
+                  </p>
                 )}
               </div>
-            </div>
 
-            
-            {/* Bouton de soumission */}
-            <button
-              type='submit'
-              disabled={loading || !formData.storeName.trim() || slugExists}
-              className='w-full bg-indigo-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
-            >
-              {loading ? 'Création en cours...' : 'Créer ma boutique'}
-            </button>
-          </form>
+              {/* Description/Slogan */}
+              <div>
+                <label
+                  htmlFor='description'
+                  className='block text-sm font-medium text-gray-700 mb-2'
+                >
+                  Description ou slogan (facultatif)
+                </label>
+                <textarea
+                  id='description'
+                  rows={3}
+                  value={formData.description}
+                  onChange={e =>
+                    setFormData({ ...formData, description: e.target.value })
+                  }
+                  className='w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500'
+                  placeholder='Décrivez votre boutique en quelques mots...'
+                />
+              </div>
+
+              {/* Logo */}
+              <div>
+                <label className='block text-sm font-medium text-gray-700 mb-2'>
+                  Logo de votre boutique *
+                </label>
+                <div className='flex items-center space-x-4'>
+                  <div className='flex-1'>
+                    <label
+                      className={`flex flex-col items-center justify-center w-full h-32 border-2 ${showValidationErrors && !formData.logo ? 'border-red-500' : 'border-gray-300'} border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100`}
+                    >
+                      <div className='flex flex-col items-center justify-center pt-5 pb-6'>
+                        <Upload className='w-8 h-8 mb-2 text-gray-400' />
+                        <p className='text-sm text-gray-500'>
+                          Cliquez pour télécharger un logo
+                        </p>
+                      </div>
+                      <input
+                        type='file'
+                        className='hidden'
+                        accept='image/png, image/jpeg'
+                        required
+                        onChange={handleLogoChange}
+                      />
+                    </label>
+                  </div>
+                  {logoPreview && (
+                    <div className='w-32 h-32 border rounded-lg overflow-hidden'>
+                      <img
+                        src={logoPreview}
+                        alt='Aperçu du logo'
+                        className='w-full h-full object-cover'
+                      />
+                    </div>
+                  )}
+                </div>
+                {!formData.logo && showValidationErrors && (
+                  <p className='mt-2 text-sm text-red-600'>
+                    Veuillez ajouter un logo
+                  </p>
+                )}
+              </div>
+
+              {/* Informations de facturation */}
+              {/* Adresse avec Stripe AddressElement */}
+              <div>
+                <label className='block text-sm font-medium text-gray-700 mb-2'>
+                  Adresse de la boutique *
+                </label>
+                <StripeWrapper>
+                  <div
+                    className={`rounded-md border ${!isAddressComplete ? 'border-red-500' : 'border-gray-300'} p-2`}
+                  >
+                    <AddressElement
+                      key={user?.id || 'nouser'}
+                      options={{
+                        mode: 'billing',
+                        allowedCountries: ['FR'],
+                        fields: {
+                          phone: 'always',
+                        },
+                        validation: {
+                          phone: {
+                            required: 'always', // Rend le champ téléphone obligatoire
+                          },
+                        },
+                        defaultValues: {
+                          name: user?.fullName || formData.name,
+                          phone: formData.phone,
+                        },
+                      }}
+                      onChange={event => {
+                        console.log('AddressElement change:', {
+                          complete: event.complete,
+                          name: event.value.name,
+                          phone: event.value.phone,
+                          address: event.value.address,
+                        });
+                        setIsAddressComplete(event.complete);
+                        if (event.value.address) {
+                          setBillingAddress(event.value.address);
+                        }
+                        // Mettre à jour le nom et téléphone si fournis par AddressElement
+                        if (event.value.name) {
+                          setFormData(prev => ({
+                            ...prev,
+                            name: event.value.name as string,
+                          }));
+                        }
+                        if (event.value.phone) {
+                          setFormData(prev => ({
+                            ...prev,
+                            phone: event.value.phone as string,
+                          }));
+                        }
+                      }}
+                    />
+                  </div>
+                  {!isAddressComplete && (
+                    <p className='mt-2 text-sm text-red-600'>
+                      Veuillez compléter votre adresse
+                    </p>
+                  )}
+                </StripeWrapper>
+              </div>
+
+              {/* Bouton de soumission */}
+              <button
+                type='submit'
+                disabled={
+                  loading ||
+                  !formData.storeName.trim() ||
+                  slugExists ||
+                  !isAddressComplete ||
+                  !formData.name.trim() ||
+                  !formData.phone.trim()
+                }
+                onMouseEnter={() => {
+                  const disabled =
+                    loading ||
+                    !formData.storeName.trim() ||
+                    slugExists ||
+                    !isAddressComplete ||
+                    !formData.name.trim() ||
+                    !formData.phone.trim();
+                  console.log('Submit button disabled effect:', {
+                    disabled,
+                    loading,
+                    storeNameEmpty: !formData.storeName.trim(),
+                    slugExists,
+                    isAddressComplete,
+                    nameEmpty: !formData.name.trim(),
+                    phoneEmpty: !formData.phone.trim(),
+                    formData,
+                    billingAddress,
+                  });
+                }}
+                className='w-full bg-indigo-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
+              >
+                {loading ? 'Création en cours...' : 'Créer ma boutique'}
+              </button>
+            </form>
+          </div>
         </div>
       </div>
     </div>
-  </div>
   );
 }

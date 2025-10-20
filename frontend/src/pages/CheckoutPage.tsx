@@ -762,6 +762,11 @@ function CheckoutForm({
                   fields: {
                     phone: 'always',
                   },
+                  validation: {
+                    phone: {
+                      required: 'always', // Rend le champ téléphone obligatoire
+                    },
+                  },
                   defaultValues: {
                     name: defaultName,
                     phone: defaultPhone,

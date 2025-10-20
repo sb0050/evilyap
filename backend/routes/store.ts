@@ -1,8 +1,13 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
+import Stripe from "stripe";
 
 const router = express.Router();
 
+// Configuration Stripe
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: "2025-06-30.basil",
+});
 
 // Configuration Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -50,7 +55,9 @@ router.get("/exists", async (req, res) => {
 
     if (error && (error as any)?.code !== "PGRST116") {
       console.error("Erreur Supabase:", error);
-      return res.status(500).json({ error: "Erreur lors de la vérification du slug" });
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la vérification du slug" });
     }
 
     return res.json({ exists: Boolean(data) });
@@ -76,7 +83,7 @@ router.get("/check-owner/:email", async (req, res) => {
       .single();
 
     if (error) {
-      if (error.code === 'PGRST116') {
+      if (error.code === "PGRST116") {
         // Aucun résultat trouvé
         return res.json({ exists: false });
       }
@@ -86,12 +93,12 @@ router.get("/check-owner/:email", async (req, res) => {
         .json({ error: "Erreur lors de la vérification de l'email" });
     }
 
-    return res.json({ 
-      exists: true, 
+    return res.json({
+      exists: true,
       storeName: data.name,
       ownerEmail: data.owner_email,
       slug: (data as any)?.slug,
-      rib: (data as any)?.rib || null
+      rib: (data as any)?.rib || null,
     });
   } catch (error) {
     console.error("Erreur serveur:", error);
@@ -121,7 +128,26 @@ router.get("/wallet-balance", async (req, res) => {
 // POST /api/stores - Créer une nouvelle boutique
 router.post("/", async (req, res) => {
   try {
-    const { storeName, storeDescription, ownerEmail, slug, logoUrl } = req.body;
+    const {
+      storeName,
+      storeDescription,
+      ownerEmail,
+      slug,
+      logoUrl,
+      clerkUserId,
+      name,
+      phone,
+      address,
+    } = req.body;
+
+    console.log("storeName:", storeName);
+    console.log("ownerEmail:", ownerEmail);
+    console.log("slug:", slug);
+    console.log("logoUrl:", logoUrl);
+    console.log("clerkUserId:", clerkUserId);
+    console.log("name:", name);
+    console.log("phone:", phone);
+    console.log("address:", address);
 
     if (!storeName || !ownerEmail) {
       return res.status(400).json({ error: "Nom de boutique et email requis" });
@@ -148,13 +174,55 @@ router.post("/", async (req, res) => {
       .eq("slug", slug)
       .maybeSingle();
 
-    if (slugCheckError && slugCheckError.code !== 'PGRST116') {
+    if (slugCheckError && slugCheckError.code !== "PGRST116") {
       console.error("Erreur Supabase (vérif slug):", slugCheckError);
-      return res.status(500).json({ error: "Erreur lors de la vérification du slug" });
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la vérification du slug" });
     }
 
     if (existingBySlug) {
       return res.status(409).json({ error: "Ce nom de boutique existe déjà" });
+    }
+
+    // Créer un client Stripe avec les métadonnées
+    let stripeCustomerId = null;
+    console.log("name:", name);
+    console.log("phone:", phone);
+    console.log("address:", address);
+    console.log("clerkUserId:", clerkUserId);
+    if (name && phone && address && clerkUserId) {
+      console.log(
+        "name && phone && address && clerkUserId",
+        name && phone && address && clerkUserId
+      );
+      try {
+        const stripeCustomer = await stripe.customers.create({
+          email: ownerEmail,
+          name: name,
+          phone: phone,
+          address: {
+            line1: address.line1,
+            line2: address.line2 || "",
+            city: address.city,
+            state: address.state || "",
+            postal_code: address.postal_code,
+            country: address.country || "FR",
+          },
+          metadata: {
+            store_name: storeName,
+            clerk_user_id: clerkUserId,
+          },
+        });
+        stripeCustomerId = stripeCustomer.id;
+        console.log("stripeCustomerId:", stripeCustomerId);
+      } catch (stripeError) {
+        console.error(
+          "Erreur lors de la création du client Stripe:",
+          stripeError
+        );
+        // On continue sans le client Stripe si ça échoue
+      }
     }
 
     const { data, error } = await supabase
@@ -163,10 +231,11 @@ router.post("/", async (req, res) => {
         {
           name: storeName,
           slug: slug,
-          description: storeDescription || '',
+          description: storeDescription || "",
           owner_email: ownerEmail,
           logo: logoUrl || null,
-        }
+          stripe_id: stripeCustomerId,
+        },
       ])
       .select()
       .single();
@@ -178,9 +247,9 @@ router.post("/", async (req, res) => {
         .json({ error: "Erreur lors de la création de la boutique" });
     }
 
-    return res.status(201).json({ 
-      success: true, 
-      store: data 
+    return res.status(201).json({
+      success: true,
+      store: data,
     });
   } catch (error) {
     console.error("Erreur serveur:", error);
@@ -205,11 +274,13 @@ router.get("/:storeSlug", async (req, res) => {
       .single();
 
     if (error) {
-      if ((error as any)?.code === 'PGRST116') {
+      if ((error as any)?.code === "PGRST116") {
         return res.status(404).json({ error: "Boutique non trouvée" });
       }
       console.error("Erreur Supabase:", error);
-      return res.status(500).json({ error: "Erreur lors de la récupération de la boutique" });
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la récupération de la boutique" });
     }
 
     return res.json({ success: true, store });
