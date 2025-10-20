@@ -71,8 +71,7 @@ export default function OrdersPage() {
     <div className='max-w-6xl mx-auto px-4 py-8'>
       <div className='text-center mb-8'>
         <ShoppingBag className='h-12 w-12 text-amber-600 mx-auto mb-4' />
-        <h1 className='text-3xl font-bold text-gray-900 mb-2'>LM OUTLET</h1>
-        <p className='text-gray-600'>LIVE SHOP</p>
+        <h1 className='text-3xl font-bold text-gray-900 mb-2'>PayLive</h1>
       </div>
 
       <div className='bg-white rounded-lg shadow-md p-8'>

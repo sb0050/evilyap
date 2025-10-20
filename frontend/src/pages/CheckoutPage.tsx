@@ -25,6 +25,7 @@ import ParcelPointMap from '../components/ParcelPointMap';
 import { ParcelPointData } from '../components/ParcelPointMap';
 import { apiPost } from '../utils/api';
 import { Address } from '@stripe/stripe-js';
+import Header from '../components/Header';
 
 interface Store {
   id: number;
@@ -361,6 +362,7 @@ export default function CheckoutPage() {
 
   return (
     <StripeWrapper>
+      <Header />
       <div className='min-h-screen bg-gray-50 py-8'>
         {toast && (
           <div

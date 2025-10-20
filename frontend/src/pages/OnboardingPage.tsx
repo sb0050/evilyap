@@ -35,14 +35,25 @@ export default function OnboardingPage() {
 
   const handleLogoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      setFormData({ ...formData, logo: file });
-      const reader = new FileReader();
-      reader.onload = e => {
-        setLogoPreview(e.target?.result as string);
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+
+    const allowedMimes = ['image/png', 'image/jpeg'];
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    const allowedExts = ['png', 'jpg', 'jpeg'];
+    const isMimeOk = allowedMimes.includes(file.type);
+    const isExtOk = !!ext && allowedExts.includes(ext);
+
+    if (!isMimeOk && !isExtOk) {
+      showToast('Format de logo invalide. Utilisez PNG ou JPG/JPEG.', 'error');
+      return;
     }
+
+    setFormData({ ...formData, logo: file });
+    const reader = new FileReader();
+    reader.onload = e => {
+      setLogoPreview(e.target?.result as string);
+    };
+    reader.readAsDataURL(file);
   };
 
   
@@ -250,7 +261,7 @@ export default function OnboardingPage() {
                     <input
                       type='file'
                       className='hidden'
-                      accept='image/*'
+                      accept='image/png, image/jpeg'
                       onChange={handleLogoChange}
                     />
                   </label>

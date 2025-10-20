@@ -30,12 +30,7 @@ function App() {
   }
 
   return (
-    <ClerkProvider
-      publishableKey={publishableKey}
-      appearance={{
-        baseTheme: [dark, neobrutalism],
-      }}
-    >
+    <ClerkProvider publishableKey={publishableKey}>
       <Router>
         <div className='min-h-screen bg-gray-50'>
           <Routes>
@@ -95,10 +90,7 @@ function App() {
                 </SignedIn>
               }
             />
-            <Route
-              path='/payment/return'
-              element={<PaymentReturnPage />}
-            />
+            <Route path='/payment/return' element={<PaymentReturnPage />} />
           </Routes>
         </div>
       </Router>

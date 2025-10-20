@@ -310,7 +310,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           productReference || ""
         }`,
         metadata: {
-          store_name: storeName || "LIVE SHOPPING APP",
+          store_name: storeName || "PayLive",
           product_reference: productReference || "N/A",
           delivery_method: deliveryMethod || "",
           delivery_network: deliveryNetwork || "",
@@ -321,7 +321,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       },
       // Duplicate useful metadata at the session level for easier retrieval
       metadata: {
-        store_name: storeName || "LIVE SHOPPING APP",
+        store_name: storeName || "PayLive",
         product_reference: productReference || "N/A",
         delivery_method: deliveryMethod || "",
         delivery_network: deliveryNetwork || "",
@@ -435,7 +435,7 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
       amount: session.amount_total || 0,
       currency: session.currency || "eur",
       reference: referenceFromSession || "N/A",
-      storeName: storeNameFromSession || "LIVE SHOPPING APP",
+      storeName: storeNameFromSession || "PayLive",
       customerEmail: customer?.email || "N/A",
       customerPhone: customer?.phone || "N/A",
       status: session.payment_status,
@@ -612,8 +612,8 @@ router.post(
                 email:
                   process.env.BOXTAL_SENDER_EMAIL || "no-reply@example.com",
                 phone: process.env.BOXTAL_SENDER_PHONE || "33666366588",
-                lastName: process.env.BOXTAL_SENDER_NAME || "LM Outlet",
-                firstName: process.env.BOXTAL_SENDER_NAME || "LM Outlet",
+                lastName: process.env.BOXTAL_SENDER_NAME || "PayLive",
+                firstName: process.env.BOXTAL_SENDER_NAME || "PayLive",
               },
               location: {
                 city: process.env.BOXTAL_SENDER_CITY || "Paris",

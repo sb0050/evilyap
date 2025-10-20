@@ -65,7 +65,7 @@ interface StoreOwnerEmailData {
     filename: string;
     content: Buffer;
     contentType?: string;
-  }>; 
+  }>;
   // Note additionnelle (ex: bordereau envoyé ultérieurement)
   documentPendingNote?: string;
 }
@@ -400,14 +400,14 @@ class EmailService {
               
               <p><strong>Action requise :</strong> Veuillez préparer et expédier la commande dans les plus brefs délais.</p>
         
-              <p><strong>L'équipe Live Shopping</strong></p>
+              <p><strong>L'équipe PayLive</strong></p>
             </div>
             
             <div class="footer">
               <p>Cet email a été envoyé automatiquement depuis votre boutique ${
                 data.storeName
               }</p>
-              <p>© ${new Date().getFullYear()} Live Shopping App - Tous droits réservés</p>
+              <p>© ${new Date().getFullYear()} PayLive - Tous droits réservés</p>
             </div>
           </div>
         </body>
@@ -415,7 +415,7 @@ class EmailService {
       `;
 
       const mailOptions = {
-        from: `"Live Shopping - ${data.storeName}" <${process.env.SMTP_USER}>`,
+        from: `"PayLive - ${data.storeName}" <${process.env.SMTP_USER}>`,
         to: data.ownerEmail,
         subject: `💰 Nouvelle commande reçue - ${formattedAmount} - ${data.storeName}`,
         html: htmlContent,
@@ -598,7 +598,9 @@ class EmailService {
                 <p class="kv"><strong>Réseau :</strong> ${
                   data.deliveryNetwork || "N/A"
                 }</p>
-                <p class="kv"><strong>Point relais </strong>(${data.pickupPointCode || "N/A"})</p>
+                <p class="kv"><strong>Point relais </strong>(${
+                  data.pickupPointCode || "N/A"
+                })</p>
               </div>
 
               <div class="section">
@@ -617,7 +619,9 @@ class EmailService {
 
               <div class="section">
                 <h3>Détails d'erreur</h3>
-                <p>${data.errorDetails || "Document Boxtal non disponible (422)"}</p>
+                <p>${
+                  data.errorDetails || "Document Boxtal non disponible (422)"
+                }</p>
                 ${
                   data.additionalNote
                     ? `<div class="note">${data.additionalNote}</div>`
@@ -626,7 +630,7 @@ class EmailService {
               </div>
 
               <p>Merci de vérifier la disponibilité des documents côté Boxtal et de relancer la génération si nécessaire.</p>
-              <p><strong>Live Shopping - Service SAV</strong></p>
+              <p><strong>PayLive - Service SAV</strong></p>
             </div>
             <div class="footer">
               <p>Cet email a été envoyé automatiquement suite à une indisponibilité de document d'expédition.</p>
@@ -637,7 +641,7 @@ class EmailService {
       `;
 
       const mailOptions = {
-        from: `"Live Shopping SAV" <${process.env.SMTP_USER}>`,
+        from: `"PayLive SAV" <${process.env.SMTP_USER}>`,
         to: savEmail,
         subject: `🚨 SAV: Document Boxtal indisponible (422) - ${data.storeName}`,
         html: htmlContent,
@@ -687,12 +691,30 @@ class EmailService {
               <h2>Bonjour ${data.customerName || ""},</h2>
               <p>Le suivi de votre envoi a été mis à jour.</p>
               <div class="order-details">
-                <p><strong>Commande d'expédition :</strong> ${data.shippingOrderId}</p>
+                <p><strong>Commande d'expédition :</strong> ${
+                  data.shippingOrderId
+                }</p>
                 <p><strong>Statut :</strong> ${data.status}</p>
-                ${data.message ? `<p><strong>Message :</strong> ${data.message}</p>` : ""}
-                ${data.trackingNumber ? `<p><strong>Numéro de suivi :</strong> ${data.trackingNumber}</p>` : ""}
-                ${data.packageId ? `<p><strong>ID colis :</strong> ${data.packageId}</p>` : ""}
-                ${data.packageTrackingUrl ? `<p><a class="btn" href="${data.packageTrackingUrl}" target="_blank" rel="noopener">Voir le suivi</a></p>` : ""}
+                ${
+                  data.message
+                    ? `<p><strong>Message :</strong> ${data.message}</p>`
+                    : ""
+                }
+                ${
+                  data.trackingNumber
+                    ? `<p><strong>Numéro de suivi :</strong> ${data.trackingNumber}</p>`
+                    : ""
+                }
+                ${
+                  data.packageId
+                    ? `<p><strong>ID colis :</strong> ${data.packageId}</p>`
+                    : ""
+                }
+                ${
+                  data.packageTrackingUrl
+                    ? `<p><a class="btn" href="${data.packageTrackingUrl}" target="_blank" rel="noopener">Voir le suivi</a></p>`
+                    : ""
+                }
               </div>
               <p>Merci pour votre confiance.</p>
               <p><strong>L'équipe ${data.storeName}</strong></p>
