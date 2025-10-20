@@ -71,7 +71,7 @@ router.get("/check-owner/:email", async (req, res) => {
 
     const { data, error } = await supabase
       .from("stores")
-      .select("name, owner_email, slug")
+      .select("name, owner_email, slug, rib")
       .eq("owner_email", email)
       .single();
 
@@ -90,8 +90,28 @@ router.get("/check-owner/:email", async (req, res) => {
       exists: true, 
       storeName: data.name,
       ownerEmail: data.owner_email,
-      slug: (data as any)?.slug
+      slug: (data as any)?.slug,
+      rib: (data as any)?.rib || null
     });
+  } catch (error) {
+    console.error("Erreur serveur:", error);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+// Nouvelle route: GET /api/stores/wallet-balance?ownerEmail=...
+router.get("/wallet-balance", async (req, res) => {
+  try {
+    const ownerEmail = (req.query.ownerEmail as string) || "";
+    if (!ownerEmail) {
+      return res.status(400).json({ error: "ownerEmail requis" });
+    }
+
+    // Placeholder: à remplacer par une vraie logique de calcul
+    // Exemple: agrégation de paiements Stripe ou table des commandes
+    const availableBalance = 0;
+
+    return res.json({ success: true, balance: availableBalance });
   } catch (error) {
     console.error("Erreur serveur:", error);
     return res.status(500).json({ error: "Erreur interne du serveur" });

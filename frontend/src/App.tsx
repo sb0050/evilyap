@@ -36,13 +36,11 @@ function App() {
           <Routes>
             <Route path='/' element={<LandingPage />} />
             <Route
-              path='/stores'
+              path='/checkout/:storeName'
               element={
                 <>
                   <SignedIn>
-                    <AuthRedirect>
-                      <CheckoutPage />
-                    </AuthRedirect>
+                    <CheckoutPage />
                   </SignedIn>
                   <SignedOut>
                     <RedirectToSignUp />
@@ -51,46 +49,31 @@ function App() {
               }
             />
             <Route
-              path='/store/:storeName'
-              element={
-                <SignedIn>
-                  <StorePage />
-                </SignedIn>
-              }
-            />
-            <Route
-              path='/checkout/:storeName'
-              element={
-                <SignedIn>
-                  <CheckoutPage />
-                </SignedIn>
-              }
-            />
-            <Route
-              path='/account'
-              element={
-                <SignedIn>
-                  <AccountPage />
-                </SignedIn>
-              }
-            />
-            <Route
-              path='/orders'
-              element={
-                <SignedIn>
-                  <OrdersPage />
-                </SignedIn>
-              }
-            />
-            <Route
               path='/onboarding'
               element={
-                <SignedIn>
-                  <OnboardingPage />
-                </SignedIn>
+                <>
+                  <SignedIn>
+                    <OnboardingPage />
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
               }
             />
-            <Route path='/payment/return' element={<PaymentReturnPage />} />
+            <Route
+              path='/payment/return'
+              element={
+                <>
+                  <SignedIn>
+                    <PaymentReturnPage />
+                  </SignedIn>
+                  <SignedOut>
+                    <LandingPage />
+                  </SignedOut>
+                </>
+              }
+            />
           </Routes>
         </div>
       </Router>

@@ -1,6 +1,7 @@
 import express from "express";
 import multer from "multer";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { createClient } from "@supabase/supabase-js";
 
 const router = express.Router();
 
@@ -22,7 +23,15 @@ const s3Client = new S3Client({
   },
 });
 
-const upload = multer({
+// Supabase client (pour mise à jour du champ rib)
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_ANON_KEY;
+if (!supabaseUrl || !supabaseKey) {
+  console.error("Supabase environment variables are missing");
+}
+const supabase = createClient(supabaseUrl!, supabaseKey!);
+
+const uploadImages = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (req, file, cb) => {
@@ -31,16 +40,32 @@ const upload = multer({
   },
 });
 
+const uploadDocs = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB pour RIB
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "application/pdf",
+      "image/jpeg",
+      "image/jpg",
+      "image/png",
+    ];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error("Type de fichier non autorisé (PDF, JPG/JPEG, PNG)"));
+  },
+});
+
 const getExtFromMime = (mime: string): string => {
   if (mime === "image/jpeg" || mime === "image/jpg") return ".jpg";
   if (mime === "image/png") return ".png";
   if (mime === "image/webp") return ".webp";
   if (mime === "image/gif") return ".gif";
-  return ".jpg"; // default to .jpg
+  if (mime === "application/pdf") return ".pdf";
+  return ".bin";
 };
 
-// POST /api/upload
-router.post("/", upload.single("image"), async (req, res) => {
+// POST /api/upload (images)
+router.post("/", uploadImages.single("image"), async (req, res) => {
   try {
     const slug = (req.body?.slug as string)?.trim();
     if (!req.file) {
@@ -74,6 +99,56 @@ router.post("/", upload.single("image"), async (req, res) => {
   } catch (error) {
     console.error("Upload error:", error);
     return res.status(500).json({ error: "Upload failed" });
+  }
+});
+
+// POST /api/upload/rib (documents)
+router.post("/rib", uploadDocs.single("document"), async (req, res) => {
+  try {
+    const slug = (req.body?.slug as string)?.trim();
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+    if (!slug) {
+      return res.status(400).json({ error: "Slug requis" });
+    }
+
+    const ext = getExtFromMime(req.file.mimetype);
+    const baseName = `${slug}-rib${ext}`;
+    const key = `documents/${baseName}`;
+
+    const params = {
+      Bucket: awsBucket!,
+      Key: key,
+      Body: req.file.buffer,
+      ContentType: req.file.mimetype,
+    };
+
+    const command = new PutObjectCommand(params);
+    await s3Client.send(command);
+
+    const url = `${cloudFrontUrl}/${key}`;
+
+    // Mettre à jour la colonne rib dans la table stores
+    const { error: supError } = await supabase
+      .from("stores")
+      .update({ rib: url })
+      .eq("slug", slug);
+
+    if (supError) {
+      console.error("Erreur Supabase (update rib):", supError);
+      return res.status(500).json({ error: "RIB uploadé mais mise à jour DB échouée" });
+    }
+
+    return res.json({
+      success: true,
+      message: "RIB uploaded successfully",
+      url,
+      fileName: key,
+    });
+  } catch (error) {
+    console.error("Upload RIB error:", error);
+    return res.status(500).json({ error: "Upload RIB failed" });
   }
 });
 

@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { useUser } from '@clerk/clerk-react';
-import { useNavigate } from 'react-router-dom';
 import { Upload } from 'lucide-react';
 
 import slugify from 'slugify';
 import { apiGet, apiPost, apiPostForm } from '../utils/api';
 import { Toast } from '../components/Toast';
 import { useToast } from '../utils/toast';
+import Header from '../components/Header';
 
 interface OnboardingFormData {
   storeName: string;
@@ -17,7 +17,6 @@ interface OnboardingFormData {
 
 export default function OnboardingPage() {
   const { user } = useUser();
-  const navigate = useNavigate();
   const { toast, showToast } = useToast();
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState<OnboardingFormData>({
@@ -173,9 +172,11 @@ export default function OnboardingPage() {
   // Toast notifications rendered when present
 
   return (
-    <div className='min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8'>
-      {toast && <Toast message={toast.message} type={toast.type} />}
-      <div className='max-w-2xl mx-auto'>
+    <div className='min-h-screen bg-gray-50'>
+      <Header />
+      <div className='py-12 px-4 sm:px-6 lg:px-8'>
+        {toast && <Toast message={toast.message} type={toast.type} />}
+        <div className='max-w-2xl mx-auto'>
         <div className='text-center mb-8'>
           <img
             src='/logo_paylive.png'
@@ -291,5 +292,6 @@ export default function OnboardingPage() {
         </div>
       </div>
     </div>
+  </div>
   );
 }
