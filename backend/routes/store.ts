@@ -71,7 +71,7 @@ router.get("/check-owner/:email", async (req, res) => {
 
     const { data, error } = await supabase
       .from("stores")
-      .select("name, owner_email")
+      .select("name, owner_email, slug")
       .eq("owner_email", email)
       .single();
 
@@ -89,7 +89,8 @@ router.get("/check-owner/:email", async (req, res) => {
     return res.json({ 
       exists: true, 
       storeName: data.name,
-      ownerEmail: data.owner_email 
+      ownerEmail: data.owner_email,
+      slug: (data as any)?.slug
     });
   } catch (error) {
     console.error("Erreur serveur:", error);

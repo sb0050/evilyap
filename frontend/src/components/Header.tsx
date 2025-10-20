@@ -22,13 +22,7 @@ export default function Header() {
 
           <nav className='flex items-center space-x-6'>
             <SignedIn>
-              <Link to='/orders' className='text-gray-700 hover:text-gray-900'>
-                Orders
-              </Link>
-              <Link to='/account' className='text-gray-700 hover:text-gray-900'>
-                Account
-              </Link>
-              <UserButton afterSignOutUrl='/' />
+              <UserButton />
             </SignedIn>
             <SignedOut>
               <SignInButton mode='modal'>

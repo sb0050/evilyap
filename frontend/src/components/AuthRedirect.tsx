@@ -6,6 +6,7 @@ interface StoreCheckResponse {
   exists: boolean;
   storeName?: string;
   ownerEmail?: string;
+  slug?: string;
 }
 
 interface AuthRedirectProps {
@@ -42,10 +43,10 @@ export default function AuthRedirect({ children }: AuthRedirectProps) {
 
         const data: StoreCheckResponse = await response.json();
 
-        if (data.exists && data.storeName) {
-          // L'utilisateur a déjà une boutique, rediriger vers sa boutique
-          const storeSlug = data.storeName.toLowerCase().replace(/\s+/g, '-');
-          navigate(`/store/${storeSlug}`);
+        if (data.exists && (data.slug || data.storeName)) {
+          // L'utilisateur a déjà une boutique, rediriger vers checkout/<slug>
+          const storeSlug = data.slug || data.storeName!.toLowerCase().replace(/\s+/g, '-');
+          navigate(`/checkout/${storeSlug}`);
         } else {
           // L'utilisateur n'a pas de boutique, rediriger vers onboarding
           navigate('/onboarding');

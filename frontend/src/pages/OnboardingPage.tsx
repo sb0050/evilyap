@@ -90,7 +90,7 @@ export default function OnboardingPage() {
 
       if (response.ok) {
         console.log('Store created successfully:', result);
-        window.location.href = `/store/${encodeURIComponent(slug)}`;
+        window.location.href = `/checkout/${encodeURIComponent(slug)}`;
       } else {
         throw new Error(
           result.error || 'Erreur lors de la création de la boutique'
