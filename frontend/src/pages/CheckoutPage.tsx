@@ -34,6 +34,16 @@ interface Store {
   description: string;
   theme: string;
   owner_email: string;
+  stripe_id?: string;
+  website?: string;
+  address?: {
+    city?: string;
+    line1?: string;
+    line2?: string;
+    country?: string;
+    postal_code?: string;
+    phone?: string;
+  } | null;
 }
 
 interface CustomerData {
@@ -71,8 +81,8 @@ export default function CheckoutPage() {
   const [selectedParcelPoint, setSelectedParcelPoint] =
     useState<ParcelPointData>();
   const [deliveryMethod, setDeliveryMethod] = useState<
-    'home_delivery' | 'pickup_point'
-  >('home_delivery');
+    'home_delivery' | 'pickup_point' | 'store_pickup'
+  >('pickup_point');
   const [isFormValid, setIsFormValid] = useState(false);
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
   const [amountInput, setAmountInput] = useState('');
@@ -80,6 +90,12 @@ export default function CheckoutPage() {
   const [showPayment, setShowPayment] = useState(false);
   const [email, setEmail] = useState('');
 
+  const [storePickupAddress, setStorePickupAddress] = useState<
+    Address | undefined
+  >();
+  const [storePickupPhone, setStorePickupPhone] = useState<
+    string | undefined
+  >();
   const [deliveryCost, setDeliveryCost] = useState<number>(0);
   const [selectedWeight, setSelectedWeight] = useState<string>('250g');
   const [toast, setToast] = useState<{
@@ -132,6 +148,26 @@ export default function CheckoutPage() {
         }
 
         setStore(data.store);
+        const addr = data.store?.address;
+        if (addr && typeof addr === 'object') {
+          const mapped: Address = {
+            city: addr.city || undefined,
+            country: addr.country || undefined,
+            line1: addr.line1 || undefined,
+            line2: addr.line2 || undefined,
+            postal_code: addr.postal_code || undefined,
+            state: addr.state || undefined,
+          };
+          setStorePickupAddress(
+            mapped.line1 && mapped.postal_code && mapped.city
+              ? mapped
+              : undefined
+          );
+          setStorePickupPhone(addr.phone || undefined);
+        } else {
+          setStorePickupAddress(undefined);
+          setStorePickupPhone(undefined);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Erreur inconnue');
       } finally {
@@ -227,7 +263,11 @@ export default function CheckoutPage() {
               (address as any)?.line1 &&
               (formData as any).shippingOfferCode
           )
-        : Boolean(selectedParcelPoint);
+        : deliveryMethod === 'pickup_point'
+          ? Boolean(selectedParcelPoint)
+          : deliveryMethod === 'store_pickup'
+            ? Boolean(storePickupAddress?.line1)
+            : false;
     const hasContactInfo =
       Boolean((formData.name || '').trim()) &&
       Boolean((formData.phone || '').trim());
@@ -248,10 +288,24 @@ export default function CheckoutPage() {
         email: email || user.primaryEmailAddress.emailAddress,
         name: formData.name,
         phone: formData.phone,
-        address: deliveryMethod === 'home_delivery' ? address : null,
+        address:
+          deliveryMethod === 'home_delivery'
+            ? address
+            : deliveryMethod === 'store_pickup'
+              ? storePickupAddress
+              : null,
         delivery_method: deliveryMethod,
         parcel_point:
           deliveryMethod === 'pickup_point' ? selectedParcelPoint : null,
+      };
+
+      const blankAddr = {
+        line1: '',
+        line2: '',
+        city: '',
+        state: '',
+        postal_code: '',
+        country: 'FR',
       };
 
       const payloadData = {
@@ -276,8 +330,10 @@ export default function CheckoutPage() {
         deliveryCost,
         selectedWeight,
         deliveryNetwork:
-          selectedParcelPoint?.shippingOfferCode ||
-          (formData as any).shippingOfferCode,
+          deliveryMethod === 'store_pickup'
+            ? 'STORE_PICKUP'
+            : selectedParcelPoint?.shippingOfferCode ||
+              (formData as any).shippingOfferCode,
       };
 
       const response = await fetch(
@@ -324,7 +380,7 @@ export default function CheckoutPage() {
       <div className='min-h-screen flex items-center justify-center'>
         <div className='text-center'>
           <div className='animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4'></div>
-          <p className='text-gray-600'>Chargement...</p>
+          <p className='text-gray-600'>Chargement de la boutique...</p>
         </div>
       </div>
     );
@@ -334,9 +390,13 @@ export default function CheckoutPage() {
     return (
       <div className='min-h-screen flex items-center justify-center'>
         <div className='text-center'>
-          <div className='text-red-500 text-xl mb-4'>❌</div>
-          <h2 className='text-xl font-semibold text-gray-900 mb-2'>Erreur</h2>
-          <p className='text-gray-600'>{error}</p>
+          <div className='text-gray-400 text-xl mb-4'>🏪</div>
+          <h2 className='text-xl font-semibold text-gray-900 mb-2'>
+            Boutique non trouvée
+          </h2>
+          <p className='text-gray-600'>
+            La boutique "{storeName}" n'existe pas ou n'est plus disponible.
+          </p>
         </div>
       </div>
     );
@@ -443,6 +503,8 @@ export default function CheckoutPage() {
                   setFormData={setFormData}
                   address={address}
                   setAddress={setAddress}
+                  storePickupAddress={storePickupAddress}
+                  storePickupPhone={storePickupPhone}
                   selectedParcelPoint={selectedParcelPoint}
                   setSelectedParcelPoint={setSelectedParcelPoint}
                   deliveryMethod={deliveryMethod}
@@ -492,7 +554,9 @@ export default function CheckoutPage() {
                       <strong>Livraison:</strong>{' '}
                       {deliveryMethod === 'home_delivery'
                         ? 'À domicile'
-                        : 'Point relais'}
+                        : deliveryMethod === 'pickup_point'
+                          ? 'Point relais'
+                          : 'Retrait en magasin'}
                     </p>
                     {deliveryMethod === 'home_delivery' && address && (
                       <p>
@@ -587,6 +651,8 @@ function CheckoutForm({
   setFormData,
   address,
   setAddress,
+  storePickupAddress,
+  storePickupPhone,
   selectedParcelPoint,
   setSelectedParcelPoint,
   deliveryMethod,
@@ -621,9 +687,11 @@ function CheckoutForm({
   setFormData: any;
   address: any;
   setAddress: any;
+  storePickupAddress: any;
+  storePickupPhone: string | undefined;
   selectedParcelPoint: any;
   setSelectedParcelPoint: any;
-  deliveryMethod: 'home_delivery' | 'pickup_point';
+  deliveryMethod: 'home_delivery' | 'pickup_point' | 'store_pickup';
   setDeliveryMethod: any;
   isFormValid: boolean;
   setIsFormValid: any;
@@ -642,7 +710,7 @@ function CheckoutForm({
   setEmail: any;
   themeColor: string;
   deliveryCost: number;
-  setDeliveryCost: (n: number) => void;
+  setDeliveryCost: any;
   selectedWeight: string;
   setSelectedWeight: any;
 }) {
@@ -803,14 +871,18 @@ function CheckoutForm({
       {/* ParcelPointMap (gère la méthode de livraison en interne et se met à jour sur changement d’adresse) */}
       <div className='mt-6'>
         {(() => {
-          const preferredDeliveryMethod =
+          const preferredDeliveryMethodRaw =
             (customerData as any)?.deliveryMethod ||
             (customerData as any)?.metadata?.delivery_method ||
             deliveryMethod;
+          const preferredDeliveryMethod = preferredDeliveryMethodRaw;
 
           return (
             <ParcelPointMap
               address={address}
+              storePickupAddress={storePickupAddress}
+              storePickupPhone={storePickupPhone}
+              storeWebsite={store?.website}
               onParcelPointSelect={(
                 point,
                 method,
@@ -819,7 +891,6 @@ function CheckoutForm({
                 shippingOfferCode
               ) => {
                 if (typeof shippingOfferCode === 'string') {
-                  // Stocker le shippingOfferCode pour succès page et metadata
                   setFormData((prev: any) => ({
                     ...prev,
                     shippingOfferCode,
@@ -835,7 +906,6 @@ function CheckoutForm({
                   }
                 } else {
                   setSelectedParcelPoint(point);
-                  // IMPORTANT: Réinitialiser le shippingOfferCode dans formData quand pas de shippingOfferCode
                   setFormData((prev: any) => ({
                     ...prev,
                     shippingOfferCode: null,

@@ -280,10 +280,10 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     }
 
     const formatDeliveryMethod = (deliveryMethod: string) => {
-      if (deliveryMethod === "pickup_point") {
-        return "par point relais";
-      }
-      return "à domicile";
+      if (deliveryMethod === "pickup_point") return "par point relais";
+      if (deliveryMethod === "home_delivery") return "à domicile";
+      if (deliveryMethod === "store_pickup") return "retrait en magasin";
+      return deliveryMethod || "inconnue";
     };
 
     // 1. Créer un produit
@@ -649,17 +649,18 @@ router.post(
               dropOffPointCode: dropOffPointCode,
             };
 
-            const createOrderPayload: any = {
-              insured: false,
-              shipment,
-              labelType: "PDF_A4",
-              shippingOfferCode: deliveryNetwork,
-            };
+            if (deliveryMethod === "pickup_point") {
+              const createOrderPayload: any = {
+                insured: false,
+                shipment,
+                labelType: "PDF_A4",
+                shippingOfferCode: deliveryNetwork,
+              };
 
-            console.log(
-              "createOrderPayload:",
-              JSON.stringify(createOrderPayload)
-            );
+              console.log(
+                "createOrderPayload:",
+                JSON.stringify(createOrderPayload)
+              );
 
             // Call internal Boxtal shipping-orders endpoint
             const apiBase =
@@ -992,6 +993,8 @@ router.post(
               }
             }
 
+            } // end if deliveryMethod === "pickup_point"
+
             // Envoyer l'email de confirmation au client
             try {
               console.log("estimatedDeliveryDate:", estimatedDeliveryDate);
@@ -1060,5 +1063,37 @@ router.post(
     res.json({ received: true });
   }
 );
+
+// Nouveau endpoint: récupérer un client Stripe par son ID
+router.get("/get-customer-by-id", async (req, res) => {
+  const { customerId } = req.query;
+  if (!customerId) {
+    res.status(400).json({ error: "Customer ID is required" });
+    return;
+  }
+  try {
+    const customer = await stripe.customers.retrieve(customerId as string);
+    if (!customer || (customer as any).deleted) {
+      res.status(404).json({ error: "Customer not found" });
+      return;
+    }
+    const c = customer as Stripe.Customer;
+    const customerData = {
+      name: c.name,
+      phone: c.phone,
+      email: c.email,
+      address: c.address,
+      shipping: c.shipping,
+      deliveryMethod: c.metadata?.delivery_method,
+      parcelPointCode: c.metadata?.parcel_point_code,
+      homeDeliveryNetwork: c.metadata?.home_delivery_network,
+      shippingOrderIds: c.metadata?.shipping_order_ids,
+    } as any;
+    res.json({ customer: customerData });
+  } catch (error) {
+    console.error("Error retrieving customer by ID:", error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
 
 export default router;

@@ -4,6 +4,7 @@ import L from 'leaflet';
 import { useEffect, useState, useRef } from 'react';
 import { createShippingOrder } from '../utils/api';
 import { CreateShippingOrderRequest } from '../types/shipping';
+import { Address } from '@stripe/stripe-js';
 
 // Types pour les points relais selon la réponse Boxtal
 interface OpeningHours {
@@ -224,11 +225,31 @@ const networkConfig = {
 
 // Configuration des options de livraison à domicile
 const homeDeliveryConfig = {
+  MONR_HOME: {
+    name: 'Mondial Relay - Domicile France',
+    color: '#10B981',
+    delay: '5 jours',
+    shippingOfferCode: 'MONR-DomicileFrance',
+    disabled: false,
+    prices: {
+      '250g': 6.27,
+      '500g': 6.83,
+      '1kg': 7.66,
+      '2kg': 8.91,
+      '3kg': 10.5,
+      '5kg': 12.61,
+      '7kg': 13.67,
+      '10kg': 16.81,
+      '15kg': 21.02,
+      '20kg': 34.7,
+      '30kg': 34.7,
+    },
+  },
   COPR_HOME: {
     name: 'Colis Privé - Domicile Sans Signature',
     color: '#8B5CF6',
     delay: '6 jours',
-    disabled: false,
+    disabled: true,
     shippingOfferCode: 'COPR-CoprRelaisDomicileNat',
     prices: {
       '250g': 5.3,
@@ -264,26 +285,6 @@ const homeDeliveryConfig = {
       '30kg': 39.09,
     },
   },
-  MONR_HOME: {
-    name: 'Mondial Relay - Domicile France',
-    color: '#10B981',
-    delay: '5 jours',
-    shippingOfferCode: 'MONR-DomicileFrance',
-    disabled: false,
-    prices: {
-      '250g': 6.27,
-      '500g': 6.83,
-      '1kg': 7.66,
-      '2kg': 8.91,
-      '3kg': 10.5,
-      '5kg': 12.61,
-      '7kg': 13.67,
-      '10kg': 16.81,
-      '15kg': 21.02,
-      '20kg': 34.7,
-      '30kg': 34.7,
-    },
-  },
 };
 
 interface ParcelPointMapProps {
@@ -291,17 +292,21 @@ interface ParcelPointMapProps {
     line1?: string;
     line2?: string;
     city?: string;
+    state?: string;
     postal_code?: string;
     country?: string;
-  };
+  } | null;
+  storePickupAddress?: Address | null;
+  storePickupPhone?: string;
+  storeWebsite?: string;
   onParcelPointSelect?: (
     parcelPoint: ParcelPointData | null,
-    deliveryMethod: 'home_delivery' | 'pickup_point',
+    deliveryMethod: 'home_delivery' | 'pickup_point' | 'store_pickup',
     deliveryCost?: number,
     selectedWeight?: string,
     shippingOfferCode?: string
   ) => void;
-  defaultDeliveryMethod?: 'home_delivery' | 'pickup_point';
+  defaultDeliveryMethod?: 'home_delivery' | 'pickup_point' | 'store_pickup';
   defaultParcelPoint?: ParcelPointData | null;
   defaultParcelPointCode?: string;
   disablePopupsOnMobile?: boolean;
@@ -332,8 +337,11 @@ function MapController({
 
 export default function ParcelPointMap({
   address,
+  storePickupAddress,
+  storePickupPhone,
+  storeWebsite,
   onParcelPointSelect,
-  defaultDeliveryMethod = 'home_delivery',
+  defaultDeliveryMethod = 'pickup_point',
   disablePopupsOnMobile = false,
 }: ParcelPointMapProps) {
   const [parcelPoints, setParcelPoints] = useState<ParcelPointResponse[]>([]);
@@ -343,9 +351,13 @@ export default function ParcelPointMap({
     null
   );
   const [networkFilter, setNetworkFilter] = useState<string>('ALL');
-  const [selectedWeight, setSelectedWeight] = useState<string>('250g');
+  const [selectedWeight, setSelectedWeight] = useState<string>('500g');
   const [deliveryType, setDeliveryType] = useState<string>(
-    defaultDeliveryMethod === 'pickup_point' ? 'PICKUP' : 'HOME'
+    defaultDeliveryMethod === 'pickup_point'
+      ? 'PICKUP'
+      : defaultDeliveryMethod === 'store_pickup'
+        ? 'STORE'
+        : 'HOME'
   );
   const [selectedHomeDelivery, setSelectedHomeDelivery] = useState<string>('');
   const [isCreatingOrder, setIsCreatingOrder] = useState<boolean>(false);
@@ -355,6 +367,49 @@ export default function ParcelPointMap({
   const refreshBtnRef = useRef<HTMLButtonElement | null>(null);
   const [canShowRefreshMessages, setCanShowRefreshMessages] =
     useState<boolean>(true);
+
+  // Helper pour changer le poids et propager au parent
+  const applyWeightChange = (newWeight: string) => {
+    setSelectedWeight(newWeight);
+    if (onParcelPointSelect) {
+      if (deliveryType === 'PICKUP') {
+        if (selectedPoint) {
+          const cost = getDeliveryPrice(selectedPoint.network);
+          const shippingOfferCode =
+            networkConfig[selectedPoint.network as keyof typeof networkConfig]?.shippingOfferCode;
+          onParcelPointSelect(
+            selectedPoint,
+            'pickup_point',
+            cost,
+            newWeight,
+            shippingOfferCode
+          );
+        } else {
+          onParcelPointSelect(null, 'pickup_point', 0, newWeight, undefined);
+        }
+      } else if (deliveryType === 'HOME') {
+        if (selectedHomeDelivery) {
+          const network = selectedHomeDelivery.replace('_HOME', '');
+          const cost = getDeliveryPrice(network, true);
+          const shippingOfferCode =
+            homeDeliveryConfig[
+              selectedHomeDelivery as keyof typeof homeDeliveryConfig
+            ]?.shippingOfferCode;
+          onParcelPointSelect(
+            null,
+            'home_delivery',
+            cost,
+            newWeight,
+            shippingOfferCode
+          );
+        } else {
+          onParcelPointSelect(null, 'home_delivery', 0, newWeight, undefined);
+        }
+      } else if (deliveryType === 'STORE') {
+        onParcelPointSelect(null, 'store_pickup', 0, newWeight, undefined);
+      }
+    }
+  };
 
   // useEffect de debug pour surveiller les changements d'état
   useEffect(() => {}, [
@@ -533,7 +588,11 @@ export default function ParcelPointMap({
   useEffect(() => {
     if (defaultDeliveryMethod) {
       setDeliveryType(
-        defaultDeliveryMethod === 'pickup_point' ? 'PICKUP' : 'HOME'
+        defaultDeliveryMethod === 'pickup_point'
+          ? 'PICKUP'
+          : defaultDeliveryMethod === 'store_pickup'
+            ? 'STORE'
+            : 'HOME'
       );
     }
   }, [defaultDeliveryMethod]);
@@ -563,9 +622,7 @@ export default function ParcelPointMap({
 
     if (type === 'HOME') {
       setSelectedPoint(null);
-      setSelectedHomeDelivery(''); // Remettre à null la sélection de livraison à domicile
-
-      // Notifier le parent que le point relais est désélectionné et qu'on passe à la livraison à domicile
+      setSelectedHomeDelivery('');
       if (onParcelPointSelect) {
         onParcelPointSelect(
           null,
@@ -576,13 +633,16 @@ export default function ParcelPointMap({
         );
       }
     } else if (type === 'PICKUP') {
-      setSelectedHomeDelivery(''); // Remettre à null la sélection de livraison à domicile
-      // Réinitialiser aussi le point relais sélectionné pour forcer une nouvelle sélection
+      setSelectedHomeDelivery('');
       setSelectedPoint(null);
-
-      // Notifier le parent qu'aucun point relais n'est sélectionné
       if (onParcelPointSelect) {
         onParcelPointSelect(null, 'pickup_point', 0, selectedWeight, undefined);
+      }
+    } else if (type === 'STORE') {
+      setSelectedHomeDelivery('');
+      setSelectedPoint(null);
+      if (onParcelPointSelect) {
+        onParcelPointSelect(null, 'store_pickup', 0, selectedWeight, undefined);
       }
     }
   };
@@ -614,8 +674,9 @@ export default function ParcelPointMap({
   // Filtrer les points relais selon le réseau sélectionné (sans UPS et DHL)
   const filteredParcelPoints = parcelPoints.filter(pointResponse => {
     const network = pointResponse.parcelPoint.network;
-    // Exclure UPS et DHL
-    if (network === 'UPSE' || network === 'DHLE') return false;
+    // Exclure UPS, DHL et Colis Privé
+    if (network === 'UPSE' || network === 'DHLE' || network === 'COPR')
+      return false;
     if (networkFilter === 'ALL') return true;
     return network === networkFilter;
   });
@@ -694,12 +755,7 @@ export default function ParcelPointMap({
         <div className='bg-slate-50 px-4 py-3 border-b border-gray-200'>
           <div className='flex items-center justify-between mb-3'>
             <h4 className='text-sm font-medium text-gray-900'>
-              Points relais à proximité
-              {needsRefresh && canShowRefreshMessages && (
-                <span className='ml-2 inline-flex items-center rounded-full bg-yellow-100 text-yellow-800 px-2 py-0.5 text-[10px] border border-yellow-200'>
-                  à mettre à jour
-                </span>
-              )}
+              Choisir sa livraison
             </h4>
             <div className='flex items-center space-x-2'>
               <div className='flex items-center space-x-2 text-xs text-gray-500'>
@@ -764,126 +820,255 @@ export default function ParcelPointMap({
                     Livraison à domicile
                   </span>
                 </label>
+                <label className='flex items-center space-x-1'>
+                  <input
+                    type='radio'
+                    name='deliveryType'
+                    value='STORE'
+                    checked={deliveryType === 'STORE'}
+                    onChange={e => handleDeliveryTypeChange(e.target.value)}
+                    className='text-blue-600'
+                  />
+                  <span className='text-xs text-gray-700'>
+                    Retrait en magasin
+                  </span>
+                </label>
               </div>
             </div>
 
             {/* Deuxième ligne : Filtres et poids */}
             <div className='flex items-center flex-wrap gap-4'>
               {deliveryType === 'PICKUP' && (
-                <div className='flex items-center space-x-2'>
-                  <label className='text-xs font-medium text-gray-700'>
-                    Filtrer par réseau:
-                  </label>
-                  <select
-                    value={networkFilter}
-                    onChange={e => setNetworkFilter(e.target.value)}
-                    className='text-xs border border-gray-300 rounded px-2 py-1 bg-white'
-                  >
-                    <option value='ALL'>Tous les réseaux</option>
-                    <option value='SOGP'>Relais Colis</option>
-                    <option value='MONR'>Mondial Relay</option>
-                    <option value='CHRP'>Chronopost</option>
-                    <option value='COPR'>Colis Privé</option>
-                  </select>
+                <div className='flex-1'>
+                  <div className='text-xs font-medium text-gray-700'>
+                    Choisis le réseau de livraison
+                  </div>
+                  <div className='mt-2 space-y-2'>
+                    <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
+                      <div>
+                        <div className='text-sm font-medium text-gray-900'>
+                          Tous les réseaux
+                        </div>
+                        <div className='text-xs text-gray-600'>
+                          Affiche tous les points relais disponibles.
+                        </div>
+                      </div>
+                      <input
+                        type='radio'
+                        name='networkFilter'
+                        value='ALL'
+                        checked={networkFilter === 'ALL'}
+                        onChange={e => setNetworkFilter(e.target.value)}
+                      />
+                    </label>
+                    <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
+                      <div>
+                        <div className='text-sm font-medium text-gray-900'>
+                          Relais Colis
+                        </div>
+                        <div className='text-xs text-gray-600'>
+                          Réseau SOGP – points relais bleus sur la carte.
+                        </div>
+                      </div>
+                      <input
+                        type='radio'
+                        name='networkFilter'
+                        value='SOGP'
+                        checked={networkFilter === 'SOGP'}
+                        onChange={e => setNetworkFilter(e.target.value)}
+                      />
+                    </label>
+                    <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
+                      <div>
+                        <div className='text-sm font-medium text-gray-900'>
+                          Mondial Relay
+                        </div>
+                        <div className='text-xs text-gray-600'>
+                          Réseau MONR – points relais verts sur la carte.
+                        </div>
+                      </div>
+                      <input
+                        type='radio'
+                        name='networkFilter'
+                        value='MONR'
+                        checked={networkFilter === 'MONR'}
+                        onChange={e => setNetworkFilter(e.target.value)}
+                      />
+                    </label>
+                    <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
+                      <div>
+                        <div className='text-sm font-medium text-gray-900'>
+                          Chronopost
+                        </div>
+                        <div className='text-xs text-gray-600'>
+                          Réseau CHRP – points relais orange sur la carte.
+                        </div>
+                      </div>
+                      <input
+                        type='radio'
+                        name='networkFilter'
+                        value='CHRP'
+                        checked={networkFilter === 'CHRP'}
+                        onChange={e => setNetworkFilter(e.target.value)}
+                      />
+                    </label>
+                  </div>
                 </div>
               )}
-              <div className='flex items-center space-x-2'>
-                <label className='text-xs font-medium text-gray-700'>
-                  Poids du colis:
-                </label>
-                <select
-                  id='weight'
-                  value={selectedWeight}
-                  onChange={e => {
-                    const newWeight = e.target.value;
-                    setSelectedWeight(newWeight);
-                    // Propager immédiatement le poids au parent afin qu'il soit pris en compte au paiement
-                    if (onParcelPointSelect) {
-                      if (deliveryType === 'PICKUP') {
-                        if (selectedPoint) {
-                          const cost = getDeliveryPrice(selectedPoint.network);
-                          const shippingOfferCode =
-                            networkConfig[selectedPoint.network as keyof typeof networkConfig]?.shippingOfferCode;
-                          onParcelPointSelect(
-                            selectedPoint,
-                            'pickup_point',
-                            cost,
-                            newWeight,
-                            shippingOfferCode
-                          );
-                        } else {
-                          onParcelPointSelect(null, 'pickup_point', 0, newWeight, undefined);
-                        }
-                      } else {
-                        if (selectedHomeDelivery) {
-                          const network = selectedHomeDelivery.replace('_HOME', '');
-                          const cost = getDeliveryPrice(network, true);
-                          const shippingOfferCode =
-                            homeDeliveryConfig[selectedHomeDelivery as keyof typeof homeDeliveryConfig]?.shippingOfferCode;
-                          onParcelPointSelect(
-                            null,
-                            'home_delivery',
-                            cost,
-                            newWeight,
-                            shippingOfferCode
-                          );
-                        } else {
-                          onParcelPointSelect(null, 'home_delivery', 0, newWeight, undefined);
-                        }
-                      }
-                    }
-                  }}
-                  className='text-xs border border-gray-300 rounded px-2 py-1 bg-white'
-                >
-                  <option value='250g'>250g</option>
-                  <option value='500g'>500g</option>
-                  <option value='1kg'>1kg</option>
-                  <option value='2kg'>2kg</option>
-                  <option value='3kg'>3kg</option>
-                  <option value='5kg'>5kg</option>
-                  <option value='7kg'>7kg</option>
-                  <option value='10kg'>10kg</option>
-                  <option value='15kg'>15kg</option>
-                  <option value='20kg'>20kg</option>
-                  <option value='30kg'>30kg</option>
-                </select>
+              <div className='flex-1'>
+                <div className='text-xs font-medium text-gray-700'>
+                  Choisis le format du colis
+                </div>
+                <div className='mt-2 space-y-2'>
+                  <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
+                    <div>
+                      <div className='text-sm font-medium text-gray-900'>
+                        Petit
+                      </div>
+                      <div className='text-xs text-gray-600'>
+                        Poids: 500g — Convient pour un article qui tient dans une grande
+                        enveloppe.
+                      </div>
+                    </div>
+                    <input
+                      type='radio'
+                      name='parcelWeight'
+                      checked={selectedWeight === '500g'}
+                      onChange={() => applyWeightChange('500g')}
+                    />
+                  </label>
+                  <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
+                    <div>
+                      <div className='text-sm font-medium text-gray-900'>
+                        Moyen
+                      </div>
+                      <div className='text-xs text-gray-600'>
+                        Poids: 1kg — Convient pour un article qui tient dans une boîte à
+                        chaussures.
+                      </div>
+                    </div>
+                    <input
+                      type='radio'
+                      name='parcelWeight'
+                      checked={selectedWeight === '1kg'}
+                      onChange={() => applyWeightChange('1kg')}
+                    />
+                  </label>
+                  <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
+                    <div>
+                      <div className='text-sm font-medium text-gray-900'>
+                        Grand
+                      </div>
+                      <div className='text-xs text-gray-600'>
+                        Poids: 2kg — Convient pour un article qui tient dans un carton de
+                        déménagement.
+                      </div>
+                    </div>
+                    <input
+                      type='radio'
+                      name='parcelWeight'
+                      checked={selectedWeight === '2kg'}
+                      onChange={() => applyWeightChange('2kg')}
+                    />
+                  </label>
+                </div>
               </div>
             </div>
           </div>
 
           {/* Légende */}
-          <div className='flex flex-wrap items-center gap-3 text-xs mb-3'>
-            <div className='flex items-center space-x-1'>
-              <div className='w-3 h-3 bg-red-500 rounded-full'></div>
-              <span className='text-gray-600'>Votre adresse</span>
+          {deliveryType === 'PICKUP' && (
+            <div className='flex flex-wrap items-center gap-3 text-xs mb-3'>
+              <div className='flex items-center space-x-1'>
+                <div className='w-3 h-3 bg-red-500 rounded-full'></div>
+                <span className='text-gray-600'>Votre adresse</span>
+              </div>
+              <div className='flex items-center space-x-1'>
+                <div className='w-3 h-3 bg-blue-500 rounded-full'></div>
+                <span className='text-gray-600'>Relais Colis</span>
+              </div>
+              <div className='flex items-center space-x-1'>
+                <div className='w-3 h-3 bg-green-500 rounded-full'></div>
+                <span className='text-gray-600'>Mondial Relay</span>
+              </div>
+              <div className='flex items-center space-x-1'>
+                <div className='w-3 h-3 bg-orange-500 rounded-full'></div>
+                <span className='text-gray-600'>Chronopost</span>
+              </div>
             </div>
-            <div className='flex items-center space-x-1'>
-              <div className='w-3 h-3 bg-blue-500 rounded-full'></div>
-              <span className='text-gray-600'>Relais Colis</span>
-            </div>
-            <div className='flex items-center space-x-1'>
-              <div className='w-3 h-3 bg-green-500 rounded-full'></div>
-              <span className='text-gray-600'>Mondial Relay</span>
-            </div>
-            <div className='flex items-center space-x-1'>
-              <div className='w-3 h-3 bg-orange-500 rounded-full'></div>
-              <span className='text-gray-600'>Chronopost</span>
-            </div>
-            <div className='flex items-center space-x-1'>
-              <div className='w-3 h-3 bg-purple-500 rounded-full'></div>
-              <span className='text-gray-600'>Colis Privé</span>
-            </div>
-          </div>
-
-          {address && (
-            <p className='text-xs text-gray-600'>
-              {address.line1}, {address.postal_code} {address.city}
-            </p>
           )}
+
+          {deliveryType === 'STORE'
+            ? storePickupAddress && <div></div>
+            : address && (
+                <p className='text-xs text-gray-600'>
+                  {address.line1}
+                  {address.line2 ? `, ${address.line2}` : ''},{' '}
+                  {address.postal_code} {address.city}
+                  {address.country ? `, ${address.country}` : ''}
+                </p>
+              )}
         </div>
 
         {/* Contenu principal */}
         <div className='relative'>
+          {deliveryType === 'STORE' && (
+            <div className='px-4 py-3 bg-gray-50 border-t border-gray-200'>
+              <div className='bg-white border border-gray-200 rounded-lg p-4 shadow-sm'>
+                <h5 className='text-lg font-medium text-gray-900 mb-4'>
+                  Retrait en magasin
+                </h5>
+                <div className='text-sm text-gray-700'>
+                  {storePickupAddress ? (
+                    <p>
+                      <strong>Adresse:</strong> {storePickupAddress.line1}
+                      {storePickupAddress.line2
+                        ? `, ${storePickupAddress.line2}`
+                        : ''}
+                      , {storePickupAddress.postal_code}{' '}
+                      {storePickupAddress.city}
+                      {storePickupAddress.country
+                        ? `, ${storePickupAddress.country}`
+                        : ''}
+                    </p>
+                  ) : (
+                    <p className='text-red-600'>
+                      Adresse du magasin indisponible.
+                    </p>
+                  )}
+                  {storePickupPhone && (
+                    <p>
+                      <strong>Téléphone:</strong> {storePickupPhone}
+                    </p>
+                  )}
+                  <div className='flex items-center space-x-4 mt-2'>
+                    <span className='font-semibold text-green-600'>
+                      Prix: 0€
+                    </span>
+                    <div className='text-blue-600'>
+                      {storeWebsite && (
+                        <>
+                          {'Infos sur la boutique:   '}
+                          <a
+                            href={
+                              storeWebsite.startsWith('http')
+                                ? storeWebsite
+                                : `https://${storeWebsite}`
+                            }
+                            target='_blank'
+                            rel='noopener noreferrer'
+                            className='text-blue-600 hover:text-blue-800 underline'
+                          >
+                            {storeWebsite}
+                          </a>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
           {deliveryType === 'PICKUP' && (
             <>
               {loading && (
