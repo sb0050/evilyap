@@ -285,6 +285,32 @@ const homeDeliveryConfig = {
       '30kg': 39.09,
     },
   },
+  CHRP_HOME: {
+    name: 'Chronopost - Chrono 18 (Express)',
+    color: '#F59E0B',
+    delay: '24h',
+    shippingOfferCode: 'CHRP-Chrono18',
+    disabled: false,
+    prices: {
+      '250g': 9.18,
+      '500g': 9.18,
+      '1kg': 9.18,
+      '2kg': 9.18,
+    },
+  },
+  UPS_HOME: {
+    name: 'UPS - Express',
+    color: '#FBBF24',
+    delay: '24h',
+    shippingOfferCode: 'UPSE-Express',
+    disabled: false,
+    prices: {
+      '250g': 9.19,
+      '500g': 9.19,
+      '1kg': 9.34,
+      '2kg': 9.34,
+    },
+  },
 };
 
 interface ParcelPointMapProps {
@@ -376,7 +402,8 @@ export default function ParcelPointMap({
         if (selectedPoint) {
           const cost = getDeliveryPrice(selectedPoint.network);
           const shippingOfferCode =
-            networkConfig[selectedPoint.network as keyof typeof networkConfig]?.shippingOfferCode;
+            networkConfig[selectedPoint.network as keyof typeof networkConfig]
+              ?.shippingOfferCode;
           onParcelPointSelect(
             selectedPoint,
             'pickup_point',
@@ -926,8 +953,8 @@ export default function ParcelPointMap({
                         Petit
                       </div>
                       <div className='text-xs text-gray-600'>
-                        Poids: 500g — Convient pour un article qui tient dans une grande
-                        enveloppe.
+                        Poids: 500g — Convient pour un article qui tient dans
+                        une grande enveloppe.
                       </div>
                     </div>
                     <input
@@ -943,8 +970,8 @@ export default function ParcelPointMap({
                         Moyen
                       </div>
                       <div className='text-xs text-gray-600'>
-                        Poids: 1kg — Convient pour un article qui tient dans une boîte à
-                        chaussures.
+                        Poids: 1kg — Convient pour un article qui tient dans une
+                        boîte à chaussures.
                       </div>
                     </div>
                     <input
@@ -960,8 +987,8 @@ export default function ParcelPointMap({
                         Grand
                       </div>
                       <div className='text-xs text-gray-600'>
-                        Poids: 2kg — Convient pour un article qui tient dans un carton de
-                        déménagement.
+                        Poids: 2kg — Convient pour un article qui tient dans un
+                        carton de déménagement.
                       </div>
                     </div>
                     <input
@@ -1002,6 +1029,7 @@ export default function ParcelPointMap({
             ? storePickupAddress && <div></div>
             : address && (
                 <p className='text-xs text-gray-600'>
+                  <strong>Votre adresse : </strong>
                   {address.line1}
                   {address.line2 ? `, ${address.line2}` : ''},{' '}
                   {address.postal_code} {address.city}
@@ -1271,71 +1299,73 @@ export default function ParcelPointMap({
               <h3 className='text-lg font-medium text-gray-900 mb-4'>
                 Options de livraison à domicile
               </h3>
-              {Object.entries(homeDeliveryConfig).map(([key, config]) => {
-                const network = key.replace('_HOME', '');
-                const price = getDeliveryPrice(network, true);
-                const delay = getDeliveryDelay(network, true);
-                const isSelected = selectedHomeDelivery === key;
-                const isDisabled = !!config.disabled;
+              {Object.entries(homeDeliveryConfig)
+                .filter(i => i[1].disabled !== true)
+                .map(([key, config]) => {
+                  const network = key.replace('_HOME', '');
+                  const price = getDeliveryPrice(network, true);
+                  const delay = getDeliveryDelay(network, true);
+                  const isSelected = selectedHomeDelivery === key;
+                  const isDisabled = !!config.disabled;
 
-                return (
-                  <div
-                    key={key}
-                    onClick={
-                      isDisabled
-                        ? undefined
-                        : () => handleHomeDeliverySelect(key)
-                    }
-                    className={`border rounded-lg p-4 ${isDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'} transition-colors ${
-                      isSelected
-                        ? 'border-blue-500 bg-blue-50'
-                        : isDisabled
-                          ? 'border-gray-200'
-                          : 'border-gray-200 hover:border-blue-300'
-                    }`}
-                  >
-                    <div className='flex items-center justify-between'>
-                      <div className='flex items-center space-x-3'>
-                        <div
-                          className='w-4 h-4 rounded-full'
-                          style={{ backgroundColor: config.color }}
-                        ></div>
-                        <div>
-                          <h4 className='text-sm font-medium text-gray-900'>
-                            {config.name}
-                          </h4>
-                          <div className='flex items-center space-x-4 mt-1'>
-                            <span className='text-xs text-blue-600 font-medium'>
-                              Délai: {delay}
-                            </span>
-                            <span className='text-xs text-gray-500'>
-                              Livraison à votre domicile
-                            </span>
+                  return (
+                    <div
+                      key={key}
+                      onClick={
+                        isDisabled
+                          ? undefined
+                          : () => handleHomeDeliverySelect(key)
+                      }
+                      className={`border rounded-lg p-4 ${isDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'} transition-colors ${
+                        isSelected
+                          ? 'border-blue-500 bg-blue-50'
+                          : isDisabled
+                            ? 'border-gray-200'
+                            : 'border-gray-200 hover:border-blue-300'
+                      }`}
+                    >
+                      <div className='flex items-center justify-between'>
+                        <div className='flex items-center space-x-3'>
+                          <div
+                            className='w-4 h-4 rounded-full'
+                            style={{ backgroundColor: config.color }}
+                          ></div>
+                          <div>
+                            <h4 className='text-sm font-medium text-gray-900'>
+                              {config.name}
+                            </h4>
+                            <div className='flex items-center space-x-4 mt-1'>
+                              <span className='text-xs text-blue-600 font-medium'>
+                                Délai: {delay}
+                              </span>
+                              <span className='text-xs text-gray-500'>
+                                Livraison à votre domicile
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className='text-right'>
+                          <div className='text-lg font-semibold text-green-600'>
+                            {price.toFixed(2)}€
+                          </div>
+                          <div className='text-xs text-gray-500'>
+                            pour {selectedWeight}
                           </div>
                         </div>
                       </div>
-                      <div className='text-right'>
-                        <div className='text-lg font-semibold text-green-600'>
-                          {price.toFixed(2)}€
+                      {isDisabled && (
+                        <div className='mt-2 text-xs text-gray-500 font-medium'>
+                          Indisponible pour le moment
                         </div>
-                        <div className='text-xs text-gray-500'>
-                          pour {selectedWeight}
+                      )}
+                      {isSelected && (
+                        <div className='mt-2 text-xs text-blue-600 font-medium'>
+                          ✓ Option sélectionnée
                         </div>
-                      </div>
+                      )}
                     </div>
-                    {isDisabled && (
-                      <div className='mt-2 text-xs text-gray-500 font-medium'>
-                        Indisponible pour le moment
-                      </div>
-                    )}
-                    {isSelected && (
-                      <div className='mt-2 text-xs text-blue-600 font-medium'>
-                        ✓ Option sélectionnée
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
             </div>
           )}
         </div>
