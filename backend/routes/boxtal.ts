@@ -47,6 +47,7 @@ const verifyAndRefreshBoxtalToken = async () => {
   const credentials = Buffer.from(
     `${BOXTAL_CONFIG.client_id}:${BOXTAL_CONFIG.client_secret}`
   ).toString("base64");
+  console.log("credentials", credentials);
   const options = {
     method: "POST",
     headers: {

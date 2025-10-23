@@ -206,6 +206,7 @@ const networkConfig = {
     name: 'Colis Privé',
     color: '#8B5CF6',
     delay: '6 jours',
+    disabled: true,
     shippingOfferCode: 'COPR-CoprRelaisRelaisNat',
     prices: {
       '250g': 3.54,
@@ -270,7 +271,7 @@ const homeDeliveryConfig = {
     color: '#FF6B35',
     delay: '48h',
     shippingOfferCode: 'POFR-ColissimoAccess',
-    disabled: true,
+    disabled: false,
     prices: {
       '250g': 7.24,
       '500g': 8.15,
