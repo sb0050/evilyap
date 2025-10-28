@@ -11,6 +11,7 @@ import storeRoutes from "./routes/store";
 import { emailService } from "./services/emailService";
 import uploadRoutes from "./routes/upload";
 import shipmentsRoutes from "./routes/shipments";
+import cartsRoutes from "./routes/carts";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -48,6 +49,7 @@ app.use("/api/boxtal", boxtalRoutes);
 app.use("/api/stores", storeRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/shipments", shipmentsRoutes);
+app.use("/api/carts", cartsRoutes);
 
 // Route de test
 app.get("/api/health", (req: Request, res: Response) => {

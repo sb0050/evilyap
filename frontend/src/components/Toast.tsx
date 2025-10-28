@@ -2,12 +2,18 @@ import React, { useEffect, useState } from 'react';
 
 export type ToastType = 'error' | 'info' | 'success';
 
-export const Toast: React.FC<{ message: string; type?: ToastType }> = ({ message, type = 'error' }) => {
+export const Toast: React.FC<{ message: string; type?: ToastType; visible?: boolean }> = ({ message, type = 'error', visible = true }) => {
   const [entered, setEntered] = useState(false);
   useEffect(() => {
     const t = setTimeout(() => setEntered(true), 10);
     return () => clearTimeout(t);
   }, []);
+
+  useEffect(() => {
+    if (visible === false) {
+      setEntered(false);
+    }
+  }, [visible]);
 
   const base = 'fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-3 rounded shadow-lg text-sm transition-all duration-300 ease-out text-center';
   const color =

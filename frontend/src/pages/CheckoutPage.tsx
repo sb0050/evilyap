@@ -26,6 +26,7 @@ import { ParcelPointData } from '../components/ParcelPointMap';
 import { apiPost } from '../utils/api';
 import { Address } from '@stripe/stripe-js';
 import Header from '../components/Header';
+import { Toast } from '../components/Toast';
 
 interface Store {
   id: number;
@@ -89,6 +90,7 @@ export default function CheckoutPage() {
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [showPayment, setShowPayment] = useState(false);
   const [email, setEmail] = useState('');
+  const [showDelivery, setShowDelivery] = useState(false);
 
   const [storePickupAddress, setStorePickupAddress] = useState<
     Address | undefined
@@ -101,6 +103,7 @@ export default function CheckoutPage() {
   const [toast, setToast] = useState<{
     message: string;
     type: 'error' | 'info' | 'success';
+    visible?: boolean;
   } | null>(null);
 
   // useEffect de debug pour surveiller selectedParcelPoint
@@ -112,8 +115,11 @@ export default function CheckoutPage() {
     message: string,
     type: 'error' | 'info' | 'success' = 'error'
   ) => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 4000);
+    setToast({ message, type, visible: true });
+    setTimeout(() => {
+      setToast(prev => (prev ? { ...prev, visible: false } : prev));
+      setTimeout(() => setToast(null), 300);
+    }, 4000);
   };
 
   useEffect(() => {
@@ -420,7 +426,10 @@ export default function CheckoutPage() {
 
   const themeColor = '#667eea';
 
-  const cloudBase = (import.meta.env.VITE_CLOUDFRONT_URL || 'https://d1tmgyvizond6e.cloudfront.net').replace(/\/+$/, '');
+  const cloudBase = (
+    import.meta.env.VITE_CLOUDFRONT_URL ||
+    'https://d1tmgyvizond6e.cloudfront.net'
+  ).replace(/\/+$/, '');
   const storeLogo = store?.id ? `${cloudBase}/images/${store.id}` : undefined;
 
   return (
@@ -428,17 +437,11 @@ export default function CheckoutPage() {
       <Header />
       <div className='min-h-screen bg-gray-50 py-8'>
         {toast && (
-          <div
-            className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded shadow ${
-              toast.type === 'error'
-                ? 'bg-red-600 text-white'
-                : toast.type === 'success'
-                  ? 'bg-green-600 text-white'
-                  : 'bg-blue-600 text-white'
-            }`}
-          >
-            {toast.message}
-          </div>
+          <Toast
+            message={toast.message}
+            type={toast.type}
+            visible={toast.visible !== false}
+          />
         )}
         <div className='max-w-4xl mx-auto px-4 sm:px-6 lg:px-8'>
           {/* En-tête de la boutique */}
@@ -536,6 +539,9 @@ export default function CheckoutPage() {
                   setDeliveryCost={setDeliveryCost}
                   selectedWeight={selectedWeight}
                   setSelectedWeight={setSelectedWeight}
+                  showDelivery={showDelivery}
+                  setShowDelivery={setShowDelivery}
+                  showToast={showToast}
                 />
               </div>
 
@@ -684,6 +690,9 @@ function CheckoutForm({
   setDeliveryCost,
   selectedWeight,
   setSelectedWeight,
+  showDelivery,
+  setShowDelivery,
+  showToast,
 }: {
   store: Store | null;
   amount: number;
@@ -720,6 +729,9 @@ function CheckoutForm({
   setDeliveryCost: any;
   selectedWeight: string;
   setSelectedWeight: any;
+  showDelivery: boolean;
+  setShowDelivery: (val: boolean) => void;
+  showToast: (message: string, type?: 'error' | 'info' | 'success') => void;
 }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -803,76 +815,154 @@ function CheckoutForm({
           placeholder='0.00'
           required
         />
+
+        {/* Actions: Ajouter au panier */}
+        <div className='mt-3 flex flex-col sm:flex-row gap-3'>
+          <button
+            type='button'
+            onClick={async () => {
+              try {
+                if (!store?.id) {
+                  return setPaymentError('Boutique invalide');
+                }
+                const product_reference = (formData.reference || '').trim();
+                if (!product_reference) {
+                  return setPaymentError('Référence requise');
+                }
+                if (!(amount > 0)) {
+                  return setPaymentError('Montant invalide');
+                }
+                const customerStripeId = customerData?.id;
+                if (!customerStripeId) {
+                  return setPaymentError('Client Stripe introuvable');
+                }
+                const resp = await apiPost('/api/carts', {
+                  store_id: store.id,
+                  product_reference,
+                  value: amount,
+                  customer_stripe_id: customerStripeId,
+                });
+                const json = await resp.json();
+                if (resp.status === 409) {
+                  const msg =
+                    json?.message ||
+                    'Cette reference existe déjà dans un autre panier';
+                  setPaymentError(msg);
+                  showToast('Cette reference existe déjà dans un autre panier', 'error');
+                  return;
+                }
+                if (!resp.ok) {
+                  const msg =
+                    json?.message ||
+                    json?.error ||
+                    "Erreur lors de l'ajout au panier";
+                  setPaymentError(msg);
+                  showToast(msg, 'error');
+                  return;
+                }
+                setPaymentError(null);
+                showToast('Ajouté au panier', 'success');
+                // Notifier le header de rafraîchir le panier
+                if (typeof window !== 'undefined') {
+                  window.dispatchEvent(new CustomEvent('cart:updated'));
+                }
+              } catch (e: any) {
+                const rawMsg = e?.message || "Erreur lors de l'ajout au panier";
+                setPaymentError(rawMsg);
+                if (typeof rawMsg === 'string' && rawMsg.includes('reference_exists')) {
+                  showToast('Cette reference existe déjà dans un autre panier', 'error');
+                } else {
+                  try {
+                    const match = typeof rawMsg === 'string' ? rawMsg.match(/\{.*\}/) : null;
+                    const parsed = match ? JSON.parse(match[0]) : null;
+                    const finalMsg = parsed?.message || rawMsg;
+                    showToast(finalMsg, 'error');
+                  } catch {
+                    showToast(rawMsg, 'error');
+                  }
+                }
+              }
+            }}
+            className='mt-4 w-full sm:w-auto px-4 py-2.5 rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500'
+          >
+            Ajouter au panier
+          </button>
+        </div>
       </div>
 
-      {/* Adresse de livraison (toujours visible, pour piloter la carte et/ou la livraison à domicile) */}
-      <div>
-        <label className='block text-sm font-medium text-gray-700 mb-2'>
-          Adresse de livraison
-        </label>
-        {(() => {
-          const defaultName =
-            (customerData?.address as any)?.name || user?.fullName || '';
-          const defaultPhone = customerData?.phone || '';
-          const defaultAddress =
-            (customerData?.address as any) || (address as any) || undefined;
-          const addressIncomplete = !(
-            (formData.name || '').trim() &&
-            (formData.phone || '').trim() &&
-            (address as any)?.line1 &&
-            (address as any)?.postal_code
-          );
+      {/* Adresse de livraison: carte style "Votre Commande" */}
+      <div className='bg-white rounded-lg shadow-sm'>
+        <div className='pb-6 pt-6 border-b flex items-center space-x-3'>
+          <MapPin className='w-6 h-6' style={{ color: themeColor }} />
+          <h2 className='text-xl font-semibold text-gray-900'>
+            Votre adresse de livraison
+          </h2>
+        </div>
+        <div className='pt-6'>
+          {(() => {
+            const defaultName =
+              (customerData?.address as any)?.name || user?.fullName || '';
+            const defaultPhone = customerData?.phone || '';
+            const defaultAddress =
+              (customerData?.address as any) || (address as any) || undefined;
+            const addressIncomplete = !(
+              (formData.name || '').trim() &&
+              (formData.phone || '').trim() &&
+              (address as any)?.line1 &&
+              (address as any)?.postal_code
+            );
 
-          return (
-            <div
-              className={`rounded-md border ${
-                addressIncomplete ? 'border-red-500' : 'border-gray-300'
-              } p-2`}
-            >
-              <AddressElement
-                key={`addr-${defaultAddress?.line1 || ''}-${defaultAddress?.postal_code || ''}`}
-                options={{
-                  mode: 'shipping',
-                  allowedCountries: ['FR', 'BE', 'ES', 'DE', 'IT', 'NL'],
-                  fields: {
-                    phone: 'always',
-                  },
-                  validation: {
-                    phone: {
-                      required: 'always', // Rend le champ téléphone obligatoire
+            return (
+              <div
+                className={`rounded-md border ${
+                  addressIncomplete ? 'border-red-500' : 'border-gray-300'
+                } p-2`}
+              >
+                <AddressElement
+                  key={`addr-${defaultAddress?.line1 || ''}-${defaultAddress?.postal_code || ''}`}
+                  options={{
+                    mode: 'shipping',
+                    allowedCountries: ['FR', 'BE', 'ES', 'DE', 'IT', 'NL'],
+                    fields: {
+                      phone: 'always',
                     },
-                  },
-                  defaultValues: {
-                    name: defaultName,
-                    phone: defaultPhone,
-                    address: defaultAddress,
-                  },
-                }}
-                onChange={(event: any) => {
-                  const { name, phone, address: addr } = event.value || {};
-                  if (typeof name === 'string') {
-                    setFormData((prev: any) => ({ ...prev, name }));
-                  }
-                  if (typeof phone === 'string') {
-                    setFormData((prev: any) => ({ ...prev, phone }));
-                  }
+                    validation: {
+                      phone: {
+                        required: 'always', // Rend le champ téléphone obligatoire
+                      },
+                    },
+                    defaultValues: {
+                      name: defaultName,
+                      phone: defaultPhone,
+                      address: defaultAddress,
+                    },
+                  }}
+                  onChange={(event: any) => {
+                    const { name, phone, address: addr } = event.value || {};
+                    if (typeof name === 'string') {
+                      setFormData((prev: any) => ({ ...prev, name }));
+                    }
+                    if (typeof phone === 'string') {
+                      setFormData((prev: any) => ({ ...prev, phone }));
+                    }
 
-                  setAddress(addr || undefined);
-                  setIsFormValid(!!event.complete);
+                    setAddress(addr || undefined);
+                    setIsFormValid(!!event.complete);
 
-                  // Calcul du coût de livraison à domicile si la méthode active est home_delivery
-                  if (deliveryMethod === 'home_delivery') {
-                    const cost = computeHomeDeliveryCost(
-                      addr as Address | undefined,
-                      selectedWeight
-                    );
-                    setDeliveryCost(cost);
-                  }
-                }}
-              />
-            </div>
-          );
-        })()}
+                    // Calcul du coût de livraison à domicile si la méthode active est home_delivery
+                    if (deliveryMethod === 'home_delivery') {
+                      const cost = computeHomeDeliveryCost(
+                        addr as Address | undefined,
+                        selectedWeight
+                      );
+                      setDeliveryCost(cost);
+                    }
+                  }}
+                />
+              </div>
+            );
+          })()}
+        </div>
       </div>
 
       {/* ParcelPointMap (gère la méthode de livraison en interne et se met à jour sur changement d’adresse) */}

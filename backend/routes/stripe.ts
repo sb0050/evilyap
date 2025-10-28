@@ -92,6 +92,7 @@ router.get("/get-customer-details", async (req, res) => {
 
     // Extract relevant details
     const customerData = {
+      id: customer.id,
       name: customer.name,
       phone: customer.phone,
       email: customer.email,
