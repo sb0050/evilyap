@@ -421,7 +421,7 @@ export default function CheckoutPage() {
   const themeColor = '#667eea';
 
   const cloudBase = (import.meta.env.VITE_CLOUDFRONT_URL || 'https://d1tmgyvizond6e.cloudfront.net').replace(/\/+$/, '');
-  const storeLogo = store?.slug ? `${cloudBase}/images/${store.slug}` : undefined;
+  const storeLogo = store?.id ? `${cloudBase}/images/${store.id}` : undefined;
 
   return (
     <StripeWrapper>

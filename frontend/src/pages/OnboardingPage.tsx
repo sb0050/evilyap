@@ -200,24 +200,6 @@ export default function OnboardingPage() {
         generatedSlug ||
         slugify(formData.storeName, { lower: true, strict: true });
 
-      // Uploader le logo si présent
-      if (formData.logo) {
-        try {
-          const fd = new FormData();
-          fd.append('image', formData.logo);
-          fd.append('slug', slug);
-          const uploadResp = await apiPostForm('/api/upload', fd);
-          const uploadJson = await uploadResp.json();
-          if (uploadResp.ok && uploadJson?.success && uploadJson?.url) {
-            // Upload réussi, le logo est accessible via CloudFront `${CLOUDFRONT_URL}/images/${slug}`
-          } else {
-            console.warn('Upload du logo échoué:', uploadJson?.error);
-          }
-        } catch (err) {
-          console.warn("Erreur lors de l'upload du logo:", err);
-        }
-      }
-
       const response = await apiPost('/api/stores', {
         storeName: formData.storeName,
         storeDescription: formData.description,
@@ -235,8 +217,24 @@ export default function OnboardingPage() {
 
       if (response.ok) {
         console.log('Store created successfully:', result);
-        // rediriger vers le tableau de bord de la boutique
-        window.location.href = `/dashboard/${encodeURIComponent(slug)}`;
+        // Uploader le logo après la création pour utiliser l'id immuable
+        if (formData.logo && result?.store?.slug) {
+          try {
+            const fd = new FormData();
+            fd.append('image', formData.logo);
+            fd.append('slug', result.store.slug);
+            const uploadResp = await apiPostForm('/api/upload', fd);
+            const uploadJson = await uploadResp.json();
+            if (!uploadJson?.success) {
+              console.warn('Upload du logo échoué:', uploadJson?.error);
+            }
+          } catch (err) {
+            console.warn("Erreur lors de l'upload du logo:", err);
+          }
+        }
+        // rediriger vers le tableau de bord de la boutique avec le slug renvoyé par le backend
+        const finalSlug = result?.store?.slug || slug;
+        window.location.href = `/dashboard/${encodeURIComponent(finalSlug)}`;
       } else {
         throw new Error(
           result.error || 'Erreur lors de la création de la boutique'

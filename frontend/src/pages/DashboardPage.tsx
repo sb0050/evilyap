@@ -7,7 +7,7 @@ import { Toast } from '../components/Toast';
 import { useToast } from '../utils/toast';
 import { apiPut, apiPost, apiPostForm, apiGet } from '../utils/api';
 import { Protect } from '@clerk/clerk-react';
-import slugify from 'slugify';
+// Slugification supprimée côté frontend; on utilise le backend
 
 type RIBInfo = {
   type: 'link' | 'database';
@@ -78,6 +78,8 @@ export default function DashboardPage() {
   const [ibanError, setIbanError] = useState<string | null>(null);
   const [bicError, setBicError] = useState<string | null>(null);
   const [isSubmittingPayout, setIsSubmittingPayout] = useState(false);
+  const [isSubmittingModifications, setIsSubmittingModifications] =
+    useState(false);
   // Édition infos boutique
   const [editingInfo, setEditingInfo] = useState(false);
   const [logoFile, setLogoFile] = useState<File | null>(null);
@@ -133,17 +135,27 @@ export default function DashboardPage() {
   const checkSlugUniqueness = async () => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    const slug = slugify(trimmed, { lower: true, strict: true });
-    setGeneratedSlug(slug);
+    // Ne pas déclencher la vérification si le nom n'a pas changé
+    if (store?.name && store.name.trim() === trimmed) {
+      setGeneratedSlug(store.slug || '');
+      setSlugExists(false);
+      return;
+    }
     setIsCheckingSlug(true);
     try {
       const resp = await apiGet(
-        `/api/stores/exists?slug=${encodeURIComponent(slug)}`
+        `/api/stores/exists?name=${encodeURIComponent(trimmed)}`
       );
       if (!resp.ok) throw new Error('Erreur lors de la vérification du slug');
       const json = await resp.json();
-      setSlugExists(Boolean(json?.exists));
-      setLastCheckedSlug(slug);
+      const exists = Boolean(json?.exists);
+      setSlugExists(exists);
+      if (!exists) {
+        setGeneratedSlug(json?.slug || '');
+        setLastCheckedSlug(json?.slug || '');
+      } else {
+        setLastCheckedSlug('');
+      }
     } catch (err) {
       console.error('Vérification du slug échouée:', err);
       setSlugExists(false);
@@ -166,8 +178,10 @@ export default function DashboardPage() {
       setWasStoreNameFocused(false);
       return;
     }
-    const slug = slugify(trimmed, { lower: true, strict: true });
-    if (lastCheckedSlug === slug) {
+    // Si le nom est inchangé, ne pas vérifier le slug
+    if (store?.name && store.name.trim() === trimmed) {
+      setGeneratedSlug(store.slug || '');
+      setSlugExists(false);
       setWasStoreNameFocused(false);
       setIsStoreNameDirty(false);
       return;
@@ -246,18 +260,19 @@ export default function DashboardPage() {
   }, [storeSlug, user?.id]);
 
   const saveStoreInfo = async () => {
+    setIsSubmittingModifications(true);
     if (!storeSlug) return;
     setShowValidationErrors(true);
     // Vérifications similaires à onboarding
     if (!name.trim()) {
+      setIsSubmittingModifications(false);
       return;
     }
     if (websiteInvalid) {
+      setIsSubmittingModifications(false);
       return;
     }
-    if (slugExists || isCheckingSlug) {
-      return;
-    }
+    // La vérification d'unicité est effectuée côté backend; ne bloque pas côté frontend
     try {
       // Uploader le logo si un nouveau fichier est sélectionné
       if (logoFile && store?.slug) {
@@ -274,24 +289,34 @@ export default function DashboardPage() {
           console.warn("Erreur l'upload du logo:", e);
         }
       }
-      const resp: any = await apiPut(
+      const payload: any = { name, description, website };
+      const resp = await apiPut(
         `/api/stores/${encodeURIComponent(storeSlug)}`,
-        { name, description, website }
+        payload
       );
-      if (!resp?.success) {
+      const json = await resp.json();
+      if (!json?.success) {
         throw new Error(
-          resp?.error || 'Échec de la mise à jour de la boutique'
+          json?.error || 'Échec de la mise à jour de la boutique'
         );
       }
-      const updated: Store = resp.store;
+      const updated: Store = json.store;
       setStore(updated);
       setEditingInfo(false);
       showToast('Informations de la boutique mises à jour.', 'success');
+      // Si le slug a changé, rediriger vers la nouvelle page du dashboard
+      if (updated?.slug && updated.slug !== storeSlug) {
+        navigate(`/dashboard/${encodeURIComponent(updated.slug)}`, {
+          replace: true,
+        });
+      }
     } catch (err) {
       showToast(
         err instanceof Error ? err.message : 'Erreur inconnue',
         'error'
       );
+    } finally {
+      setIsSubmittingModifications(false);
     }
   };
 
@@ -476,7 +501,7 @@ export default function DashboardPage() {
               <h1 className='text-2xl font-bold text-gray-900'>
                 Tableau de bord
               </h1>
-              {store && <p className='text-gray-600'>Boutique: {store.name}</p>}
+              {store && <p className='text-gray-600'>{store.name}</p>}
             </div>
             {store && (
               <button
@@ -485,7 +510,7 @@ export default function DashboardPage() {
                 }
                 className='inline-flex items-center px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
               >
-                Aller au formulaire de paiement
+                Formulaire de paiement
                 <ArrowRight className='w-4 h-4 ml-2' />
               </button>
             )}
@@ -509,8 +534,8 @@ export default function DashboardPage() {
                         import.meta.env.VITE_CLOUDFRONT_URL ||
                         'https://d1tmgyvizond6e.cloudfront.net'
                       ).replace(/\/+$/, '');
-                      const storeLogo = store?.slug
-                        ? `${cloudBase}/images/${store.slug}`
+                      const storeLogo = store?.id
+                        ? `${cloudBase}/images/${store.id}`
                         : undefined;
                       return storeLogo ? (
                         <img
@@ -556,9 +581,9 @@ export default function DashboardPage() {
                   <div>
                     <button
                       onClick={() => setEditingInfo(true)}
-                      className='px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700'
+                      className='inline-flex items-center px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700'
                     >
-                      Modifier
+                      Modifier vos informations
                     </button>
                   </div>
                 </div>
@@ -644,7 +669,7 @@ export default function DashboardPage() {
                     </label>
                     <div className='flex items-center space-x-4'>
                       <label
-                        className={` ${logoFile ? 'border-red-500' : 'border-gray-300'} flex flex-col items-center justify-center w-40 h-32 border-2 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100`}
+                        className={` border-gray-300 flex flex-col items-center justify-center w-40 h-32 border-2 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100`}
                       >
                         <div className='flex flex-col items-center justify-center pt-5 pb-6'>
                           <Upload className='w-8 h-8 mb-2 text-gray-400' />
@@ -665,8 +690,8 @@ export default function DashboardPage() {
                             import.meta.env.VITE_CLOUDFRONT_URL ||
                             'https://d1tmgyvizond6e.cloudfront.net'
                           ).replace(/\/+$/, '');
-                          return store?.slug
-                            ? `${cloudBase}/images/${store.slug}`
+                          return store?.id
+                            ? `${cloudBase}/images/${store.id}`
                             : null;
                         })()) && (
                         <div className='w-32 h-32 border rounded-lg overflow-hidden'>
@@ -678,8 +703,8 @@ export default function DashboardPage() {
                                   import.meta.env.VITE_CLOUDFRONT_URL ||
                                   'https://d1tmgyvizond6e.cloudfront.net'
                                 ).replace(/\/+$/, '');
-                                return store?.slug
-                                  ? `${cloudBase}/images/${store.slug}`
+                                return store?.id
+                                  ? `${cloudBase}/images/${store.id}`
                                   : '';
                               })()
                             }
@@ -699,9 +724,12 @@ export default function DashboardPage() {
                         slugExists ||
                         isCheckingSlug
                       }
-                      className={`px-4 py-2 rounded text-white ${!name.trim() || (website && websiteInvalid) || slugExists || isCheckingSlug ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+                      className={`inline-flex items-center px-4 py-2 rounded-md text-white ${!name.trim() || (website && websiteInvalid) || slugExists || isCheckingSlug ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
                     >
-                      Enregistrer
+                      {isSubmittingModifications && (
+                        <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                      )}
+                      Enregistrer vos modifications
                     </button>
                     <button
                       onClick={() => {

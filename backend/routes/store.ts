@@ -39,6 +39,19 @@ const isValidWebsite = (url?: string | null) => {
   }
 };
 
+// Helper: slugify côté backend (similaire à strict: true, lower: true)
+const slugifyName = (input: string) => {
+  const s = (input || '').trim().toLowerCase();
+  // Normaliser et supprimer les diacritiques
+  const norm = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  // Remplacer les caractères non alphanumériques par des tirets
+  const slug = norm
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-');
+  return slug;
+};
+
 // GET /api/stores - Récupérer tous les stores
 router.get("/", async (req, res) => {
   try {
@@ -61,15 +74,17 @@ router.get("/", async (req, res) => {
 // GET /api/stores/exists?slug=... - Vérifier l'existence d'un slug
 router.get("/exists", async (req, res) => {
   try {
-    const slug = (req.query.slug as string) || "";
-    if (!slug) {
-      return res.status(400).json({ error: "Slug requis" });
+    const raw = (req.query.slug as string) || (req.query.name as string) || "";
+    if (!raw.trim()) {
+      return res.status(400).json({ error: "Slug ou nom requis" });
     }
+
+    const candidate = slugifyName(raw);
 
     const { data, error } = await supabase
       .from("stores")
       .select("id")
-      .eq("slug", slug)
+      .eq("slug", candidate)
       .maybeSingle();
 
     if (error && (error as any)?.code !== "PGRST116") {
@@ -79,7 +94,10 @@ router.get("/exists", async (req, res) => {
         .json({ error: "Erreur lors de la vérification du slug" });
     }
 
-    return res.json({ exists: Boolean(data) });
+    if (data) {
+      return res.json({ exists: true });
+    }
+    return res.json({ exists: false, slug: candidate });
   } catch (error) {
     console.error("Erreur serveur:", error);
     return res.status(500).json({ error: "Erreur interne du serveur" });
@@ -303,7 +321,7 @@ router.put("/:storeSlug", async (req, res) => {
 
     const { data: existing, error: getErr } = await supabase
       .from("stores")
-      .select("id")
+      .select("id, name, slug")
       .eq("slug", decodedSlug)
       .maybeSingle();
 
@@ -319,6 +337,30 @@ router.put("/:storeSlug", async (req, res) => {
     if (typeof name === 'string') payload.name = name;
     if (typeof description === 'string') payload.description = description;
     if (typeof website === 'string') payload.website = website || null;
+
+    // Si le nom change, recalculer le slug côté backend et vérifier l'unicité
+    if (typeof name === 'string') {
+      const newName = (name || '').trim();
+      const currentName = ((existing as any)?.name || '').trim();
+      if (newName && newName !== currentName) {
+        const newSlug = slugifyName(newName);
+        // Vérifier unicité du nouveau slug, en excluant la boutique actuelle
+        const { data: existingByNewSlug, error: slugCheckErr } = await supabase
+          .from("stores")
+          .select("id")
+          .eq("slug", newSlug)
+          .maybeSingle();
+
+        if (slugCheckErr && (slugCheckErr as any)?.code !== "PGRST116") {
+          console.error("Erreur Supabase (vérif nouveau slug):", slugCheckErr);
+          return res.status(500).json({ error: "Erreur lors de la vérification du slug" });
+        }
+        if (existingByNewSlug && existingByNewSlug.id !== (existing as any)?.id) {
+          return res.status(409).json({ error: "Ce nom existe déjà" });
+        }
+        payload.slug = newSlug;
+      }
+    }
 
     const { data: updated, error: updErr } = await supabase
       .from("stores")

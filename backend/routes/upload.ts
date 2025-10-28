@@ -2,6 +2,10 @@ import express from "express";
 import multer from "multer";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { createClient } from "@supabase/supabase-js";
+import {
+  CloudFrontClient,
+  CreateInvalidationCommand,
+} from "@aws-sdk/client-cloudfront";
 
 const router = express.Router();
 
@@ -30,6 +34,39 @@ const s3Client = new S3Client({
     secretAccessKey: awsSecretAccessKey || "",
   },
 });
+
+const cloudFrontClient = new CloudFrontClient({
+  region: awsRegion,
+  credentials: {
+    accessKeyId: awsAccessKeyId || "",
+    secretAccessKey: awsSecretAccessKey || "",
+  },
+});
+
+// Fonction pour invalider le cache CloudFront
+async function invalidateCloudFrontCache(filePaths: any) {
+  try {
+    const params = {
+      DistributionId: process.env.CLOUDFRONT_DISTRIBUTION_ID, // Votre ID de distribution
+      InvalidationBatch: {
+        Paths: {
+          Quantity: filePaths.length,
+          Items: filePaths,
+        },
+        CallerReference: `invalidation-${Date.now()}`,
+      },
+    };
+
+    const command = new CreateInvalidationCommand(params);
+    const result = await cloudFrontClient.send(command);
+
+    console.log("Invalidation créée:", result?.Invalidation?.Id);
+    return result;
+  } catch (error) {
+    console.error("Erreur lors de l'invalidation:", error);
+    throw error;
+  }
+}
 
 // Supabase client (pour mise à jour du champ rib)
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -75,19 +112,47 @@ router.post("/", uploadImages.single("image"), async (req, res) => {
     if (!slug) {
       return res.status(400).json({ error: "Slug requis" });
     }
+    // Récupérer l'id du store à partir du slug
+    const { data: store, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, slug")
+      .eq("slug", slug)
+      .maybeSingle();
+    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
+      console.error("Erreur Supabase (get store by slug):", storeErr);
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la récupération de la boutique" });
+    }
+    if (!store) {
+      return res.status(404).json({ error: "Boutique non trouvée" });
+    }
 
-    // Renomme le logo sans extension: images/<slug>
-    const key = `images/${slug}`;
+    // Renommer le logo sans extension avec id immuable: images/<storeId>
+    const key = `images/${(store as any).id}`;
 
     const params = {
       Bucket: awsBucket!,
       Key: key,
       Body: req.file.buffer,
       ContentType: req.file.mimetype,
+      CacheControl: "no-cache, no-store, must-revalidate",
+      Metadata: {
+        "upload-date": new Date().toISOString(),
+      },
     };
 
     const command = new PutObjectCommand(params);
     await s3Client.send(command);
+
+    // Invalider automatiquement le cache CloudFront
+    try {
+      await invalidateCloudFrontCache([`/${key}`]);
+      console.log(`Cache invalidé pour: /${key}`);
+    } catch (invalidationError) {
+      console.error("Erreur invalidation:", invalidationError);
+      // Continuer même si l'invalidation échoue
+    }
 
     const url = `${cloudFrontUrl}/${key}`;
 
@@ -113,9 +178,23 @@ router.post("/rib", uploadDocs.single("document"), async (req, res) => {
     if (!slug) {
       return res.status(400).json({ error: "Slug requis" });
     }
+    // Récupérer l'id du store à partir du slug
+    const { data: store, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, slug")
+      .eq("slug", slug)
+      .maybeSingle();
+    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
+      console.error("Erreur Supabase (get store by slug):", storeErr);
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la récupération de la boutique" });
+    }
+    if (!store) {
+      return res.status(404).json({ error: "Boutique non trouvée" });
+    }
 
-    const ext = getExtFromMime(req.file.mimetype);
-    const baseName = `${slug}-rib`;
+    const baseName = `${(store as any).id}`;
     const key = `documents/${baseName}`;
 
     const params = {
@@ -123,10 +202,24 @@ router.post("/rib", uploadDocs.single("document"), async (req, res) => {
       Key: key,
       Body: req.file.buffer,
       ContentType: req.file.mimetype,
+      // Forcer le remplacement du cache
+      CacheControl: "no-cache, no-store, must-revalidate",
+      Metadata: {
+        "upload-date": new Date().toISOString(),
+      },
     };
 
     const command = new PutObjectCommand(params);
     await s3Client.send(command);
+
+    // Invalider automatiquement le cache CloudFront
+    try {
+      await invalidateCloudFrontCache([`/${key}`]);
+      console.log(`Cache invalidé pour: /${key}`);
+    } catch (invalidationError) {
+      console.error("Erreur invalidation:", invalidationError);
+      // Continuer même si l'invalidation échoue
+    }
 
     const url = `${cloudFrontUrl}/${key}`;
 
@@ -135,7 +228,7 @@ router.post("/rib", uploadDocs.single("document"), async (req, res) => {
     const { error: supError } = await supabase
       .from("stores")
       .update({ rib: ribValue })
-      .eq("slug", slug);
+      .eq("id", (store as any).id);
 
     if (supError) {
       console.error("Erreur Supabase (update rib):", supError);

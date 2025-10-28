@@ -77,7 +77,7 @@ const StorePage: React.FC = () => {
   const isOwner = user?.primaryEmailAddress?.emailAddress === store.owner_email;
 
   const cloudBase = (import.meta.env.VITE_CLOUDFRONT_URL || 'https://d1tmgyvizond6e.cloudfront.net').replace(/\/+$/, '');
-  const storeLogo = store?.slug ? `${cloudBase}/images/${store.slug}` : undefined;
+  const storeLogo = store?.id ? `${cloudBase}/images/${store.id}` : undefined;
 
   return (
     <div className='min-h-screen bg-gradient-to-b from-indigo-50 to-white'>
