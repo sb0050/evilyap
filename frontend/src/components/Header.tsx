@@ -8,6 +8,7 @@ import {
   useAuth,
 } from '@clerk/clerk-react';
 import { LayoutDashboard, Truck, ShoppingCart, Trash2 } from 'lucide-react';
+import { animate } from 'motion';
 import { useNavigate } from 'react-router-dom';
 
 type OwnerStoreInfo = {
@@ -36,7 +37,7 @@ export default function Header() {
       items: Array<{ id: number; product_reference: string; value: number }>;
     }>
   >([]);
-  const [cartAnimate, setCartAnimate] = useState(false);
+  const cartIconRef = useRef<HTMLSpanElement | null>(null);
   const cartRef = useRef<HTMLDivElement | null>(null);
   const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
 
@@ -143,8 +144,12 @@ export default function Header() {
 
     const onCartUpdated = () => {
       fetchCart();
-      setCartAnimate(true);
-      setTimeout(() => setCartAnimate(false), 400);
+      if (cartIconRef.current) {
+        animate(cartIconRef.current as any, { scale: [1, 1.2, 1] }, {
+          duration: 0.4,
+          easing: 'ease-out',
+        } as any);
+      }
     };
     window.addEventListener('cart:updated', onCartUpdated);
     return () => {
@@ -226,14 +231,7 @@ export default function Header() {
                 className='px-3 py-2 rounded-md text-sm font-medium bg-slate-100 hover:bg-slate-200 text-gray-700 inline-flex items-center'
                 onClick={() => setCartOpen(prev => !prev)}
               >
-                <span
-                  className={`${cartAnimate ? 'animate-bounce' : ''}`}
-                  style={{
-                    animationDuration: cartAnimate
-                      ? ('0.35s' as any)
-                      : undefined,
-                  }}
-                >
+                <span ref={cartIconRef}>
                   <ShoppingCart className='w-4 h-4 mr-2' />
                 </span>
                 <span>{Number(cartTotal || 0).toFixed(2)} €</span>
