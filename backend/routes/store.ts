@@ -441,7 +441,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       .from("stores")
       .update({ rib: newRib })
       .eq("slug", decodedSlug)
-      .select("id, name, slug, owner_email, rib")
+      .select("id, name, slug, owner_email, rib, balance")
       .single();
 
     if (updErr) {
@@ -459,6 +459,8 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         iban: newRib?.iban,
         bic: newRib?.bic,
         ribUrl: newRib?.url,
+        amount: (updated as any)?.balance ?? 0,
+        currency: "EUR",
       });
     } catch (emailErr) {
       console.error("Erreur envoi email demande de versement:", emailErr);

@@ -718,6 +718,8 @@ class EmailService {
     iban?: string;
     bic?: string;
     ribUrl?: string;
+    amount?: number;
+    currency?: string;
   }): Promise<boolean> {
     try {
       const savEmail = process.env.SAV_EMAIL || "";
@@ -725,6 +727,11 @@ class EmailService {
         console.warn("SAV_EMAIL non configuré, email SAV non envoyé.");
         return false;
       }
+
+      const formattedAmount = this.formatAmount(
+        data.amount,
+        (data.currency || "EUR") as string
+      );
 
       const ribDetailsHtml =
         data.method === "database"
@@ -746,6 +753,10 @@ class EmailService {
             .section { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #0d6efd; }
             .kv { margin: 0; }
             .kv strong { display: inline-block; width: 220px; }
+            .amount-card { background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%); color: white; padding: 16px; border-radius: 10px; text-align: center; margin: 16px 0; }
+            .amount-title { font-size: 14px; opacity: 0.9; margin-bottom: 8px; }
+            .amount-value { font-size: 28px; font-weight: bold; letter-spacing: 0.5px; }
+            .note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; border-radius: 6px; margin-top: 12px; }
           </style>
         </head>
         <body>
@@ -755,6 +766,10 @@ class EmailService {
               <p>${data.storeName}</p>
             </div>
             <div class="content">
+              <div class="amount-card">
+                <div class="amount-title">Montant des gains disponibles</div>
+                <div class="amount-value">${formattedAmount || "N/A"}</div>
+              </div>
               <div class="section">
                 <h3>Informations boutique</h3>
                 <p class="kv"><strong>Owner email :</strong> ${data.ownerEmail}</p>
@@ -765,6 +780,10 @@ class EmailService {
                 <h3>Coordonnées bancaires</h3>
                 <p class="kv"><strong>Méthode :</strong> ${data.method === "database" ? "Saisie manuelle (stockée en base)" : "Fichier (lien)"}</p>
                 ${ribDetailsHtml}
+              </div>
+
+              <div class="note">
+                <strong>Note:</strong> Le montant indiqué est à titre indicatif et correspond aux gains actuellement disponibles. Merci de vérifier et de procéder au versement selon les informations fournies.
               </div>
 
               <p>Merci de traiter cette demande de versement.</p>
@@ -778,7 +797,7 @@ class EmailService {
       const info = await this.transporter.sendMail({
         from: `"PayLive SAV" <${process.env.SMTP_USER}>`,
         to: savEmail,
-        subject: `💸 Demande de versement - ${data.storeName}`,
+        subject: `💸 Demande de versement - ${data.storeName}${formattedAmount ? ` - ${formattedAmount}` : ""}`,
         html: htmlContent,
       });
       console.log(`✅ Email demande de versement envoyé à ${savEmail}`);
