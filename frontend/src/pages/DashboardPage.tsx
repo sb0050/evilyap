@@ -742,7 +742,8 @@ export default function DashboardPage() {
             {store && !showPayout && (
               <button
                 onClick={() => setShowPayout(true)}
-                className='px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700'
+                disabled={(store.balance ?? 0) <= 0}
+                className={`px-4 py-2 rounded ${(store.balance ?? 0) <= 0 ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
               >
                 Retirer mes gains
               </button>
