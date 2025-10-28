@@ -9,7 +9,7 @@ export const Toast: React.FC<{ message: string; type?: ToastType }> = ({ message
     return () => clearTimeout(t);
   }, []);
 
-  const base = 'fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-3 rounded shadow-lg text-sm transition-all duration-300 ease-out';
+  const base = 'fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-3 rounded shadow-lg text-sm transition-all duration-300 ease-out text-center';
   const color =
     type === 'success'
       ? 'bg-green-600 text-white'

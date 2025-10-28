@@ -13,13 +13,12 @@ const normalizeBaseUrl = (raw?: string) => {
 
 const getApiBaseUrl = () => {
   // Si on est en mode ngrok (npm run dev:ngrok), utiliser l'URL du backend ngrok depuis les variables d'environnement
-  const isNgrok = (window.location.hostname.includes('ngrok') ||
-    window.location.hostname.includes('ngrok-free.app')) &&
+  const isNgrok =
+    (window.location.hostname.includes('ngrok') ||
+      window.location.hostname.includes('ngrok-free.app')) &&
     import.meta.env.VITE_USE_NGROK === 'true';
 
-  const raw = isNgrok
-    ? (import.meta.env.VITE_API_URL_NGROK || import.meta.env.VITE_API_URL || 'http://localhost:5000')
-    : (import.meta.env.VITE_API_URL || 'http://localhost:5000');
+  const raw = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
   return normalizeBaseUrl(raw);
 };
@@ -31,7 +30,6 @@ console.log('🔧 API Base URL:', API_BASE_URL);
 console.log('🌐 Current hostname:', window.location.hostname);
 console.log('📍 Environment variables:', {
   VITE_API_URL: import.meta.env.VITE_API_URL,
-  VITE_API_URL_NGROK: import.meta.env.VITE_API_URL_NGROK,
 });
 
 /**
@@ -60,7 +58,8 @@ export const apiCall = async (endpoint: any, options: any = {}) => {
     const response = await fetch(url, finalOptions);
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      const text: any = await response.text();
+      throw new Error(`Error: ${text}`);
     }
 
     return response;
@@ -109,7 +108,11 @@ export const apiDelete = (endpoint: any, options = {}) => {
 /**
  * Raccourci pour POST de FormData (ne pas définir Content-Type)
  */
-export const apiPostForm = async (endpoint: any, formData: FormData, options: any = {}) => {
+export const apiPostForm = async (
+  endpoint: any,
+  formData: FormData,
+  options: any = {}
+) => {
   const url = `${API_BASE_URL}${endpoint}`;
   const finalOptions = {
     method: 'POST',
@@ -122,8 +125,8 @@ export const apiPostForm = async (endpoint: any, formData: FormData, options: an
   };
   const response = await fetch(url, finalOptions);
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`HTTP error! status: ${response.status} - ${text}`);
+    const text: any = await response.text();
+    throw new Error(`Error: ${text}`);
   }
   return response;
 };

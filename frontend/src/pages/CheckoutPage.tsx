@@ -30,7 +30,7 @@ import Header from '../components/Header';
 interface Store {
   id: number;
   name: string;
-  logo: string;
+  slug: string;
   description: string;
   theme: string;
   owner_email: string;
@@ -420,6 +420,9 @@ export default function CheckoutPage() {
 
   const themeColor = '#667eea';
 
+  const cloudBase = (import.meta.env.VITE_CLOUDFRONT_URL || 'https://d1tmgyvizond6e.cloudfront.net').replace(/\/+$/, '');
+  const storeLogo = store?.slug ? `${cloudBase}/images/${store.slug}` : undefined;
+
   return (
     <StripeWrapper>
       <Header />
@@ -441,12 +444,16 @@ export default function CheckoutPage() {
           {/* En-tête de la boutique */}
           <div className='bg-white rounded-lg shadow-sm p-6 mb-6'>
             <div className='flex items-center space-x-4'>
-              {store.logo && (
+              {storeLogo ? (
                 <img
-                  src={store.logo}
-                  alt={store.name}
+                  src={storeLogo}
+                  alt={store?.name}
                   className='w-16 h-16 rounded-lg object-cover'
                 />
+              ) : (
+                <div className='w-16 h-16 rounded-lg bg-gray-200 flex items-center justify-center'>
+                  <ShoppingBag className='w-8 h-8 text-gray-500' />
+                </div>
               )}
               <div>
                 <h1 className='text-2xl font-bold text-gray-900'>

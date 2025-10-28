@@ -4,18 +4,16 @@ import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import {
   emailService,
-  StoreOwnerShippingDocEmailData,
   CustomerTrackingEmailData,
 } from "../services/emailService";
 
 const router = express.Router();
 
 // Configuration Boxtal
-const BOXTAL_API = process.env.BOXTAL_API || "https://api.boxtal.com";
 const BOXTAL_CONFIG = {
   client_id: process.env.BOXTAL_ACCESS_KEY || "your_client_id",
   client_secret: process.env.BOXTAL_SECRET_KEY || "your_client_secret",
-  auth_url: `${BOXTAL_API}/iam/account-app/token`,
+  auth_url: "https://api.boxtal.com/iam/account-app/token",
 };
 
 let boxtalToken: string | null = null;
@@ -47,7 +45,6 @@ const verifyAndRefreshBoxtalToken = async () => {
   const credentials = Buffer.from(
     `${BOXTAL_CONFIG.client_id}:${BOXTAL_CONFIG.client_secret}`
   ).toString("base64");
-  console.log("credentials", credentials);
   const options = {
     method: "POST",
     headers: {
@@ -98,7 +95,7 @@ router.post("/auth", async (req, res) => {
 router.post("/parcel-points", async (req, res) => {
   try {
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `${BOXTAL_API}/shipping/v3.1/parcel-point`;
+    const url = `https://api.boxtal.com/shipping/v3.1/parcel-point`;
 
     // Construire les paramètres URL correctement
     const params = new URLSearchParams();
@@ -138,7 +135,7 @@ router.post("/parcel-points", async (req, res) => {
 router.post("/shipping-orders", async (req, res) => {
   try {
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order`;
+    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order`;
     const options = {
       method: "POST",
       headers: {
@@ -180,7 +177,7 @@ router.get("/shipping-orders/:id", async (req, res) => {
     }
 
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
+    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
       id
     )}`;
 
@@ -231,7 +228,7 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
     }
 
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
+    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
       id
     )}/shipping-document`;
 
@@ -323,153 +320,6 @@ router.post(
 
       // Gérer les différents types d'événements
       switch (event.type) {
-        case "DOCUMENT_CREATED":
-          console.log("DOCUMENT_CREATED event:", JSON.stringify(event));
-          try {
-            const shippingOrderId: string | undefined = event?.shippingOrderId;
-            if (!shippingOrderId) {
-              console.warn("DOCUMENT_CREATED: shippingOrderId manquant dans l'événement");
-              break;
-            }
-
-            // 1) Vérifier d'abord si COPR est contenu dans l'ID reçu
-            if (!String(shippingOrderId).includes("COPR")) {
-              console.log(
-                `DOCUMENT_CREATED: shippingOrderId (${shippingOrderId}) ne contient pas 'COPR', on ignore cet événement pour l'instant.`
-              );
-              break;
-            }
-
-            // 2) Récupérer la liste des stores et chercher une occurrence dans document_not_created
-            let foundStore: any | null = null;
-            if (!supabase) {
-              console.warn("Supabase non configuré, impossible de rechercher le store");
-              break;
-            }
-
-            const { data: stores, error: storesError } = await supabase
-              .from("stores")
-              .select("id, name, owner_email, document_not_created")
-              .order("id", { ascending: true });
-
-            if (storesError) {
-              console.error("DOCUMENT_CREATED: erreur récupération stores:", storesError);
-              break;
-            }
-
-            if (Array.isArray(stores)) {
-              for (const s of stores) {
-                const docnc = (s as any)?.document_not_created || "";
-                const items = docnc
-                  .split(";")
-                  .map((x: string) => x.trim())
-                  .filter((x: string) => x.length > 0);
-                if (items.includes(shippingOrderId) || docnc.includes(shippingOrderId)) {
-                  foundStore = s;
-                  break; // ID unique, on arrête dès qu'on trouve
-                }
-              }
-            }
-
-            if (!foundStore) {
-              console.warn(
-                `DOCUMENT_CREATED: aucun store trouvé avec document_not_created contenant ${shippingOrderId}`
-              );
-              break;
-            }
-
-            // 3) Rechercher le client Stripe associé via metadata['shipping_order_ids']
-            if (!stripe) {
-              console.warn("Stripe non configuré, impossible de rechercher le client");
-              break;
-            }
-
-            const searchRes = await stripe.customers.search({
-              query: `metadata['shipping_order_ids']:'${shippingOrderId}'`,
-              limit: 1,
-            });
-            const customer = searchRes?.data?.[0] || null;
-            if (!customer) {
-              console.warn(
-                `DOCUMENT_CREATED: aucun client Stripe trouvé avec shipping_order_ids contenant ${shippingOrderId}`
-              );
-            } else {
-              const metaStr = (customer.metadata as any)?.shipping_order_ids || "";
-              if (!String(metaStr).includes(shippingOrderId)) {
-                console.warn(
-                  `DOCUMENT_CREATED: shippingOrderId non présent dans la metadata du client Stripe (id=${customer.id})`
-                );
-              }
-            }
-
-            // 4) Télécharger le bordereau depuis l'API interne
-            const apiBase =
-              process.env.INTERNAL_API_BASE || `http://localhost:${process.env.PORT || 5000}`;
-            const docApi = await fetch(
-              `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(shippingOrderId)}/shipping-document`,
-              { method: "GET", headers: { "Content-Type": "application/json" } }
-            );
-
-            if (!docApi.ok) {
-              const errText = await docApi.text();
-              console.warn(
-                "DOCUMENT_CREATED: échec récupération documents d'expédition:",
-                docApi.status,
-                errText
-              );
-              break;
-            }
-
-            const docJson: any = await docApi.json();
-            const docs: any[] = Array.isArray(docJson?.content) ? docJson.content : [];
-            const labelDoc = docs.find((d) => d.type === "LABEL") || docs[0];
-
-            if (!labelDoc?.url) {
-              console.warn("DOCUMENT_CREATED: aucun document LABEL disponible pour", shippingOrderId);
-              break;
-            }
-
-            const pdfResp = await fetch(labelDoc.url);
-            if (!pdfResp.ok) {
-              console.warn(
-                "DOCUMENT_CREATED: échec téléchargement du PDF:",
-                labelDoc.url,
-                pdfResp.status
-              );
-              break;
-            }
-
-            const buf = Buffer.from(await pdfResp.arrayBuffer());
-            const attachments = [
-              {
-                filename: `${labelDoc.type || "LABEL"}_${shippingOrderId}.pdf`,
-                content: buf,
-                contentType: "application/pdf",
-              },
-            ];
-
-            // 5) Envoyer un email au store owner avec les infos store+client et le bordereau
-            try {
-              await emailService.sendStoreOwnerShippingDocument({
-                ownerEmail: (foundStore as any)?.owner_email,
-                storeName: (foundStore as any)?.name,
-                shippingOrderId,
-                boxtalId: shippingOrderId,
-                attachments,
-                customerEmail: customer?.email,
-                customerName: (customer?.name || "").toString(),
-              } as any);
-              console.log(
-                `DOCUMENT_CREATED: email envoyé au store owner ${(foundStore as any)?.owner_email} pour ${shippingOrderId}`
-              );
-            } catch (mailErr) {
-              console.error("DOCUMENT_CREATED: erreur envoi email store owner:", mailErr);
-            }
-          } catch (e) {
-            console.error("DOCUMENT_CREATED processing error:", e);
-          }
-          break;
-
         case "TRACKING_CHANGED":
           console.log("TRACKING_CHANGED event:", JSON.stringify(event));
           try {
@@ -564,7 +414,6 @@ router.post(
             console.error("TRACKING_CHANGED processing error:", e);
           }
           break;
-
         default:
           console.log("Unhandled event type:", event.type);
       }

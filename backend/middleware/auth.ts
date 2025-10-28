@@ -1,8 +1,9 @@
-const { ClerkExpressRequireAuth } = require('@clerk/clerk-sdk-node');
+const { ClerkExpressRequireAuth } = require("@clerk/clerk-sdk-node");
 
 // Middleware pour vérifier l'authentification avec Clerk
 const requireAuth = ClerkExpressRequireAuth({
-  // Options de configuration si nécessaire
+  publishableKey: process.env.CLERK_PUBLISHABLE_KEY,
+  secretKey: process.env.CLERK_SECRET_KEY,
 });
 
 module.exports = {

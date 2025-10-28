@@ -17,36 +17,40 @@ interface OnboardingFormData {
   description: string;
   name: string;
   phone: string;
+  website?: string;
 }
 
 export default function OnboardingPage() {
   const { user } = useUser();
-  // Redirect owner to checkout if a store already exists
+  // Redirection basée sur le rôle Clerk: ne rien faire pour admin, rediriger vers dashboard si rôle != 'customer'
   useEffect(() => {
-    const checkOwnerAndRedirect = async () => {
+    const role = (user?.publicMetadata as any)?.role;
+    if (!role || role === 'admin') return;
+    if (role !== 'customer') {
       const email = user?.primaryEmailAddress?.emailAddress;
       if (!email) return;
-      try {
-        const response = await fetch(
-          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores/check-owner/${encodeURIComponent(email)}`
-        );
-        if (!response.ok) return;
-        const data = await response.json();
-        if (data?.exists) {
-          const storeSlug =
-            data.slug ||
-            (data.storeName
-              ? slugify(data.storeName, { lower: true, strict: true })
-              : undefined);
-          if (storeSlug) {
-            window.location.href = `/checkout/${encodeURIComponent(storeSlug)}`;
+      (async () => {
+        try {
+          const response = await fetch(
+            `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores/check-owner/${encodeURIComponent(email)}`
+          );
+          if (!response.ok) return;
+          const data = await response.json();
+          if (data?.exists) {
+            const storeSlug =
+              data.slug ||
+              (data.storeName
+                ? slugify(data.storeName, { lower: true, strict: true })
+                : undefined);
+            if (storeSlug) {
+              window.location.href = `/dashboard/${encodeURIComponent(storeSlug)}`;
+            }
           }
+        } catch (_err) {
+          // Ignorer silencieusement; onboarding reste accessible
         }
-      } catch (_err) {
-        // Ignore errors silently; onboarding remains accessible otherwise
-      }
-    };
-    checkOwnerAndRedirect();
+      })();
+    }
   }, [user]);
 
   // Préremplir le nom complet depuis Clerk
@@ -65,6 +69,7 @@ export default function OnboardingPage() {
     description: '',
     name: '',
     phone: '',
+    website: '',
   });
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [isCheckingSlug, setIsCheckingSlug] = useState(false);
@@ -78,6 +83,29 @@ export default function OnboardingPage() {
   // États pour l'adresse Stripe
   const [billingAddress, setBillingAddress] = useState<Address | null>(null);
   const [isAddressComplete, setIsAddressComplete] = useState(false);
+
+  // Validation du site web
+  const isValidWebsite = (url: string) => {
+    const value = (url || '').trim();
+    if (!value) return true; // champ facultatif
+
+    // Cas 1: nom de domaine sans protocole, doit terminer par un TLD (ex: .co, .cc, .it, etc.)
+    const domainOnlyRegex = /^(?:[a-zA-Z0-9-]{1,63}\.)+[a-zA-Z]{2,}$/;
+    if (domainOnlyRegex.test(value)) return true;
+
+    // Cas 2: URL complète avec protocole (on l'accepte également)
+    try {
+      const parsed = new URL(value);
+      const host = parsed.hostname || '';
+      const hasTld = /\.[a-zA-Z]{2,}$/.test(host);
+      return hasTld; // on ne force pas http/https, on vérifie seulement que le host a un TLD
+    } catch {
+      return false;
+    }
+  };
+  const websiteInvalid = !!(
+    formData.website && !isValidWebsite(formData.website)
+  );
 
   // Debug: tracer les raisons du disabled du bouton
   useEffect(() => {
@@ -147,6 +175,15 @@ export default function OnboardingPage() {
       return;
     }
 
+    // Vérifier le format du site web s'il est fourni
+    if (formData.website && !isValidWebsite(formData.website)) {
+      showToast(
+        'Veuillez saisir un nom de domaine valide (ex: votre-site.co) ou une URL complète',
+        'error'
+      );
+      return;
+    }
+
     setLoading(true);
     console.log('Submitting form with data:', {
       storeName: formData.storeName,
@@ -155,6 +192,7 @@ export default function OnboardingPage() {
       isAddressComplete,
       name: formData.name,
       phone: formData.phone,
+      website: formData.website,
       billingAddress,
     });
     try {
@@ -163,7 +201,6 @@ export default function OnboardingPage() {
         slugify(formData.storeName, { lower: true, strict: true });
 
       // Uploader le logo si présent
-      let logoUrl: string | undefined;
       if (formData.logo) {
         try {
           const fd = new FormData();
@@ -172,7 +209,7 @@ export default function OnboardingPage() {
           const uploadResp = await apiPostForm('/api/upload', fd);
           const uploadJson = await uploadResp.json();
           if (uploadResp.ok && uploadJson?.success && uploadJson?.url) {
-            logoUrl = uploadJson.url as string;
+            // Upload réussi, le logo est accessible via CloudFront `${CLOUDFRONT_URL}/images/${slug}`
           } else {
             console.warn('Upload du logo échoué:', uploadJson?.error);
           }
@@ -186,19 +223,20 @@ export default function OnboardingPage() {
         storeDescription: formData.description,
         ownerEmail: user.primaryEmailAddress.emailAddress,
         slug,
-        logoUrl,
         // Données de facturation pour créer le client Stripe
         clerkUserId: user.id,
         name: formData.name,
         phone: formData.phone,
         address: billingAddress,
+        website: formData.website || undefined,
       });
 
       const result = await response.json();
 
       if (response.ok) {
         console.log('Store created successfully:', result);
-        window.location.href = `/checkout/${encodeURIComponent(slug)}`;
+        // rediriger vers le tableau de bord de la boutique
+        window.location.href = `/dashboard/${encodeURIComponent(slug)}`;
       } else {
         throw new Error(
           result.error || 'Erreur lors de la création de la boutique'
@@ -227,7 +265,6 @@ export default function OnboardingPage() {
     setIsStoreNameDirty(true);
     // Reset slugExists pour éviter un disabled persistant
     if (slugExists) setSlugExists(false);
-    console.log('storeName change:', value);
   };
 
   const handleStoreNameBlur = async () => {
@@ -321,7 +358,8 @@ export default function OnboardingPage() {
                     onChange={handleStoreNameChange}
                     onFocus={handleStoreNameFocus}
                     onBlur={handleStoreNameBlur}
-                    className={`w-full px-4 py-3 pr-10 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border ${slugExists || (showValidationErrors && !formData.storeName.trim()) ? 'border-red-500' : 'border-gray-300'} text-gray-700`}
+                    className={`w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 
+                      ${slugExists || !formData.storeName.trim() ? 'border-red-500' : 'border-gray-300'}`}
                     placeholder='Ma Super Boutique'
                   />
                   {isCheckingSlug && (
@@ -362,6 +400,31 @@ export default function OnboardingPage() {
                 />
               </div>
 
+              {/* Site web (facultatif) */}
+              <div>
+                <label
+                  htmlFor='website'
+                  className='block text-sm font-medium text-gray-700 mb-2'
+                >
+                  Site web (facultatif)
+                </label>
+                <input
+                  id='website'
+                  value={formData.website || ''}
+                  onChange={e =>
+                    setFormData({ ...formData, website: e.target.value })
+                  }
+                  className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${formData.website && websiteInvalid ? 'border-red-500' : 'border-gray-300'}`}
+                  placeholder='https://votre-site.com'
+                />
+                {formData.website && websiteInvalid && (
+                  <p className='mt-2 text-sm text-red-600'>
+                    Veuillez saisir un nom de domaine valide (ex: votre-site.co)
+                    ou une URL complète
+                  </p>
+                )}
+              </div>
+
               {/* Logo */}
               <div>
                 <label className='block text-sm font-medium text-gray-700 mb-2'>
@@ -370,7 +433,8 @@ export default function OnboardingPage() {
                 <div className='flex items-center space-x-4'>
                   <div className='flex-1'>
                     <label
-                      className={`flex flex-col items-center justify-center w-full h-32 border-2 ${showValidationErrors && !formData.logo ? 'border-red-500' : 'border-gray-300'} border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100`}
+                      className={`flex flex-col items-center justify-center w-full h-32 border-2 
+                        ${slugExists || !formData.logo ? 'border-red-500' : 'border-gray-300'} border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100`}
                     >
                       <div className='flex flex-col items-center justify-center pt-5 pb-6'>
                         <Upload className='w-8 h-8 mb-2 text-gray-400' />
@@ -433,12 +497,6 @@ export default function OnboardingPage() {
                         },
                       }}
                       onChange={event => {
-                        console.log('AddressElement change:', {
-                          complete: event.complete,
-                          name: event.value.name,
-                          phone: event.value.phone,
-                          address: event.value.address,
-                        });
                         setIsAddressComplete(event.complete);
                         if (event.value.address) {
                           setBillingAddress(event.value.address);
@@ -476,7 +534,8 @@ export default function OnboardingPage() {
                   slugExists ||
                   !isAddressComplete ||
                   !formData.name.trim() ||
-                  !formData.phone.trim()
+                  !formData.phone.trim() ||
+                  (formData.website ? websiteInvalid : false)
                 }
                 onMouseEnter={() => {
                   const disabled =
@@ -485,18 +544,8 @@ export default function OnboardingPage() {
                     slugExists ||
                     !isAddressComplete ||
                     !formData.name.trim() ||
-                    !formData.phone.trim();
-                  console.log('Submit button disabled effect:', {
-                    disabled,
-                    loading,
-                    storeNameEmpty: !formData.storeName.trim(),
-                    slugExists,
-                    isAddressComplete,
-                    nameEmpty: !formData.name.trim(),
-                    phoneEmpty: !formData.phone.trim(),
-                    formData,
-                    billingAddress,
-                  });
+                    !formData.phone.trim() ||
+                    (formData.website ? websiteInvalid : false);
                 }}
                 className='w-full bg-indigo-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
               >

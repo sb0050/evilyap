@@ -2,7 +2,7 @@ import express from "express";
 import Stripe from "stripe";
 import { emailService } from "../services/emailService";
 import { createClient } from "@supabase/supabase-js";
-import { isStringOneByteRepresentation } from "v8";
+import { clerkClient } from "@clerk/clerk-sdk-node";
 
 const router = express.Router();
 
@@ -59,22 +59,12 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
 });
 
-const BASE_URL = process.env.FRONTEND_URL || "http://localhost:3001";
-
 // Types pour les requêtes
 interface OrderItem {
   id: string;
   name: string;
   price: number;
   quantity: number;
-}
-
-interface CreatePaymentIntentRequest {
-  amount: number;
-  currency: string;
-  orderItems: OrderItem[];
-  customerEmail?: string;
-  customerName?: string;
 }
 
 // Endpoint to get customer details
@@ -110,7 +100,6 @@ router.get("/get-customer-details", async (req, res) => {
       deliveryMethod: customer.metadata.delivery_method,
       parcelPointCode: customer.metadata.parcel_point_code,
       homeDeliveryNetwork: customer.metadata.home_delivery_network,
-      shippingOrderIds: customer.metadata.shipping_order_ids,
     };
 
     res.json({ customer: customerData });
@@ -200,23 +189,9 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
                     country: parcelPoint.location.countryIsoCode || "FR",
                   },
                 }
-              : {
-                  name: customerName,
-                  phone: phone,
-                  address: {
-                    line1: address.line1,
-                    line2: address.line2 || "",
-                    city: address.city,
-                    state: address.state || "",
-                    postal_code: address.postal_code,
-                    country: address.country || "FR",
-                  },
-                },
+              : ({} as Stripe.CustomerUpdateParams.Shipping),
           metadata: {
             clerk_user_id: clerkUserId || "",
-            delivery_method: deliveryMethod,
-            delivery_network: deliveryNetwork || "",
-            ...(parcelPoint && { parcel_point_code: parcelPoint.code }),
           },
         });
       } else {
@@ -247,23 +222,9 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
                     country: parcelPoint.location.countryIsoCode || "FR",
                   },
                 }
-              : {
-                  name: customerName,
-                  phone: phone,
-                  address: {
-                    line1: address.line1,
-                    line2: address.line2 || "",
-                    city: address.city,
-                    state: address.state || "",
-                    postal_code: address.postal_code,
-                    country: address.country || "FR",
-                  },
-                },
+              : ({} as Stripe.CustomerUpdateParams.Shipping),
           metadata: {
             clerk_user_id: clerkUserId || "",
-            delivery_method: deliveryMethod,
-            delivery_network: deliveryNetwork || "",
-            ...(parcelPoint && { parcel_point_code: parcelPoint.code }),
           },
         };
 
@@ -271,6 +232,21 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       }
 
       customerId = customer.id;
+
+      // Mettre à jour les métadonnées Clerk pour le rôle et stripe_id
+      try {
+        if (clerkUserId && customerId) {
+          await clerkClient.users.updateUserMetadata(clerkUserId, {
+            publicMetadata: { role: "customer" },
+            privateMetadata: { stripe_id: customerId },
+          });
+        }
+      } catch (err) {
+        console.error(
+          "Erreur lors de la mise à jour des métadonnées Clerk:",
+          err
+        );
+      }
     } catch (customerError) {
       console.error("Erreur lors de la gestion du client:", customerError);
       res
@@ -312,11 +288,6 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         metadata: {
           store_name: storeName || "PayLive",
           product_reference: productReference || "N/A",
-          delivery_method: deliveryMethod || "",
-          delivery_network: deliveryNetwork || "",
-          weight: selectedWeight || "",
-          pickup_point_code: pickupPointCode || "",
-          drop_off_point_code: dropOffPointCode || "",
         },
       },
       // Duplicate useful metadata at the session level for easier retrieval
@@ -472,6 +443,8 @@ router.post(
       return;
     }
 
+    let paymentIntent: Stripe.PaymentIntent | null = null;
+
     // Gérer les événements
     switch (event.type) {
       case "payment_intent.succeeded":
@@ -483,14 +456,13 @@ router.post(
         break;
       case "checkout.session.completed":
         // Session checkout complétée
-
         try {
           const session: any = event.data.object as any;
           console.log("Session metadata:", session.metadata);
           const customer = await stripe.customers.retrieve(session.customer);
 
           // Récupérer le payment intent pour les informations de paiement
-          let paymentIntent: Stripe.PaymentIntent | null = null;
+
           try {
             if (session.payment_intent) {
               paymentIntent = await stripe.paymentIntents.retrieve(
@@ -565,21 +537,25 @@ router.post(
             let storeOwnerEmail = null;
             let storeDescription = null;
             let storeLogo = null;
-            let storeShoppingOrderIds = null;
+            let storeId: number | null = null;
+            let storeSlug: string | null = null;
 
             if (storeName) {
               try {
                 const { data: storeData, error: storeError } = await supabase
                   .from("stores")
-                  .select("owner_email, description, logo, shipping_order_ids")
+                  .select("id, slug, owner_email, description")
                   .eq("name", storeName)
                   .single();
 
                 if (!storeError && storeData) {
                   storeOwnerEmail = storeData.owner_email;
                   storeDescription = storeData.description;
-                  storeLogo = storeData.logo;
-                  storeShoppingOrderIds = storeData.shipping_order_ids;
+                  storeId = storeData.id || null;
+                  storeSlug = storeData.slug || null;
+                  if (process.env.CLOUDFRONT_URL && storeSlug) {
+                    storeLogo = `${process.env.CLOUDFRONT_URL}/images/${storeSlug}`;
+                  }
                 }
               } catch (storeErr) {
                 console.error("Error fetching store data:", storeErr);
@@ -624,6 +600,25 @@ router.post(
               },
             };
 
+            // Dimensions dynamiques selon l'offre de transport
+            const offerDimensions: Record<
+              string,
+              { width: number; length: number; height: number }
+            > = {
+              "MONR-CpourToi": { width: 41, length: 64, height: 38 },
+              "MONR-DomicileFrance": { width: 41, length: 64, height: 38 },
+              "SOGP-RelaisColis": { width: 100, length: 100, height: 100 },
+              "CHRP-Chrono2ShopDirect": { width: 30, length: 100, height: 20 },
+              "CHRP-Chrono18": { width: 30, length: 100, height: 20 },
+              "UPSE-Express": { width: 41, length: 64, height: 38 },
+              "POFR-ColissimoAccess": { width: 24, length: 34, height: 26 },
+            };
+            const dims = offerDimensions[deliveryNetwork] || {
+              width: 10,
+              length: 10,
+              height: 5,
+            };
+
             // Compose shipment
             const shipment = {
               packages: [
@@ -633,12 +628,12 @@ router.post(
                     value: (amount || 0) / 100,
                     currency: "EUR",
                   },
-                  width: 10, //en cm
-                  length: 10, //en cm
-                  height: 5, // en cm
+                  width: dims.width, // en cm
+                  length: dims.length, // en cm
+                  height: dims.height, // en cm
                   weight: weight, // poids en Kg
                   content: {
-                    id: "content:v1:40110", //40110	Tissus, vêtements neufs
+                    id: "content:v1:40110", //40110\tTissus, vêtements neufs
                     description: `${storeName} - ${productReference}`,
                   },
                 },
@@ -662,338 +657,308 @@ router.post(
                 JSON.stringify(createOrderPayload)
               );
 
-            // Call internal Boxtal shipping-orders endpoint
-            const apiBase =
-              process.env.INTERNAL_API_BASE ||
-              `http://localhost:${process.env.PORT || 5000}`;
-            const resp = await fetch(`${apiBase}/api/boxtal/shipping-orders`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(createOrderPayload),
-            });
-
-            if (!resp.ok) {
-              const text = await resp.text();
-              console.error(
-                "Failed to create Boxtal shipping order:",
-                resp.status,
-                text
+              // Call internal Boxtal shipping-orders endpoint
+              const apiBase =
+                process.env.INTERNAL_API_BASE ||
+                `http://localhost:${process.env.PORT || 5000}`;
+              const resp = await fetch(
+                `${apiBase}/api/boxtal/shipping-orders`,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(createOrderPayload),
+                }
               );
-            } else {
-              const data: any = await resp.json();
-              estimatedDeliveryDate = data.content.estimatedDeliveryDate;
-              boxtalId = data.content.id;
-              console.log("Boxtal shipping order created:", data);
 
-              // Mettre à jour Supabase (stores.shipping_order_ids uniquement)
-              try {
-                const shippingOrderId = boxtalId;
-                const appendDelimited = (
-                  existing: string | null | undefined,
-                  add: string
-                ) => {
-                  const arr = (existing || "")
-                    .split(";")
-                    .map((s) => s.trim())
-                    .filter((s) => s.length > 0);
-                  if (add && !arr.includes(add)) arr.push(add);
-                  return arr.join(";");
-                };
+              if (!resp.ok) {
+                const text = await resp.text();
+                console.error(
+                  "Failed to create Boxtal shipping order:",
+                  resp.status,
+                  text
+                );
+                await emailService.sendAdminError({
+                  subject: "Boxtal shipping order échec",
+                  message: `Echec de création Boxtal pour store ${storeName} / network ${deliveryNetwork}`,
+                  context: text,
+                });
+              } else {
+                const data: any = await resp.json();
+                estimatedDeliveryDate = data.content.estimatedDeliveryDate;
+                boxtalId = data.content.id;
+                console.log("Boxtal shipping order created:", data);
 
-                if (storeName) {
-                  const { data: storeRow, error: storeSelectError } =
+                // Enregistrer l'expédition dans la table shipments (plus de metadata Stripe)
+                try {
+                  const pickupCodeNum =
+                    pickupPointCode && pickupPointCode !== "N/A"
+                      ? Number(pickupPointCode)
+                      : null;
+                  const dropOffCodeNum =
+                    dropOffPointCode && dropOffPointCode !== "N/A"
+                      ? Number(dropOffPointCode)
+                      : null;
+                  const prodRefNum =
+                    productReference && /^\d+$/.test(productReference)
+                      ? Number(productReference)
+                      : null;
+
+                  const { data: shipmentInsert, error: shipmentInsertError } =
                     await supabase
-                      .from("stores")
-                      .select("id, shipping_order_ids")
-                      .eq("name", storeName)
+                      .from("shipments")
+                      .insert({
+                        store_id: storeId,
+                        customer_stripe_id: customerId || null,
+                        shipment_id: boxtalId,
+                        document_created: false,
+                        delivery_method: deliveryMethod,
+                        delivery_network: deliveryNetwork,
+                        drop_off_point_code: dropOffCodeNum,
+                        pickup_point_code: pickupCodeNum,
+                        weight: session.metadata?.weight || null,
+                        product_reference: prodRefNum,
+                        value: (amount || 0) / 100,
+                        customer_clerk_id: clerkUserId || null,
+                      })
+                      .select("id")
                       .single();
 
-                  if (!storeSelectError && storeRow) {
-                    const newShoppingOrderIds = appendDelimited(
-                      storeRow.shipping_order_ids,
-                      shippingOrderId
-                    );
-                    const { error: storeUpdateError } = await supabase
-                      .from("stores")
-                      .update({
-                        shipping_order_ids: newShoppingOrderIds,
-                      })
-                      .eq("id", storeRow.id);
-                    if (storeUpdateError) {
-                      console.error(
-                        "Failed to update store ids:",
-                        storeUpdateError
-                      );
-                    } else {
-                      console.log("Store ids updated (Supabase)", {
-                        shipping_order_ids: newShoppingOrderIds,
-                      });
-                    }
-                  } else {
-                    console.warn(
-                      "Store not found for updating ids:",
-                      storeSelectError
-                    );
-                  }
-                }
-
-                // Mettre à jour les metadata du customer (shipping_order_ids uniquement)
-                const existingCustomers = await stripe.customers.list({
-                  email: customerEmail as string,
-                  limit: 1,
-                });
-                const customerIdForMeta = existingCustomers.data[0]?.id;
-
-                console.log("customerIdForMeta:", customerIdForMeta);
-                if (customerIdForMeta) {
-                  const existingShoppingOrderIds =
-                    (customer?.metadata as any)?.shipping_order_ids || "";
-                  const newCustomerShoppingOrderIds = appendDelimited(
-                    existingShoppingOrderIds,
-                    shippingOrderId
-                  );
-                  try {
-                    await stripe.customers.update(customerIdForMeta, {
-                      metadata: {
-                        ...(customer.metadata || {}),
-                        shipping_order_ids: newCustomerShoppingOrderIds,
-                      },
-                    } as any);
-                    console.log("Stripe customer metadata updated", {
-                      shipping_order_ids: newCustomerShoppingOrderIds,
-                    });
-                  } catch (metaErr) {
+                  if (shipmentInsertError) {
                     console.error(
-                      "Failed to update Stripe customer metadata:",
-                      metaErr
+                      "Error inserting shipment row:",
+                      shipmentInsertError
                     );
+                    await emailService.sendAdminError({
+                      subject: "Erreur insertion shipments",
+                      message: `Insertion échouée pour boxtalId ${boxtalId} (store ${storeName}).`,
+                      context: JSON.stringify(shipmentInsertError),
+                    });
+                  } else {
+                    console.log("Shipments row inserted:", shipmentInsert);
                   }
+                } catch (dbErr) {
+                  console.error("DB insert shipments exception:", dbErr);
                 }
-              } catch (idsErr) {
-                console.error("Error updating store/customer ids:", idsErr);
-              }
 
-              // Attendre, tenter récupération du document 2× avec 2s de délai et notifier le propriétaire
-              try {
-                const shippingOrderIdForDoc = boxtalId;
-                const base =
-                  process.env.INTERNAL_API_BASE ||
-                  `http://localhost:${process.env.PORT || 5000}`;
-                console.log("shippingOrderIdForDoc:", shippingOrderIdForDoc);
+                // Attendre, tenter récupération du document 2× avec 2s de délai et notifier le propriétaire
+                try {
+                  const shippingOrderIdForDoc = boxtalId;
+                  const base =
+                    process.env.INTERNAL_API_BASE ||
+                    `http://localhost:${process.env.PORT || 5000}`;
+                  console.log("shippingOrderIdForDoc:", shippingOrderIdForDoc);
 
-                let attachments: Array<{
-                  filename: string;
-                  content: Buffer;
-                  contentType?: string;
-                }> = [];
+                  let attachments: Array<{
+                    filename: string;
+                    content: Buffer;
+                    contentType?: string;
+                  }> = [];
 
-                for (let attempt = 1; attempt <= 2; attempt++) {
-                  // Attente 2s avant chaque tentative pour laisser Boxtal générer le document
-                  await new Promise((resolve) => setTimeout(resolve, 2000));
+                  for (let attempt = 1; attempt <= 2; attempt++) {
+                    // Attente 2s avant chaque tentative pour laisser Boxtal générer le document
+                    await new Promise((resolve) => setTimeout(resolve, 2000));
 
-                  const docApiResp = await fetch(
-                    `${base}/api/boxtal/shipping-orders/${encodeURIComponent(
-                      shippingOrderIdForDoc
-                    )}/shipping-document`,
-                    { method: "GET" }
-                  );
+                    const docApiResp = await fetch(
+                      `${base}/api/boxtal/shipping-orders/${encodeURIComponent(
+                        shippingOrderIdForDoc
+                      )}/shipping-document`,
+                      { method: "GET" }
+                    );
 
-                  if (docApiResp.ok) {
-                    const docJson: any = await docApiResp.json();
-                    const docs: any[] = docJson?.content || [];
-                    const labelDoc =
-                      docs.find((d) => d.type === "LABEL") || docs[0];
+                    if (docApiResp.ok) {
+                      const docJson: any = await docApiResp.json();
+                      const docs: any[] = docJson?.content || [];
+                      const labelDoc =
+                        docs.find((d) => d.type === "LABEL") || docs[0];
 
-                    if (labelDoc?.url) {
-                      const docResp = await fetch(labelDoc.url);
-                      if (docResp.ok) {
-                        const buf = Buffer.from(await docResp.arrayBuffer());
-                        attachments = [
-                          {
-                            filename: `${
-                              labelDoc.type || "LABEL"
-                            }_${shippingOrderIdForDoc}.pdf`,
-                            content: buf,
-                            contentType: "application/pdf",
-                          },
-                        ];
-                        break; // pièce jointe prête, on sort
+                      if (labelDoc?.url) {
+                        const docResp = await fetch(labelDoc.url);
+                        if (docResp.ok) {
+                          const buf = Buffer.from(await docResp.arrayBuffer());
+                          attachments = [
+                            {
+                              filename: `${
+                                labelDoc.type || "LABEL"
+                              }_${shippingOrderIdForDoc}.pdf`,
+                              content: buf,
+                              contentType: "application/pdf",
+                            },
+                          ];
+                          break; // pièce jointe prête, on sort
+                        } else {
+                          console.warn(
+                            "Failed to download shipping document PDF:",
+                            labelDoc.url,
+                            docResp.status
+                          );
+                        }
                       } else {
                         console.warn(
-                          "Failed to download shipping document PDF:",
-                          labelDoc.url,
-                          docResp.status
+                          "No shipping document available in Boxtal response"
                         );
                       }
                     } else {
+                      const errText = await docApiResp.text();
+                      console.log(
+                        "Failed to fetch shipping document from Boxtal:",
+                        docApiResp.status,
+                        errText
+                      );
+
                       console.warn(
-                        "No shipping document available in Boxtal response"
+                        "Failed to get shipping documents via internal route:",
+                        docApiResp.status,
+                        errText
                       );
+                      // autres erreurs : on log et on sort de la boucle
+                      break;
                     }
-                  } else {
-                    const errText = await docApiResp.text();
-                    console.log(
-                      "Failed to fetch shipping document from Boxtal:",
-                      docApiResp.status,
-                      errText
-                    );
-
-                    // Déterminer si l'erreur correspond à NoShippingDocumentException
-                    let noShippingDocumentException = false;
-                    try {
-                      const parsed = JSON.parse(errText);
-                      const code = parsed.errors[0].code;
-                      noShippingDocumentException = code.includes(
-                        "NoShippingDocumentException"
-                      );
-                      console.log("parsed: ", parsed);
-                    } catch {
-                      // si texte brut
-                      noShippingDocumentException = (errText || "")
-                        .toString()
-                        .includes("NoShippingDocumentException");
-                    }
-
-                    // Envoyer email SAV uniquement si NoShippingDocumentException
-                    if (noShippingDocumentException) {
-                      // Enregistrer l'ID dans Supabase (stores.document_not_created)
-                      try {
-                        const appendDelimited = (
-                          existing: string | null | undefined,
-                          add: string
-                        ) => {
-                          const arr = (existing || "")
-                            .split(";")
-                            .map((s) => s.trim())
-                            .filter((s) => s.length > 0);
-                          if (add && !arr.includes(add)) arr.push(add);
-                          return arr.join(";");
-                        };
-
-                        if (storeName) {
-                          const { data: storeRow, error: storeSelectError } =
-                            await supabase
-                              .from("stores")
-                              .select("id, document_not_created")
-                              .eq("name", storeName)
-                              .single();
-
-                          if (!storeSelectError && storeRow) {
-                            const newDocNotCreated = appendDelimited(
-                              (storeRow as any)?.document_not_created,
-                              shippingOrderIdForDoc
-                            );
-                            const { error: storeUpdateError } = await supabase
-                              .from("stores")
-                              .update({
-                                document_not_created: newDocNotCreated,
-                              })
-                              .eq("id", storeRow.id);
-                            if (storeUpdateError) {
-                              console.error(
-                                "Failed to update stores.document_not_created:",
-                                storeUpdateError
-                              );
-                            } else {
-                              console.log(
-                                "Supabase updated (stores.document_not_created)",
-                                { document_not_created: newDocNotCreated }
-                              );
-                            }
-                          } else {
-                            console.warn(
-                              "Store not found for updating document_not_created:",
-                              storeSelectError
-                            );
-                          }
-                        }
-                      } catch (sbErr) {
-                        console.error(
-                          "Error updating Supabase document_not_created:",
-                          sbErr
-                        );
-                      }
-                    }
-
-                    console.warn(
-                      "Failed to get shipping documents via internal route:",
-                      docApiResp.status,
-                      errText
-                    );
-                    // autres erreurs : on log et on sort de la boucle
-                    break;
                   }
-                }
 
-                // Envoyer l'email au propriétaire (avec ou sans pièce jointe)
-                if (storeOwnerEmail) {
-                  console.log("product_amount:", product_amount);
-                  const sentOwner =
-                    await emailService.sendStoreOwnerNotification({
-                      ownerEmail: storeOwnerEmail,
-                      storeName: storeName || "Votre Boutique",
-                      customerEmail: customerEmail || "",
-                      customerName: customerName || "",
-                      customerPhone: customerPhone || "",
-                      deliveryMethod,
-                      deliveryNetwork,
-                      shippingAddress: {
-                        name: (customerShippingAddress as any)?.name,
-                        address: {
-                          line1: (customerShippingAddress as any)?.address
-                            ?.line1,
-                          line2:
-                            (customerShippingAddress as any)?.address?.line2 ||
-                            "",
-                          city: (customerShippingAddress as any)?.address?.city,
-                          state: (customerShippingAddress as any)?.address
-                            ?.state,
-                          postal_code: (customerShippingAddress as any)?.address
-                            ?.postal_code,
-                          country: (customerShippingAddress as any)?.address
-                            ?.country,
+                  // Marquer document_created = true si une pièce jointe PDF a été récupérée
+                  if (attachments && attachments.length > 0) {
+                    try {
+                      const { error: updateErr } = await supabase
+                        .from("shipments")
+                        .update({ document_created: true })
+                        .eq("shipment_id", shippingOrderIdForDoc);
+                      if (updateErr) {
+                        console.error(
+                          "Error updating shipments.document_created:",
+                          updateErr
+                        );
+                        await emailService.sendAdminError({
+                          subject: "Erreur update document_created",
+                          message: `Mise à jour échouée pour boxtalId ${shippingOrderIdForDoc}`,
+                          context: JSON.stringify(updateErr),
+                        });
+                      }
+                    } catch (updEx) {
+                      console.error(
+                        "Exception updating shipments.document_created:",
+                        updEx
+                      );
+                    }
+                  }
+
+                  // Envoyer l'email au propriétaire (avec ou sans pièce jointe)
+                  if (storeOwnerEmail) {
+                    console.log("product_amount:", product_amount);
+                    const sentOwner =
+                      await emailService.sendStoreOwnerNotification({
+                        ownerEmail: storeOwnerEmail,
+                        storeName: storeName || "Votre Boutique",
+                        customerEmail: customerEmail || "",
+                        customerName: customerName || "",
+                        customerPhone: customerPhone || "",
+                        deliveryMethod,
+                        deliveryNetwork,
+                        shippingAddress: {
+                          name: (customerShippingAddress as any)?.name,
+                          address: {
+                            line1: (customerShippingAddress as any)?.address
+                              ?.line1,
+                            line2:
+                              (customerShippingAddress as any)?.address
+                                ?.line2 || "",
+                            city: (customerShippingAddress as any)?.address
+                              ?.city,
+                            state: (customerShippingAddress as any)?.address
+                              ?.state,
+                            postal_code: (customerShippingAddress as any)
+                              ?.address?.postal_code,
+                            country: (customerShippingAddress as any)?.address
+                              ?.country,
+                          },
                         },
-                      },
-                      customerAddress: {
-                        line1: (customerBillingAddress as any)?.line1,
-                        line2: (customerBillingAddress as any)?.line2 || "",
-                        city: (customerBillingAddress as any)?.city,
-                        state: (customerBillingAddress as any)?.state,
-                        postal_code: (customerBillingAddress as any)
-                          ?.postal_code,
-                        country: (customerBillingAddress as any)?.country,
-                      },
-                      pickupPointCode,
-                      productReference,
-                      amount: product_amount || amount,
-                      currency,
-                      paymentId,
-                      boxtalId,
-                      attachments,
-                      documentPendingNote:
-                        attachments?.length === 0
-                          ? "Le bordereau d'envoi sera envoyé dans un autre email."
-                          : undefined,
-                    });
-                  console.log(
-                    "Store owner notification sent",
-                    sentOwner,
-                    storeOwnerEmail
-                  );
-                } else {
-                  console.warn(
-                    "No storeOwnerEmail found, skipping owner notification"
+                        customerAddress: {
+                          line1: (customerBillingAddress as any)?.line1,
+                          line2: (customerBillingAddress as any)?.line2 || "",
+                          city: (customerBillingAddress as any)?.city,
+                          state: (customerBillingAddress as any)?.state,
+                          postal_code: (customerBillingAddress as any)
+                            ?.postal_code,
+                          country: (customerBillingAddress as any)?.country,
+                        },
+                        pickupPointCode,
+                        productReference,
+                        amount: product_amount || amount,
+                        currency,
+                        paymentId,
+                        boxtalId,
+                        attachments,
+                        documentPendingNote:
+                          attachments?.length === 0
+                            ? "Le bordereau d'envoi sera envoyé dans un autre email."
+                            : undefined,
+                      });
+                    console.log(
+                      "Store owner notification sent",
+                      sentOwner,
+                      storeOwnerEmail
+                    );
+                  } else {
+                    console.warn(
+                      "No storeOwnerEmail found, skipping owner notification"
+                    );
+                  }
+                } catch (e) {
+                  console.error(
+                    "Error sending store owner notification with document:",
+                    e
                   );
                 }
-              } catch (e) {
-                console.error(
-                  "Error sending store owner notification with document:",
-                  e
-                );
+              }
+            } // end if deliveryMethod === "pickup_point"
+
+            // Enregistrer une expédition générique pour les autres méthodes
+            if (deliveryMethod !== "pickup_point") {
+              try {
+                const pickupCodeNum =
+                  pickupPointCode && pickupPointCode !== "N/A"
+                    ? Number(pickupPointCode)
+                    : null;
+                const dropOffCodeNum =
+                  dropOffPointCode && dropOffPointCode !== "N/A"
+                    ? Number(dropOffPointCode)
+                    : null;
+                const prodRefNum =
+                  productReference && /^\d+$/.test(productReference)
+                    ? Number(productReference)
+                    : null;
+
+                const { error: shipmentInsertError } = await supabase
+                  .from("shipments")
+                  .insert({
+                    store_id: storeId,
+                    customer_stripe_id: customerId || null,
+                    shipment_id: null,
+                    document_created: false,
+                    delivery_method: deliveryMethod,
+                    delivery_network: deliveryNetwork,
+                    drop_off_point_code: dropOffCodeNum,
+                    pickup_point_code: pickupCodeNum,
+                    weight: session.metadata?.weight || null,
+                    product_reference: prodRefNum,
+                    value: (amount || 0) / 100,
+                    customer_clerk_id: clerkUserId || null,
+                  });
+
+                if (shipmentInsertError) {
+                  console.error(
+                    "Error inserting generic shipment row:",
+                    shipmentInsertError
+                  );
+                  await emailService.sendAdminError({
+                    subject: "Erreur insertion shipments (générique)",
+                    message: `Insertion échouée pour store ${storeName}.`,
+                    context: JSON.stringify(shipmentInsertError),
+                  });
+                }
+              } catch (dbErr) {
+                console.error("DB insert shipments (générique) exception:", dbErr);
               }
             }
-
-            } // end if deliveryMethod === "pickup_point"
 
             // Envoyer l'email de confirmation au client
             try {
@@ -1004,7 +969,7 @@ router.post(
                 customerName: customerName,
                 storeName: storeName,
                 storeDescription: storeDescription,
-                storeLogo: storeLogo,
+                storeLogo: `${process.env.CLOUDFRONT_URL}/images/${storeSlug}`,
                 productReference: productReference,
                 amount: amount / 100,
                 currency: currency,
@@ -1028,6 +993,13 @@ router.post(
             // Notification storeowner supprimée: l’envoi des documents se fait via webhook Boxtal
           }
         } catch (sessionErr) {
+          // envoyer l'erreur à l'admin
+          await emailService.sendAdminError({
+            subject: "Erreur lors de la création de la session de paiement",
+            message: `Une erreur est survenue lors de la création de la session de paiement pour l'email ${
+              paymentIntent?.receipt_email
+            }: ${JSON.stringify(sessionErr)}`,
+          });
           console.error(
             "Error handling checkout.session.completed:",
             sessionErr

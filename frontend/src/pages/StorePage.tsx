@@ -7,9 +7,9 @@ import { useUser } from '@clerk/clerk-react';
 interface Store {
   id: number;
   name: string;
-  logo: string;
   description: string;
   owner_email: string;
+  slug: string;
 }
 
 const StorePage: React.FC = () => {
@@ -76,6 +76,9 @@ const StorePage: React.FC = () => {
 
   const isOwner = user?.primaryEmailAddress?.emailAddress === store.owner_email;
 
+  const cloudBase = (import.meta.env.VITE_CLOUDFRONT_URL || 'https://d1tmgyvizond6e.cloudfront.net').replace(/\/+$/, '');
+  const storeLogo = store?.slug ? `${cloudBase}/images/${store.slug}` : undefined;
+
   return (
     <div className='min-h-screen bg-gradient-to-b from-indigo-50 to-white'>
       {/* Header avec overlay pour la lisibilité */}
@@ -83,9 +86,9 @@ const StorePage: React.FC = () => {
         <div className='max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8'>
           <div className='flex items-center space-x-6'>
             {/* Logo de la boutique */}
-            {store.logo ? (
+            {storeLogo ? (
               <img
-                src={store.logo}
+                src={storeLogo}
                 alt={`Logo ${store.name}`}
                 className='w-20 h-20 rounded-full object-cover border-4 border-white shadow-lg'
               />
@@ -157,22 +160,39 @@ const StorePage: React.FC = () => {
                 </div>
               </div>
 
-              <div className='text-center'>
-                <h3 className='text-xl font-semibold text-gray-900 mb-4'>
-                  Bienvenue dans votre boutique !
-                </h3>
-                <p className='text-gray-600 mb-6'>
-                  Commencez par ajouter vos premiers produits pour démarrer vos
-                  ventes.
-                </p>
-                <div className='space-x-4'>
-                  <button className='bg-indigo-600 text-white px-6 py-3 rounded-lg hover:bg-indigo-700 transition-colors'>
-                    Ajouter un produit
-                  </button>
-                  <button className='border border-gray-300 text-gray-700 px-6 py-3 rounded-lg hover:bg-gray-50 transition-colors'>
-                    <Settings className='w-5 h-5 inline mr-2' />
-                    Paramètres
-                  </button>
+              {/* Paramètres rapides */}
+              <div className='grid grid-cols-1 md:grid-cols-2 gap-6'>
+                <div className='bg-gray-50 rounded-lg p-6'>
+                  <h3 className='text-lg font-semibold text-gray-900 mb-4'>
+                    Paramètres de la boutique
+                  </h3>
+                  <div className='space-y-4'>
+                    <button className='w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700 transition'>
+                      Modifier le logo
+                    </button>
+                    <button className='w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700 transition'>
+                      Gérer les catégories
+                    </button>
+                    <button className='w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700 transition'>
+                      Ajouter un produit
+                    </button>
+                  </div>
+                </div>
+
+                <div className='bg-gray-50 rounded-lg p-6'>
+                  <h3 className='text-lg font-semibold text-gray-900 mb-4'>
+                    Statistiques
+                  </h3>
+                  <div className='grid grid-cols-2 gap-4'>
+                    <div className='p-4 bg-white rounded-lg shadow-sm'>
+                      <p className='text-sm text-gray-500'>Taux de conversion</p>
+                      <p className='text-2xl font-bold text-gray-900'>0%</p>
+                    </div>
+                    <div className='p-4 bg-white rounded-lg shadow-sm'>
+                      <p className='text-sm text-gray-500'>Panier moyen</p>
+                      <p className='text-2xl font-bold text-gray-900'>0€</p>
+                    </div>
+                  </div>
                 </div>
               </div>
             </>

@@ -1,27 +1,26 @@
 import express from "express";
 import multer from "multer";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { createClient } from "@supabase/supabase-js";
 
 const router = express.Router();
 
+// AWS S3 config
 const awsRegion = process.env.AWS_REGION;
 const awsAccessKeyId = process.env.AWS_ACCESS_KEY_ID;
 const awsSecretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
 const awsBucket = process.env.AWS_S3_BUCKET;
 
-// Ensure CloudFront base URL includes protocol and no trailing slash
-const normalizeCdnBase = (raw?: string) => {
-  const base = (raw || "https://d1tmgyvizond6e.cloudfront.net").trim();
-  const withProto = base.startsWith("http://") || base.startsWith("https://")
-    ? base
-    : `https://${base.replace(/^\/+/, "")}`;
-  return withProto.replace(/\/+$/, "");
+const normalizeCdnBase = (base?: string | null) => {
+  if (!base) return "";
+  return base.replace(/\/$/, "");
 };
 const cloudFrontUrl = normalizeCdnBase(process.env.CLOUDFRONT_URL);
 
 if (!awsRegion || !awsAccessKeyId || !awsSecretAccessKey || !awsBucket) {
-  console.error("AWS S3 environment variables are missing (AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET)");
+  console.error(
+    "AWS S3 environment variables are missing (AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET)"
+  );
 }
 
 const s3Client = new S3Client({
@@ -53,24 +52,17 @@ const uploadDocs = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB pour RIB
   fileFilter: (req, file, cb) => {
-    const allowed = [
-      "application/pdf",
-      "image/jpeg",
-      "image/jpg",
-      "image/png",
-    ];
+    const allowed = ["application/pdf", "image/jpeg", "image/jpg", "image/png"];
     if (allowed.includes(file.mimetype)) cb(null, true);
     else cb(new Error("Type de fichier non autorisé (PDF, JPG/JPEG, PNG)"));
   },
 });
 
-const getExtFromMime = (mime: string): string => {
+const getExtFromMime = (mime: string) => {
+  if (mime === "application/pdf") return ".pdf";
   if (mime === "image/jpeg" || mime === "image/jpg") return ".jpg";
   if (mime === "image/png") return ".png";
-  if (mime === "image/webp") return ".webp";
-  if (mime === "image/gif") return ".gif";
-  if (mime === "application/pdf") return ".pdf";
-  return ".bin";
+  return "";
 };
 
 // POST /api/upload (images)
@@ -84,8 +76,8 @@ router.post("/", uploadImages.single("image"), async (req, res) => {
       return res.status(400).json({ error: "Slug requis" });
     }
 
-    const ext = getExtFromMime(req.file.mimetype);
-    const key = `images/${slug}${ext}`;
+    // Renomme le logo sans extension: images/<slug>
+    const key = `images/${slug}`;
 
     const params = {
       Bucket: awsBucket!,
@@ -123,7 +115,7 @@ router.post("/rib", uploadDocs.single("document"), async (req, res) => {
     }
 
     const ext = getExtFromMime(req.file.mimetype);
-    const baseName = `${slug}-rib${ext}`;
+    const baseName = `${slug}-rib`;
     const key = `documents/${baseName}`;
 
     const params = {
@@ -138,15 +130,18 @@ router.post("/rib", uploadDocs.single("document"), async (req, res) => {
 
     const url = `${cloudFrontUrl}/${key}`;
 
-    // Mettre à jour la colonne rib dans la table stores
+    // Mettre à jour la colonne rib dans la table stores avec objet JSON {type:"link", url}
+    const ribValue = { type: "link", url, iban: "", bic: "" };
     const { error: supError } = await supabase
       .from("stores")
-      .update({ rib: url })
+      .update({ rib: ribValue })
       .eq("slug", slug);
 
     if (supError) {
       console.error("Erreur Supabase (update rib):", supError);
-      return res.status(500).json({ error: "RIB uploadé mais mise à jour DB échouée" });
+      return res
+        .status(500)
+        .json({ error: "RIB uploadé mais mise à jour DB échouée" });
     }
 
     return res.json({

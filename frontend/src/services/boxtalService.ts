@@ -32,9 +32,7 @@ class BoxtalService {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(
-          `HTTP error! status: ${response.status}, message: ${errorData.error}`
-        );
+        throw new Error(`Error: message: ${errorData.error}`);
       }
 
       const data: BoxtalAuthResponse = await response.json();
@@ -80,9 +78,7 @@ class BoxtalService {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(
-          `HTTP error! status: ${response.status}, message: ${errorData.error}`
-        );
+        throw new Error(`Error: ${errorData.error}`);
       }
 
       return await response.json();

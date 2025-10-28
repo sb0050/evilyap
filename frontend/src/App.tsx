@@ -22,6 +22,7 @@ import StorePage from './pages/StorePage';
 import AuthRedirect from './components/AuthRedirect';
 import PaymentReturnPage from './pages/PaymentReturnPage';
 import { frFR } from '@clerk/localizations';
+import DashboardPage from './pages/DashboardPage';
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -55,6 +56,32 @@ function App() {
                 <>
                   <SignedIn>
                     <OnboardingPage />
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path='/orders/:storeSlug'
+              element={
+                <>
+                  <SignedIn>
+                    <OrdersPage />
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path='/dashboard/:storeSlug'
+              element={
+                <>
+                  <SignedIn>
+                    <DashboardPage />
                   </SignedIn>
                   <SignedOut>
                     <RedirectToSignUp />

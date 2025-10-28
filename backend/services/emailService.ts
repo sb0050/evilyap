@@ -82,21 +82,6 @@ interface CustomerTrackingEmailData {
   packageTrackingUrl?: string;
 }
 
-interface StoreOwnerShippingDocEmailData {
-  ownerEmail: string;
-  storeName: string;
-  shippingOrderId: string;
-  boxtalId?: string;
-  // Infos client optionnelles
-  customerEmail?: string;
-  customerName?: string;
-  attachments: Array<{
-    filename: string;
-    content: Buffer;
-    contentType?: string;
-  }>;
-}
-
 interface SupportShippingDocMissingData {
   storeOwnerEmail: string;
   storeName: string;
@@ -442,80 +427,6 @@ class EmailService {
     }
   }
 
-  async sendStoreOwnerShippingDocument(
-    data: StoreOwnerShippingDocEmailData
-  ): Promise<boolean> {
-    try {
-      const htmlContent = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="utf-8">
-          <title>Document d'expédition disponible</title>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-            .order-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #28a745; }
-            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>📄 Document d'expédition prêt</h1>
-              <p>${data.storeName}</p>
-            </div>
-            <div class="content">
-              <p>Le PDF d'étiquette/bordereau pour la commande est disponible.</p>
-              <div class="order-details">
-                <p><strong>ID Boxtal :</strong> ${data.boxtalId || "N/A"}</p>
-                <p><strong>Shipping Order ID :</strong> ${
-                  data.shippingOrderId
-                }</p>
-                ${
-                  data.customerEmail || data.customerName
-                    ? `<p><strong>Client :</strong> ${
-                        data.customerName || "N/A"
-                      } (${data.customerEmail || "N/A"})</p>`
-                    : ""
-                }
-              </div>
-              <p>Le document est joint à cet email.</p>
-              <p><strong>L'équipe ${data.storeName}</strong></p>
-            </div>
-            <div class="footer">
-              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
-            </div>
-          </div>
-        </body>
-        </html>
-      `;
-
-      const mailOptions = {
-        from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
-        to: data.ownerEmail,
-        subject: `📄 Document d'expédition prêt - ${data.storeName}`,
-        html: htmlContent,
-        attachments: data.attachments,
-      };
-
-      const info = await this.transporter.sendMail(mailOptions);
-      console.log(`✅ Email document expédition envoyé à ${data.ownerEmail}`);
-      console.log("📨 sendMail result (owner doc):", {
-        messageId: info.messageId,
-        accepted: info.accepted,
-        rejected: info.rejected,
-        response: info.response,
-      });
-      return true;
-    } catch (error) {
-      console.error("❌ Erreur envoi email document propriétaire:", error);
-      return false;
-    }
-  }
-
   // Email d'alerte SAV quand le document Boxtal n'est pas disponible (422)
   async sendSupportShippingDocMissing(
     data: SupportShippingDocMissingData
@@ -748,13 +659,143 @@ class EmailService {
       return false;
     }
   }
+  async sendAdminError(data: { subject: string; message: string; context?: string }): Promise<boolean> {
+    try {
+      const to = process.env.SAV_EMAIL || process.env.SUPPORT_EMAIL || process.env.SMTP_USER || "";
+      if (!to) {
+        console.error("sendAdminError: SAV_EMAIL/SUPPORT_EMAIL non configuré");
+        return false;
+      }
+  
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>🚨 ${data.subject}</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+            .header { background: #b91c1c; color: white; padding: 20px; border-radius: 8px 8px 0 0; }
+            .content { background: #fff7f7; padding: 20px; border: 1px solid #fecaca; border-top: none; border-radius: 0 0 8px 8px; }
+            pre { background: #fff; padding: 12px; border-radius: 6px; border: 1px solid #fca5a5; overflow-x: auto; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h2>🚨 Alerte erreur</h2>
+              <p>${data.subject}</p>
+            </div>
+            <div class="content">
+              <p><strong>Message:</strong> ${data.message}</p>
+              ${data.context ? `<h3>Détails</h3><pre>${data.context}</pre>` : ""}
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+  
+      const info = await this.transporter.sendMail({
+        from: process.env.SMTP_USER || "no-reply@example.com",
+        to,
+        subject: `[ALERT] ${data.subject}`,
+        html: htmlContent,
+      });
+      console.log("sendAdminError sent:", info.messageId);
+      return true;
+    } catch (error) {
+      console.error("sendAdminError failed:", error);
+      return false;
+    }
+  }
+
+  async sendPayoutRequest(data: {
+    ownerEmail: string;
+    storeName: string;
+    storeSlug: string;
+    method: "database" | "link";
+    iban?: string;
+    bic?: string;
+    ribUrl?: string;
+  }): Promise<boolean> {
+    try {
+      const savEmail = process.env.SAV_EMAIL || "";
+      if (!savEmail) {
+        console.warn("SAV_EMAIL non configuré, email SAV non envoyé.");
+        return false;
+      }
+
+      const ribDetailsHtml =
+        data.method === "database"
+          ? `<p><strong>IBAN:</strong> ${data.iban || "N/A"}</p>
+             <p><strong>BIC:</strong> ${data.bic || "N/A"}</p>`
+          : `<p><strong>RIB (lien):</strong> ${data.ribUrl || "N/A"}</p>`;
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Demande de versement des gains</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #0d6efd 0%, #6c63ff 100%); color: white; padding: 24px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
+            .section { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #0d6efd; }
+            .kv { margin: 0; }
+            .kv strong { display: inline-block; width: 220px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>💸 Demande de versement des gains</h1>
+              <p>${data.storeName}</p>
+            </div>
+            <div class="content">
+              <div class="section">
+                <h3>Informations boutique</h3>
+                <p class="kv"><strong>Owner email :</strong> ${data.ownerEmail}</p>
+                <p class="kv"><strong>Slug :</strong> ${data.storeSlug}</p>
+              </div>
+
+              <div class="section">
+                <h3>Coordonnées bancaires</h3>
+                <p class="kv"><strong>Méthode :</strong> ${data.method === "database" ? "Saisie manuelle (stockée en base)" : "Fichier (lien)"}</p>
+                ${ribDetailsHtml}
+              </div>
+
+              <p>Merci de traiter cette demande de versement.</p>
+              <p><strong>PayLive - Service SAV</strong></p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const info = await this.transporter.sendMail({
+        from: `"PayLive SAV" <${process.env.SMTP_USER}>`,
+        to: savEmail,
+        subject: `💸 Demande de versement - ${data.storeName}`,
+        html: htmlContent,
+      });
+      console.log(`✅ Email demande de versement envoyé à ${savEmail}`);
+      console.log("📨 sendMail result (payout):", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email demande de versement:", error);
+      return false;
+    }
+  }
 }
 
 // Exporter une instance unique du service
 export const emailService = new EmailService();
-export {
-  CustomerEmailData,
-  StoreOwnerEmailData,
-  CustomerTrackingEmailData,
-  StoreOwnerShippingDocEmailData,
-};
+export { CustomerEmailData, StoreOwnerEmailData, CustomerTrackingEmailData };

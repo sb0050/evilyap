@@ -1,6 +1,9 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
+import { clerkClient } from '@clerk/clerk-sdk-node';
+import { emailService } from "../services/emailService";
+import { isValidIBAN, isValidBIC } from "ibantools";
 
 const router = express.Router();
 
@@ -19,6 +22,22 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Helper: validation website (TLD domain or full URL with TLD)
+const isValidWebsite = (url?: string | null) => {
+  const value = (url || '').trim();
+  if (!value) return true; // facultatif
+  const domainOnlyRegex = /^(?:[a-zA-Z0-9-]{1,63}\.)+[a-zA-Z]{2,}$/;
+  if (domainOnlyRegex.test(value)) return true;
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname || '';
+    const hasTld = /\.[a-zA-Z]{2,}$/.test(host);
+    return hasTld;
+  } catch {
+    return false;
+  }
+};
 
 // GET /api/stores - Récupérer tous les stores
 router.get("/", async (req, res) => {
@@ -133,21 +152,12 @@ router.post("/", async (req, res) => {
       storeDescription,
       ownerEmail,
       slug,
-      logoUrl,
       clerkUserId,
       name,
       phone,
       address,
+      website,
     } = req.body;
-
-    console.log("storeName:", storeName);
-    console.log("ownerEmail:", ownerEmail);
-    console.log("slug:", slug);
-    console.log("logoUrl:", logoUrl);
-    console.log("clerkUserId:", clerkUserId);
-    console.log("name:", name);
-    console.log("phone:", phone);
-    console.log("address:", address);
 
     if (!storeName || !ownerEmail) {
       return res.status(400).json({ error: "Nom de boutique et email requis" });
@@ -201,14 +211,6 @@ router.post("/", async (req, res) => {
           email: ownerEmail,
           name: name,
           phone: phone,
-          address: {
-            line1: address.line1,
-            line2: address.line2 || "",
-            city: address.city,
-            state: address.state || "",
-            postal_code: address.postal_code,
-            country: address.country || "FR",
-          },
           metadata: {
             store_name: storeName,
             clerk_user_id: clerkUserId,
@@ -225,6 +227,17 @@ router.post("/", async (req, res) => {
       }
     }
 
+    // Construire l'adresse JSON attendue
+    const addressJson = address && typeof address === "object"
+      ? {
+          city: address.city || null,
+          line1: address.line1 || null,
+          country: address.country || null,
+          postal_code: address.postal_code || null,
+          phone: phone || null,
+        }
+      : null;
+
     const { data, error } = await supabase
       .from("stores")
       .insert([
@@ -233,8 +246,10 @@ router.post("/", async (req, res) => {
           slug: slug,
           description: storeDescription || "",
           owner_email: ownerEmail,
-          logo: logoUrl || null,
           stripe_id: stripeCustomerId,
+          address: addressJson,
+          website: website || null,
+          clerk_id: clerkUserId || null,
         },
       ])
       .select()
@@ -247,12 +262,79 @@ router.post("/", async (req, res) => {
         .json({ error: "Erreur lors de la création de la boutique" });
     }
 
+    // Mettre à jour le rôle Clerk en "owner" après la création du store
+    if (clerkUserId) {
+      try {
+        await clerkClient.users.updateUserMetadata(clerkUserId, {
+          publicMetadata: { role: "owner" },
+        });
+      } catch (e) {
+        console.error("Erreur mise à jour du rôle Clerk:", e);
+      }
+    }
+
     return res.status(201).json({
       success: true,
       store: data,
     });
   } catch (error) {
     console.error("Erreur serveur:", error);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+// PUT /api/stores/:storeSlug - Mettre à jour nom/description/website
+router.put("/:storeSlug", async (req, res) => {
+  try {
+    const { storeSlug } = req.params as { storeSlug?: string };
+    const { name, description, website } = req.body as {
+      name?: string;
+      description?: string;
+      website?: string;
+    };
+
+    if (!storeSlug) return res.status(400).json({ error: "Slug de boutique requis" });
+    const decodedSlug = decodeURIComponent(storeSlug);
+
+    // Validation website (facultatif, mais si présent doit être valide)
+    if (website && !isValidWebsite(website)) {
+      return res.status(400).json({ error: "Site web invalide: fournir un domaine avec TLD ou une URL complète" });
+    }
+
+    const { data: existing, error: getErr } = await supabase
+      .from("stores")
+      .select("id")
+      .eq("slug", decodedSlug)
+      .maybeSingle();
+
+    if (getErr && (getErr as any)?.code !== "PGRST116") {
+      console.error("Erreur Supabase (get store):", getErr);
+      return res.status(500).json({ error: "Erreur lors de la récupération de la boutique" });
+    }
+    if (!existing) {
+      return res.status(404).json({ error: "Boutique non trouvée" });
+    }
+
+    const payload: any = {};
+    if (typeof name === 'string') payload.name = name;
+    if (typeof description === 'string') payload.description = description;
+    if (typeof website === 'string') payload.website = website || null;
+
+    const { data: updated, error: updErr } = await supabase
+      .from("stores")
+      .update(payload)
+      .eq("slug", decodedSlug)
+      .select("*")
+      .single();
+
+    if (updErr) {
+      console.error("Erreur Supabase (update store):", updErr);
+      return res.status(500).json({ error: "Erreur lors de la mise à jour de la boutique" });
+    }
+
+    return res.json({ success: true, store: updated });
+  } catch (err) {
+    console.error("Erreur serveur:", err);
     return res.status(500).json({ error: "Erreur interne du serveur" });
   }
 });
@@ -284,6 +366,105 @@ router.get("/:storeSlug", async (req, res) => {
     }
 
     return res.json({ success: true, store });
+  } catch (err) {
+    console.error("Erreur serveur:", err);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+// POST /api/stores/:storeSlug/confirm-payout - Confirmer demande de versement
+router.post("/:storeSlug/confirm-payout", async (req, res) => {
+  try {
+    const { storeSlug } = req.params as { storeSlug?: string };
+    const { method, iban, bic } = req.body as {
+      method?: "database" | "link";
+      iban?: string;
+      bic?: string;
+    };
+
+    if (!storeSlug) {
+      return res.status(400).json({ error: "Slug de boutique requis" });
+    }
+    const decodedSlug = decodeURIComponent(storeSlug);
+
+    if (!method || (method !== "database" && method !== "link")) {
+      return res.status(400).json({ error: "Méthode invalide: 'database' ou 'link' requis" });
+    }
+
+    const { data: store, error: getErr } = await supabase
+      .from("stores")
+      .select("id, name, slug, owner_email, rib")
+      .eq("slug", decodedSlug)
+      .maybeSingle();
+
+    if (getErr && (getErr as any)?.code !== "PGRST116") {
+      console.error("Erreur Supabase (get store):", getErr);
+      return res.status(500).json({ error: "Erreur lors de la récupération de la boutique" });
+    }
+    if (!store) {
+      return res.status(404).json({ error: "Boutique non trouvée" });
+    }
+
+    const currentRib = (store as any)?.rib || null;
+
+    let newRib: any = null;
+    if (method === "database") {
+      if (!iban || !bic) {
+        return res.status(400).json({ error: "IBAN et BIC requis pour la méthode 'database'" });
+      }
+      if (!isValidIBAN(iban)) {
+        return res.status(400).json({ error: "IBAN invalide" });
+      }
+      if (!isValidBIC(bic)) {
+        return res.status(400).json({ error: "BIC invalide" });
+      }
+      newRib = {
+        type: "database",
+        iban,
+        bic,
+        url: currentRib?.type === "link" ? currentRib.url || null : null,
+      };
+    } else {
+      // method === "link"
+      if (!currentRib || currentRib?.type !== "link" || !currentRib?.url) {
+        return res.status(400).json({ error: "Aucun RIB (lien) enregistré pour cette boutique" });
+      }
+      newRib = {
+        type: "link",
+        url: currentRib.url,
+        iban: currentRib?.iban || "",
+        bic: currentRib?.bic || "",
+      };
+    }
+
+    const { data: updated, error: updErr } = await supabase
+      .from("stores")
+      .update({ rib: newRib })
+      .eq("slug", decodedSlug)
+      .select("id, name, slug, owner_email, rib")
+      .single();
+
+    if (updErr) {
+      console.error("Erreur Supabase (update rib):", updErr);
+      return res.status(500).json({ error: "Erreur lors de la mise à jour du RIB" });
+    }
+
+    // Email SAV de demande de versement
+    try {
+      await emailService.sendPayoutRequest({
+        ownerEmail: (updated as any).owner_email,
+        storeName: (updated as any).name,
+        storeSlug: (updated as any).slug,
+        method,
+        iban: newRib?.iban,
+        bic: newRib?.bic,
+        ribUrl: newRib?.url,
+      });
+    } catch (emailErr) {
+      console.error("Erreur envoi email demande de versement:", emailErr);
+    }
+
+    return res.json({ success: true, store: updated });
   } catch (err) {
     console.error("Erreur serveur:", err);
     return res.status(500).json({ error: "Erreur interne du serveur" });
