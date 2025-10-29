@@ -1,4 +1,6 @@
 import nodemailer from "nodemailer";
+import fs from "fs";
+import path from "path";
 
 interface EmailConfig {
   host: string;
@@ -16,14 +18,18 @@ interface CustomerEmailData {
   storeName: string;
   storeDescription?: string;
   storeLogo?: string;
+  storeAddress?: any;
   productReference: string;
   amount: number;
   currency: string;
   paymentId: string;
-  deliveryMethod: "pickup_point" | "home_delivery" | string;
+  boxtalId: string;
+  shipmentId: string;
+  deliveryMethod: "pickup_point" | "home_delivery" | "store_pickup";
   deliveryNetwork: string;
   pickupPointCode: string;
   estimatedDeliveryDate: string;
+  trackingUrl: string;
 }
 
 interface StoreOwnerEmailData {
@@ -33,7 +39,7 @@ interface StoreOwnerEmailData {
   customerName: string;
   customerPhone?: string;
   // NEW: delivery method and shipping info
-  deliveryMethod: "pickup_point" | "home_delivery" | string;
+  deliveryMethod: "pickup_point" | "home_delivery" | "store_pickup";
   deliveryNetwork: string;
   shippingAddress: {
     name?: string;
@@ -57,17 +63,17 @@ interface StoreOwnerEmailData {
   pickupPointCode: string;
   productReference: string;
   amount: number;
+  weight: number;
   currency: string;
   paymentId: string;
   boxtalId: string;
+  shipmentId?: string;
   // Pièces jointes optionnelles (ex: bordereau PDF)
   attachments?: Array<{
     filename: string;
     content: Buffer;
     contentType?: string;
   }>;
-  // Note additionnelle (ex: bordereau envoyé ultérieurement)
-  documentPendingNote?: string;
 }
 
 interface CustomerTrackingEmailData {
@@ -230,14 +236,45 @@ class EmailService {
                 }</p>
                 <p><strong>Montant payé :</strong> <span class="amount">${formattedAmount}</span> (frais de livraison inclus)</p>
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
+                ${
+                  data.deliveryMethod !== "store_pickup"
+                    ? `<p><strong>ID de commande :</strong> ${data.boxtalId}</p>`
+                    : `<p><strong>ID de commande interne :</strong> ${data.shipmentId}</p>`
+                }
+                <p><strong>Date :</strong> ${new Date().toLocaleDateString(
+                  "fr-FR",
+                  {
+                    year: "numeric",
+                    month: "long",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  }
+                )}</p>
                 <p><strong>Méthode de livraison :</strong> ${
                   data.deliveryMethod === "pickup_point"
                     ? `Point relais (${data.pickupPointCode})`
                     : data.deliveryMethod === "home_delivery"
                     ? "À domicile"
-                    : "Inconnue"
+                    : "Retrait en Magasin"
                 }</p>
-                <p><strong>Date de livraison estimée :</strong> ${formattedEstimatedDate}</p>
+                ${
+                  data.deliveryMethod === "store_pickup"
+                    ? `<p><strong>Adresse de la boutique :</strong> ${data.storeAddress.line1}, ${data.storeAddress.postal_code} ${data.storeAddress.city} ${data.storeAddress.country}</p>
+                   <p><strong>Numéro de téléphone de la boutique :</strong> ${data.storeAddress.phone}</p>
+                   `
+                    : ""
+                }
+                ${
+                  data.deliveryMethod !== "store_pickup"
+                    ? `<p><strong>Date de livraison estimée :</strong> ${formattedEstimatedDate}</p>`
+                    : ""
+                }
+                ${
+                  data.deliveryMethod !== "store_pickup"
+                    ? `<p><strong>Lien de suivi de la livraison :</strong> <a href="${data.trackingUrl}">Cliquez ici</a></p>`
+                    : ""
+                }
               </div>
               
               <p>📬 Vous recevrez prochainement un email avec les détails de livraison de votre commande.</p>
@@ -288,6 +325,84 @@ class EmailService {
     try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
 
+      // Préparer les infos réseau (lien carte + image dimensions) selon deliveryNetwork
+      const getNetworkInfo = (
+        networkCode?: string
+      ): {
+        name: string;
+        link?: string;
+        imageFile?: string;
+      } | null => {
+        if (!networkCode) return null;
+        const code = (networkCode || "").toUpperCase();
+        // Mapping par préfixe
+        if (code.startsWith("MONR")) {
+          return {
+            name: "Mondial Relay",
+            link: "https://www.mondialrelay.fr/trouver-le-point-relais-le-plus-proche-de-chez-moi/",
+            imageFile: "mondial_relay.jpg",
+          };
+        }
+        if (code.startsWith("CHRP")) {
+          return {
+            name: "Chronopost",
+            link: "https://www.chronopost.fr/expeditionAvanceeSec/ounoustrouver.html",
+            imageFile: "chronopost.png",
+          };
+        }
+        if (code.startsWith("POFR")) {
+          return {
+            name: "Colissimo (La Poste)",
+            link: "https://localiser.laposte.fr/",
+            imageFile: "colissimo.jpg",
+          };
+        }
+        if (code.startsWith("SOGP")) {
+          return {
+            name: "Relais Colis",
+            link: "https://www.relaiscolis.com/relais/trouver",
+            imageFile: "relais_colis.jpg",
+          };
+        }
+        if (code.startsWith("UPSE")) {
+          return {
+            name: "UPS Access Point",
+            link: "https://www.ups.com/fr/fr/business-solutions/expand-your-online-business/ups-access-point",
+            imageFile: "ups.jpg",
+          };
+        }
+        return null;
+      };
+
+      const networkInfo =
+        data.deliveryMethod === "pickup_point" ||
+        data.deliveryMethod === "home_delivery"
+          ? getNetworkInfo(data.deliveryNetwork)
+          : null;
+
+      // Attachement image dimensions (cid) si disponible
+      const networkImageCid = "network-dimensions-img";
+      const networkImageAttachment = (() => {
+        try {
+          if (networkInfo?.imageFile) {
+            const imgPath = path.join(
+              __dirname,
+              "..",
+              "public",
+              networkInfo.imageFile
+            );
+            if (fs.existsSync(imgPath)) {
+              return {
+                filename: networkInfo.imageFile,
+                path: imgPath,
+                cid: networkImageCid,
+              } as any;
+            }
+          }
+        } catch (_) {}
+        return null;
+      })();
+
       const htmlContent = `
         <!DOCTYPE html>
         <html>
@@ -304,6 +419,10 @@ class EmailService {
             .amount { font-size: 24px; font-weight: bold; color: #28a745; }
             .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
             .note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; border-radius: 6px; margin-top: 12px; }
+            .network { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #6c63ff; }
+            .network img { max-width: 100%; height: auto; border-radius: 6px; border: 1px solid #eee; }
+            .network a { color: #0d6efd; text-decoration: none; }
+            .network a:hover { text-decoration: underline; }
           </style>
         </head>
         <body>
@@ -327,7 +446,11 @@ class EmailService {
                 }</p>
                 <p><strong>Montant :</strong> <span class="amount">${formattedAmount}</span></p>
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
-                <p><strong>ID de commande :</strong> ${data.boxtalId}</p>
+                ${
+                  data.deliveryMethod !== "store_pickup"
+                    ? `<p><strong>ID de commande :</strong> ${data.boxtalId}</p>`
+                    : `<p><strong>ID de commande interne :</strong> ${data.shipmentId}</p>`
+                }
                 <p><strong>Date :</strong> ${new Date().toLocaleDateString(
                   "fr-FR",
                   {
@@ -338,11 +461,6 @@ class EmailService {
                     minute: "2-digit",
                   }
                 )}</p>
-                ${
-                  data.documentPendingNote
-                    ? `<div class="note">${data.documentPendingNote}</div>`
-                    : ""
-                }
               </div>
               
               <div class="customer-details">
@@ -354,17 +472,6 @@ class EmailService {
                     ? `<p><strong>Téléphone :</strong> ${data.customerPhone}</p>`
                     : ""
                 }
-                <p><strong>Adresse :</strong><br>
-                ${data.shippingAddress.address?.line1 || ""}<br>
-                ${
-                  data.shippingAddress.address?.line2
-                    ? data.shippingAddress.address.line2 + "<br>"
-                    : ""
-                }
-                ${data.shippingAddress.address?.postal_code || ""} ${
-        data.shippingAddress.address?.city || ""
-      }<br>
-                ${data.shippingAddress.address?.country || ""}
               </p>
               </div>
 
@@ -375,8 +482,33 @@ class EmailService {
                     ? `Point relais (${data.pickupPointCode})`
                     : data.deliveryMethod === "home_delivery"
                     ? "À domicile"
-                    : "Inconnue"
-                }</p>
+                    : "Retrait en Magasin"
+                }
+                </p>
+                <p><strong>Poids du colis :</strong> ${data.weight} kg</p>
+                ${
+                  networkInfo
+                    ? `
+                        <p><strong>Réseau :</strong> ${data.deliveryNetwork} (${
+                        networkInfo.name
+                      })</p>
+                        <p>Vous pouvez déposer ce colis dans n'importe quel point relais du réseau <strong>${
+                          data.deliveryNetwork
+                        }</strong>.</p>
+                        ${
+                          networkInfo.link
+                            ? `<p>🗺️ <a href="${networkInfo.link}" target="_blank" rel="noopener">Voir la carte des points relais</a></p>`
+                            : ""
+                        }
+                        <p><strong>Dimensions maximales des colis</strong> (selon le réseau) :</p>
+                        ${
+                          networkImageAttachment
+                            ? `<img src="cid:${networkImageCid}" alt="Dimensions maximales - ${networkInfo.name}" />`
+                            : ""
+                        }
+                      `
+                    : ""
+                }
               </div>
 
       
@@ -399,15 +531,22 @@ class EmailService {
         </html>
       `;
 
+      // Fusionner les pièces jointes (documents + image réseau)
+      const mailAttachments: any[] = [];
+      if (data.attachments && data.attachments.length) {
+        mailAttachments.push(...data.attachments);
+      }
+      if (networkImageAttachment) {
+        mailAttachments.push(networkImageAttachment);
+      }
+
       const mailOptions = {
         from: `"PayLive - ${data.storeName}" <${process.env.SMTP_USER}>`,
         to: data.ownerEmail,
         subject: `💰 Nouvelle commande reçue - ${formattedAmount} - ${data.storeName}`,
         html: htmlContent,
         // Ajouter les pièces jointes si présentes
-        ...(data.attachments && data.attachments.length
-          ? { attachments: data.attachments }
-          : {}),
+        ...(mailAttachments.length ? { attachments: mailAttachments } : {}),
       };
 
       const info = await this.transporter.sendMail(mailOptions);
@@ -659,14 +798,22 @@ class EmailService {
       return false;
     }
   }
-  async sendAdminError(data: { subject: string; message: string; context?: string }): Promise<boolean> {
+  async sendAdminError(data: {
+    subject: string;
+    message: string;
+    context?: string;
+  }): Promise<boolean> {
     try {
-      const to = process.env.SAV_EMAIL || process.env.SUPPORT_EMAIL || process.env.SMTP_USER || "";
+      const to =
+        process.env.SAV_EMAIL ||
+        process.env.SUPPORT_EMAIL ||
+        process.env.SMTP_USER ||
+        "";
       if (!to) {
         console.error("sendAdminError: SAV_EMAIL/SUPPORT_EMAIL non configuré");
         return false;
       }
-  
+
       const htmlContent = `
         <!DOCTYPE html>
         <html>
@@ -689,13 +836,15 @@ class EmailService {
             </div>
             <div class="content">
               <p><strong>Message:</strong> ${data.message}</p>
-              ${data.context ? `<h3>Détails</h3><pre>${data.context}</pre>` : ""}
+              ${
+                data.context ? `<h3>Détails</h3><pre>${data.context}</pre>` : ""
+              }
             </div>
           </div>
         </body>
         </html>
       `;
-  
+
       const info = await this.transporter.sendMail({
         from: process.env.SMTP_USER || "no-reply@example.com",
         to,
@@ -772,13 +921,19 @@ class EmailService {
               </div>
               <div class="section">
                 <h3>Informations boutique</h3>
-                <p class="kv"><strong>Owner email :</strong> ${data.ownerEmail}</p>
+                <p class="kv"><strong>Owner email :</strong> ${
+                  data.ownerEmail
+                }</p>
                 <p class="kv"><strong>Slug :</strong> ${data.storeSlug}</p>
               </div>
 
               <div class="section">
                 <h3>Coordonnées bancaires</h3>
-                <p class="kv"><strong>Méthode :</strong> ${data.method === "database" ? "Saisie manuelle (stockée en base)" : "Fichier (lien)"}</p>
+                <p class="kv"><strong>Méthode :</strong> ${
+                  data.method === "database"
+                    ? "Saisie manuelle (stockée en base)"
+                    : "Fichier (lien)"
+                }</p>
                 ${ribDetailsHtml}
               </div>
 
@@ -797,7 +952,9 @@ class EmailService {
       const info = await this.transporter.sendMail({
         from: `"PayLive SAV" <${process.env.SMTP_USER}>`,
         to: savEmail,
-        subject: `💸 Demande de versement - ${data.storeName}${formattedAmount ? ` - ${formattedAmount}` : ""}`,
+        subject: `💸 Demande de versement - ${data.storeName}${
+          formattedAmount ? ` - ${formattedAmount}` : ""
+        }`,
         html: htmlContent,
       });
       console.log(`✅ Email demande de versement envoyé à ${savEmail}`);

@@ -4,6 +4,7 @@ import Stripe from "stripe";
 import { clerkClient } from '@clerk/clerk-sdk-node';
 import { emailService } from "../services/emailService";
 import { isValidIBAN, isValidBIC } from "ibantools";
+import slugify from 'slugify';
 
 const router = express.Router();
 
@@ -39,18 +40,6 @@ const isValidWebsite = (url?: string | null) => {
   }
 };
 
-// Helper: slugify côté backend (similaire à strict: true, lower: true)
-const slugifyName = (input: string) => {
-  const s = (input || '').trim().toLowerCase();
-  // Normaliser et supprimer les diacritiques
-  const norm = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  // Remplacer les caractères non alphanumériques par des tirets
-  const slug = norm
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .replace(/-+/g, '-');
-  return slug;
-};
 
 // GET /api/stores - Récupérer tous les stores
 router.get("/", async (req, res) => {
@@ -79,7 +68,7 @@ router.get("/exists", async (req, res) => {
       return res.status(400).json({ error: "Slug ou nom requis" });
     }
 
-    const candidate = slugifyName(raw);
+    const candidate = slugify(raw, { lower: true, strict: true });
 
     const { data, error } = await supabase
       .from("stores")
@@ -343,7 +332,7 @@ router.put("/:storeSlug", async (req, res) => {
       const newName = (name || '').trim();
       const currentName = ((existing as any)?.name || '').trim();
       if (newName && newName !== currentName) {
-        const newSlug = slugifyName(newName);
+        const newSlug = slugify(newName, { lower: true, strict: true });
         // Vérifier unicité du nouveau slug, en excluant la boutique actuelle
         const { data: existingByNewSlug, error: slugCheckErr } = await supabase
           .from("stores")

@@ -274,6 +274,190 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
   }
 });
 
+// Récupérer le suivi d'une commande d'expédition
+router.get("/shipping-orders/:id/tracking", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({ error: "Missing shipping order id" });
+    }
+
+    const token = await verifyAndRefreshBoxtalToken();
+    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+      id
+    )}/tracking`;
+
+    const options = {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    } as any;
+
+    const response = await fetch(url, options);
+
+    if (response.ok) {
+      const data = await response.json();
+      // Retourne l'objet tel que renvoyé par Boxtal (status, timestamp, content[])
+      return res.status(200).json(data);
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const errorJson = await response.json();
+      return res.status(response.status).json(errorJson);
+    } else {
+      const errorText = await response.text();
+      return res.status(response.status).json({
+        error: "Failed to get shipping tracking",
+        details: errorText,
+      });
+    }
+  } catch (error) {
+    console.error("Error in /api/boxtal/shipping-orders/:id/tracking:", error);
+    return res.status(500).json({
+      error: "Failed to get shipping tracking",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+// Déclarer une demande de retour client (envoi d'email au SAV)
+router.get("/shipping-orders/:id/return", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ error: "Missing shipping order id" });
+    }
+
+    if (!supabase) {
+      console.error("Supabase client not configured");
+      return res.status(500).json({ error: "Database not configured" });
+    }
+
+    // Récupérer les infos du shipment par shipment_id
+    const { data: shipment, error: shipmentError } = await supabase
+      .from("shipments")
+      .select("*, store_id")
+      .eq("shipment_id", id)
+      .maybeSingle();
+
+    if (shipmentError) {
+      console.error("Supabase error fetching shipment:", shipmentError);
+      return res.status(500).json({ error: shipmentError.message });
+    }
+
+    if (!shipment) {
+      return res.status(404).json({ error: "Shipment not found" });
+    }
+
+    // Optionnel: récupérer le store pour enrichir le mail
+    let store: any = null;
+    if (shipment.store_id) {
+      const { data: storeData } = await supabase
+        .from("stores")
+        .select("id,name,owner_email,slug")
+        .eq("id", shipment.store_id)
+        .maybeSingle();
+      store = storeData || null;
+    }
+
+    // Envoyer un email au SAV pour signaler la demande de retour
+    const subject = "Demande de retour client";
+    const message = `Le client souhaite un retour pour la commande d'expédition ${id}.`;
+    const context = JSON.stringify(
+      {
+        storeName: store?.name || "",
+        storeSlug: store?.slug || "",
+        storeOwnerEmail: store?.owner_email || "",
+        shipment,
+      },
+      null,
+      2
+    );
+
+    const sent = await emailService.sendAdminError({
+      subject,
+      message,
+      context,
+    });
+
+    return res.json({ success: true, emailSent: sent });
+  } catch (error) {
+    console.error("Error in /api/boxtal/shipping-orders/:id/return:", error);
+    return res.status(500).json({
+      error: "Failed to process return request",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+// Annuler une commande d'expédition et mettre à jour le statut en base
+router.delete("/shipping-orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ error: "Missing shipping order id" });
+    }
+
+    const token = await verifyAndRefreshBoxtalToken();
+    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+      id
+    )}`;
+
+    const options = {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+    } as any;
+
+    const response = await fetch(url, options);
+
+    const contentType = response.headers.get("content-type") || "";
+    let payload: any = null;
+    if (response.ok) {
+      payload = await response.json();
+    } else if (contentType.includes("application/json")) {
+      const errJson = await response.json();
+      return res.status(response.status).json(errJson);
+    } else {
+      const errText = await response.text();
+      return res.status(response.status).json({
+        error: "Failed to cancel shipping order",
+        details: errText,
+      });
+    }
+
+    // Mettre à jour le statut en base de données si possible
+    try {
+      if (supabase && payload?.content?.status) {
+        const newStatus = String(payload.content.status);
+        const { error: updError } = await supabase
+          .from("shipments")
+          .update({ status: newStatus })
+          .eq("shipment_id", id);
+        if (updError) {
+          console.error("Supabase update shipments status failed:", updError);
+        }
+      }
+    } catch (dbErr) {
+      console.error("DB update exception:", dbErr);
+    }
+
+    return res.status(200).json(payload);
+  } catch (error) {
+    console.error("Error in DELETE /api/boxtal/shipping-orders/:id:", error);
+    return res.status(500).json({
+      error: "Failed to cancel shipping order",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
 // Fonction pour vérifier la signature du webhook Boxtal
 const verifyWebhookSignature = (
   payload: string,

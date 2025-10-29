@@ -92,7 +92,14 @@ export default function CheckoutPage() {
   const [email, setEmail] = useState('');
   const [showDelivery, setShowDelivery] = useState(false);
   const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
-  const [cartItemsForStore, setCartItemsForStore] = useState<Array<{ id: number; product_reference: string; value: number; created_at?: string }>>([]);
+  const [cartItemsForStore, setCartItemsForStore] = useState<
+    Array<{
+      id: number;
+      product_reference: string;
+      value: number;
+      created_at?: string;
+    }>
+  >([]);
   const [cartTotalForStore, setCartTotalForStore] = useState<number>(0);
 
   const [storePickupAddress, setStorePickupAddress] = useState<
@@ -134,8 +141,12 @@ export default function CheckoutPage() {
         );
         if (!cartResp.ok) return;
         const cartJson = await cartResp.json();
-        const groups = Array.isArray(cartJson?.itemsByStore) ? cartJson.itemsByStore : [];
-        const groupForStore = groups.find((g: any) => g?.store?.id && store?.id && g.store.id === store.id);
+        const groups = Array.isArray(cartJson?.itemsByStore)
+          ? cartJson.itemsByStore
+          : [];
+        const groupForStore = groups.find(
+          (g: any) => g?.store?.id && store?.id && g.store.id === store.id
+        );
         if (groupForStore) {
           setCartItemsForStore(groupForStore.items || []);
           setCartTotalForStore(Number(groupForStore.total || 0));
@@ -158,6 +169,14 @@ export default function CheckoutPage() {
       }
     };
   }, [user, store]);
+
+  // Alimente automatiquement la référence avec les références agrégées du panier
+  // Désactivé: ne pas écraser la saisie manuelle de la référence
+  // Les valeurs agrégées seront affichées uniquement dans le récapitulatif
+
+  // Alimente automatiquement le montant avec le total du panier
+  // Désactivé: ne pas écraser la saisie manuelle du montant
+  // Le total agrégé du panier sera affiché uniquement dans le récapitulatif
 
   const showToast = (
     message: string,
@@ -307,9 +326,7 @@ export default function CheckoutPage() {
   }, [user, store]);
 
   const isFormComplete = () => {
-    //const hasReference = Boolean((formData.reference || '').trim());
     const hasEmail = Boolean((email || '').trim());
-    //const hasAmount = amount > 0;
     const hasDeliveryInfo =
       deliveryMethod === 'home_delivery'
         ? Boolean(
@@ -326,13 +343,15 @@ export default function CheckoutPage() {
       Boolean((formData.name || '').trim()) &&
       Boolean((formData.phone || '').trim());
 
-    return (
-      hasEmail && hasDeliveryInfo && hasContactInfo
-    );
+    return hasEmail && hasDeliveryInfo && hasContactInfo;
   };
 
   const handleProceedToPayment = async () => {
-    if ((!isFormComplete() && cartItemsForStore.length === 0) || !store || !user?.primaryEmailAddress?.emailAddress)
+    if (
+      (!isFormComplete() && cartItemsForStore.length === 0) ||
+      !store ||
+      !user?.primaryEmailAddress?.emailAddress
+    )
       return;
 
     setIsProcessingPayment(true);
@@ -365,8 +384,10 @@ export default function CheckoutPage() {
         // Ne pas bloquer le paiement en cas d'erreur d'ajout au panier
       }
 
-      const isCartFlow = !isFormComplete() && cartItemsForStore.length > 0;
-      const effectiveDeliveryMethod: 'home_delivery' | 'pickup_point' | 'store_pickup' = isCartFlow ? 'store_pickup' : deliveryMethod;
+      const effectiveDeliveryMethod:
+        | 'home_delivery'
+        | 'pickup_point'
+        | 'store_pickup' = deliveryMethod;
       const customerInfo = {
         email: email || user.primaryEmailAddress.emailAddress,
         name: formData.name || user.fullName || 'Client',
@@ -379,7 +400,9 @@ export default function CheckoutPage() {
               : null,
         delivery_method: effectiveDeliveryMethod,
         parcel_point:
-          effectiveDeliveryMethod === 'pickup_point' ? selectedParcelPoint : null,
+          effectiveDeliveryMethod === 'pickup_point'
+            ? selectedParcelPoint
+            : null,
       };
 
       const blankAddr = {
@@ -391,14 +414,21 @@ export default function CheckoutPage() {
         country: 'FR',
       };
 
+      // Construire la chaîne des références du panier: ref1;ref2;ref3
+      const productReferencesString =  (cartItemsForStore || [])
+            .map(it => String(it.product_reference || '').trim())
+            .filter(s => s.length > 0)
+            .join(';')
+        
+
       const payloadData = {
-        amount: isCartFlow ? cartTotalForStore : amount,
+        amount: cartTotalForStore,
         currency: 'eur',
         customerName: customerInfo.name,
         customerEmail: customerInfo.email,
         clerkUserId: user.id,
         storeName: store.name,
-        productReference: isCartFlow ? `PANIER (${cartItemsForStore.length} réf.)` : formData.reference,
+        productReference: productReferencesString,
         address: address || {
           line1: '',
           line2: '',
@@ -408,9 +438,13 @@ export default function CheckoutPage() {
           country: 'FR',
         },
         deliveryMethod: effectiveDeliveryMethod,
-        parcelPoint: effectiveDeliveryMethod === 'pickup_point' ? (selectedParcelPoint || null) : null,
+        parcelPoint:
+          effectiveDeliveryMethod === 'pickup_point'
+            ? selectedParcelPoint || null
+            : null,
         phone: customerInfo.phone,
         deliveryCost,
+        cartItemIds: (cartItemsForStore || []).map(it => it.id),
         selectedWeight,
         deliveryNetwork:
           effectiveDeliveryMethod === 'store_pickup'
@@ -635,10 +669,15 @@ export default function CheckoutPage() {
                       <strong>Email:</strong> {email}
                     </p>
                     <p>
-                      <strong>Référence:</strong> {formData.reference}
+                      <strong>Référence:</strong> {(
+                        (cartItemsForStore || [])
+                          .map(it => String(it.product_reference || '').trim())
+                          .filter(s => s.length > 0)
+                          .join(';')
+                      )}
                     </p>
                     <p>
-                      <strong>Montant:</strong> {amount.toFixed(2)} €
+                      <strong>Montant:</strong> {Number(cartTotalForStore || 0).toFixed(2)} €
                     </p>
                     <p>
                       <strong>Livraison:</strong>{' '}
@@ -670,7 +709,10 @@ export default function CheckoutPage() {
             <div className='mt-4'>
               {(!showPayment || !embeddedClientSecret) &&
                 (() => {
-                  const canProceed = !isProcessingPayment && isFormComplete() && cartItemsForStore.length > 0;
+                  const canProceed =
+                    !isProcessingPayment &&
+                    isFormComplete() &&
+                    cartItemsForStore.length > 0;
                   const btnColor = canProceed ? '#0074D4' : '#6B7280';
                   return (
                     <button
@@ -945,7 +987,7 @@ function CheckoutForm({
                 }
                 setPaymentError(null);
                 showToast(
-                  'Ajouté au panier pour une durée de 5 minutes',
+                  'Ajouté au panier pour une durée de 15 minutes',
                   'success'
                 );
                 // Notifier le header de rafraîchir le panier

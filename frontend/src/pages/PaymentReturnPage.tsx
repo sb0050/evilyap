@@ -183,10 +183,13 @@ const PaymentReturnPage: React.FC = () => {
           </div>
           <div className='mt-6'>
             <button
-              onClick={() => navigate('/')}
+              onClick={() => {
+              const storeSlug = searchParams.get('store_name');
+              navigate(`/orders/${storeSlug}`);
+            }}
               className='w-full bg-blue-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-blue-700 transition-colors'
             >
-              Retour à l’accueil
+              Suivre mes commandes
             </button>
           </div>
         </div>
@@ -208,41 +211,19 @@ const PaymentReturnPage: React.FC = () => {
             : "Votre paiement n'a pas été complété. Aucun montant n'a été débité."}
         </p>
 
-        <div className='bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6'>
-          <p className='text-yellow-800 text-sm'>
-            � Redirection automatique vers la page de commande dans quelques
-            secondes...
-          </p>
-        </div>
 
         <div className='space-y-3'>
           {/* Bouton unique qui calcule correctement le slug de boutique */}
           <button
             onClick={() => {
-              const urlStoreName = searchParams.get('store_name');
-              const sessionStoreName =
-                session?.metadata?.store_name || (session as any)?.storeName;
-              const chosenStoreName =
-                sessionStoreName || urlStoreName || 'default';
-              const storeSlug = chosenStoreName
-                .toLowerCase()
-                .replace(/\s+/g, '-');
-              console.log('🔁 Retry now: redirecting to store:', {
-                chosenStoreName,
-                storeSlug,
-              });
+              const storeSlug = searchParams.get('store_name');
               navigate(`/checkout/${storeSlug}?error=payment_failed`);
             }}
             className='w-full bg-blue-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-blue-700 transition-colors'
           >
             Réessayer maintenant
           </button>
-          <button
-            onClick={() => navigate('/')}
-            className='w-full bg-gray-200 text-gray-800 py-3 px-4 rounded-lg font-medium hover:bg-gray-300 transition-colors'
-          >
-            Retour à l'accueil
-          </button>
+    
         </div>
       </div>
     </div>

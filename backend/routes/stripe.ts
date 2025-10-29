@@ -3,6 +3,7 @@ import Stripe from "stripe";
 import { emailService } from "../services/emailService";
 import { createClient } from "@supabase/supabase-js";
 import { clerkClient } from "@clerk/clerk-sdk-node";
+import slugify from "slugify";
 
 const router = express.Router();
 
@@ -129,6 +130,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       phone,
       deliveryCost,
       deliveryNetwork,
+      cartItemIds,
     } = req.body;
 
     const pickupPointCode = parcelPoint?.code || "";
@@ -289,6 +291,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         metadata: {
           store_name: storeName || "PayLive",
           product_reference: productReference || "N/A",
+          cart_item_ids: Array.isArray(cartItemIds)
+            ? (cartItemIds as any[]).join(",")
+            : typeof cartItemIds === "string"
+            ? cartItemIds
+            : "",
         },
       },
       // Duplicate useful metadata at the session level for easier retrieval
@@ -300,6 +307,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         weight: selectedWeight || "",
         pickup_point_code: pickupPointCode || "",
         drop_off_point_code: dropOffPointCode || "",
+        cart_item_ids: Array.isArray(cartItemIds)
+          ? (cartItemIds as any[]).join(",")
+          : typeof cartItemIds === "string"
+          ? cartItemIds
+          : "",
       },
       line_items: [
         {
@@ -324,7 +336,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       return_url: `${
         process.env.FRONTEND_URL
       }/payment/return?session_id={CHECKOUT_SESSION_ID}&store_name=${encodeURIComponent(
-        storeName || "default"
+        slugify(storeName, { lower: true, strict: true }) || "default"
       )}`,
       customer: customerId,
     } as any);
@@ -488,8 +500,14 @@ router.post(
             const customerEmail = customer.email || null;
             const customerName = customer.name || "Client";
             const customerBillingAddress: any = customer.address;
-            const deliveryMethod = customer.metadata.delivery_method || "N/A";
-            const deliveryNetwork = customer.metadata.delivery_network || "N/A";
+            const deliveryMethod =
+              (session.metadata?.delivery_method as any) ||
+              customer.metadata?.delivery_method ||
+              "N/A";
+            const deliveryNetwork =
+              (session.metadata?.delivery_network as any) ||
+              customer.metadata?.delivery_network ||
+              "N/A";
             const clerkUserId = customer.metadata.clerk_user_id || null;
             const pickupPointCode = session.metadata.pickup_point_code || "N/A";
             const dropOffPointCode =
@@ -504,6 +522,39 @@ router.post(
             const weight = formatWeight(session.metadata?.weight);
             let estimatedDeliveryDate: string = "";
             let boxtalId = "";
+            let trackingUrl = "";
+            let shipmentId = "";
+
+            // Supprimer les items du panier si des identifiants ont été passés via la session
+            try {
+              const cartItemsRaw =
+                (session.metadata?.cart_item_ids as any) || "";
+              const cartItemIds: number[] = Array.isArray(cartItemsRaw)
+                ? (cartItemsRaw as any[])
+                    .map((x) => Number(String(x).trim()))
+                    .filter((n) => Number.isFinite(n))
+                : String(cartItemsRaw)
+                    .split(",")
+                    .map((s) => Number(s.trim()))
+                    .filter((n) => Number.isFinite(n));
+              if (cartItemIds.length > 0) {
+                const { error: cartDelErr } = await supabase
+                  .from("carts")
+                  .delete()
+                  .in("id", cartItemIds);
+                if (cartDelErr) {
+                  console.error(
+                    "Error deleting cart items after payment:",
+                    cartDelErr.message
+                  );
+                }
+              }
+            } catch (cartCleanupErr) {
+              console.error(
+                "Unexpected error during cart cleanup:",
+                cartCleanupErr
+              );
+            }
             // Extraire les produits des line_items
 
             const sessionId = event.data.object.id;
@@ -540,12 +591,13 @@ router.post(
             let storeLogo = null;
             let storeId: number | null = null;
             let storeSlug: string | null = null;
+            let storeAddress: any = null;
 
             if (storeName) {
               try {
                 const { data: storeData, error: storeError } = await supabase
                   .from("stores")
-                  .select("id, slug, owner_email, description")
+                  .select("id, slug, owner_email, description, address")
                   .eq("name", storeName)
                   .single();
 
@@ -554,14 +606,17 @@ router.post(
                   storeDescription = storeData.description;
                   storeId = storeData.id || null;
                   storeSlug = storeData.slug || null;
+                  storeAddress = (storeData as any)?.address || null;
                   if (process.env.CLOUDFRONT_URL && storeSlug) {
-                    storeLogo = `${process.env.CLOUDFRONT_URL}/images/${storeSlug}`;
+                    storeLogo = `${process.env.CLOUDFRONT_URL}/images/${storeId}`;
                   }
                 }
               } catch (storeErr) {
                 console.error("Error fetching store data:", storeErr);
               }
             }
+
+            // Préparer l'adresse d'expéditeur à partir des infos du store si disponibles
 
             const toAddress = {
               type: "RESIDENTIAL",
@@ -582,22 +637,21 @@ router.post(
               },
             };
 
-            // From address - prefer env variables if set, otherwise use a generic placeholder
+            // From address: privilégier l'adresse de la boutique si connue, sinon variables d'env / valeurs par défaut
             const fromAddress = {
               type: "BUSINESS",
               contact: {
-                email:
-                  process.env.BOXTAL_SENDER_EMAIL || "no-reply@example.com",
-                phone: process.env.BOXTAL_SENDER_PHONE || "33666366588",
-                lastName: process.env.BOXTAL_SENDER_NAME || "PayLive",
-                firstName: process.env.BOXTAL_SENDER_NAME || "PayLive",
+                email: "no-reply@paylive.cc",
+                phone: (storeAddress as any)?.phone || "33666477877",
+                lastName: storeName || "PayLive",
+                firstName: storeName || "PayLive",
               },
               location: {
-                city: process.env.BOXTAL_SENDER_CITY || "Paris",
-                street: process.env.BOXTAL_SENDER_STREET || "1 Rue Exemple",
-                number: process.env.BOXTAL_SENDER_NUMBER || "1",
-                postalCode: process.env.BOXTAL_SENDER_POSTAL || "75001",
-                countryIsoCode: process.env.BOXTAL_SENDER_COUNTRY || "FR",
+                city: (storeAddress?.city as any) || "Paris",
+                street: (storeAddress?.line1 as any) || "1 Rue Exemple",
+                number: (storeAddress?.line1 as any).split(" ")[0] || "1",
+                postalCode: (storeAddress?.postal_code as any) || "75001",
+                countryIsoCode: (storeAddress?.country as any) || "FR",
               },
             };
 
@@ -645,19 +699,25 @@ router.post(
               dropOffPointCode: dropOffPointCode,
             };
 
-            if (deliveryMethod === "pickup_point") {
-              const createOrderPayload: any = {
-                insured: false,
-                shipment,
-                labelType: "PDF_A4",
-                shippingOfferCode: deliveryNetwork,
-              };
+            const createOrderPayload: any = {
+              insured: false,
+              shipment,
+              labelType: "PDF_A4",
+              shippingOfferCode: deliveryNetwork,
+            };
+            console.log(
+              "createOrderPayload:",
+              JSON.stringify(createOrderPayload)
+            );
 
-              console.log(
-                "createOrderPayload:",
-                JSON.stringify(createOrderPayload)
-              );
+            let dataBoxtal: any = {};
+            let attachments: Array<{
+              filename: string;
+              content: Buffer;
+              contentType?: string;
+            }> = [];
 
+            if (deliveryMethod !== "store_pickup") {
               // Call internal Boxtal shipping-orders endpoint
               const apiBase =
                 process.env.INTERNAL_API_BASE ||
@@ -684,61 +744,11 @@ router.post(
                   context: text,
                 });
               } else {
-                const data: any = await resp.json();
-                estimatedDeliveryDate = data.content.estimatedDeliveryDate;
-                boxtalId = data.content.id;
-                console.log("Boxtal shipping order created:", data);
-
-                // Enregistrer l'expédition dans la table shipments (plus de metadata Stripe)
-                try {
-                  const pickupCodeNum =
-                    pickupPointCode && pickupPointCode !== "N/A"
-                      ? Number(pickupPointCode)
-                      : null;
-                  const dropOffCodeNum =
-                    dropOffPointCode && dropOffPointCode !== "N/A"
-                      ? Number(dropOffPointCode)
-                      : null;
-                  const prodRefNum =
-                    productReference && /^\d+$/.test(productReference)
-                      ? Number(productReference)
-                      : null;
-
-                  const { data: shipmentInsert, error: shipmentInsertError } =
-                    await supabase
-                      .from("shipments")
-                      .insert({
-                        store_id: storeId,
-                        customer_stripe_id: customerId || null,
-                        shipment_id: boxtalId,
-                        document_created: false,
-                        delivery_method: deliveryMethod,
-                        delivery_network: deliveryNetwork,
-                        drop_off_point_code: dropOffCodeNum,
-                        pickup_point_code: pickupCodeNum,
-                        weight: session.metadata?.weight || null,
-                        product_reference: prodRefNum,
-                        value: (amount || 0) / 100,
-                      })
-                      .select("id")
-                      .single();
-
-                  if (shipmentInsertError) {
-                    console.error(
-                      "Error inserting shipment row:",
-                      shipmentInsertError
-                    );
-                    await emailService.sendAdminError({
-                      subject: "Erreur insertion shipments",
-                      message: `Insertion échouée pour boxtalId ${boxtalId} (store ${storeName}).`,
-                      context: JSON.stringify(shipmentInsertError),
-                    });
-                  } else {
-                    console.log("Shipments row inserted:", shipmentInsert);
-                  }
-                } catch (dbErr) {
-                  console.error("DB insert shipments exception:", dbErr);
-                }
+                dataBoxtal = await resp.json();
+                estimatedDeliveryDate =
+                  dataBoxtal.content.estimatedDeliveryDate;
+                boxtalId = dataBoxtal.content.id;
+                console.log("Boxtal shipping order created:", dataBoxtal);
 
                 // Attendre, tenter récupération du document 2× avec 2s de délai et notifier le propriétaire
                 try {
@@ -747,12 +757,6 @@ router.post(
                     process.env.INTERNAL_API_BASE ||
                     `http://localhost:${process.env.PORT || 5000}`;
                   console.log("shippingOrderIdForDoc:", shippingOrderIdForDoc);
-
-                  let attachments: Array<{
-                    filename: string;
-                    content: Buffer;
-                    contentType?: string;
-                  }> = [];
 
                   for (let attempt = 1; attempt <= 2; attempt++) {
                     // Attente 2s avant chaque tentative pour laisser Boxtal générer le document
@@ -840,68 +844,6 @@ router.post(
                       );
                     }
                   }
-
-                  // Envoyer l'email au propriétaire (avec ou sans pièce jointe)
-                  if (storeOwnerEmail) {
-                    console.log("product_amount:", product_amount);
-                    const sentOwner =
-                      await emailService.sendStoreOwnerNotification({
-                        ownerEmail: storeOwnerEmail,
-                        storeName: storeName || "Votre Boutique",
-                        customerEmail: customerEmail || "",
-                        customerName: customerName || "",
-                        customerPhone: customerPhone || "",
-                        deliveryMethod,
-                        deliveryNetwork,
-                        shippingAddress: {
-                          name: (customerShippingAddress as any)?.name,
-                          address: {
-                            line1: (customerShippingAddress as any)?.address
-                              ?.line1,
-                            line2:
-                              (customerShippingAddress as any)?.address
-                                ?.line2 || "",
-                            city: (customerShippingAddress as any)?.address
-                              ?.city,
-                            state: (customerShippingAddress as any)?.address
-                              ?.state,
-                            postal_code: (customerShippingAddress as any)
-                              ?.address?.postal_code,
-                            country: (customerShippingAddress as any)?.address
-                              ?.country,
-                          },
-                        },
-                        customerAddress: {
-                          line1: (customerBillingAddress as any)?.line1,
-                          line2: (customerBillingAddress as any)?.line2 || "",
-                          city: (customerBillingAddress as any)?.city,
-                          state: (customerBillingAddress as any)?.state,
-                          postal_code: (customerBillingAddress as any)
-                            ?.postal_code,
-                          country: (customerBillingAddress as any)?.country,
-                        },
-                        pickupPointCode,
-                        productReference,
-                        amount: product_amount || amount,
-                        currency,
-                        paymentId,
-                        boxtalId,
-                        attachments,
-                        documentPendingNote:
-                          attachments?.length === 0
-                            ? "Le bordereau d'envoi sera envoyé dans un autre email."
-                            : undefined,
-                      });
-                    console.log(
-                      "Store owner notification sent",
-                      sentOwner,
-                      storeOwnerEmail
-                    );
-                  } else {
-                    console.warn(
-                      "No storeOwnerEmail found, skipping owner notification"
-                    );
-                  }
                 } catch (e) {
                   console.error(
                     "Error sending store owner notification with document:",
@@ -911,75 +853,159 @@ router.post(
               }
             } // end if deliveryMethod === "pickup_point"
 
-            // Enregistrer une expédition générique pour les autres méthodes
-            if (deliveryMethod !== "pickup_point") {
-              try {
-                const pickupCodeNum =
-                  pickupPointCode && pickupPointCode !== "N/A"
-                    ? Number(pickupPointCode)
-                    : null;
-                const dropOffCodeNum =
-                  dropOffPointCode && dropOffPointCode !== "N/A"
-                    ? Number(dropOffPointCode)
-                    : null;
-                const prodRefNum =
-                  productReference && /^\d+$/.test(productReference)
-                    ? Number(productReference)
-                    : null;
-
-                const { error: shipmentInsertError } = await supabase
+            // Enregistrer l'expédition dans la table shipments (plus de metadata Stripe)
+            try {
+              const pickupCodeNum =
+                pickupPointCode && pickupPointCode !== "N/A"
+                  ? Number(pickupPointCode)
+                  : null;
+              const dropOffCodeNum =
+                dropOffPointCode && dropOffPointCode !== "N/A"
+                  ? Number(dropOffPointCode)
+                  : null;
+              const { data: shipmentInsert, error: shipmentInsertError } =
+                await supabase
                   .from("shipments")
                   .insert({
                     store_id: storeId,
                     customer_stripe_id: customerId || null,
-                    shipment_id: null,
-                    document_created: false,
+                    shipment_id: boxtalId,
+                    status: (dataBoxtal?.content?.status as any) || null,
+                    estimated_delivery_date: estimatedDeliveryDate || null,
+                    created_at: dataBoxtal?.timestamp
+                      ? new Date(dataBoxtal.timestamp).toISOString()
+                      : new Date().toISOString(),
+                    document_created: attachments && attachments.length > 0,
                     delivery_method: deliveryMethod,
                     delivery_network: deliveryNetwork,
                     drop_off_point_code: dropOffCodeNum,
                     pickup_point_code: pickupCodeNum,
                     weight: session.metadata?.weight || null,
-                    product_reference: prodRefNum,
+                    product_reference: productReference || null,
                     value: (amount || 0) / 100,
-                  });
+                    delivery_cost:
+                      dataBoxtal?.content?.deliveryPriceExclTax?.value || 0,
+                  })
+                  .select("id")
+                  .single();
+              shipmentId = shipmentInsert?.id || "";
 
-                if (shipmentInsertError) {
-                  console.error(
-                    "Error inserting generic shipment row:",
-                    shipmentInsertError
-                  );
-                  await emailService.sendAdminError({
-                    subject: "Erreur insertion shipments (générique)",
-                    message: `Insertion échouée pour store ${storeName}.`,
-                    context: JSON.stringify(shipmentInsertError),
-                  });
-                }
-              } catch (dbErr) {
+              if (shipmentInsertError) {
                 console.error(
-                  "DB insert shipments (générique) exception:",
-                  dbErr
+                  "Error inserting shipment row:",
+                  shipmentInsertError
+                );
+                await emailService.sendAdminError({
+                  subject: "Erreur insertion shipments",
+                  message: `Insertion échouée pour boxtalId ${boxtalId} (store ${storeName}).`,
+                  context: JSON.stringify(shipmentInsertError),
+                });
+              } else {
+                console.log("Shipments row inserted:", shipmentInsert);
+              }
+            } catch (dbErr) {
+              console.error("DB insert shipments exception:", dbErr);
+              await emailService.sendAdminError({
+                subject: "Erreur insertion shipments",
+                message: `Insertion échouée pour boxtalId ${boxtalId} (store ${storeName}).`,
+                context: JSON.stringify(dbErr),
+              });
+            }
+
+            // Recuperer le lien de suivi de la livraison depuis l'appel à boxtal et l'enregistrer dans la table shipments
+            if (deliveryMethod !== "store_pickup") {
+              try {
+                if (boxtalId) {
+                  console.log("boxtalId:", boxtalId);
+                  const base =
+                    process.env.INTERNAL_API_BASE ||
+                    `http://localhost:${process.env.PORT || 5000}`;
+
+                  const trackingResp = await fetch(
+                    `${base}/api/boxtal/shipping-orders/${encodeURIComponent(
+                      boxtalId
+                    )}/tracking`,
+                    { method: "GET" }
+                  );
+
+                  if (trackingResp.ok) {
+                    const trackingJson: any = await trackingResp.json();
+                    let packageTrackingUrl: string | undefined = undefined;
+
+                    // Boxtal peut renvoyer content comme objet ou tableau d'événements
+                    if (Array.isArray(trackingJson?.content)) {
+                      const firstWithUrl = (trackingJson.content || []).find(
+                        (ev: any) => ev && ev.packageTrackingUrl
+                      );
+                      packageTrackingUrl =
+                        firstWithUrl?.packageTrackingUrl ||
+                        (trackingJson.content[0]?.packageTrackingUrl as any);
+                    } else {
+                      packageTrackingUrl =
+                        trackingJson?.content?.packageTrackingUrl;
+                    }
+
+                    if (packageTrackingUrl) {
+                      // Mettre à jour la variable utilisée pour les emails
+                      trackingUrl = packageTrackingUrl;
+
+                      // Mettre à jour la colonne tracking_url dans la table shipments
+                      try {
+                        const { error: updError } = await supabase
+                          .from("shipments")
+                          .update({ tracking_url: packageTrackingUrl })
+                          .eq("shipment_id", boxtalId);
+                        if (updError) {
+                          console.error(
+                            "Error updating shipments.tracking_url:",
+                            updError
+                          );
+                        }
+                      } catch (updEx) {
+                        console.error(
+                          "Exception updating shipments.tracking_url:",
+                          updEx
+                        );
+                      }
+                    }
+                  } else {
+                    const errText = await trackingResp.text();
+                    console.warn(
+                      "Boxtal tracking API non-OK:",
+                      trackingResp.status,
+                      errText
+                    );
+                  }
+                }
+              } catch (trackErr) {
+                console.error(
+                  "Error retrieving tracking URL from internal Boxtal API:",
+                  trackErr
                 );
               }
             }
 
             // Envoyer l'email de confirmation au client
             try {
-              console.log("estimatedDeliveryDate:", estimatedDeliveryDate);
               await emailService.sendCustomerConfirmation({
                 customerEmail:
                   paymentIntent?.receipt_email || customerEmail || "",
                 customerName: customerName,
                 storeName: storeName,
                 storeDescription: storeDescription,
-                storeLogo: `${process.env.CLOUDFRONT_URL}/images/${storeSlug}`,
+                storeLogo: `${process.env.CLOUDFRONT_URL}/images/${storeId}`,
+                storeAddress: storeAddress,
                 productReference: productReference,
                 amount: amount / 100,
                 currency: currency,
                 paymentId: paymentId,
+                boxtalId: boxtalId,
+                shipmentId: shipmentId,
                 deliveryMethod: deliveryMethod,
                 deliveryNetwork: deliveryNetwork,
                 pickupPointCode: pickupPointCode,
                 estimatedDeliveryDate: estimatedDeliveryDate,
+                trackingUrl: trackingUrl,
               });
               console.log(
                 "Customer confirmation email sent",
@@ -989,6 +1015,63 @@ router.post(
               console.error(
                 "Error sending customer confirmation email:",
                 emailErr
+              );
+            }
+
+            try {
+              // Envoyer l'email au propriétaire (avec ou sans pièce jointe)
+              if (storeOwnerEmail) {
+                console.log("product_amount:", product_amount);
+                const sentOwner = await emailService.sendStoreOwnerNotification(
+                  {
+                    ownerEmail: storeOwnerEmail,
+                    storeName: storeName || "Votre Boutique",
+                    customerEmail: customerEmail || "",
+                    customerName: customerName || "",
+                    customerPhone: customerPhone || "",
+                    deliveryMethod,
+                    deliveryNetwork,
+                    shippingAddress: {
+                      name: (customerShippingAddress as any)?.name,
+                      address: {
+                        line1: (customerShippingAddress as any)?.address?.line1,
+                        line2:
+                          (customerShippingAddress as any)?.address?.line2 ||
+                          "",
+                        city: (customerShippingAddress as any)?.address?.city,
+                        state: (customerShippingAddress as any)?.address?.state,
+                        postal_code: (customerShippingAddress as any)?.address
+                          ?.postal_code,
+                        country: (customerShippingAddress as any)?.address
+                          ?.country,
+                      },
+                    },
+                    customerAddress: {},
+                    pickupPointCode,
+                    productReference,
+                    amount: product_amount || amount,
+                    weight,
+                    currency,
+                    paymentId,
+                    boxtalId,
+                    shipmentId,
+                    attachments,
+                  }
+                );
+                console.log(
+                  "Store owner notification sent",
+                  sentOwner,
+                  storeOwnerEmail
+                );
+              } else {
+                console.warn(
+                  "No storeOwnerEmail found, skipping owner notification"
+                );
+              }
+            } catch (ownerEmailErr) {
+              console.error(
+                "Error sending store owner notification:",
+                ownerEmailErr
               );
             }
 
