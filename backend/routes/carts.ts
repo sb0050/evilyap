@@ -63,6 +63,8 @@ router.post("/", async (req, res) => {
           product_reference,
           value,
           customer_stripe_id,
+          // Horodatage de création côté serveur (timestamptz)
+          created_at: new Date().toISOString(),
         },
       ])
       .select()
@@ -89,7 +91,7 @@ router.get("/summary", async (req, res) => {
 
     const { data: cartRows, error } = await supabase
       .from("carts")
-      .select("id,store_id,product_reference,value")
+      .select("id,store_id,product_reference,value,created_at")
       .eq("customer_stripe_id", stripeId)
       .order("id", { ascending: false });
 
@@ -123,7 +125,7 @@ router.get("/summary", async (req, res) => {
     const itemsByStore: Array<{
       store: { id: number; name: string; slug: string } | null;
       total: number;
-      items: Array<{ id: number; product_reference: string; value: number }>;
+      items: Array<{ id: number; product_reference: string; value: number; created_at?: string }>;
     }> = [];
 
     const grouped: Record<string, { total: number; items: any[]; store: any }> = {};
@@ -140,6 +142,7 @@ router.get("/summary", async (req, res) => {
         id: r.id,
         product_reference: r.product_reference,
         value: r.value,
+        created_at: (r as any).created_at,
       });
       grouped[key].total += r.value || 0;
     }
@@ -164,10 +167,38 @@ router.get("/summary", async (req, res) => {
 // DELETE /api/carts - Remove item by id only
 router.delete("/", async (req, res) => {
   try {
-    const { id } = (req.body || {}) as { id?: number };
+    const { id, requireExpired } = (req.body || {}) as {
+      id?: number;
+      requireExpired?: boolean;
+    };
 
     if (!id || typeof id !== "number") {
       return res.status(400).json({ error: "id requis pour la suppression" });
+    }
+
+    // Si on demande de vérifier l'expiration, contrôler TTL=5min
+    if (requireExpired) {
+      const { data: rec, error: selErr } = await supabase
+        .from("carts")
+        .select("id,created_at")
+        .eq("id", id)
+        .single();
+      if (selErr) {
+        // PGRST116: not found
+        if ((selErr as any)?.code === "PGRST116") {
+          return res.status(404).json({ error: "item_not_found" });
+        }
+        return res.status(500).json({ error: selErr.message });
+      }
+
+      const ttlMs = 5 * 60 * 1000;
+      const createdMs = rec?.created_at ? new Date(rec.created_at as any).getTime() : null;
+      const nowMs = Date.now();
+      const leftMs = createdMs ? ttlMs - (nowMs - createdMs) : 0; // si pas de created_at, considérer expiré
+      if (leftMs > 0) {
+        const expiresAt = createdMs ? new Date(createdMs + ttlMs).toISOString() : null;
+        return res.status(409).json({ error: "not_expired", timeLeftMs: leftMs, expiresAt });
+      }
     }
 
     const { error } = await supabase.from("carts").delete().eq("id", id);

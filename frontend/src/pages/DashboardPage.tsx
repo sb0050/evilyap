@@ -40,7 +40,6 @@ type Shipment = {
   weight: string | null;
   product_reference: number | null;
   value: number | null;
-  customer_clerk_id: string | null;
 };
 
 export default function DashboardPage() {

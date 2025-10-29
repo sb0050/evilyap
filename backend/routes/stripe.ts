@@ -719,7 +719,6 @@ router.post(
                         weight: session.metadata?.weight || null,
                         product_reference: prodRefNum,
                         value: (amount || 0) / 100,
-                        customer_clerk_id: clerkUserId || null,
                       })
                       .select("id")
                       .single();
@@ -942,7 +941,6 @@ router.post(
                     weight: session.metadata?.weight || null,
                     product_reference: prodRefNum,
                     value: (amount || 0) / 100,
-                    customer_clerk_id: clerkUserId || null,
                   });
 
                 if (shipmentInsertError) {
@@ -957,7 +955,10 @@ router.post(
                   });
                 }
               } catch (dbErr) {
-                console.error("DB insert shipments (générique) exception:", dbErr);
+                console.error(
+                  "DB insert shipments (générique) exception:",
+                  dbErr
+                );
               }
             }
 

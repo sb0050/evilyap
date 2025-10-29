@@ -34,12 +34,47 @@ export default function Header() {
     Array<{
       store: { id: number; name: string; slug: string } | null;
       total: number;
-      items: Array<{ id: number; product_reference: string; value: number }>;
+      items: Array<{
+        id: number;
+        product_reference: string;
+        value: number;
+        created_at?: string;
+      }>;
     }>
   >([]);
   const cartIconRef = useRef<HTMLSpanElement | null>(null);
   const cartRef = useRef<HTMLDivElement | null>(null);
   const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
+  const [now, setNow] = useState<number>(Date.now());
+  const deletingIdsRef = useRef<Set<number>>(new Set());
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Suppression automatique des items expirés (TTL 5 minutes)
+  useEffect(() => {
+    const ttlMs = 5 * 60 * 1000;
+    for (const group of cartGroups) {
+      for (const it of group.items) {
+        const created = it.created_at
+          ? new Date(it.created_at).getTime()
+          : null;
+        const leftMs = created ? ttlMs - (now - created) : ttlMs;
+        if (leftMs <= 0 && !deletingIdsRef.current.has(it.id)) {
+          deletingIdsRef.current.add(it.id);
+          (async () => {
+            try {
+              await handleDeleteItem(it.id, true);
+            } finally {
+              deletingIdsRef.current.delete(it.id);
+            }
+          })();
+        }
+      }
+    }
+  }, [cartGroups, now]);
 
   useEffect(() => {
     const checkOwner = async () => {
@@ -174,12 +209,18 @@ export default function Header() {
     };
   }, [cartOpen]);
 
-  const handleDeleteItem = async (cartItemId: number) => {
+  const handleDeleteItem = async (
+    cartItemId: number,
+    requireExpired?: boolean
+  ) => {
     try {
       const resp = await fetch(`${apiBase}/api/carts`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: cartItemId }),
+        body: JSON.stringify({
+          id: cartItemId,
+          requireExpired: Boolean(requireExpired),
+        }),
       });
       if (!resp.ok) {
         // Option: handle error toast/log
@@ -261,32 +302,58 @@ export default function Header() {
                             </span>
                           </div>
                           <ul className='space-y-1'>
-                            {group.items.map((it, i) => (
-                              <li
-                                key={i}
-                                className='flex justify-between items-center text-sm text-gray-700'
-                              >
-                                <span
-                                  className='truncate max-w-[60%]'
-                                  title={it.product_reference}
+                            {group.items.map((it, i) => {
+                              const created = it.created_at
+                                ? new Date(it.created_at).getTime()
+                                : null;
+                              const ttlMs = 15 * 60 * 1000; // 15 minutes
+                              const leftMs = created
+                                ? Math.max(0, ttlMs - (now - created))
+                                : ttlMs;
+                              return (
+                                <li
+                                  key={i}
+                                  className={`flex justify-between items-center text-sm ${leftMs === 10000 ? 'text-red-600' : 'text-gray-700'}`}
                                 >
-                                  {it.product_reference}
-                                </span>
-                                <div className='flex items-center gap-2'>
-                                  <span>
-                                    {Number(it.value || 0).toFixed(2)} €
-                                  </span>
-                                  <button
-                                    className='p-1 rounded hover:bg-red-50 text-red-600'
-                                    title='Supprimer cette référence'
-                                    aria-label='Supprimer'
-                                    onClick={() => handleDeleteItem(it.id)}
+                                  <span
+                                    className='truncate max-w-[60%]'
+                                    title={it.product_reference}
                                   >
-                                    <Trash2 className='w-4 h-4' />
-                                  </button>
-                                </div>
-                              </li>
-                            ))}
+                                    {it.product_reference}
+                                  </span>
+                                  <div className='flex items-center gap-2'>
+                                    {(() => {
+                                      const minutes = Math.floor(
+                                        leftMs / 60000
+                                      );
+                                      const seconds = Math.floor(
+                                        (leftMs % 60000) / 1000
+                                      );
+                                      const label = `${minutes}:${String(seconds).padStart(2, '0')}`;
+                                      return (
+                                        <span
+                                          className={`font-mono text-xs ${leftMs === 10000 ? 'text-red-600' : 'text-gray-500'}`}
+                                          title='Temps restant'
+                                        >
+                                          {label}
+                                        </span>
+                                      );
+                                    })()}
+                                    <span>
+                                      {Number(it.value || 0).toFixed(2)} €
+                                    </span>
+                                    <button
+                                      className='p-1 rounded hover:bg-red-50 text-red-600'
+                                      title='Supprimer cette référence'
+                                      aria-label='Supprimer'
+                                      onClick={() => handleDeleteItem(it.id)}
+                                    >
+                                      <Trash2 className='w-4 h-4' />
+                                    </button>
+                                  </div>
+                                </li>
+                              );
+                            })}
                           </ul>
                         </div>
                       ))}

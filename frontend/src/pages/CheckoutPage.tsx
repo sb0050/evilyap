@@ -91,6 +91,9 @@ export default function CheckoutPage() {
   const [showPayment, setShowPayment] = useState(false);
   const [email, setEmail] = useState('');
   const [showDelivery, setShowDelivery] = useState(false);
+  const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
+  const [cartItemsForStore, setCartItemsForStore] = useState<Array<{ id: number; product_reference: string; value: number; created_at?: string }>>([]);
+  const [cartTotalForStore, setCartTotalForStore] = useState<number>(0);
 
   const [storePickupAddress, setStorePickupAddress] = useState<
     Address | undefined
@@ -110,6 +113,51 @@ export default function CheckoutPage() {
   useEffect(() => {
     // Debug supprimé
   }, [selectedParcelPoint, deliveryMethod, isFormValid]);
+
+  // Charger le panier pour ce store
+  useEffect(() => {
+    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+    const fetchCartForStore = async () => {
+      try {
+        const userEmail = user?.primaryEmailAddress?.emailAddress;
+        if (!userEmail || !store?.id) return;
+        const resp = await fetch(
+          `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(userEmail)}`
+        );
+        if (!resp.ok) return;
+        const json = await resp.json();
+        const stripeId = json?.customer?.id;
+        if (!stripeId) return;
+        setStripeCustomerId(stripeId);
+        const cartResp = await fetch(
+          `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(stripeId)}`
+        );
+        if (!cartResp.ok) return;
+        const cartJson = await cartResp.json();
+        const groups = Array.isArray(cartJson?.itemsByStore) ? cartJson.itemsByStore : [];
+        const groupForStore = groups.find((g: any) => g?.store?.id && store?.id && g.store.id === store.id);
+        if (groupForStore) {
+          setCartItemsForStore(groupForStore.items || []);
+          setCartTotalForStore(Number(groupForStore.total || 0));
+        } else {
+          setCartItemsForStore([]);
+          setCartTotalForStore(0);
+        }
+      } catch (_e) {
+        // ignore
+      }
+    };
+    fetchCartForStore();
+    const onCartUpdated = () => fetchCartForStore();
+    if (typeof window !== 'undefined') {
+      window.addEventListener('cart:updated', onCartUpdated);
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('cart:updated', onCartUpdated);
+      }
+    };
+  }, [user, store]);
 
   const showToast = (
     message: string,
@@ -259,9 +307,9 @@ export default function CheckoutPage() {
   }, [user, store]);
 
   const isFormComplete = () => {
-    const hasReference = Boolean((formData.reference || '').trim());
+    //const hasReference = Boolean((formData.reference || '').trim());
     const hasEmail = Boolean((email || '').trim());
-    const hasAmount = amount > 0;
+    //const hasAmount = amount > 0;
     const hasDeliveryInfo =
       deliveryMethod === 'home_delivery'
         ? Boolean(
@@ -279,30 +327,59 @@ export default function CheckoutPage() {
       Boolean((formData.phone || '').trim());
 
     return (
-      hasReference && hasEmail && hasAmount && hasDeliveryInfo && hasContactInfo
+      hasEmail && hasDeliveryInfo && hasContactInfo
     );
   };
 
   const handleProceedToPayment = async () => {
-    if (!isFormComplete() || !store || !user?.primaryEmailAddress?.emailAddress)
+    if ((!isFormComplete() && cartItemsForStore.length === 0) || !store || !user?.primaryEmailAddress?.emailAddress)
       return;
 
     setIsProcessingPayment(true);
 
     try {
+      // Ajout automatique au panier si référence et montant renseignés
+      try {
+        const product_reference = (formData.reference || '').trim();
+        const stripeId = customerData?.id;
+        if (product_reference && amount > 0 && stripeId && store?.id) {
+          const resp = await apiPost('/api/carts', {
+            store_id: store.id,
+            product_reference,
+            value: amount,
+            customer_stripe_id: stripeId,
+          });
+          // Ignorer les conflits ou erreurs non critiques
+          if (resp.status === 409) {
+            // référence déjà présente — OK
+          } else if (!resp.ok) {
+            // Ne pas bloquer le paiement
+          } else {
+            // rafraîchir le panier visuellement
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('cart:updated'));
+            }
+          }
+        }
+      } catch (_e) {
+        // Ne pas bloquer le paiement en cas d'erreur d'ajout au panier
+      }
+
+      const isCartFlow = !isFormComplete() && cartItemsForStore.length > 0;
+      const effectiveDeliveryMethod: 'home_delivery' | 'pickup_point' | 'store_pickup' = isCartFlow ? 'store_pickup' : deliveryMethod;
       const customerInfo = {
         email: email || user.primaryEmailAddress.emailAddress,
-        name: formData.name,
-        phone: formData.phone,
+        name: formData.name || user.fullName || 'Client',
+        phone: formData.phone || '',
         address:
-          deliveryMethod === 'home_delivery'
+          effectiveDeliveryMethod === 'home_delivery'
             ? address
-            : deliveryMethod === 'store_pickup'
+            : effectiveDeliveryMethod === 'store_pickup'
               ? storePickupAddress
               : null,
-        delivery_method: deliveryMethod,
+        delivery_method: effectiveDeliveryMethod,
         parcel_point:
-          deliveryMethod === 'pickup_point' ? selectedParcelPoint : null,
+          effectiveDeliveryMethod === 'pickup_point' ? selectedParcelPoint : null,
       };
 
       const blankAddr = {
@@ -315,13 +392,13 @@ export default function CheckoutPage() {
       };
 
       const payloadData = {
-        amount: amount,
+        amount: isCartFlow ? cartTotalForStore : amount,
         currency: 'eur',
-        customerName: formData.name || user.fullName || 'Client',
+        customerName: customerInfo.name,
         customerEmail: customerInfo.email,
         clerkUserId: user.id,
         storeName: store.name,
-        productReference: formData.reference,
+        productReference: isCartFlow ? `PANIER (${cartItemsForStore.length} réf.)` : formData.reference,
         address: address || {
           line1: '',
           line2: '',
@@ -330,13 +407,13 @@ export default function CheckoutPage() {
           postal_code: '',
           country: 'FR',
         },
-        deliveryMethod,
-        parcelPoint: selectedParcelPoint || null,
-        phone: formData.phone || '',
+        deliveryMethod: effectiveDeliveryMethod,
+        parcelPoint: effectiveDeliveryMethod === 'pickup_point' ? (selectedParcelPoint || null) : null,
+        phone: customerInfo.phone,
         deliveryCost,
         selectedWeight,
         deliveryNetwork:
-          deliveryMethod === 'store_pickup'
+          effectiveDeliveryMethod === 'store_pickup'
             ? 'STORE_PICKUP'
             : selectedParcelPoint?.shippingOfferCode ||
               (formData as any).shippingOfferCode,
@@ -593,7 +670,7 @@ export default function CheckoutPage() {
             <div className='mt-4'>
               {(!showPayment || !embeddedClientSecret) &&
                 (() => {
-                  const canProceed = isFormComplete() && !isProcessingPayment;
+                  const canProceed = !isProcessingPayment && isFormComplete() && cartItemsForStore.length > 0;
                   const btnColor = canProceed ? '#0074D4' : '#6B7280';
                   return (
                     <button
@@ -616,7 +693,7 @@ export default function CheckoutPage() {
                     </button>
                   );
                 })()}
-              {!isFormComplete() && (
+              {!isFormComplete() && cartItemsForStore.length === 0 && (
                 <p className='text-sm text-gray-500 text-center mt-2'>
                   Veuillez compléter tous les champs pour continuer
                 </p>
@@ -735,6 +812,8 @@ function CheckoutForm({
 }) {
   const stripe = useStripe();
   const elements = useElements();
+  const isAddToCartDisabled =
+    !Boolean((formData.reference || '').trim()) || !(amount > 0);
 
   if (!store) {
     return (
@@ -772,7 +851,7 @@ function CheckoutForm({
           onChange={e =>
             setFormData({ ...formData, reference: e.target.value })
           }
-          className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border ${formData.reference.trim() ? 'border-gray-300' : 'border-red-500'}`}
+          className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300`}
           style={{ lineHeight: '1.5' }}
           placeholder='Votre référence'
           required
@@ -810,7 +889,7 @@ function CheckoutForm({
               setAmountInput(amount.toFixed(2));
             }
           }}
-          className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border ${parseFloat(amountInput) > 0 ? 'border-gray-300' : 'border-red-500'}`}
+          className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300`}
           style={{ lineHeight: '1.5' }}
           placeholder='0.00'
           required
@@ -820,6 +899,7 @@ function CheckoutForm({
         <div className='mt-3 flex flex-col sm:flex-row gap-3'>
           <button
             type='button'
+            disabled={isAddToCartDisabled}
             onClick={async () => {
               try {
                 if (!store?.id) {
@@ -848,7 +928,10 @@ function CheckoutForm({
                     json?.message ||
                     'Cette reference existe déjà dans un autre panier';
                   setPaymentError(msg);
-                  showToast('Cette reference existe déjà dans un autre panier', 'error');
+                  showToast(
+                    'Cette reference existe déjà dans un autre panier',
+                    'error'
+                  );
                   return;
                 }
                 if (!resp.ok) {
@@ -861,7 +944,10 @@ function CheckoutForm({
                   return;
                 }
                 setPaymentError(null);
-                showToast('Ajouté au panier', 'success');
+                showToast(
+                  'Ajouté au panier pour une durée de 5 minutes',
+                  'success'
+                );
                 // Notifier le header de rafraîchir le panier
                 if (typeof window !== 'undefined') {
                   window.dispatchEvent(new CustomEvent('cart:updated'));
@@ -869,11 +955,20 @@ function CheckoutForm({
               } catch (e: any) {
                 const rawMsg = e?.message || "Erreur lors de l'ajout au panier";
                 setPaymentError(rawMsg);
-                if (typeof rawMsg === 'string' && rawMsg.includes('reference_exists')) {
-                  showToast('Cette reference existe déjà dans un autre panier', 'error');
+                if (
+                  typeof rawMsg === 'string' &&
+                  rawMsg.includes('reference_exists')
+                ) {
+                  showToast(
+                    'Cette reference existe déjà dans un autre panier',
+                    'error'
+                  );
                 } else {
                   try {
-                    const match = typeof rawMsg === 'string' ? rawMsg.match(/\{.*\}/) : null;
+                    const match =
+                      typeof rawMsg === 'string'
+                        ? rawMsg.match(/\{.*\}/)
+                        : null;
                     const parsed = match ? JSON.parse(match[0]) : null;
                     const finalMsg = parsed?.message || rawMsg;
                     showToast(finalMsg, 'error');
@@ -883,7 +978,7 @@ function CheckoutForm({
                 }
               }
             }}
-            className='mt-4 w-full sm:w-auto px-4 py-2.5 rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500'
+            className='mt-4 w-full sm:w-auto px-4 py-2.5 rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600'
           >
             Ajouter au panier
           </button>
@@ -900,11 +995,10 @@ function CheckoutForm({
         </div>
         <div className='pt-6'>
           {(() => {
-            const defaultName =
-              (customerData?.address as any)?.name || user?.fullName || '';
+            const defaultName = user?.fullName || '';
             const defaultPhone = customerData?.phone || '';
-            const defaultAddress =
-              (customerData?.address as any) || (address as any) || undefined;
+            const presetAddress = (customerData?.address as any) || undefined;
+            const addressKey = presetAddress ? 'addr-preset' : 'addr-empty';
             const addressIncomplete = !(
               (formData.name || '').trim() &&
               (formData.phone || '').trim() &&
@@ -919,7 +1013,7 @@ function CheckoutForm({
                 } p-2`}
               >
                 <AddressElement
-                  key={`addr-${defaultAddress?.line1 || ''}-${defaultAddress?.postal_code || ''}`}
+                  key={addressKey}
                   options={{
                     mode: 'shipping',
                     allowedCountries: ['FR', 'BE', 'ES', 'DE', 'IT', 'NL'],
@@ -934,7 +1028,7 @@ function CheckoutForm({
                     defaultValues: {
                       name: defaultName,
                       phone: defaultPhone,
-                      address: defaultAddress,
+                      address: presetAddress,
                     },
                   }}
                   onChange={(event: any) => {

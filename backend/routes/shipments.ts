@@ -14,14 +14,14 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// GET /api/shipments/customer?clerkId=<id>&storeSlug=<slug?>
+// GET /api/shipments/customer?stripeId=<id>&storeSlug=<slug?>
 router.get("/customer", requireAuth, async (req, res) => {
   try {
-    const clerkId = (req.query.clerkId as string) || "";
     const storeSlug = (req.query.storeSlug as string) || null;
+    const stripeId = (req.query.stripeId as string) || "";
 
-    if (!clerkId) {
-      return res.status(400).json({ error: "Missing clerkId" });
+    if (!stripeId) {
+      return res.status(400).json({ error: "Missing stripeId" });
     }
 
     let storeFilterId: number | null = null;
@@ -41,9 +41,9 @@ router.get("/customer", requireAuth, async (req, res) => {
     const baseQuery = supabase
       .from("shipments")
       .select(
-        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, drop_off_point_code, pickup_point_code, weight, product_reference, value, customer_clerk_id"
+        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, drop_off_point_code, pickup_point_code, weight, product_reference, value"
       )
-      .eq("customer_clerk_id", clerkId)
+      .eq("customer_stripe_id", stripeId)
       .order("id", { ascending: false });
 
     const { data, error } =
@@ -175,7 +175,7 @@ router.get("/store/:storeSlug", requireAuth, async (req, res) => {
     const { data: shipments, error: shipErr } = await supabase
       .from("shipments")
       .select(
-        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, drop_off_point_code, pickup_point_code, weight, product_reference, value, customer_clerk_id"
+        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, drop_off_point_code, pickup_point_code, weight, product_reference, value"
       )
       .eq("store_id", store.id)
       .order("id", { ascending: false });

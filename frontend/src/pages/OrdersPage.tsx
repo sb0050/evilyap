@@ -19,7 +19,6 @@ type Shipment = {
   weight: string | null;
   product_reference: number | null;
   value: number | null;
-  customer_clerk_id: string | null;
   store?: StoreInfo | null;
 };
 
@@ -39,8 +38,12 @@ export default function OrdersPage() {
         setLoading(true);
         setError(null);
         const token = await getToken();
-        const url = `${apiBase}/api/shipments/customer?clerkId=${encodeURIComponent(
-          user?.id || ''
+        const stripeId = (user?.publicMetadata as any)?.stripe_id as string | undefined;
+        if (!stripeId) {
+          throw new Error("stripe_id manquant dans les metadata du user");
+        }
+        const url = `${apiBase}/api/shipments/customer?stripeId=${encodeURIComponent(
+          stripeId
         )}${storeSlug ? `&storeSlug=${encodeURIComponent(storeSlug)}` : ''}`;
         const resp = await fetch(url, {
           headers: {
