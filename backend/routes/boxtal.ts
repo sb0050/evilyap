@@ -278,6 +278,7 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
 router.get("/shipping-orders/:id/tracking", async (req, res) => {
   try {
     const { id } = req.params;
+    console.log("Fetching tracking for order ID:", id);
 
     if (!id) {
       return res.status(400).json({ error: "Missing shipping order id" });
@@ -383,6 +384,21 @@ router.get("/shipping-orders/:id/return", async (req, res) => {
       message,
       context,
     });
+
+    // Si l'envoi d'email est validé, mettre à jour return_requested = TRUE
+    if (sent) {
+      try {
+        const { error: updErr } = await supabase
+          .from("shipments")
+          .update({ return_requested: true })
+          .eq("shipment_id", id);
+        if (updErr) {
+          console.error("Supabase update return_requested failed:", updErr);
+        }
+      } catch (dbEx) {
+        console.error("DB update return_requested exception:", dbEx);
+      }
+    }
 
     return res.json({ success: true, emailSent: sent });
   } catch (error) {
@@ -504,15 +520,231 @@ router.post(
 
       // Gérer les différents types d'événements
       switch (event.type) {
+        case "DOCUMENT_CREATED":
+          console.log(
+            `DOCUMENT_CREATED at ${new Date().toISOString()}`,
+            JSON.stringify(event)
+          );
+          try {
+            const shippingOrderId: string = event?.shippingOrderId;
+            const docUrl: string | undefined =
+              event?.payload?.documents?.[0]?.url;
+
+            if (!shippingOrderId || !supabase) {
+              console.warn(
+                "DOCUMENT_CREATED: missing shippingOrderId or supabase not configured"
+              );
+              break;
+            }
+
+            // Récupérer le shipment correspondant
+            const { data: shipment, error: shipmentError } = await supabase
+              .from("shipments")
+              .select(
+                "id, shipment_id, document_created, document_url, store_id, customer_stripe_id, product_reference, value, weight, delivery_method, delivery_network, pickup_point, dropoff_point"
+              )
+              .eq("shipment_id", shippingOrderId)
+              .maybeSingle();
+
+            if (shipmentError) {
+              console.error(
+                "DOCUMENT_CREATED: Supabase error fetching shipment:",
+                shipmentError
+              );
+              break;
+            }
+            if (!shipment) {
+              console.log(
+                "DOCUMENT_CREATED: shipment not found for",
+                shippingOrderId
+              );
+              break;
+            }
+
+            // Si déjà créé, mettre à jour l'URL si nécessaire et sortir
+            if (shipment.document_created === true) {
+              if (docUrl) {
+                try {
+                  const { error: updUrlErr } = await supabase
+                    .from("shipments")
+                    .update({ document_url: docUrl })
+                    .eq("id", shipment.id);
+                  if (updUrlErr) {
+                    console.error(
+                      "DOCUMENT_CREATED: error updating document_url:",
+                      updUrlErr
+                    );
+                  }
+                } catch (updEx) {
+                  console.error(
+                    "DOCUMENT_CREATED: exception updating document_url:",
+                    updEx
+                  );
+                }
+              }
+              console.log(
+                "DOCUMENT_CREATED: document already marked as created, skipping email"
+              );
+              break;
+            }
+
+            // Récupérer les infos de la boutique (email du propriétaire + nom)
+            let storeOwnerEmail: string | undefined;
+            let storeName: string = "Votre Boutique";
+            if (shipment.store_id) {
+              try {
+                const { data: store, error: storeErr } = await supabase
+                  .from("stores")
+                  .select("owner_email,name")
+                  .eq("id", shipment.store_id as any)
+                  .maybeSingle();
+                if (!storeErr) {
+                  storeOwnerEmail = (store as any)?.owner_email || undefined;
+                  storeName = (store as any)?.name || storeName;
+                } else {
+                  console.warn(
+                    "DOCUMENT_CREATED: error fetching store:",
+                    storeErr
+                  );
+                }
+              } catch (storeEx) {
+                console.warn(
+                  "DOCUMENT_CREATED: exception fetching store:",
+                  storeEx
+                );
+              }
+            }
+
+            if (!storeOwnerEmail) {
+              console.warn(
+                "DOCUMENT_CREATED: no store owner email found, skipping"
+              );
+              break;
+            }
+
+            // Récupérer les infos client via stripe_id
+            let customerEmail: string = "";
+            let customerName: string = "";
+            try {
+              if (stripe && shipment.customer_stripe_id) {
+                const customer = await stripe.customers.retrieve(
+                  shipment.customer_stripe_id as string
+                );
+                customerEmail = (customer as any)?.email || "";
+                customerName =
+                  ((customer as any)?.name as string) ||
+                  ((customer as any)?.metadata?.name as any as string) ||
+                  "";
+              }
+            } catch (retrieveErr) {
+              console.warn(
+                "DOCUMENT_CREATED: unable to retrieve Stripe customer:",
+                retrieveErr
+              );
+            }
+
+            // Télécharger le document pour l'attacher au mail
+            let attachments: Array<{
+              filename: string;
+              content: Buffer;
+              contentType?: string;
+            }> = [];
+            if (docUrl) {
+              try {
+                const resp = await fetch(docUrl);
+                if (resp.ok) {
+                  const buf = Buffer.from(await resp.arrayBuffer());
+                  const ct =
+                    resp.headers.get("content-type") || "application/pdf";
+                  let filename = "shipping-document.pdf";
+                  try {
+                    const urlObj = new URL(docUrl);
+                    const parts = urlObj.pathname.split("/").filter(Boolean);
+                    filename = parts[parts.length - 1] || filename;
+                  } catch {}
+                  attachments.push({ filename, content: buf, contentType: ct });
+                } else {
+                  console.warn(
+                    "DOCUMENT_CREATED: failed to download document:",
+                    resp.status
+                  );
+                }
+              } catch (downloadEx) {
+                console.error(
+                  "DOCUMENT_CREATED: exception downloading document:",
+                  downloadEx
+                );
+              }
+            }
+
+            // Préparer et envoyer l'email au propriétaire
+            const amount = Number(shipment.value || 0);
+            const pickupCode = (shipment as any)?.pickup_point?.code || "";
+            const deliveryMethod =
+              (shipment.delivery_method as any) || "pickup_point";
+            const deliveryNetwork = (shipment.delivery_network as any) || "";
+
+            const sentOwner = await emailService.sendStoreOwnerNotification({
+              ownerEmail: storeOwnerEmail,
+              storeName,
+              customerEmail,
+              customerName,
+              customerPhone: "",
+              deliveryMethod,
+              deliveryNetwork,
+              shippingAddress: {},
+              customerAddress: {},
+              pickupPointCode: pickupCode,
+              productReference: String(shipment.product_reference || ""),
+              amount,
+              weight: shipment.weight,
+              currency: "eur",
+              paymentId: "",
+              boxtalId: shippingOrderId,
+              shipmentId: shipment.shipment_id || shippingOrderId,
+              attachments,
+              documentPendingNote:
+                attachments.length === 0
+                  ? "Le document n'a pas pu être joint automatiquement; vous pouvez le télécharger depuis le Tabelau de Bord."
+                  : undefined,
+            });
+            console.log(
+              `DOCUMENT_CREATED: store owner email sent=${sentOwner} to ${storeOwnerEmail} for ${shippingOrderId}`
+            );
+
+            // Mettre à jour les colonnes document_created et document_url
+            try {
+              const updateData: any = { document_created: true };
+              if (docUrl) updateData.document_url = docUrl;
+              const { error: updErr } = await supabase
+                .from("shipments")
+                .update(updateData)
+                .eq("id", shipment.id);
+              if (updErr) {
+                console.error(
+                  "DOCUMENT_CREATED: error updating shipments document fields:",
+                  updErr
+                );
+              }
+            } catch (updEx) {
+              console.error(
+                "DOCUMENT_CREATED: exception updating shipments document fields:",
+                updEx
+              );
+            }
+          } catch (e) {
+            console.error("DOCUMENT_CREATED processing error:", e);
+          }
+          break;
         case "TRACKING_CHANGED":
           console.log("TRACKING_CHANGED event:", JSON.stringify(event));
           try {
             const shippingOrderId: string = event?.shippingOrderId;
             const tracking = event?.payload?.trackings?.[0];
 
-            if (!shippingOrderId || !stripe) {
+            if (!shippingOrderId || !stripe || !supabase) {
               console.warn(
-                "TRACKING_CHANGED: missing shippingOrderId or stripe not configured"
+                "TRACKING_CHANGED: missing shippingOrderId or stripe/supabase not configured"
               );
               break;
             }
@@ -535,53 +767,90 @@ router.post(
               break;
             }
 
-            // Rechercher le client Stripe dont la metadata shipping_order_ids contient l'ID
-            let customer: Stripe.Customer | null = null;
+            // Vérifier via la table shipments si l'ID existe et si le statut a changé
+            const { data: shipment, error: shipmentError } = await supabase
+              .from("shipments")
+              .select("id, shipment_id, status, customer_stripe_id, store_id")
+              .eq("shipment_id", shippingOrderId)
+              .maybeSingle();
+
+            if (shipmentError) {
+              console.error("Supabase error fetching shipment:", shipmentError);
+              break;
+            }
+            if (!shipment) {
+              console.log(
+                "TRACKING_CHANGED: shipment not found for",
+                shippingOrderId
+              );
+              break;
+            }
+
+            const previousStatus: string | undefined =
+              shipment.status || undefined;
+            if (previousStatus && currentStatus === previousStatus) {
+              console.log(
+                "TRACKING_CHANGED: status unchanged vs DB, skipping email",
+                currentStatus,
+                shippingOrderId
+              );
+              break;
+            }
+
+            // Récupérer le store pour le nom à afficher
+            let storeName = "Votre Boutique";
             try {
-              const searchRes = await stripe.customers.search({
-                query: `metadata['shipping_order_ids']:'${shippingOrderId}'`,
-                limit: 1,
-              });
-              if (searchRes?.data?.length) {
-                customer = searchRes.data[0] as any;
+              if (shipment.store_id) {
+                const { data: store, error: storeErr } = await supabase
+                  .from("stores")
+                  .select("name")
+                  .eq("id", shipment.store_id as any)
+                  .maybeSingle();
+                if (!storeErr && (store as any)?.name) {
+                  storeName = (store as any).name;
+                }
               }
-            } catch (searchErr) {
+            } catch (storeEx) {
               console.warn(
-                "Stripe search failed, fallback to list:",
-                searchErr
+                "TRACKING_CHANGED: error fetching store name:",
+                storeEx
               );
             }
 
-            if (!customer) {
-              // Fallback: lister quelques clients et filtrer
-              const list = await stripe.customers.list({ limit: 100 });
-              customer = (list.data as any[]).find((c) => {
-                const ids = ((c.metadata?.shipping_order_ids as any) || "")
-                  .split(";")
-                  .map((x: string) => x.trim())
-                  .filter(Boolean);
-                return ids.includes(shippingOrderId);
-              }) as any;
+            // Récupérer l'email du client via stripe_id
+            let customerEmail: string | undefined;
+            let customerName: string = "";
+            try {
+              const customer = await stripe.customers.retrieve(
+                shipment.customer_stripe_id as string
+              );
+              customerEmail = (customer as any)?.email || undefined;
+              customerName =
+                ((customer as any)?.name as string) ||
+                ((customer as any)?.metadata?.name as any as string) ||
+                "";
+            } catch (retrieveErr) {
+              console.error(
+                "TRACKING_CHANGED: unable to retrieve Stripe customer:",
+                retrieveErr
+              );
             }
 
-            if (!customer || !customer.email) {
+            if (!customerEmail) {
               console.log(
-                "TRACKING_CHANGED: no matching Stripe customer found for",
-                shippingOrderId
+                "TRACKING_CHANGED: no email found for Stripe customer",
+                shipment.customer_stripe_id
               );
               break;
             }
 
             // Construire et envoyer l'email au client
             const emailData: CustomerTrackingEmailData = {
-              customerEmail: customer.email,
-              customerName:
-                (customer.name as any) ||
-                (customer.metadata?.name as any) ||
-                "",
-              storeName: customer.metadata?.storeName || "Votre Boutique",
+              customerEmail,
+              customerName,
+              storeName,
               shippingOrderId,
-              status: tracking?.status || "Mise à jour",
+              status: currentStatus || "Mise à jour",
               message: tracking?.message || undefined,
               trackingNumber: tracking?.trackingNumber || undefined,
               packageId: tracking?.packageId,
@@ -592,8 +861,52 @@ router.post(
               emailData
             );
             console.log(
-              `TRACKING_CHANGED: email sent=${sent} to ${customer.email} for ${shippingOrderId}`
+              `TRACKING_CHANGED: email sent=${sent} to ${customerEmail} for ${shippingOrderId}`
             );
+
+            // Mettre à jour le statut du shipment dans la base
+            try {
+              const { error: updErr } = await supabase
+                .from("shipments")
+                .update({ status: currentStatus })
+                .eq("shipment_id", shippingOrderId);
+              if (updErr) {
+                console.error(
+                  "TRACKING_CHANGED: error updating shipments.status:",
+                  updErr
+                );
+              }
+            } catch (updEx) {
+              console.error(
+                "TRACKING_CHANGED: exception updating shipments.status:",
+                updEx
+              );
+            }
+            // Mettre à jour la colonne isFinal si le suivi est final
+            try {
+              if (tracking?.isFinal === true) {
+                const { error: finalErr } = await supabase
+                  .from("shipments")
+                  .update({ isFinal: true })
+                  .eq("shipment_id", shippingOrderId);
+                if (finalErr) {
+                  console.error(
+                    "TRACKING_CHANGED: error updating shipments.isFinal:",
+                    finalErr
+                  );
+                } else {
+                  console.log(
+                    "TRACKING_CHANGED: shipments.isFinal set to TRUE for",
+                    shippingOrderId
+                  );
+                }
+              }
+            } catch (finalEx) {
+              console.error(
+                "TRACKING_CHANGED: exception updating shipments.isFinal:",
+                finalEx
+              );
+            }
           } catch (e) {
             console.error("TRACKING_CHANGED processing error:", e);
           }

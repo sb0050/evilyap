@@ -304,7 +304,7 @@ const homeDeliveryConfig = {
     color: '#FBBF24',
     delay: '24h',
     shippingOfferCode: 'UPSE-Express',
-    disabled: false,
+    disabled: true,
     prices: {
       '250g': 9.19,
       '500g': 9.19,

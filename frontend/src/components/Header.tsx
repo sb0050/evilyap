@@ -10,6 +10,7 @@ import {
 import { LayoutDashboard, Truck, ShoppingCart, Trash2 } from 'lucide-react';
 import { animate } from 'motion';
 import { useNavigate } from 'react-router-dom';
+import { Protect } from '@clerk/clerk-react';
 
 type OwnerStoreInfo = {
   exists: boolean;
@@ -76,6 +77,7 @@ export default function Header() {
     }
   }, [cartGroups, now]);
 
+  // check owner and store slug
   useEffect(() => {
     const checkOwner = async () => {
       const email = user?.primaryEmailAddress?.emailAddress;
@@ -99,9 +101,9 @@ export default function Header() {
     const fetchCustomerStores = async () => {
       try {
         const token = await getToken();
-        if (!user?.id) return;
+        if (!stripeCustomerId) return;
         const resp = await fetch(
-          `${apiBase}/api/shipments/stores-for-customer/${user.id}`,
+          `${apiBase}/api/shipments/stores-for-customer/${encodeURIComponent(stripeCustomerId)}`,
           {
             headers: {
               Authorization: token ? `Bearer ${token}` : '',
@@ -150,6 +152,7 @@ export default function Header() {
     checkOwner();
     fetchCustomerStores();
     checkDashboardAccess();
+
     const fetchCart = async () => {
       try {
         const email = user?.primaryEmailAddress?.emailAddress;
@@ -250,14 +253,18 @@ export default function Header() {
                 Suivre mes commandes
               </span>
             </button>
-            {(user?.publicMetadata as any)?.role === 'owner' && (
+            <Protect
+              condition={() => {
+                // Utiliser le rôle depuis les métadonnées publiques et l’accès calculé
+                const role = (user?.publicMetadata as any)?.role;
+                //const isOwnerWithAccess = role === 'owner' && Boolean(canAccessDashboard) && Boolean(dashboardSlug);
+                return role === 'admin' || role === 'owner';
+              }}
+            >
               <button
                 className={`mr-4 px-3 py-2 rounded-md text-sm font-medium ${canAccessDashboard && dashboardSlug ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-                disabled={!canAccessDashboard || !dashboardSlug}
                 onClick={() => {
-                  if (canAccessDashboard && dashboardSlug) {
-                    navigate(`/dashboard/${dashboardSlug}`);
-                  }
+                  navigate(`/dashboard/${dashboardSlug}`);
                 }}
               >
                 <span className='inline-flex items-center'>
@@ -265,7 +272,7 @@ export default function Header() {
                   Tableau de bord
                 </span>
               </button>
-            )}
+            </Protect>
             {/* Panier */}
             <div className='mr-4 relative' ref={cartRef}>
               <button

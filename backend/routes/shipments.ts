@@ -41,7 +41,7 @@ router.get("/customer", requireAuth, async (req, res) => {
     const baseQuery = supabase
       .from("shipments")
       .select(
-        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, drop_off_point_code, pickup_point_code, weight, product_reference, value"
+        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, dropoff_point, pickup_point, weight, product_reference, value, created_at, status, estimated_delivery_date, cancel_requested, return_requested, delivery_cost, tracking_url"
       )
       .eq("customer_stripe_id", stripeId)
       .order("id", { ascending: false });
@@ -89,18 +89,18 @@ router.get("/customer", requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/shipments/stores-for-customer/:clerkId
-router.get("/stores-for-customer/:clerkId", requireAuth, async (req, res) => {
+// GET /api/shipments/stores-for-customer/:stripeId
+router.get("/stores-for-customer/:stripeId", requireAuth, async (req, res) => {
   try {
-    const clerkId = req.params.clerkId;
-    if (!clerkId) {
-      return res.status(400).json({ error: "Missing clerkId" });
+    const stripeId = req.params.stripeId;
+    if (!stripeId) {
+      return res.status(400).json({ error: "Missing stripeId" });
     }
 
     const { data, error } = await supabase
       .from("shipments")
       .select("store_id")
-      .eq("customer_clerk_id", clerkId);
+      .eq("customer_stripe_id", stripeId);
 
     if (error) {
       return res.status(500).json({ error: error.message });
@@ -175,7 +175,7 @@ router.get("/store/:storeSlug", requireAuth, async (req, res) => {
     const { data: shipments, error: shipErr } = await supabase
       .from("shipments")
       .select(
-        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, drop_off_point_code, pickup_point_code, weight, product_reference, value"
+        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, dropoff_point, pickup_point, weight, product_reference, value, created_at, status, estimated_delivery_date, cancel_requested, return_requested, delivery_cost, tracking_url"
       )
       .eq("store_id", store.id)
       .order("id", { ascending: false });

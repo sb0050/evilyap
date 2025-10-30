@@ -358,31 +358,6 @@ export default function CheckoutPage() {
 
     try {
       // Ajout automatique au panier si référence et montant renseignés
-      try {
-        const product_reference = (formData.reference || '').trim();
-        const stripeId = customerData?.id;
-        if (product_reference && amount > 0 && stripeId && store?.id) {
-          const resp = await apiPost('/api/carts', {
-            store_id: store.id,
-            product_reference,
-            value: amount,
-            customer_stripe_id: stripeId,
-          });
-          // Ignorer les conflits ou erreurs non critiques
-          if (resp.status === 409) {
-            // référence déjà présente — OK
-          } else if (!resp.ok) {
-            // Ne pas bloquer le paiement
-          } else {
-            // rafraîchir le panier visuellement
-            if (typeof window !== 'undefined') {
-              window.dispatchEvent(new CustomEvent('cart:updated'));
-            }
-          }
-        }
-      } catch (_e) {
-        // Ne pas bloquer le paiement en cas d'erreur d'ajout au panier
-      }
 
       const effectiveDeliveryMethod:
         | 'home_delivery'
@@ -415,11 +390,10 @@ export default function CheckoutPage() {
       };
 
       // Construire la chaîne des références du panier: ref1;ref2;ref3
-      const productReferencesString =  (cartItemsForStore || [])
-            .map(it => String(it.product_reference || '').trim())
-            .filter(s => s.length > 0)
-            .join(';')
-        
+      const productReferencesString = (cartItemsForStore || [])
+        .map(it => String(it.product_reference || '').trim())
+        .filter(s => s.length > 0)
+        .join(';');
 
       const payloadData = {
         amount: cartTotalForStore,
@@ -669,15 +643,15 @@ export default function CheckoutPage() {
                       <strong>Email:</strong> {email}
                     </p>
                     <p>
-                      <strong>Référence:</strong> {(
-                        (cartItemsForStore || [])
-                          .map(it => String(it.product_reference || '').trim())
-                          .filter(s => s.length > 0)
-                          .join(';')
-                      )}
+                      <strong>Référence:</strong>{' '}
+                      {(cartItemsForStore || [])
+                        .map(it => String(it.product_reference || '').trim())
+                        .filter(s => s.length > 0)
+                        .join(';')}
                     </p>
                     <p>
-                      <strong>Montant:</strong> {Number(cartTotalForStore || 0).toFixed(2)} €
+                      <strong>Montant:</strong>{' '}
+                      {Number(cartTotalForStore || 0).toFixed(2)} €
                     </p>
                     <p>
                       <strong>Livraison:</strong>{' '}

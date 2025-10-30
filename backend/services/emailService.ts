@@ -74,6 +74,8 @@ interface StoreOwnerEmailData {
     content: Buffer;
     contentType?: string;
   }>;
+  // Note additionnelle (ex: bordereau envoyé ultérieurement)
+  documentPendingNote?: string;
 }
 
 interface CustomerTrackingEmailData {
@@ -251,6 +253,7 @@ class EmailService {
                     minute: "2-digit",
                   }
                 )}</p>
+                
                 <p><strong>Méthode de livraison :</strong> ${
                   data.deliveryMethod === "pickup_point"
                     ? `Point relais (${data.pickupPointCode})`
@@ -420,7 +423,7 @@ class EmailService {
             .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
             .note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; border-radius: 6px; margin-top: 12px; }
             .network { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #6c63ff; }
-            .network img { max-width: 100%; height: auto; border-radius: 6px; border: 1px solid #eee; }
+            .network img { max-width: 100px; width: auto; height: auto; border-radius: 6px; border: 1px solid #eee; }
             .network a { color: #0d6efd; text-decoration: none; }
             .network a:hover { text-decoration: underline; }
           </style>
@@ -461,6 +464,11 @@ class EmailService {
                     minute: "2-digit",
                   }
                 )}</p>
+                 ${
+                   data.documentPendingNote
+                     ? `<div class="note">${data.documentPendingNote}</div>`
+                     : ""
+                 }
               </div>
               
               <div class="customer-details">

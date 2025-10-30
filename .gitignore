@@ -8,6 +8,7 @@ frontend/dist/
 backend/dist/
 .husky
 /.vscode
+.idea
 
 # Environment files with secrets
 .env

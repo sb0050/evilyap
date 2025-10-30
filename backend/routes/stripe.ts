@@ -304,9 +304,29 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         product_reference: productReference || "N/A",
         delivery_method: deliveryMethod || "",
         delivery_network: deliveryNetwork || "",
-        weight: selectedWeight || "",
-        pickup_point_code: pickupPointCode || "",
-        drop_off_point_code: dropOffPointCode || "",
+        weight: String(selectedWeight || ""),
+        pickup_point: JSON.stringify({
+          street: parcelPoint?.location?.street,
+          city: parcelPoint?.location?.city,
+          state: parcelPoint?.location?.state || "",
+          postal_code: parcelPoint?.location?.postalCode,
+          country: parcelPoint?.location?.countryIsoCode || "FR",
+          code: parcelPoint?.code || "",
+          name: parcelPoint?.name || "",
+          network: parcelPoint?.network || "",
+          shippingOfferCode: parcelPoint?.shippingOfferCode || "",
+        }),
+        dropoff_point: JSON.stringify({
+          street: parcelPoint?.location?.street,
+          city: parcelPoint?.location?.city,
+          state: parcelPoint?.location?.state || "",
+          postal_code: parcelPoint?.location?.postalCode,
+          country: parcelPoint?.location?.countryIsoCode || "FR",
+          code: parcelPoint?.code || "",
+          name: parcelPoint?.name || "",
+          network: parcelPoint?.network || "",
+          shippingOfferCode: parcelPoint?.shippingOfferCode || "",
+        }),
         cart_item_ids: Array.isArray(cartItemIds)
           ? (cartItemIds as any[]).join(",")
           : typeof cartItemIds === "string"
@@ -509,9 +529,27 @@ router.post(
               customer.metadata?.delivery_network ||
               "N/A";
             const clerkUserId = customer.metadata.clerk_user_id || null;
-            const pickupPointCode = session.metadata.pickup_point_code || "N/A";
-            const dropOffPointCode =
-              session.metadata.drop_off_point_code || "N/A";
+            let pickupPoint: any = {};
+            let dropOffPoint: any = {};
+            try {
+              pickupPoint = session.metadata?.pickup_point
+                ? JSON.parse(session.metadata.pickup_point as any)
+                : {};
+            } catch (e) {
+              console.warn("Invalid JSON in session.metadata.pickup_point:", e);
+              pickupPoint = {};
+            }
+            try {
+              dropOffPoint = session.metadata?.dropoff_point
+                ? JSON.parse(session.metadata.dropoff_point as any)
+                : {};
+            } catch (e) {
+              console.warn(
+                "Invalid JSON in session.metadata.dropoff_point:",
+                e
+              );
+              dropOffPoint = {};
+            }
             const storeName = session.metadata?.store_name || null;
             const productReference =
               session.metadata?.product_reference || "N/A";
@@ -662,7 +700,7 @@ router.post(
             > = {
               "MONR-CpourToi": { width: 41, length: 64, height: 38 },
               "MONR-DomicileFrance": { width: 41, length: 64, height: 38 },
-              "SOGP-RelaisColis": { width: 100, length: 100, height: 100 },
+              "SOGP-RelaisColis": { width: 50, length: 80, height: 40 },
               "CHRP-Chrono2ShopDirect": { width: 30, length: 100, height: 20 },
               "CHRP-Chrono18": { width: 30, length: 100, height: 20 },
               "UPSE-Express": { width: 41, length: 64, height: 38 },
@@ -695,8 +733,8 @@ router.post(
               ],
               toAddress,
               fromAddress,
-              pickupPointCode: pickupPointCode,
-              dropOffPointCode: dropOffPointCode,
+              pickupPointCode: pickupPoint.code,
+              dropOffPointCode: dropOffPoint.code,
             };
 
             const createOrderPayload: any = {
@@ -705,10 +743,7 @@ router.post(
               labelType: "PDF_A4",
               shippingOfferCode: deliveryNetwork,
             };
-            console.log(
-              "createOrderPayload:",
-              JSON.stringify(createOrderPayload)
-            );
+            console.log("createOrderPayload:", createOrderPayload);
 
             let dataBoxtal: any = {};
             let attachments: Array<{
@@ -759,8 +794,11 @@ router.post(
                   console.log("shippingOrderIdForDoc:", shippingOrderIdForDoc);
 
                   for (let attempt = 1; attempt <= 2; attempt++) {
-                    // Attente 2s avant chaque tentative pour laisser Boxtal générer le document
-                    await new Promise((resolve) => setTimeout(resolve, 2000));
+                    // Attente 10 s avant chaque tentative pour laisser Boxtal générer le document
+                    await new Promise((resolve) => setTimeout(resolve, 10000));
+                    console.log(
+                      `Attempt ${attempt}: Checking for document at ${new Date().toISOString()}`
+                    );
 
                     const docApiResp = await fetch(
                       `${base}/api/boxtal/shipping-orders/${encodeURIComponent(
@@ -855,14 +893,6 @@ router.post(
 
             // Enregistrer l'expédition dans la table shipments (plus de metadata Stripe)
             try {
-              const pickupCodeNum =
-                pickupPointCode && pickupPointCode !== "N/A"
-                  ? Number(pickupPointCode)
-                  : null;
-              const dropOffCodeNum =
-                dropOffPointCode && dropOffPointCode !== "N/A"
-                  ? Number(dropOffPointCode)
-                  : null;
               const { data: shipmentInsert, error: shipmentInsertError } =
                 await supabase
                   .from("shipments")
@@ -878,8 +908,8 @@ router.post(
                     document_created: attachments && attachments.length > 0,
                     delivery_method: deliveryMethod,
                     delivery_network: deliveryNetwork,
-                    drop_off_point_code: dropOffCodeNum,
-                    pickup_point_code: pickupCodeNum,
+                    dropoff_point: dropOffPoint,
+                    pickup_point: pickupPoint,
                     weight: session.metadata?.weight || null,
                     product_reference: productReference || null,
                     value: (amount || 0) / 100,
@@ -914,6 +944,7 @@ router.post(
 
             // Recuperer le lien de suivi de la livraison depuis l'appel à boxtal et l'enregistrer dans la table shipments
             if (deliveryMethod !== "store_pickup") {
+              console.log("Fetching tracking for boxtalId:", boxtalId);
               try {
                 if (boxtalId) {
                   console.log("boxtalId:", boxtalId);
@@ -930,6 +961,10 @@ router.post(
 
                   if (trackingResp.ok) {
                     const trackingJson: any = await trackingResp.json();
+                    console.log(
+                      "Boxtal tracking response:",
+                      JSON.stringify(trackingJson)
+                    );
                     let packageTrackingUrl: string | undefined = undefined;
 
                     // Boxtal peut renvoyer content comme objet ou tableau d'événements
@@ -1003,7 +1038,7 @@ router.post(
                 shipmentId: shipmentId,
                 deliveryMethod: deliveryMethod,
                 deliveryNetwork: deliveryNetwork,
-                pickupPointCode: pickupPointCode,
+                pickupPointCode: pickupPoint.code || "",
                 estimatedDeliveryDate: estimatedDeliveryDate,
                 trackingUrl: trackingUrl,
               });
@@ -1047,7 +1082,7 @@ router.post(
                       },
                     },
                     customerAddress: {},
-                    pickupPointCode,
+                    pickupPointCode: pickupPoint.code || "",
                     productReference,
                     amount: product_amount || amount,
                     weight,
@@ -1056,6 +1091,10 @@ router.post(
                     boxtalId,
                     shipmentId,
                     attachments,
+                    documentPendingNote:
+                      attachments?.length === 0
+                        ? "Le bordereau d'envoi sera envoyé dans un autre email."
+                        : undefined,
                   }
                 );
                 console.log(
@@ -1063,6 +1102,48 @@ router.post(
                   sentOwner,
                   storeOwnerEmail
                 );
+                // Mettre à jour le solde de la boutique après envoi de l'email au propriétaire
+                try {
+                  if (sentOwner && storeId) {
+                    const { data: storeBalanceRow, error: storeBalanceErr } =
+                      await supabase
+                        .from("stores")
+                        .select("balance")
+                        .eq("id", storeId)
+                        .single();
+                    if (storeBalanceErr) {
+                      console.error(
+                        "Error fetching current store balance:",
+                        storeBalanceErr
+                      );
+                    } else {
+                      const currentBalance = Number(
+                        (storeBalanceRow as any)?.balance || 0
+                      );
+                      const increment = Number(product_amount || 0);
+                      const newBalance = currentBalance + increment;
+                      const { error: balanceUpdateErr } = await supabase
+                        .from("stores")
+                        .update({ balance: newBalance })
+                        .eq("id", storeId);
+                      if (balanceUpdateErr) {
+                        console.error(
+                          "Error updating stores.balance:",
+                          balanceUpdateErr
+                        );
+                      } else {
+                        console.log(
+                          `stores.balance updated for store ${storeId}: +${increment} => ${newBalance}`
+                        );
+                      }
+                    }
+                  }
+                } catch (balanceEx) {
+                  console.error(
+                    "Exception updating stores.balance:",
+                    balanceEx
+                  );
+                }
               } else {
                 console.warn(
                   "No storeOwnerEmail found, skipping owner notification"

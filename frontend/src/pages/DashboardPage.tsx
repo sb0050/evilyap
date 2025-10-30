@@ -35,8 +35,8 @@ type Shipment = {
   document_created: boolean;
   delivery_method: string | null;
   delivery_network: string | null;
-  drop_off_point_code: number | null;
-  pickup_point_code: number | null;
+  dropoff_point: any | null;
+  pickup_point: object | null;
   weight: string | null;
   product_reference: number | null;
   value: number | null;

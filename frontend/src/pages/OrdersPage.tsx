@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
+import { Toast } from '../components/Toast';
 import { useParams } from 'react-router-dom';
-import { Package, Truck, CheckCircle } from 'lucide-react';
+import { Package, Truck, Undo2 } from 'lucide-react';
 
 type StoreInfo = { name: string; slug: string };
 
@@ -14,12 +15,20 @@ type Shipment = {
   document_created: boolean;
   delivery_method: string | null;
   delivery_network: string | null;
-  drop_off_point_code: number | null;
-  pickup_point_code: number | null;
+  dropoff_point: any | null;
+  pickup_point: any | null;
   weight: string | null;
-  product_reference: number | null;
+  product_reference: string | null;
   value: number | null;
+  created_at?: string | null;
+  status?: string | null;
+  estimated_delivery_date?: string | null;
+  cancel_requested?: boolean | null;
+  return_requested?: boolean | null;
+  delivery_cost?: number | null;
+  tracking_url?: string | null;
   store?: StoreInfo | null;
+  isFinal?: boolean | null;
 };
 
 export default function OrdersPage() {
@@ -29,6 +38,16 @@ export default function OrdersPage() {
   const [shipments, setShipments] = useState<Shipment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [returnStatus, setReturnStatus] = useState<
+    Record<number, 'idle' | 'loading' | 'success' | 'error'>
+  >({});
+  const [pageSize, setPageSize] = useState<number>(10);
+  const [page, setPage] = useState<number>(1);
+  const [toast, setToast] = useState<{
+    message: string;
+    type: 'error' | 'info' | 'success';
+    visible?: boolean;
+  } | null>(null);
 
   const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
@@ -38,9 +57,11 @@ export default function OrdersPage() {
         setLoading(true);
         setError(null);
         const token = await getToken();
-        const stripeId = (user?.publicMetadata as any)?.stripe_id as string | undefined;
+        const stripeId = (user?.publicMetadata as any)?.stripe_id as
+          | string
+          | undefined;
         if (!stripeId) {
-          throw new Error("stripe_id manquant dans les metadata du user");
+          throw new Error('stripe_id manquant dans les metadata du user');
         }
         const url = `${apiBase}/api/shipments/customer?stripeId=${encodeURIComponent(
           stripeId
@@ -88,10 +109,158 @@ export default function OrdersPage() {
     }).format(v);
   };
 
+  const formatDate = (d?: string | null) => {
+    if (!d) return '—';
+    try {
+      return new Date(d).toLocaleString('fr-FR', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return d;
+    }
+  };
+
+  // Pagination helpers
+  const totalPages = Math.max(
+    1,
+    Math.ceil((shipments || []).length / pageSize)
+  );
+  const startIndex = (page - 1) * pageSize;
+  const visibleShipments = (shipments || []).slice(
+    startIndex,
+    startIndex + pageSize
+  );
+
+  useEffect(() => {
+    // Clamp page if shipments length or pageSize changes
+    const newTotal = Math.max(
+      1,
+      Math.ceil((shipments || []).length / pageSize)
+    );
+    if (page > newTotal) setPage(newTotal);
+    if (page < 1) setPage(1);
+  }, [shipments, pageSize]);
+
+  const showToast = (
+    message: string,
+    type: 'error' | 'info' | 'success' = 'success'
+  ) => {
+    setToast({ message, type, visible: true });
+    setTimeout(() => {
+      setToast(prev => (prev ? { ...prev, visible: false } : prev));
+      setTimeout(() => setToast(null), 300);
+    }, 4000);
+  };
+
+  const getStatusDescription = (status?: string | null) => {
+    switch ((status || '').toUpperCase()) {
+      case 'ANNOUNCED':
+        return "Le bordereau d'expédition est créé mais le colis n'est pas encore expédié";
+      case 'SHIPPED':
+        return 'Le colis est soit récupéré par le transporteur, soit déposé dans un point de proximité';
+      case 'IN_TRANSIT':
+        return 'Le colis a été scanné par le transporteur et est en transit';
+      case 'OUT_FOR_DELIVERY':
+        return 'Le colis est en cours de livraison';
+      case 'FAILED_ATTEMPT':
+        return 'Quelque chose a empêché la livraison du colis';
+      case 'REACHED_DELIVERY_PICKUP_POINT':
+        return 'Le colis est disponible pour être récupéré dans un point de proximité';
+      case 'DELIVERED':
+        return 'Le colis a été livré au destinataire ou le destinataire a récupéré le colis dans un point de proximité';
+      case 'RETURNED':
+        return "Le colis est renvoyé à l'expéditeur";
+      case 'EXCEPTION':
+        return "Un problème est survenu pendant le transit qui nécessite une action de l'expéditeur";
+      case 'PENDING':
+        return "L'envoi est enregistré auprès de PayLive mais pas encore auprès du transporteur choisi";
+      case 'REQUESTED':
+        return "L'envoi est enregistré auprès du transporteur choisi";
+      case 'CONFIRMED':
+        return "L'envoi est confirmé par le transporteur et possède un bordereau d'expédition";
+      case 'CANCELLED':
+        return "L'envoi est annulé";
+      default:
+        return '';
+    }
+  };
+
+  const getNetworkDescription = (code?: string | null) => {
+    const c = (code || '').toUpperCase();
+    const map: Record<string, string> = {
+      'MONR-DOMICILEFRANCE': 'Mondial Relay - Domicile France',
+      'COPR-COPRRELAISDOMICILENAT': 'Colis Privé - Domicile Sans Signature',
+      'POFR-COLISSIMOACCESS': 'Colissimo - Domicile Sans Signature',
+      'CHRP-CHRONO18': 'Chronopost - Chrono 18 (Express)',
+      'SOGP-RELAISCOLIS': 'Relais Colis',
+      'MONR-CPOURTOI': 'Mondial Relay',
+      'CHRP-CHRONO2SHOPDIRECT': 'Chronopost',
+      'COPR-COPRRELAISRELAISNAT': 'Colis Privé',
+      STORE_PICKUP: 'Retrait en boutique',
+    };
+    return map[c] || code || '—';
+  };
+
+  const handleReturn = async (s: Shipment) => {
+    if (!s.shipment_id) {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      return;
+    }
+    try {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'loading' }));
+      const token = await getToken();
+      const url = `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
+        s.shipment_id
+      )}/return`;
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok && json?.success) {
+        setReturnStatus(prev => ({ ...prev, [s.id]: 'success' }));
+        // Marquer localement la demande de retour comme envoyée pour désactiver le bouton
+        setShipments(prev =>
+          (prev || []).map(it =>
+            it.id === s.id ? { ...it, return_requested: true } : it
+          )
+        );
+        showToast('Demande de retour envoyée avec succès', 'success');
+      } else {
+        setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+        const msg =
+          json?.error ||
+          json?.message ||
+          "Erreur lors de l'envoi de la demande";
+        showToast(typeof msg === 'string' ? msg : "Erreur d'envoi", 'error');
+      }
+    } catch (e: any) {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      const rawMsg = e?.message || "Erreur lors de l'envoi de la demande";
+      showToast(
+        typeof rawMsg === 'string' ? rawMsg : "Erreur d'envoi",
+        'error'
+      );
+    }
+  };
+
   return (
     <div className='min-h-screen bg-gray-50'>
       <Header />
-      <div className='max-w-6xl mx-auto px-4 py-8'>
+      {toast && (
+        <Toast
+          message={toast.message}
+          type={toast.type}
+          visible={toast.visible !== false}
+        />
+      )}
+      <div className='max-w-fit mx-auto px-4 py-8'>
         <div className='text-center mb-8'>
           <Package className='h-12 w-12 text-amber-600 mx-auto mb-4' />
           <h1 className='text-3xl font-bold text-gray-900 mb-2'>
@@ -118,9 +287,61 @@ export default function OrdersPage() {
             </div>
           ) : (
             <div className='overflow-x-auto'>
+              <div className='flex items-center justify-between mb-3 mt-1'>
+                <div className='text-sm text-gray-600'>
+                  Page {page} / {totalPages} — {(shipments || []).length}{' '}
+                  commandes
+                </div>
+                <div className='flex items-center space-x-3'>
+                  <label className='text-sm text-gray-700'>
+                    Lignes par page
+                  </label>
+                  <select
+                    value={pageSize}
+                    onChange={e => {
+                      const v = parseInt(e.target.value, 10);
+                      setPageSize(isNaN(v) ? 10 : v);
+                      setPage(1);
+                    }}
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                  >
+                    <option value={5}>5</option>
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                  </select>
+                  <div className='flex items-center space-x-2'>
+                    <button
+                      onClick={() => setPage(p => Math.max(1, p - 1))}
+                      disabled={page <= 1}
+                      className={`px-3 py-1 text-sm rounded-md border ${
+                        page <= 1
+                          ? 'bg-gray-100 text-gray-400 border-gray-200'
+                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      Précédent
+                    </button>
+                    <button
+                      onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                      disabled={page >= totalPages}
+                      className={`px-3 py-1 text-sm rounded-md border ${
+                        page >= totalPages
+                          ? 'bg-gray-100 text-gray-400 border-gray-200'
+                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      Suivant
+                    </button>
+                  </div>
+                </div>
+              </div>
               <table className='w-full'>
                 <thead>
                   <tr className='border-b border-gray-200'>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Date
+                    </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Boutique
                     </th>
@@ -128,37 +349,39 @@ export default function OrdersPage() {
                       Référence produit
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Valeur
+                      Payé
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Méthode
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Statut
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Estimée
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Réseau
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Point retrait/dépôt
+                      Point retrait
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Poids
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Shipment ID
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Document
+                      Retour
                     </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {shipments.map(s => (
+                  {visibleShipments.map(s => (
                     <tr
                       key={s.id}
                       className='border-b border-gray-100 hover:bg-gray-50'
                     >
+                      <td className='py-4 px-4 text-gray-700'>
+                        {formatDate(s.created_at)}
+                      </td>
                       <td className='py-4 px-4 text-gray-900'>
-                        {s.store?.name || '—'}{' '}
-                        {s.store?.slug ? `(${s.store.slug})` : ''}
+                        {s.store?.name || '—'}
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
                         {s.product_reference ?? '—'}
@@ -177,32 +400,79 @@ export default function OrdersPage() {
                         </div>
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
-                        {s.delivery_network || '—'}
-                      </td>
-                      <td className='py-4 px-4 text-gray-700'>
-                        {s.pickup_point_code || s.drop_off_point_code || '—'}
-                      </td>
-                      <td className='py-4 px-4 text-gray-700'>
-                        {s.weight ?? '—'}
-                      </td>
-                      <td className='py-4 px-4'>
-                        <span className='text-blue-600'>
-                          {s.shipment_id || '—'}
-                        </span>
-                      </td>
-                      <td className='py-4 px-4'>
-                        <div className='flex items-center space-x-2'>
-                          {s.document_created ? (
-                            <CheckCircle className='h-5 w-5 text-green-500' />
+                        <div className='space-y-1'>
+                          <div className='font-medium'>{s.status || '—'}</div>
+                          <div className='text-xs text-gray-500'>
+                            {getStatusDescription(s.status)}
+                          </div>
+                          {s.tracking_url ? (
+                            <a
+                              href={s.tracking_url}
+                              target='_blank'
+                              rel='noopener noreferrer'
+                              className='text-blue-600 hover:underline'
+                            >
+                              Suivre
+                            </a>
                           ) : (
-                            <Package className='h-5 w-5 text-gray-400' />
+                            <span />
                           )}
-                          <span className='text-gray-700'>
-                            {s.document_created
-                              ? 'Document généré'
-                              : 'En préparation'}
-                          </span>
                         </div>
+                      </td>
+                      <td className='py-4 px-4 text-gray-700'>
+                        {formatDate(s.estimated_delivery_date)}
+                      </td>
+                      <td className='py-4 px-4 text-gray-700'>
+                        {getNetworkDescription(s.delivery_network)}
+                      </td>
+                      <td className='py-4 px-4 text-gray-700'>
+                        {s.pickup_point ? (
+                          <div>
+                            <strong>{s.pickup_point?.name}</strong>
+                            <br />
+                            {s.pickup_point?.street}
+                            <br />
+                            {s.pickup_point?.city} {s.pickup_point?.postal_code}{' '}
+                            {s.pickup_point?.country}
+                          </div>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                      <td className='py-4 px-4'>
+                        <button
+                          onClick={() => handleReturn(s)}
+                          disabled={
+                            !s.shipment_id ||
+                            returnStatus[s.id] === 'loading' ||
+                            !!s.return_requested ||
+                            !s.isFinal
+                          }
+                          className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                            s.return_requested ||
+                            returnStatus[s.id] === 'success'
+                              ? 'bg-green-50 text-green-700 border-green-200'
+                              : returnStatus[s.id] === 'error'
+                                ? 'bg-red-50 text-red-700 border-red-200'
+                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                          }`}
+                          title={
+                            !s.shipment_id
+                              ? 'Retour indisponible'
+                              : s.return_requested
+                                ? 'Demande déjà envoyée'
+                                : 'Envoyer demande de retour'
+                          }
+                        >
+                          <Undo2 className='h-4 w-4 mr-2' />
+                          {returnStatus[s.id] === 'loading'
+                            ? 'Envoi...'
+                            : s.return_requested
+                              ? 'Demande envoyée'
+                              : returnStatus[s.id] === 'error'
+                                ? 'Erreur'
+                                : 'Demander le retour'}
+                        </button>
                       </td>
                     </tr>
                   ))}
