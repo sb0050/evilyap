@@ -6,7 +6,7 @@ import { Wallet, ShoppingCart, ArrowRight, Upload, Info } from 'lucide-react';
 import { Toast } from '../components/Toast';
 import { useToast } from '../utils/toast';
 import { apiPut, apiPost, apiPostForm, apiGet } from '../utils/api';
-import { Protect } from '@clerk/clerk-react';
+// Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
 
 type RIBInfo = {
@@ -51,7 +51,7 @@ export default function DashboardPage() {
   const [shipments, setShipments] = useState<Shipment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [storeNotFound, setStoreNotFound] = useState(false);
+  // Vérification d’existence et d’accès au dashboard gérées par Header
   const { toast, showToast, hideToast } = useToast();
 
   const [name, setName] = useState('');
@@ -205,15 +205,10 @@ export default function DashboardPage() {
         );
         const storeJson = await storeResp.json();
         if (!storeResp.ok) {
-          if (storeResp.status === 404) {
-            setStoreNotFound(true);
-            setError(storeJson?.error || 'Boutique non trouvée');
-            setLoading(false);
-            return;
-          }
-          throw new Error(
-            storeJson?.error || 'Erreur lors de la récupération de la boutique'
-          );
+          // L’overlay du Header affichera le message d’erreur de non-existence/accès
+          setError(storeJson?.error || 'Boutique non trouvée');
+          setLoading(false);
+          return;
         }
         const s: Store = storeJson.store;
 
@@ -240,7 +235,7 @@ export default function DashboardPage() {
           const msg = shipJson?.error || 'Erreur lors du chargement des ventes';
           if (shipResp.status === 403 || shipResp.status === 404) {
             setError(msg);
-            showToast(msg, 'error');
+            //showToast(msg, 'error');
             setLoading(false);
             return;
           }
@@ -445,24 +440,7 @@ export default function DashboardPage() {
       </div>
     );
   }
-  // Boutique inexistante: afficher un message centré (style CheckoutPage)
-  const storeNameToShow = store?.name || storeSlug || '';
-  if (storeNotFound) {
-    return (
-      <div className='min-h-screen flex items-center justify-center'>
-        <div className='text-center'>
-          <div className='text-gray-400 text-xl mb-4'>🏪</div>
-          <h2 className='text-xl font-semibold text-gray-900 mb-2'>
-            Boutique non trouvée
-          </h2>
-          <p className='text-gray-600'>
-            La boutique "{storeNameToShow}" n'existe pas ou n'est plus
-            disponible.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  // Les erreurs d’accès/absence de boutique sont gérées par l’overlay du Header
 
   return (
     <div className='min-h-screen bg-gray-50'>
@@ -474,506 +452,483 @@ export default function DashboardPage() {
         />
       )}
       <Header />
-      <Protect
-        condition={() => {
-          const role = (user?.publicMetadata as any)?.role;
-          const isAdmin = role === 'admin';
-          const isOwnerOfStore =
-            role === 'owner' && store?.clerk_id === user?.id;
-          return isAdmin || isOwnerOfStore;
-        }}
-        fallback={
-          <div className='min-h-screen flex items-center justify-center'>
-            <div className='text-center'>
-              <div className='text-gray-400 text-xl mb-4'>🔐</div>
-              <h2 className='text-xl font-semibold text-gray-900 mb-2'>
-                Accès refusé
-              </h2>
-              <p className='text-gray-600'>
-                Vous n’avez pas les droits pour accéder au tableau de bord de
-                cette boutique.
-              </p>
-            </div>
-          </div>
-        }
-      >
-        <div className='max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8'>
-          {/* Errors are now surfaced via Toasts */}
-          {/* Les erreurs sont gérées via des toasts, pas de bandeau inline */}
+      {/* Accès contrôlé par Header; contenu rendu directement ici */}
+      <div className='max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8'>
+        {/* Errors are now surfaced via Toasts */}
+        {/* Les erreurs sont gérées via des toasts, pas de bandeau inline */}
 
-          <div className='flex items-center justify-between mb-6'>
-            <div>
-              <h1 className='text-2xl font-bold text-gray-900'>
-                Tableau de bord
-              </h1>
-              {store && <p className='text-gray-600'>{store.name}</p>}
-            </div>
-            {store && (
-              <button
-                onClick={() =>
-                  navigate(`/checkout/${encodeURIComponent(store.slug)}`)
-                }
-                className='inline-flex items-center px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
-              >
-                Formulaire de paiement
-                <ArrowRight className='w-4 h-4 ml-2' />
-              </button>
-            )}
+        <div className='flex items-center justify-between mb-6'>
+          <div>
+            <h1 className='text-2xl font-bold text-gray-900'>
+              Tableau de bord
+            </h1>
+            {store && <p className='text-gray-600'>{store.name}</p>}
           </div>
-
-          {/* Infos boutique */}
           {store && (
-            <div className='bg-white rounded-lg shadow p-6 mb-8'>
-              <div className='flex items-center mb-4'>
-                <Info className='w-5 h-5 text-indigo-600 mr-2' />
-                <h2 className='text-lg font-semibold text-gray-900'>
-                  Informations de la boutique
-                </h2>
-              </div>
-              {/* Affichage (non édité) */}
-              {!editingInfo && (
-                <div className='space-y-4'>
-                  <div className='flex items-center space-x-4'>
-                    {(() => {
-                      const cloudBase = (
-                        import.meta.env.VITE_CLOUDFRONT_URL ||
-                        'https://d1tmgyvizond6e.cloudfront.net'
-                      ).replace(/\/+$/, '');
-                      const storeLogo = store?.id
-                        ? `${cloudBase}/images/${store.id}`
-                        : undefined;
-                      return storeLogo ? (
-                        <img
-                          src={storeLogo}
-                          alt={store.name}
-                          className='w-16 h-16 rounded-lg object-cover'
-                        />
-                      ) : (
-                        <div className='w-16 h-16 rounded-lg bg-gray-200 flex items-center justify-center'>
-                          <Upload className='w-8 h-8 text-gray-500' />
-                        </div>
-                      );
-                    })()}
-                    <div>
-                      <p className='text-sm text-gray-700'>
-                        <span className='font-medium'>Nom:</span> {store.name}
-                      </p>
-                      <p className='text-sm text-gray-700'>
-                        <span className='font-medium'>Description:</span>{' '}
-                        {store.description || '-'}
-                      </p>
-                      <p className='text-sm text-gray-700'>
-                        <span className='font-medium'>Site web:</span>{' '}
-                        {store.website ? (
-                          <a
-                            href={
-                              /^https?:\/\//.test(store.website)
-                                ? store.website
-                                : `http://${store.website}`
-                            }
-                            target='_blank'
-                            rel='noreferrer'
-                            className='text-indigo-600 hover:underline'
-                          >
-                            {store.website}
-                          </a>
-                        ) : (
-                          '-'
-                        )}
-                      </p>
-                    </div>
-                  </div>
-                  <div>
-                    <button
-                      onClick={() => setEditingInfo(true)}
-                      className='inline-flex items-center px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700'
-                    >
-                      Modifier vos informations
-                    </button>
-                  </div>
-                </div>
-              )}
-              {/* Édition */}
-              {editingInfo && (
-                <div className='space-y-4'>
-                  <div className='grid grid-cols-1 md:grid-cols-3 gap-4'>
-                    <div>
-                      <label
-                        htmlFor='storeName'
-                        className='block text-sm font-medium text-gray-700 mb-2'
-                      >
-                        Nom de votre boutique *
-                      </label>
-                      <div className='relative'>
-                        <input
-                          type='text'
-                          id='storeName'
-                          required
-                          value={name}
-                          onChange={handleStoreNameChange}
-                          onFocus={handleStoreNameFocus}
-                          onBlur={handleStoreNameBlur}
-                          className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${slugExists || !name.trim() ? 'border-red-500' : 'border-gray-300'}`}
-                          placeholder='Ma Super Boutique'
-                        />
-                        {isCheckingSlug && (
-                          <div className='absolute right-3 inset-y-0 flex items-center'>
-                            <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
-                          </div>
-                        )}
-                      </div>
-                      {showValidationErrors && !name.trim() && (
-                        <p className='mt-2 text-sm text-red-600'>
-                          Veuillez renseigner le nom de la boutique
-                        </p>
-                      )}
-                      {slugExists && (
-                        <p className='mt-2 text-sm text-red-600'>
-                          Ce nom existe déjà.
-                        </p>
-                      )}
-                    </div>
-                    <div>
-                      <label
-                        htmlFor='description'
-                        className='block text-sm font-medium text-gray-700 mb-2'
-                      >
-                        Description
-                      </label>
-                      <input
-                        className='w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500'
-                        value={description}
-                        onChange={e => setDescription(e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label
-                        htmlFor='website'
-                        className='block text-sm font-medium text-gray-700 mb-2'
-                      >
-                        Site web
-                      </label>
-
-                      <input
-                        className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${website && websiteInvalid ? 'border-red-500' : 'border-gray-300'}`}
-                        value={website}
-                        onChange={e => setWebsite(e.target.value)}
-                        placeholder='ex: exemple.com ou https://exemple.com'
-                      />
-                      {website && websiteInvalid && (
-                        <p className='mt-1 text-xs text-red-600'>
-                          Veuillez saisir un nom de domaine valide (ex:
-                          votre-site.co) ou une URL complète
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  <div>
-                    <label className='block text-sm font-medium text-gray-700 mb-2'>
-                      Logo *
-                    </label>
-                    <div className='flex items-center space-x-4'>
-                      <label
-                        className={` border-gray-300 flex flex-col items-center justify-center w-40 h-32 border-2 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100`}
-                      >
-                        <div className='flex flex-col items-center justify-center pt-5 pb-6'>
-                          <Upload className='w-8 h-8 mb-2 text-gray-400' />
-                          <p className='text-xs text-gray-500'>
-                            Cliquez pour télécharger
-                          </p>
-                        </div>
-                        <input
-                          type='file'
-                          className='hidden'
-                          accept='image/png, image/jpeg'
-                          onChange={handleLogoChange}
-                        />
-                      </label>
-                      {(logoPreview ||
-                        (() => {
-                          const cloudBase = (
-                            import.meta.env.VITE_CLOUDFRONT_URL ||
-                            'https://d1tmgyvizond6e.cloudfront.net'
-                          ).replace(/\/+$/, '');
-                          return store?.id
-                            ? `${cloudBase}/images/${store.id}`
-                            : null;
-                        })()) && (
-                        <div className='w-32 h-32 border rounded-lg overflow-hidden'>
-                          <img
-                            src={
-                              logoPreview ||
-                              (() => {
-                                const cloudBase = (
-                                  import.meta.env.VITE_CLOUDFRONT_URL ||
-                                  'https://d1tmgyvizond6e.cloudfront.net'
-                                ).replace(/\/+$/, '');
-                                return store?.id
-                                  ? `${cloudBase}/images/${store.id}`
-                                  : '';
-                              })()
-                            }
-                            alt='Aperçu du logo'
-                            className='w-full h-full object-cover'
-                          />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className='flex items-center space-x-2'>
-                    <button
-                      onClick={saveStoreInfo}
-                      disabled={
-                        !name.trim() ||
-                        (website && websiteInvalid) ||
-                        slugExists ||
-                        isCheckingSlug
-                      }
-                      className={`inline-flex items-center px-4 py-2 rounded-md text-white ${!name.trim() || (website && websiteInvalid) || slugExists || isCheckingSlug ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
-                    >
-                      {isSubmittingModifications && (
-                        <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
-                      )}
-                      Enregistrer vos modifications
-                    </button>
-                    <button
-                      onClick={() => {
-                        setEditingInfo(false);
-                        setLogoFile(null);
-                        setLogoPreview(null);
-                      }}
-                      className='px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
-                    >
-                      Annuler
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
+            <button
+              onClick={() =>
+                navigate(`/checkout/${encodeURIComponent(store.slug)}`)
+              }
+              className='inline-flex items-center px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
+            >
+              Formulaire de paiement
+              <ArrowRight className='w-4 h-4 ml-2' />
+            </button>
           )}
+        </div>
 
-          {/* Porte-monnaie */}
+        {/* Infos boutique */}
+        {store && (
           <div className='bg-white rounded-lg shadow p-6 mb-8'>
             <div className='flex items-center mb-4'>
-              <Wallet className='w-5 h-5 text-indigo-600 mr-2' />
+              <Info className='w-5 h-5 text-indigo-600 mr-2' />
               <h2 className='text-lg font-semibold text-gray-900'>
-                Porte-monnaie
+                Informations de la boutique
               </h2>
             </div>
-            <p className='text-gray-600 mb-2'>
-              Montant accumulé suite aux achats des clients.
-            </p>
-            {store && (
-              <div className='flex items-baseline space-x-2 mb-4'>
-                <span className='text-2xl font-bold text-gray-900'>
-                  {(store.balance ?? 0).toFixed(2)}
-                </span>
-                <span className='text-gray-700'>€ disponibles</span>
+            {/* Affichage (non édité) */}
+            {!editingInfo && (
+              <div className='space-y-4'>
+                <div className='flex items-center space-x-4'>
+                  {(() => {
+                    const cloudBase = (
+                      import.meta.env.VITE_CLOUDFRONT_URL ||
+                      'https://d1tmgyvizond6e.cloudfront.net'
+                    ).replace(/\/+$/, '');
+                    const storeLogo = store?.id
+                      ? `${cloudBase}/images/${store.id}`
+                      : undefined;
+                    return storeLogo ? (
+                      <img
+                        src={storeLogo}
+                        alt={store.name}
+                        className='w-16 h-16 rounded-lg object-cover'
+                      />
+                    ) : (
+                      <div className='w-16 h-16 rounded-lg bg-gray-200 flex items-center justify-center'>
+                        <Upload className='w-8 h-8 text-gray-500' />
+                      </div>
+                    );
+                  })()}
+                  <div>
+                    <p className='text-sm text-gray-700'>
+                      <span className='font-medium'>Nom:</span> {store.name}
+                    </p>
+                    <p className='text-sm text-gray-700'>
+                      <span className='font-medium'>Description:</span>{' '}
+                      {store.description || '-'}
+                    </p>
+                    <p className='text-sm text-gray-700'>
+                      <span className='font-medium'>Site web:</span>{' '}
+                      {store.website ? (
+                        <a
+                          href={
+                            /^https?:\/\//.test(store.website)
+                              ? store.website
+                              : `http://${store.website}`
+                          }
+                          target='_blank'
+                          rel='noreferrer'
+                          className='text-indigo-600 hover:underline'
+                        >
+                          {store.website}
+                        </a>
+                      ) : (
+                        '-'
+                      )}
+                    </p>
+                  </div>
+                </div>
+                <div>
+                  <button
+                    onClick={() => setEditingInfo(true)}
+                    className='inline-flex items-center px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700'
+                  >
+                    Modifier vos informations
+                  </button>
+                </div>
               </div>
             )}
-            {/* Bouton qui révèle la section Demande de versement */}
-            {store && !showPayout && (
-              <button
-                onClick={() => setShowPayout(true)}
-                disabled={(store.balance ?? 0) <= 0}
-                className={`px-4 py-2 rounded ${(store.balance ?? 0) <= 0 ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
-              >
-                Retirer mes gains
-              </button>
-            )}
-            {store && showPayout && (
-              <div>
-                <button
-                  onClick={() => setShowPayout(false)}
-                  className='px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
-                >
-                  Annuler
-                </button>
-                <div className='mt-4 border-t pt-4'>
-                  <h3 className='text-md font-semibold text-gray-900 mb-2'>
-                    Demande de versement
-                  </h3>
-                  {store.rib && !editingRib && (
-                    <div className='mb-4'>
-                      <p className='text-gray-700'>
-                        Les coordonnées bancaires précédemment renseignées pour
-                        le dernier versement seront utilisées.
+            {/* Édition */}
+            {editingInfo && (
+              <div className='space-y-4'>
+                <div className='grid grid-cols-1 md:grid-cols-3 gap-4'>
+                  <div>
+                    <label
+                      htmlFor='storeName'
+                      className='block text-sm font-medium text-gray-700 mb-2'
+                    >
+                      Nom de votre boutique *
+                    </label>
+                    <div className='relative'>
+                      <input
+                        type='text'
+                        id='storeName'
+                        required
+                        value={name}
+                        onChange={handleStoreNameChange}
+                        onFocus={handleStoreNameFocus}
+                        onBlur={handleStoreNameBlur}
+                        className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${slugExists || !name.trim() ? 'border-red-500' : 'border-gray-300'}`}
+                        placeholder='Ma Super Boutique'
+                      />
+                      {isCheckingSlug && (
+                        <div className='absolute right-3 inset-y-0 flex items-center'>
+                          <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
+                        </div>
+                      )}
+                    </div>
+                    {showValidationErrors && !name.trim() && (
+                      <p className='mt-2 text-sm text-red-600'>
+                        Veuillez renseigner le nom de la boutique
                       </p>
-                    </div>
-                  )}
-                  {!(store.rib && !editingRib) && (
-                    <div>
-                      <div className='flex items-center space-x-4 mb-3'>
-                        <label className='inline-flex items-center'>
-                          <input
-                            type='radio'
-                            className='mr-2'
-                            name='payoutMethod'
-                            value='link'
-                            checked={payoutMethod === 'link'}
-                            onChange={() => setPayoutMethod('link')}
-                          />
-                          Télécharger le RIB
-                        </label>
-                        <label className='inline-flex items-center'>
-                          <input
-                            type='radio'
-                            className='mr-2'
-                            name='payoutMethod'
-                            value='database'
-                            checked={payoutMethod === 'database'}
-                            onChange={() => setPayoutMethod('database')}
-                          />
-                          Saisir IBAN/BIC
-                        </label>
-                      </div>
-                      {payoutMethod === 'link' && (
-                        <div className='mb-3'>
-                          <label className='block text-sm text-gray-700 mb-1'>
-                            RIB (PDF, PNG, JPG/JPEG)
-                          </label>
-                          <input
-                            type='file'
-                            accept='application/pdf,image/png,image/jpeg'
-                            onChange={e => {
-                              const f = e.target.files?.[0] || null;
-                              setRibFile(f);
-                              setRibUploadError(null);
-                            }}
-                            className='w-full text-sm'
-                          />
-                          {uploadingRib && (
-                            <p className='text-xs text-gray-500 mt-1'>
-                              Téléchargement en cours...
-                            </p>
-                          )}
-                          {ribUploadError && (
-                            <p className='text-sm text-red-600 mt-1'>
-                              {ribUploadError}
-                            </p>
-                          )}
-                        </div>
-                      )}
-                      {payoutMethod === 'database' && (
-                        <div className='grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3'>
-                          <div>
-                            <label className='block text-sm text-gray-700 mb-1'>
-                              IBAN
-                            </label>
-                            <input
-                              className={`w-full border rounded px-3 py-2 text-sm ${ibanError ? 'border-red-500' : 'border-gray-300'}`}
-                              value={ibanInput}
-                              onChange={e => {
-                                setIbanInput(e.target.value);
-                                if (ibanError) setIbanError(null);
-                              }}
-                              placeholder='FR76 3000 6000 0112 3456 7890 189'
-                            />
-                            {ibanError && (
-                              <p className='mt-1 text-xs text-red-600'>
-                                {ibanError}
-                              </p>
-                            )}
-                          </div>
-                          <div>
-                            <label className='block text-sm text-gray-700 mb-1'>
-                              BIC
-                            </label>
-                            <input
-                              className={`w-full border rounded px-3 py-2 text-sm ${bicError ? 'border-red-500' : 'border-gray-300'}`}
-                              value={bicInput}
-                              onChange={e => {
-                                setBicInput(e.target.value);
-                                if (bicError) setBicError(null);
-                              }}
-                              placeholder='AGRIFRPPXXX'
-                            />
-                            {bicError && (
-                              <p className='mt-1 text-xs text-red-600'>
-                                {bicError}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                    )}
+                    {slugExists && (
+                      <p className='mt-2 text-sm text-red-600'>
+                        Ce nom existe déjà.
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <label
+                      htmlFor='description'
+                      className='block text-sm font-medium text-gray-700 mb-2'
+                    >
+                      Description
+                    </label>
+                    <input
+                      className='w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500'
+                      value={description}
+                      onChange={e => setDescription(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor='website'
+                      className='block text-sm font-medium text-gray-700 mb-2'
+                    >
+                      Site web
+                    </label>
+
+                    <input
+                      className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${website && websiteInvalid ? 'border-red-500' : 'border-gray-300'}`}
+                      value={website}
+                      onChange={e => setWebsite(e.target.value)}
+                      placeholder='ex: exemple.com ou https://exemple.com'
+                    />
+                    {website && websiteInvalid && (
+                      <p className='mt-1 text-xs text-red-600'>
+                        Veuillez saisir un nom de domaine valide (ex:
+                        votre-site.co) ou une URL complète
+                      </p>
+                    )}
+                  </div>
                 </div>
-                <div className='mt-4 flex items-center space-x-2'>
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-2'>
+                    Logo *
+                  </label>
+                  <div className='flex items-center space-x-4'>
+                    <label
+                      className={` border-gray-300 flex flex-col items-center justify-center w-40 h-32 border-2 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100`}
+                    >
+                      <div className='flex flex-col items-center justify-center pt-5 pb-6'>
+                        <Upload className='w-8 h-8 mb-2 text-gray-400' />
+                        <p className='text-xs text-gray-500'>
+                          Cliquez pour télécharger
+                        </p>
+                      </div>
+                      <input
+                        type='file'
+                        className='hidden'
+                        accept='image/png, image/jpeg'
+                        onChange={handleLogoChange}
+                      />
+                    </label>
+                    {(logoPreview ||
+                      (() => {
+                        const cloudBase = (
+                          import.meta.env.VITE_CLOUDFRONT_URL ||
+                          'https://d1tmgyvizond6e.cloudfront.net'
+                        ).replace(/\/+$/, '');
+                        return store?.id
+                          ? `${cloudBase}/images/${store.id}`
+                          : null;
+                      })()) && (
+                      <div className='w-32 h-32 border rounded-lg overflow-hidden'>
+                        <img
+                          src={
+                            logoPreview ||
+                            (() => {
+                              const cloudBase = (
+                                import.meta.env.VITE_CLOUDFRONT_URL ||
+                                'https://d1tmgyvizond6e.cloudfront.net'
+                              ).replace(/\/+$/, '');
+                              return store?.id
+                                ? `${cloudBase}/images/${store.id}`
+                                : '';
+                            })()
+                          }
+                          alt='Aperçu du logo'
+                          className='w-full h-full object-cover'
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className='flex items-center space-x-2'>
                   <button
-                    onClick={confirmPayout}
-                    className={`inline-flex items-center px-4 py-2 rounded-md text-white ${
-                      isSubmittingPayout ||
-                      ((store.rib === null || editingRib) &&
-                        (payoutMethod === 'link'
-                          ? !ribFile
-                          : !ibanInput.trim() || !bicInput.trim())) ||
-                      (payoutMethod === 'database'
-                        ? Boolean(ibanError) || Boolean(bicError)
-                        : Boolean(ribUploadError))
-                        ? 'bg-gray-400 cursor-not-allowed'
-                        : 'bg-indigo-600 hover:bg-indigo-700'
-                    }`}
+                    onClick={saveStoreInfo}
                     disabled={
-                      isSubmittingPayout ||
-                      ((store.rib === null || editingRib) &&
-                        (payoutMethod === 'link'
-                          ? !ribFile
-                          : !ibanInput.trim() || !bicInput.trim())) ||
-                      (payoutMethod === 'database'
-                        ? Boolean(ibanError) || Boolean(bicError)
-                        : Boolean(ribUploadError))
+                      !name.trim() ||
+                      (website && websiteInvalid) ||
+                      slugExists ||
+                      isCheckingSlug
                     }
+                    className={`inline-flex items-center px-4 py-2 rounded-md text-white ${!name.trim() || (website && websiteInvalid) || slugExists || isCheckingSlug ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
                   >
-                    {isSubmittingPayout && (
+                    {isSubmittingModifications && (
                       <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
                     )}
-                    Demander un versement
+                    Enregistrer vos modifications
                   </button>
-                  {store.rib && !editingRib && (
-                    <button
-                      onClick={() => {
-                        setEditingRib(true);
-                        setPayoutMethod(
-                          store.rib?.type === 'link' ? 'link' : 'database'
-                        );
-                      }}
-                      className='px-3 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
-                    >
-                      Modifier
-                    </button>
-                  )}
-                  {editingRib && (
-                    <button
-                      onClick={() => {
-                        setEditingRib(false);
-                        setRibFile(null);
-                        setIbanError(null);
-                        setBicError(null);
-                        setRibUploadError(null);
-                      }}
-                      className='px-3 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
-                    >
-                      Annuler
-                    </button>
-                  )}
+                  <button
+                    onClick={() => {
+                      setEditingInfo(false);
+                      setLogoFile(null);
+                      setLogoPreview(null);
+                    }}
+                    className='px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
+                  >
+                    Annuler
+                  </button>
                 </div>
               </div>
             )}
           </div>
-          {shipments.length === 0 && (
-            <div className='bg-white rounded-lg shadow p-6'>
-              <div className='flex items-center mb-2'>
-                <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
-                <h2 className='text-lg font-semibold text-gray-900'>
-                  Mes ventes
-                </h2>
+        )}
+
+        {/* Porte-monnaie */}
+        <div className='bg-white rounded-lg shadow p-6 mb-8'>
+          <div className='flex items-center mb-4'>
+            <Wallet className='w-5 h-5 text-indigo-600 mr-2' />
+            <h2 className='text-lg font-semibold text-gray-900'>
+              Porte-monnaie
+            </h2>
+          </div>
+          <p className='text-gray-600 mb-2'>
+            Montant accumulé suite aux achats des clients.
+          </p>
+          {store && (
+            <div className='flex items-baseline space-x-2 mb-4'>
+              <span className='text-2xl font-bold text-gray-900'>
+                {(store.balance ?? 0).toFixed(2)}
+              </span>
+              <span className='text-gray-700'>€ disponibles</span>
+            </div>
+          )}
+          {/* Bouton qui révèle la section Demande de versement */}
+          {store && !showPayout && (
+            <button
+              onClick={() => setShowPayout(true)}
+              disabled={(store.balance ?? 0) <= 0}
+              className={`px-4 py-2 rounded ${(store.balance ?? 0) <= 0 ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
+            >
+              Retirer mes gains
+            </button>
+          )}
+          {store && showPayout && (
+            <div>
+              <button
+                onClick={() => setShowPayout(false)}
+                className='px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
+              >
+                Annuler
+              </button>
+              <div className='mt-4 border-t pt-4'>
+                <h3 className='text-md font-semibold text-gray-900 mb-2'>
+                  Demande de versement
+                </h3>
+                {store.rib && !editingRib && (
+                  <div className='mb-4'>
+                    <p className='text-gray-700'>
+                      Les coordonnées bancaires précédemment renseignées pour le
+                      dernier versement seront utilisées.
+                    </p>
+                  </div>
+                )}
+                {!(store.rib && !editingRib) && (
+                  <div>
+                    <div className='flex items-center space-x-4 mb-3'>
+                      <label className='inline-flex items-center'>
+                        <input
+                          type='radio'
+                          className='mr-2'
+                          name='payoutMethod'
+                          value='link'
+                          checked={payoutMethod === 'link'}
+                          onChange={() => setPayoutMethod('link')}
+                        />
+                        Télécharger le RIB
+                      </label>
+                      <label className='inline-flex items-center'>
+                        <input
+                          type='radio'
+                          className='mr-2'
+                          name='payoutMethod'
+                          value='database'
+                          checked={payoutMethod === 'database'}
+                          onChange={() => setPayoutMethod('database')}
+                        />
+                        Saisir IBAN/BIC
+                      </label>
+                    </div>
+                    {payoutMethod === 'link' && (
+                      <div className='mb-3'>
+                        <label className='block text-sm text-gray-700 mb-1'>
+                          RIB (PDF, PNG, JPG/JPEG)
+                        </label>
+                        <input
+                          type='file'
+                          accept='application/pdf,image/png,image/jpeg'
+                          onChange={e => {
+                            const f = e.target.files?.[0] || null;
+                            setRibFile(f);
+                            setRibUploadError(null);
+                          }}
+                          className='w-full text-sm'
+                        />
+                        {uploadingRib && (
+                          <p className='text-xs text-gray-500 mt-1'>
+                            Téléchargement en cours...
+                          </p>
+                        )}
+                        {ribUploadError && (
+                          <p className='text-sm text-red-600 mt-1'>
+                            {ribUploadError}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {payoutMethod === 'database' && (
+                      <div className='grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3'>
+                        <div>
+                          <label className='block text-sm text-gray-700 mb-1'>
+                            IBAN
+                          </label>
+                          <input
+                            className={`w-full border rounded px-3 py-2 text-sm ${ibanError ? 'border-red-500' : 'border-gray-300'}`}
+                            value={ibanInput}
+                            onChange={e => {
+                              setIbanInput(e.target.value);
+                              if (ibanError) setIbanError(null);
+                            }}
+                            placeholder='FR76 3000 6000 0112 3456 7890 189'
+                          />
+                          {ibanError && (
+                            <p className='mt-1 text-xs text-red-600'>
+                              {ibanError}
+                            </p>
+                          )}
+                        </div>
+                        <div>
+                          <label className='block text-sm text-gray-700 mb-1'>
+                            BIC
+                          </label>
+                          <input
+                            className={`w-full border rounded px-3 py-2 text-sm ${bicError ? 'border-red-500' : 'border-gray-300'}`}
+                            value={bicInput}
+                            onChange={e => {
+                              setBicInput(e.target.value);
+                              if (bicError) setBicError(null);
+                            }}
+                            placeholder='AGRIFRPPXXX'
+                          />
+                          {bicError && (
+                            <p className='mt-1 text-xs text-red-600'>
+                              {bicError}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-              <p className='text-gray-600'>Aucune vente pour le moment.</p>
+              <div className='mt-4 flex items-center space-x-2'>
+                <button
+                  onClick={confirmPayout}
+                  className={`inline-flex items-center px-4 py-2 rounded-md text-white ${
+                    isSubmittingPayout ||
+                    ((store.rib === null || editingRib) &&
+                      (payoutMethod === 'link'
+                        ? !ribFile
+                        : !ibanInput.trim() || !bicInput.trim())) ||
+                    (payoutMethod === 'database'
+                      ? Boolean(ibanError) || Boolean(bicError)
+                      : Boolean(ribUploadError))
+                      ? 'bg-gray-400 cursor-not-allowed'
+                      : 'bg-indigo-600 hover:bg-indigo-700'
+                  }`}
+                  disabled={
+                    isSubmittingPayout ||
+                    ((store.rib === null || editingRib) &&
+                      (payoutMethod === 'link'
+                        ? !ribFile
+                        : !ibanInput.trim() || !bicInput.trim())) ||
+                    (payoutMethod === 'database'
+                      ? Boolean(ibanError) || Boolean(bicError)
+                      : Boolean(ribUploadError))
+                  }
+                >
+                  {isSubmittingPayout && (
+                    <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                  )}
+                  Demander un versement
+                </button>
+                {store.rib && !editingRib && (
+                  <button
+                    onClick={() => {
+                      setEditingRib(true);
+                      setPayoutMethod(
+                        store.rib?.type === 'link' ? 'link' : 'database'
+                      );
+                    }}
+                    className='px-3 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
+                  >
+                    Modifier
+                  </button>
+                )}
+                {editingRib && (
+                  <button
+                    onClick={() => {
+                      setEditingRib(false);
+                      setRibFile(null);
+                      setIbanError(null);
+                      setBicError(null);
+                      setRibUploadError(null);
+                    }}
+                    className='px-3 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
+                  >
+                    Annuler
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>
-      </Protect>
+        {shipments.length === 0 && (
+          <div className='bg-white rounded-lg shadow p-6'>
+            <div className='flex items-center mb-2'>
+              <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
+              <h2 className='text-lg font-semibold text-gray-900'>
+                Mes ventes
+              </h2>
+            </div>
+            <p className='text-gray-600'>Aucune vente pour le moment.</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

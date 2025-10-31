@@ -169,7 +169,7 @@ router.get("/store/:storeSlug", requireAuth, async (req, res) => {
 
     const isOwner = store?.clerk_id && store.clerk_id === requesterId;
     if (!isOwner && !isAdmin) {
-      return res.status(403).json({ error: "Accès refusé" });
+      return res.status(403).json({ error: "Accès refusé !" });
     }
 
     const { data: shipments, error: shipErr } = await supabase

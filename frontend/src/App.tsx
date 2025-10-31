@@ -18,7 +18,6 @@ import CheckoutPage from './pages/CheckoutPage';
 import AccountPage from './pages/AccountPage';
 import OrdersPage from './pages/OrdersPage';
 import OnboardingPage from './pages/OnboardingPage';
-import StorePage from './pages/StorePage';
 import AuthRedirect from './components/AuthRedirect';
 import PaymentReturnPage from './pages/PaymentReturnPage';
 import { frFR } from '@clerk/localizations';

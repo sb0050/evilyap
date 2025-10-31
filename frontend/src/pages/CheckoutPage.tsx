@@ -401,7 +401,7 @@ export default function CheckoutPage() {
         customerName: customerInfo.name,
         customerEmail: customerInfo.email,
         clerkUserId: user.id,
-        storeName: store.name,
+        storeName: store?.name ?? storeName,
         productReference: productReferencesString,
         address: address || {
           line1: '',
@@ -477,37 +477,7 @@ export default function CheckoutPage() {
     );
   }
 
-  if (error) {
-    return (
-      <div className='min-h-screen flex items-center justify-center'>
-        <div className='text-center'>
-          <div className='text-gray-400 text-xl mb-4'>🏪</div>
-          <h2 className='text-xl font-semibold text-gray-900 mb-2'>
-            Boutique non trouvée
-          </h2>
-          <p className='text-gray-600'>
-            La boutique "{storeName}" n'existe pas ou n'est plus disponible.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!store) {
-    return (
-      <div className='min-h-screen flex items-center justify-center'>
-        <div className='text-center'>
-          <div className='text-gray-400 text-xl mb-4'>🏪</div>
-          <h2 className='text-xl font-semibold text-gray-900 mb-2'>
-            Boutique non trouvée
-          </h2>
-          <p className='text-gray-600'>
-            La boutique "{storeName}" n'existe pas ou n'est plus disponible.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  // Les erreurs d’existence de boutique sont désormais gérées par l’overlay du Header
 
   const themeColor = '#667eea';
 
@@ -545,9 +515,9 @@ export default function CheckoutPage() {
               )}
               <div>
                 <h1 className='text-2xl font-bold text-gray-900'>
-                  {store.name}
+                  {store?.name ?? storeName}
                 </h1>
-                {store.description && (
+                {store?.description && (
                   <p className='text-gray-600 mt-1'>{store.description}</p>
                 )}
               </div>
