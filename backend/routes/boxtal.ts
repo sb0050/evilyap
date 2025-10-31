@@ -6,6 +6,7 @@ import {
   emailService,
   CustomerTrackingEmailData,
 } from "../services/emailService";
+import { url } from "inspector";
 
 const router = express.Router();
 
@@ -234,6 +235,15 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
 
     console.log("Fetching shipping documents for order ID:", id);
 
+    if (!id) {
+      return res.status(400).json({ error: "Missing shipping order id" });
+    }
+
+    if (!supabase) {
+      console.error("Supabase client not configured");
+      return res.status(500).json({ error: "Database not configured" });
+    }
+
     const options = {
       method: "GET",
       headers: {
@@ -246,7 +256,32 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
 
     if (response.ok) {
       const data = await response.json();
+      const docUrl: string | undefined = (response as any)?.content?.[0]?.url;
       // Boxtal renvoie un objet { status, timestamp, content: ShippingDocument[] }
+      console.log("DOCUMENT_CREATED: existing document_url:", docUrl);
+      if (docUrl) {
+        try {
+          const { error: updUrlErr } = await supabase
+            .from("shipments")
+            .update({ document_url: docUrl })
+            .eq("id", id);
+          if (updUrlErr) {
+            console.error(
+              "DOCUMENT_CREATED: error updating document_url:",
+              updUrlErr
+            );
+          }
+        } catch (updEx) {
+          console.error(
+            "DOCUMENT_CREATED: exception updating document_url:",
+            updEx
+          );
+        }
+      }
+      console.log(
+        "DOCUMENT_CREATED: document already marked as created, skipping email"
+      );
+
       return res.status(200).json(data);
     }
 
@@ -273,6 +308,96 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
     });
   }
 });
+
+// Proxy de téléchargement du bordereau avec Content-Disposition: attachment
+router.get(
+  "/shipping-orders/:id/shipping-document/download",
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      if (!id) {
+        return res.status(400).json({ error: "Missing shipping order id" });
+      }
+
+      const token = await verifyAndRefreshBoxtalToken();
+      const apiUrl = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+        id
+      )}/shipping-document`;
+
+      const options = {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      } as any;
+
+      // 1) Récupérer la liste des documents auprès de Boxtal
+      const docApiResp = await fetch(apiUrl, options);
+      if (!docApiResp.ok) {
+        const contentType = docApiResp.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const errJson = await docApiResp.json();
+          return res.status(docApiResp.status).json(errJson);
+        } else {
+          const errText = await docApiResp.text();
+          return res.status(docApiResp.status).json({
+            error: "Failed to get shipping documents",
+            details: errText,
+          });
+        }
+      }
+
+      const docPayload: any = await docApiResp.json();
+      const docs: any[] = Array.isArray(docPayload?.content)
+        ? docPayload.content
+        : [];
+      // Sélectionner le document LABEL si présent, sinon le premier
+      const preferredDoc =
+        docs.find((d) => String(d?.type || "").toUpperCase() === "LABEL") ||
+        docs[0];
+
+      const docUrl: string | undefined = preferredDoc?.url || docs[0]?.url;
+      const docType: string = preferredDoc?.type || "LABEL";
+      if (!docUrl) {
+        return res
+          .status(404)
+          .json({ error: "No shipping document available" });
+      }
+
+      // 2) Télécharger le PDF et le renvoyer avec Content-Disposition: attachment
+      const fileResp = await fetch(docUrl);
+      if (!fileResp.ok) {
+        const errText = await fileResp.text().catch(() => "");
+        return res.status(fileResp.status).json({
+          error: "Failed to download shipping document",
+          details: errText,
+        });
+      }
+
+      const buf = Buffer.from(await fileResp.arrayBuffer());
+      const ct = fileResp.headers.get("content-type") || "application/pdf";
+      const safeType = String(docType || "DOCUMENT").toUpperCase();
+      const filename = `${safeType}_${id}.pdf`;
+
+      res.setHeader("Content-Type", ct);
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`
+      );
+      return res.status(200).send(buf);
+    } catch (error) {
+      console.error(
+        "Error in /api/boxtal/shipping-orders/:id/shipping-document/download:",
+        error
+      );
+      return res.status(500).json({
+        error: "Failed to download shipping document",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+);
 
 // Récupérer le suivi d'une commande d'expédition
 router.get("/shipping-orders/:id/tracking", async (req, res) => {
@@ -464,6 +589,88 @@ router.delete("/shipping-orders/:id", async (req, res) => {
       console.error("DB update exception:", dbErr);
     }
 
+    // Envoi d'un email à l'admin avec les infos nécessaires pour remboursement
+    try {
+      if (supabase) {
+        const { data: shipment, error: shipErr } = await supabase
+          .from("shipments")
+          .select(
+            "id, store_id, shipment_id, customer_stripe_id, product_reference, value, reference_value, delivery_cost, status, tracking_url"
+          )
+          .eq("shipment_id", id)
+          .single();
+
+        if (shipErr) {
+          console.warn("Supabase fetch shipment failed:", shipErr);
+        }
+
+        let storeName = "Votre Boutique";
+        let storeOwnerEmail: string | undefined = undefined;
+        let storeSlug: string | undefined = undefined;
+        if (shipment?.store_id) {
+          const { data: store, error: storeErr } = await supabase
+            .from("stores")
+            .select("name, owner_email, slug")
+            .eq("id", shipment.store_id)
+            .single();
+          if (storeErr) {
+            console.warn("Supabase fetch store failed:", storeErr);
+          } else {
+            storeName = (store as any)?.name || storeName;
+            storeOwnerEmail = (store as any)?.owner_email || undefined;
+            storeSlug = (store as any)?.slug || undefined;
+          }
+        }
+
+        let customerName: string | undefined = undefined;
+        let customerEmail: string | undefined = undefined;
+        const customerStripeId: string | undefined = shipment?.customer_stripe_id || undefined;
+        if (stripe && customerStripeId) {
+          try {
+            const customer = await stripe.customers.retrieve(customerStripeId);
+            customerEmail = (customer as any)?.email || undefined;
+            customerName = (customer as any)?.name || undefined;
+          } catch (cErr) {
+            console.warn("Stripe retrieve customer failed:", cErr);
+          }
+        }
+
+        const amountRaw =
+          typeof shipment?.reference_value === "number"
+            ? shipment.reference_value
+            : typeof shipment?.value === "number"
+            ? shipment.value
+            : undefined;
+        const deliveryCostRaw =
+          typeof shipment?.delivery_cost === "number"
+            ? shipment.delivery_cost
+            : undefined;
+        const totalRaw =
+          typeof amountRaw === "number" && typeof deliveryCostRaw === "number"
+            ? amountRaw + deliveryCostRaw
+            : amountRaw;
+
+        await emailService.sendAdminRefundRequest({
+          storeName,
+          storeOwnerEmail,
+          storeSlug,
+          shippingOrderId: id,
+          boxtalStatus: String(payload?.content?.status || ""),
+          shipmentId: shipment ? String(shipment.id) : undefined,
+          customerName,
+          customerEmail,
+          customerStripeId,
+          productReference: shipment?.product_reference || undefined,
+          amount: amountRaw,
+          deliveryCost: deliveryCostRaw,
+          total: totalRaw,
+          currency: "EUR",
+        });
+      }
+    } catch (emailErr) {
+      console.error("Failed to send admin refund email:", emailErr);
+    }
+
     return res.status(200).json(payload);
   } catch (error) {
     console.error("Error in DELETE /api/boxtal/shipping-orders/:id:", error);
@@ -563,6 +770,7 @@ router.post(
 
             // Si déjà créé, mettre à jour l'URL si nécessaire et sortir
             if (shipment.document_created === true) {
+              console.log("DOCUMENT_CREATED: existing document_url:", docUrl);
               if (docUrl) {
                 try {
                   const { error: updUrlErr } = await supabase

@@ -175,7 +175,7 @@ router.get("/store/:storeSlug", requireAuth, async (req, res) => {
     const { data: shipments, error: shipErr } = await supabase
       .from("shipments")
       .select(
-        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, dropoff_point, pickup_point, weight, product_reference, value, created_at, status, estimated_delivery_date, cancel_requested, return_requested, delivery_cost, tracking_url"
+        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, dropoff_point, pickup_point, weight, product_reference, value, reference_value, created_at, status, estimated_delivery_date, cancel_requested, return_requested, delivery_cost, tracking_url"
       )
       .eq("store_id", store.id)
       .order("id", { ascending: false });

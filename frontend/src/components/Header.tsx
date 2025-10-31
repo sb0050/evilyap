@@ -8,6 +8,7 @@ import {
   useAuth,
 } from '@clerk/clerk-react';
 import { LayoutDashboard, Truck, ShoppingCart, Trash2 } from 'lucide-react';
+import Spinner from './Spinner';
 import { animate } from 'motion';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Protect } from '@clerk/clerk-react';
@@ -515,7 +516,7 @@ export default function Header() {
           <div className='fixed inset-0 top-16 bg-gray-50 z-40 flex items-center justify-center'>
             <div className='text-center px-4'>
               {guardStatus === 'pending' ? (
-                <div className='animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4'></div>
+                <Spinner size='lg' color='blue' variant='bottom' className='mx-auto mb-4' />
               ) : (
                 <>
                   <div className='text-gray-400 text-xl mb-4'>😢</div>

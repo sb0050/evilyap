@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
+import Spinner from '../components/Spinner';
 import { Wallet, ShoppingCart, ArrowRight, Upload, Info } from 'lucide-react';
 import { Toast } from '../components/Toast';
 import { useToast } from '../utils/toast';
@@ -16,16 +17,17 @@ type RIBInfo = {
   bic?: string;
 };
 
-type Store = {
-  id: number;
-  name: string;
-  slug: string;
-  balance?: number | null;
-  clerk_id?: string | null;
-  description?: string | null;
-  website?: string | null;
-  rib?: RIBInfo | null;
-};
+  type Store = {
+    id: number;
+    name: string;
+    slug: string;
+    balance?: number | null;
+    clerk_id?: string | null;
+    description?: string | null;
+    website?: string | null;
+    rib?: RIBInfo | null;
+    reference_value?: number | null;
+  };
 
 type Shipment = {
   id: number;
@@ -33,13 +35,22 @@ type Shipment = {
   customer_stripe_id: string | null;
   shipment_id: string | null;
   document_created: boolean;
+  document_url?: string | null;
   delivery_method: string | null;
   delivery_network: string | null;
   dropoff_point: any | null;
   pickup_point: object | null;
   weight: string | null;
-  product_reference: number | null;
+  product_reference: string | number | null;
   value: number | null;
+  reference_value?: number | null;
+  created_at?: string | null;
+  status?: string | null;
+  estimated_delivery_date?: string | null;
+  cancel_requested?: boolean | null;
+  isFinal?: boolean | null;
+  delivery_cost?: number | null;
+  tracking_url?: string | null;
 };
 
 export default function DashboardPage() {
@@ -85,6 +96,11 @@ export default function DashboardPage() {
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   // Toggle de la demande de versement
   const [showPayout, setShowPayout] = useState(false);
+  // Navigation des sections du dashboard
+  const [section, setSection] = useState<'infos' | 'wallet' | 'sales'>('infos');
+  // Pagination pour la section Ventes
+  const [pageSize, setPageSize] = useState<number>(10);
+  const [page, setPage] = useState<number>(1);
   // Validation du site web (mêmes règles que onboarding)
   const isValidWebsite = (url: string) => {
     const value = (url || '').trim();
@@ -120,6 +136,218 @@ export default function DashboardPage() {
     reader.readAsDataURL(file);
   };
   const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
+  // Helpers d'affichage inspirés de OrdersPage
+  const formatMethod = (m?: string | null) => {
+    if (!m) return '—';
+    switch (m) {
+      case 'pickup_point':
+        return 'Point relais';
+      case 'home_delivery':
+        return 'À domicile';
+      case 'store_pickup':
+        return 'Retrait en boutique';
+      default:
+        return m;
+    }
+  };
+
+  const formatValue = (v?: number | null) => {
+    if (v == null) return '—';
+    return new Intl.NumberFormat('fr-FR', {
+      style: 'currency',
+      currency: 'EUR',
+    }).format(v);
+  };
+
+  const formatDate = (d?: string | null) => {
+    if (!d) return '—';
+    try {
+      return new Date(d).toLocaleString('fr-FR', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return d as string;
+    }
+  };
+
+  const getNetworkDescription = (code?: string | null) => {
+    const c = (code || '').toUpperCase();
+    const map: Record<string, string> = {
+      'MONR-DOMICILEFRANCE': 'Mondial Relay - Domicile France',
+      'COPR-COPRRELAISDOMICILENAT': 'Colis Privé - Domicile Sans Signature',
+      'POFR-COLISSIMOACCESS': 'Colissimo - Domicile Sans Signature',
+      'CHRP-CHRONO18': 'Chronopost - Chrono 18 (Express)',
+      'SOGP-RELAISCOLIS': 'Relais Colis',
+      'MONR-CPOURTOI': 'Mondial Relay',
+      'CHRP-CHRONO2SHOPDIRECT': 'Chronopost',
+      'COPR-COPRRELAISRELAISNAT': 'Colis Privé',
+      STORE_PICKUP: 'Retrait en boutique',
+    };
+    return map[c] || code || '—';
+  };
+
+  const getStatusDescription = (status?: string | null) => {
+    switch ((status || '').toUpperCase()) {
+      case 'ANNOUNCED':
+        return "Le bordereau d'expédition est créé mais le colis n'est pas encore expédié";
+      case 'SHIPPED':
+        return 'Le colis est soit récupéré par le transporteur, soit déposé dans un point de proximité';
+      case 'IN_TRANSIT':
+        return 'Le colis a été scanné par le transporteur et est en transit';
+      case 'OUT_FOR_DELIVERY':
+        return 'Le colis est en cours de livraison';
+      case 'FAILED_ATTEMPT':
+        return 'Quelque chose a empêché la livraison du colis';
+      case 'REACHED_DELIVERY_PICKUP_POINT':
+        return 'Le colis est disponible pour être récupéré dans un point de proximité';
+      case 'DELIVERED':
+        return 'Le colis a été livré au destinataire ou le destinataire a récupéré le colis dans un point de proximité';
+      case 'RETURNED':
+        return "Le colis est renvoyé à l'expéditeur";
+      case 'EXCEPTION':
+        return "Un problème est survenu pendant le transit qui nécessite une action de l'expéditeur";
+      case 'PENDING':
+        return "L'envoi est enregistré auprès de PayLive mais pas encore auprès du transporteur choisi";
+      case 'REQUESTED':
+        return "L'envoi est enregistré auprès du transporteur choisi";
+      case 'CONFIRMED':
+        return "L'envoi est confirmé par le transporteur et possède un bordereau d'expédition";
+      case 'CANCELLED':
+        return "L'envoi est annulé";
+      default:
+        return '';
+    }
+  };
+
+  // États de suivi pour les actions
+  const [cancelStatus, setCancelStatus] = useState<
+    Record<number, 'idle' | 'loading' | 'success' | 'error'>
+  >({});
+  const [docStatus, setDocStatus] = useState<
+    Record<number, 'idle' | 'loading' | 'success' | 'error'>
+  >({});
+
+  const handleCancel = async (s: Shipment) => {
+    if (!s.shipment_id) {
+      setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      return;
+    }
+    try {
+      setCancelStatus(prev => ({ ...prev, [s.id]: 'loading' }));
+      const token = await getToken();
+      const url = `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
+        s.shipment_id
+      )}`;
+      const resp = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        setCancelStatus(prev => ({ ...prev, [s.id]: 'success' }));
+        setShipments(prev =>
+          (prev || []).map(it =>
+            it.id === s.id ? { ...it, cancel_requested: true } : it
+          )
+        );
+        showToast("Demande d'annulation envoyée", 'success');
+      } else {
+        setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+        const msg =
+          json?.error || json?.message || "Erreur lors de l'annulation";
+        showToast(
+          typeof msg === 'string' ? msg : "Demande d'annulation échouée",
+          'error'
+        );
+      }
+    } catch (e: any) {
+      setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      const rawMsg = e?.message || "Erreur lors de l'annulation";
+      showToast(
+        typeof rawMsg === 'string' ? rawMsg : "Demande d'annulation échouée",
+        'error'
+      );
+    }
+  };
+
+  const handleShippingDocument = async (s: Shipment) => {
+    try {
+      if (!s.shipment_id) return;
+      setDocStatus(prev => ({ ...prev, [s.id]: 'loading' }));
+      const token = await getToken();
+      const url = `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
+        s.shipment_id
+      )}/shipping-document/download`;
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      });
+      if (resp.ok) {
+        const blob = await resp.blob();
+        const objectUrl = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = objectUrl;
+        a.download = `LABEL_${s.shipment_id}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(objectUrl);
+        setDocStatus(prev => ({ ...prev, [s.id]: 'success' }));
+        showToast('Bordereau créé', 'success');
+      } else {
+        const data = await resp.json().catch(() => ({}));
+        const msg = data?.error || data?.message || 'Erreur bordereau';
+        showToast(typeof msg === 'string' ? msg : 'Erreur bordereau', 'error');
+        // Fallback: ouvrir l'URL existante si disponible (peut s'afficher inline selon headers)
+        if (s.document_url) {
+          const a = document.createElement('a');
+          a.href = s.document_url;
+          a.target = '_blank';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        }
+        setDocStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      }
+    } catch (e: any) {
+      setDocStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      const rawMsg = e?.message || 'Erreur bordereau';
+      showToast(
+        typeof rawMsg === 'string' ? rawMsg : 'Erreur bordereau',
+        'error'
+      );
+    }
+  };
+
+  // Pagination: calculs dérivés
+  const totalPages = Math.max(
+    1,
+    Math.ceil((shipments || []).length / pageSize)
+  );
+  const startIndex = (page - 1) * pageSize;
+  const visibleShipments = (shipments || []).slice(
+    startIndex,
+    startIndex + pageSize
+  );
+
+  useEffect(() => {
+    // Clamp page si longueur change
+    const newTotal = Math.max(
+      1,
+      Math.ceil((shipments || []).length / pageSize)
+    );
+    if (page > newTotal) setPage(newTotal);
+    if (page < 1) setPage(1);
+  }, [shipments, pageSize]);
 
   // Handlers de validation du nom (adaptés depuis Onboarding)
   const handleStoreNameFocus = () => {
@@ -433,7 +661,12 @@ export default function DashboardPage() {
         <Header />
         <div className='min-h-screen flex items-center justify-center'>
           <div className='text-center'>
-            <div className='animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4'></div>
+            <Spinner
+              size='lg'
+              color='blue'
+              variant='bottom'
+              className='mx-auto mb-4'
+            />
             <p className='text-gray-600'>Chargement du tableau de bord...</p>
           </div>
         </div>
@@ -441,7 +674,6 @@ export default function DashboardPage() {
     );
   }
   // Les erreurs d’accès/absence de boutique sont gérées par l’overlay du Header
-
   return (
     <div className='min-h-screen bg-gray-50'>
       {toast && (
@@ -453,7 +685,7 @@ export default function DashboardPage() {
       )}
       <Header />
       {/* Accès contrôlé par Header; contenu rendu directement ici */}
-      <div className='max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8'>
+      <div className='w-full mx-auto px-4 sm:px-6 lg:px-8 py-8'>
         {/* Errors are now surfaced via Toasts */}
         {/* Les erreurs sont gérées via des toasts, pas de bandeau inline */}
 
@@ -476,458 +708,714 @@ export default function DashboardPage() {
             </button>
           )}
         </div>
+        {/* Onglets horizontaux au-dessus du contenu */}
+        <div className='mb-6'>
+          <nav className='flex items-center gap-2'>
+            <button
+              onClick={() => setSection('infos')}
+              className={`flex items-center px-3 py-2 rounded-md border ${
+                section === 'infos'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <Info className='w-4 h-4 mr-2' />
+              <span>Informations</span>
+            </button>
+            <button
+              onClick={() => setSection('wallet')}
+              className={`flex items-center px-3 py-2 rounded-md border ${
+                section === 'wallet'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <Wallet className='w-4 h-4 mr-2' />
+              <span>Porte-monnaie</span>
+            </button>
+            <button
+              onClick={() => setSection('sales')}
+              className={`flex items-center px-3 py-2 rounded-md border ${
+                section === 'sales'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <ShoppingCart className='w-4 h-4 mr-2' />
+              <span>Ventes</span>
+            </button>
+          </nav>
+        </div>
 
-        {/* Infos boutique */}
-        {store && (
-          <div className='bg-white rounded-lg shadow p-6 mb-8'>
-            <div className='flex items-center mb-4'>
-              <Info className='w-5 h-5 text-indigo-600 mr-2' />
-              <h2 className='text-lg font-semibold text-gray-900'>
-                Informations de la boutique
-              </h2>
-            </div>
-            {/* Affichage (non édité) */}
-            {!editingInfo && (
-              <div className='space-y-4'>
-                <div className='flex items-center space-x-4'>
-                  {(() => {
-                    const cloudBase = (
-                      import.meta.env.VITE_CLOUDFRONT_URL ||
-                      'https://d1tmgyvizond6e.cloudfront.net'
-                    ).replace(/\/+$/, '');
-                    const storeLogo = store?.id
-                      ? `${cloudBase}/images/${store.id}`
-                      : undefined;
-                    return storeLogo ? (
-                      <img
-                        src={storeLogo}
-                        alt={store.name}
-                        className='w-16 h-16 rounded-lg object-cover'
-                      />
-                    ) : (
-                      <div className='w-16 h-16 rounded-lg bg-gray-200 flex items-center justify-center'>
-                        <Upload className='w-8 h-8 text-gray-500' />
-                      </div>
-                    );
-                  })()}
-                  <div>
-                    <p className='text-sm text-gray-700'>
-                      <span className='font-medium'>Nom:</span> {store.name}
-                    </p>
-                    <p className='text-sm text-gray-700'>
-                      <span className='font-medium'>Description:</span>{' '}
-                      {store.description || '-'}
-                    </p>
-                    <p className='text-sm text-gray-700'>
-                      <span className='font-medium'>Site web:</span>{' '}
-                      {store.website ? (
-                        <a
-                          href={
-                            /^https?:\/\//.test(store.website)
-                              ? store.website
-                              : `http://${store.website}`
-                          }
-                          target='_blank'
-                          rel='noreferrer'
-                          className='text-indigo-600 hover:underline'
-                        >
-                          {store.website}
-                        </a>
+        {/* Contenu principal en pleine largeur */}
+        <div className='space-y-8'>
+          {/* Section Infos boutique */}
+          {store && section === 'infos' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center mb-4'>
+                <Info className='w-5 h-5 text-indigo-600 mr-2' />
+                <h2 className='text-lg font-semibold text-gray-900'>
+                  Informations de la boutique
+                </h2>
+              </div>
+              {/* Affichage (non édité) */}
+              {!editingInfo && (
+                <div className='space-y-4'>
+                  <div className='flex items-center space-x-4'>
+                    {(() => {
+                      const cloudBase = (
+                        import.meta.env.VITE_CLOUDFRONT_URL ||
+                        'https://d1tmgyvizond6e.cloudfront.net'
+                      ).replace(/\/+$/, '');
+                      const storeLogo = store?.id
+                        ? `${cloudBase}/images/${store.id}`
+                        : undefined;
+                      return storeLogo ? (
+                        <img
+                          src={storeLogo}
+                          alt={store.name}
+                          className='w-16 h-16 rounded-lg object-cover'
+                        />
                       ) : (
-                        '-'
-                      )}
-                    </p>
+                        <div className='w-16 h-16 rounded-lg bg-gray-200 flex items-center justify-center'>
+                          <Upload className='w-8 h-8 text-gray-500' />
+                        </div>
+                      );
+                    })()}
+                    <div>
+                      <p className='text-sm text-gray-700'>
+                        <span className='font-medium'>Nom:</span> {store.name}
+                      </p>
+                      <p className='text-sm text-gray-700'>
+                        <span className='font-medium'>Description:</span>{' '}
+                        {store.description || '-'}
+                      </p>
+                      <p className='text-sm text-gray-700'>
+                        <span className='font-medium'>Site web:</span>{' '}
+                        {store.website ? (
+                          <a
+                            href={
+                              /^https?:\/\//.test(store.website)
+                                ? store.website
+                                : `http://${store.website}`
+                            }
+                            target='_blank'
+                            rel='noreferrer'
+                            className='text-indigo-600 hover:underline'
+                          >
+                            {store.website}
+                          </a>
+                        ) : (
+                          '-'
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                  <div>
+                    <button
+                      onClick={() => setEditingInfo(true)}
+                      className='inline-flex items-center px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700'
+                    >
+                      Modifier vos informations
+                    </button>
                   </div>
                 </div>
-                <div>
-                  <button
-                    onClick={() => setEditingInfo(true)}
-                    className='inline-flex items-center px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700'
-                  >
-                    Modifier vos informations
-                  </button>
-                </div>
-              </div>
-            )}
-            {/* Édition */}
-            {editingInfo && (
-              <div className='space-y-4'>
-                <div className='grid grid-cols-1 md:grid-cols-3 gap-4'>
-                  <div>
-                    <label
-                      htmlFor='storeName'
-                      className='block text-sm font-medium text-gray-700 mb-2'
-                    >
-                      Nom de votre boutique *
-                    </label>
-                    <div className='relative'>
+              )}
+              {/* Édition */}
+              {editingInfo && (
+                <div className='space-y-4'>
+                  <div className='grid grid-cols-1 md:grid-cols-3 gap-4'>
+                    <div>
+                      <label
+                        htmlFor='storeName'
+                        className='block text-sm font-medium text-gray-700 mb-2'
+                      >
+                        Nom de votre boutique *
+                      </label>
+                      <div className='relative'>
+                        <input
+                          type='text'
+                          id='storeName'
+                          required
+                          value={name}
+                          onChange={handleStoreNameChange}
+                          onFocus={handleStoreNameFocus}
+                          onBlur={handleStoreNameBlur}
+                          className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${slugExists || !name.trim() ? 'border-red-500' : 'border-gray-300'}`}
+                          placeholder='Ma Super Boutique'
+                        />
+                        {isCheckingSlug && (
+                          <div className='absolute right-3 inset-y-0 flex items-center'>
+                            <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
+                          </div>
+                        )}
+                      </div>
+                      {showValidationErrors && !name.trim() && (
+                        <p className='mt-2 text-sm text-red-600'>
+                          Veuillez renseigner le nom de la boutique
+                        </p>
+                      )}
+                      {slugExists && (
+                        <p className='mt-2 text-sm text-red-600'>
+                          Ce nom existe déjà.
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      <label
+                        htmlFor='description'
+                        className='block text-sm font-medium text-gray-700 mb-2'
+                      >
+                        Description
+                      </label>
                       <input
-                        type='text'
-                        id='storeName'
-                        required
-                        value={name}
-                        onChange={handleStoreNameChange}
-                        onFocus={handleStoreNameFocus}
-                        onBlur={handleStoreNameBlur}
-                        className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${slugExists || !name.trim() ? 'border-red-500' : 'border-gray-300'}`}
-                        placeholder='Ma Super Boutique'
+                        className='w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500'
+                        value={description}
+                        onChange={e => setDescription(e.target.value)}
                       />
-                      {isCheckingSlug && (
-                        <div className='absolute right-3 inset-y-0 flex items-center'>
-                          <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
+                    </div>
+                    <div>
+                      <label
+                        htmlFor='website'
+                        className='block text-sm font-medium text-gray-700 mb-2'
+                      >
+                        Site web
+                      </label>
+
+                      <input
+                        className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${website && websiteInvalid ? 'border-red-500' : 'border-gray-300'}`}
+                        value={website}
+                        onChange={e => setWebsite(e.target.value)}
+                        placeholder='ex: exemple.com ou https://exemple.com'
+                      />
+                      {website && websiteInvalid && (
+                        <p className='mt-1 text-xs text-red-600'>
+                          Veuillez saisir un nom de domaine valide (ex:
+                          votre-site.co) ou une URL complète
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <label className='block text-sm font-medium text-gray-700 mb-2'>
+                      Logo *
+                    </label>
+                    <div className='flex items-center space-x-4'>
+                      <label
+                        className={` border-gray-300 flex flex-col items-center justify-center w-40 h-32 border-2 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100`}
+                      >
+                        <div className='flex flex-col items-center justify-center pt-5 pb-6'>
+                          <Upload className='w-8 h-8 mb-2 text-gray-400' />
+                          <p className='text-xs text-gray-500'>
+                            Cliquez pour télécharger
+                          </p>
+                        </div>
+                        <input
+                          type='file'
+                          className='hidden'
+                          accept='image/png, image/jpeg'
+                          onChange={handleLogoChange}
+                        />
+                      </label>
+                      {(logoPreview ||
+                        (() => {
+                          const cloudBase = (
+                            import.meta.env.VITE_CLOUDFRONT_URL ||
+                            'https://d1tmgyvizond6e.cloudfront.net'
+                          ).replace(/\/+$/, '');
+                          return store?.id
+                            ? `${cloudBase}/images/${store.id}`
+                            : null;
+                        })()) && (
+                        <div className='w-32 h-32 border rounded-lg overflow-hidden'>
+                          <img
+                            src={
+                              logoPreview ||
+                              (() => {
+                                const cloudBase = (
+                                  import.meta.env.VITE_CLOUDFRONT_URL ||
+                                  'https://d1tmgyvizond6e.cloudfront.net'
+                                ).replace(/\/+$/, '');
+                                return store?.id
+                                  ? `${cloudBase}/images/${store.id}`
+                                  : '';
+                              })()
+                            }
+                            alt='Aperçu du logo'
+                            className='w-full h-full object-cover'
+                          />
                         </div>
                       )}
                     </div>
-                    {showValidationErrors && !name.trim() && (
-                      <p className='mt-2 text-sm text-red-600'>
-                        Veuillez renseigner le nom de la boutique
-                      </p>
-                    )}
-                    {slugExists && (
-                      <p className='mt-2 text-sm text-red-600'>
-                        Ce nom existe déjà.
-                      </p>
-                    )}
                   </div>
-                  <div>
-                    <label
-                      htmlFor='description'
-                      className='block text-sm font-medium text-gray-700 mb-2'
+                  <div className='flex items-center space-x-2'>
+                    <button
+                      onClick={saveStoreInfo}
+                      disabled={
+                        !name.trim() ||
+                        (website && websiteInvalid) ||
+                        slugExists ||
+                        isCheckingSlug
+                      }
+                      className={`inline-flex items-center px-4 py-2 rounded-md text-white ${!name.trim() || (website && websiteInvalid) || slugExists || isCheckingSlug ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
                     >
-                      Description
-                    </label>
-                    <input
-                      className='w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500'
-                      value={description}
-                      onChange={e => setDescription(e.target.value)}
-                    />
+                      {isSubmittingModifications && (
+                        <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                      )}
+                      Enregistrer vos modifications
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingInfo(false);
+                        setLogoFile(null);
+                        setLogoPreview(null);
+                      }}
+                      className='px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
+                    >
+                      Annuler
+                    </button>
                   </div>
-                  <div>
-                    <label
-                      htmlFor='website'
-                      className='block text-sm font-medium text-gray-700 mb-2'
-                    >
-                      Site web
-                    </label>
+                </div>
+              )}
+            </div>
+          )}
 
-                    <input
-                      className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${website && websiteInvalid ? 'border-red-500' : 'border-gray-300'}`}
-                      value={website}
-                      onChange={e => setWebsite(e.target.value)}
-                      placeholder='ex: exemple.com ou https://exemple.com'
-                    />
-                    {website && websiteInvalid && (
-                      <p className='mt-1 text-xs text-red-600'>
-                        Veuillez saisir un nom de domaine valide (ex:
-                        votre-site.co) ou une URL complète
-                      </p>
-                    )}
-                  </div>
+          {/* Section Porte-monnaie */}
+          {section === 'wallet' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center mb-4'>
+                <Wallet className='w-5 h-5 text-indigo-600 mr-2' />
+                <h2 className='text-lg font-semibold text-gray-900'>
+                  Porte-monnaie
+                </h2>
+              </div>
+              <p className='text-gray-600 mb-2'>
+                Montant accumulé suite aux achats des clients.
+              </p>
+              {store && (
+                <div className='flex items-baseline space-x-2 mb-4'>
+                  <span className='text-2xl font-bold text-gray-900'>
+                    {(store.balance ?? 0).toFixed(2)}
+                  </span>
+                  <span className='text-gray-700'>€ disponibles</span>
                 </div>
+              )}
+              {/* Bouton qui révèle la section Demande de versement */}
+              {store && !showPayout && (
+                <button
+                  onClick={() => setShowPayout(true)}
+                  disabled={(store?.balance ?? 0) <= 0}
+                  className={`px-4 py-2 rounded ${(store?.balance ?? 0) <= 0 ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
+                >
+                  Retirer mes gains
+                </button>
+              )}
+              {store && showPayout && (
                 <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-2'>
-                    Logo *
-                  </label>
-                  <div className='flex items-center space-x-4'>
-                    <label
-                      className={` border-gray-300 flex flex-col items-center justify-center w-40 h-32 border-2 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100`}
-                    >
-                      <div className='flex flex-col items-center justify-center pt-5 pb-6'>
-                        <Upload className='w-8 h-8 mb-2 text-gray-400' />
-                        <p className='text-xs text-gray-500'>
-                          Cliquez pour télécharger
-                        </p>
-                      </div>
-                      <input
-                        type='file'
-                        className='hidden'
-                        accept='image/png, image/jpeg'
-                        onChange={handleLogoChange}
-                      />
-                    </label>
-                    {(logoPreview ||
-                      (() => {
-                        const cloudBase = (
-                          import.meta.env.VITE_CLOUDFRONT_URL ||
-                          'https://d1tmgyvizond6e.cloudfront.net'
-                        ).replace(/\/+$/, '');
-                        return store?.id
-                          ? `${cloudBase}/images/${store.id}`
-                          : null;
-                      })()) && (
-                      <div className='w-32 h-32 border rounded-lg overflow-hidden'>
-                        <img
-                          src={
-                            logoPreview ||
-                            (() => {
-                              const cloudBase = (
-                                import.meta.env.VITE_CLOUDFRONT_URL ||
-                                'https://d1tmgyvizond6e.cloudfront.net'
-                              ).replace(/\/+$/, '');
-                              return store?.id
-                                ? `${cloudBase}/images/${store.id}`
-                                : '';
-                            })()
-                          }
-                          alt='Aperçu du logo'
-                          className='w-full h-full object-cover'
-                        />
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className='flex items-center space-x-2'>
                   <button
-                    onClick={saveStoreInfo}
-                    disabled={
-                      !name.trim() ||
-                      (website && websiteInvalid) ||
-                      slugExists ||
-                      isCheckingSlug
-                    }
-                    className={`inline-flex items-center px-4 py-2 rounded-md text-white ${!name.trim() || (website && websiteInvalid) || slugExists || isCheckingSlug ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
-                  >
-                    {isSubmittingModifications && (
-                      <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
-                    )}
-                    Enregistrer vos modifications
-                  </button>
-                  <button
-                    onClick={() => {
-                      setEditingInfo(false);
-                      setLogoFile(null);
-                      setLogoPreview(null);
-                    }}
+                    onClick={() => setShowPayout(false)}
                     className='px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
                   >
                     Annuler
                   </button>
+                  <div className='mt-4 border-t pt-4'>
+                    <h3 className='text-md font-semibold text-gray-900 mb-2'>
+                      Demande de versement
+                    </h3>
+                    {store?.rib && !editingRib && (
+                      <div className='mb-4'>
+                        <p className='text-gray-700'>
+                          Les coordonnées bancaires précédemment renseignées
+                          pour le dernier versement seront utilisées.
+                        </p>
+                      </div>
+                    )}
+                    {!(store?.rib && !editingRib) && (
+                      <div>
+                        <div className='flex items-center space-x-4 mb-3'>
+                          <label className='inline-flex items-center'>
+                            <input
+                              type='radio'
+                              className='mr-2'
+                              name='payoutMethod'
+                              value='link'
+                              checked={payoutMethod === 'link'}
+                              onChange={() => setPayoutMethod('link')}
+                            />
+                            Télécharger le RIB
+                          </label>
+                          <label className='inline-flex items-center'>
+                            <input
+                              type='radio'
+                              className='mr-2'
+                              name='payoutMethod'
+                              value='database'
+                              checked={payoutMethod === 'database'}
+                              onChange={() => setPayoutMethod('database')}
+                            />
+                            Saisir IBAN/BIC
+                          </label>
+                        </div>
+                        {payoutMethod === 'link' && (
+                          <div className='mb-3'>
+                            <label className='block text-sm text-gray-700 mb-1'>
+                              RIB (PDF, PNG, JPG/JPEG)
+                            </label>
+                            <input
+                              type='file'
+                              accept='application/pdf,image/png,image/jpeg'
+                              onChange={e => {
+                                const f = e.target.files?.[0] || null;
+                                setRibFile(f);
+                                setRibUploadError(null);
+                              }}
+                              className='w-full text-sm'
+                            />
+                            {uploadingRib && (
+                              <p className='text-xs text-gray-500 mt-1'>
+                                Téléchargement en cours...
+                              </p>
+                            )}
+                            {ribUploadError && (
+                              <p className='text-sm text-red-600 mt-1'>
+                                {ribUploadError}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {payoutMethod === 'database' && (
+                          <div className='grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3'>
+                            <div>
+                              <label className='block text-sm text-gray-700 mb-1'>
+                                IBAN
+                              </label>
+                              <input
+                                className={`w-full border rounded px-3 py-2 text-sm ${ibanError ? 'border-red-500' : 'border-gray-300'}`}
+                                value={ibanInput}
+                                onChange={e => {
+                                  setIbanInput(e.target.value);
+                                  if (ibanError) setIbanError(null);
+                                }}
+                                placeholder='FR76 3000 6000 0112 3456 7890 189'
+                              />
+                              {ibanError && (
+                                <p className='mt-1 text-xs text-red-600'>
+                                  {ibanError}
+                                </p>
+                              )}
+                            </div>
+                            <div>
+                              <label className='block text-sm text-gray-700 mb-1'>
+                                BIC
+                              </label>
+                              <input
+                                className={`w-full border rounded px-3 py-2 text-sm ${bicError ? 'border-red-500' : 'border-gray-300'}`}
+                                value={bicInput}
+                                onChange={e => {
+                                  setBicInput(e.target.value);
+                                  if (bicError) setBicError(null);
+                                }}
+                                placeholder='AGRIFRPPXXX'
+                              />
+                              {bicError && (
+                                <p className='mt-1 text-xs text-red-600'>
+                                  {bicError}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className='mt-4 flex items-center space-x-2'>
+                    <button
+                      onClick={confirmPayout}
+                      className={`inline-flex items-center px-4 py-2 rounded-md text-white ${
+                        isSubmittingPayout ||
+                        ((store?.rib === null || editingRib) &&
+                          (payoutMethod === 'link'
+                            ? !ribFile
+                            : !ibanInput.trim() || !bicInput.trim())) ||
+                        (payoutMethod === 'database'
+                          ? Boolean(ibanError) || Boolean(bicError)
+                          : Boolean(ribUploadError))
+                          ? 'bg-gray-400 cursor-not-allowed'
+                          : 'bg-indigo-600 hover:bg-indigo-700'
+                      }`}
+                      disabled={
+                        isSubmittingPayout ||
+                        ((store?.rib === null || editingRib) &&
+                          (payoutMethod === 'link'
+                            ? !ribFile
+                            : !ibanInput.trim() || !bicInput.trim())) ||
+                        (payoutMethod === 'database'
+                          ? Boolean(ibanError) || Boolean(bicError)
+                          : Boolean(ribUploadError))
+                      }
+                    >
+                      {isSubmittingPayout && (
+                        <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                      )}
+                      Demander un versement
+                    </button>
+                    {store?.rib && !editingRib && (
+                      <button
+                        onClick={() => {
+                          setEditingRib(true);
+                          setPayoutMethod(
+                            store?.rib?.type === 'link' ? 'link' : 'database'
+                          );
+                        }}
+                        className='px-3 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
+                      >
+                        Modifier
+                      </button>
+                    )}
+                    {editingRib && (
+                      <button
+                        onClick={() => {
+                          setEditingRib(false);
+                          setRibFile(null);
+                          setIbanError(null);
+                          setBicError(null);
+                          setRibUploadError(null);
+                        }}
+                        className='px-3 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
+                      >
+                        Annuler
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Porte-monnaie */}
-        <div className='bg-white rounded-lg shadow p-6 mb-8'>
-          <div className='flex items-center mb-4'>
-            <Wallet className='w-5 h-5 text-indigo-600 mr-2' />
-            <h2 className='text-lg font-semibold text-gray-900'>
-              Porte-monnaie
-            </h2>
-          </div>
-          <p className='text-gray-600 mb-2'>
-            Montant accumulé suite aux achats des clients.
-          </p>
-          {store && (
-            <div className='flex items-baseline space-x-2 mb-4'>
-              <span className='text-2xl font-bold text-gray-900'>
-                {(store.balance ?? 0).toFixed(2)}
-              </span>
-              <span className='text-gray-700'>€ disponibles</span>
+              )}
             </div>
           )}
-          {/* Bouton qui révèle la section Demande de versement */}
-          {store && !showPayout && (
-            <button
-              onClick={() => setShowPayout(true)}
-              disabled={(store.balance ?? 0) <= 0}
-              className={`px-4 py-2 rounded ${(store.balance ?? 0) <= 0 ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
-            >
-              Retirer mes gains
-            </button>
-          )}
-          {store && showPayout && (
-            <div>
-              <button
-                onClick={() => setShowPayout(false)}
-                className='px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
-              >
-                Annuler
-              </button>
-              <div className='mt-4 border-t pt-4'>
-                <h3 className='text-md font-semibold text-gray-900 mb-2'>
-                  Demande de versement
-                </h3>
-                {store.rib && !editingRib && (
-                  <div className='mb-4'>
-                    <p className='text-gray-700'>
-                      Les coordonnées bancaires précédemment renseignées pour le
-                      dernier versement seront utilisées.
-                    </p>
+
+          {/* Section Ventes */}
+          {section === 'sales' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center justify-between mb-4'>
+                <div className='flex items-center'>
+                  <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
+                  <h2 className='text-lg font-semibold text-gray-900'>
+                    Mes ventes
+                  </h2>
+                </div>
+                <div className='flex items-center space-x-3'>
+                  <div className='text-sm text-gray-600'>
+                    Page {page} / {totalPages} — {(shipments || []).length}{' '}
+                    ventes
                   </div>
-                )}
-                {!(store.rib && !editingRib) && (
-                  <div>
-                    <div className='flex items-center space-x-4 mb-3'>
-                      <label className='inline-flex items-center'>
-                        <input
-                          type='radio'
-                          className='mr-2'
-                          name='payoutMethod'
-                          value='link'
-                          checked={payoutMethod === 'link'}
-                          onChange={() => setPayoutMethod('link')}
-                        />
-                        Télécharger le RIB
-                      </label>
-                      <label className='inline-flex items-center'>
-                        <input
-                          type='radio'
-                          className='mr-2'
-                          name='payoutMethod'
-                          value='database'
-                          checked={payoutMethod === 'database'}
-                          onChange={() => setPayoutMethod('database')}
-                        />
-                        Saisir IBAN/BIC
-                      </label>
-                    </div>
-                    {payoutMethod === 'link' && (
-                      <div className='mb-3'>
-                        <label className='block text-sm text-gray-700 mb-1'>
-                          RIB (PDF, PNG, JPG/JPEG)
-                        </label>
-                        <input
-                          type='file'
-                          accept='application/pdf,image/png,image/jpeg'
-                          onChange={e => {
-                            const f = e.target.files?.[0] || null;
-                            setRibFile(f);
-                            setRibUploadError(null);
-                          }}
-                          className='w-full text-sm'
-                        />
-                        {uploadingRib && (
-                          <p className='text-xs text-gray-500 mt-1'>
-                            Téléchargement en cours...
-                          </p>
-                        )}
-                        {ribUploadError && (
-                          <p className='text-sm text-red-600 mt-1'>
-                            {ribUploadError}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                    {payoutMethod === 'database' && (
-                      <div className='grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3'>
-                        <div>
-                          <label className='block text-sm text-gray-700 mb-1'>
-                            IBAN
-                          </label>
-                          <input
-                            className={`w-full border rounded px-3 py-2 text-sm ${ibanError ? 'border-red-500' : 'border-gray-300'}`}
-                            value={ibanInput}
-                            onChange={e => {
-                              setIbanInput(e.target.value);
-                              if (ibanError) setIbanError(null);
-                            }}
-                            placeholder='FR76 3000 6000 0112 3456 7890 189'
-                          />
-                          {ibanError && (
-                            <p className='mt-1 text-xs text-red-600'>
-                              {ibanError}
-                            </p>
-                          )}
-                        </div>
-                        <div>
-                          <label className='block text-sm text-gray-700 mb-1'>
-                            BIC
-                          </label>
-                          <input
-                            className={`w-full border rounded px-3 py-2 text-sm ${bicError ? 'border-red-500' : 'border-gray-300'}`}
-                            value={bicInput}
-                            onChange={e => {
-                              setBicInput(e.target.value);
-                              if (bicError) setBicError(null);
-                            }}
-                            placeholder='AGRIFRPPXXX'
-                          />
-                          {bicError && (
-                            <p className='mt-1 text-xs text-red-600'>
-                              {bicError}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    )}
+                  <label className='text-sm text-gray-700'>Lignes</label>
+                  <select
+                    value={pageSize}
+                    onChange={e => {
+                      const v = parseInt(e.target.value, 10);
+                      setPageSize(isNaN(v) ? 10 : v);
+                      setPage(1);
+                    }}
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                  >
+                    <option value={5}>5</option>
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                  </select>
+                  <div className='flex items-center space-x-2'>
+                    <button
+                      onClick={() => setPage(p => Math.max(1, p - 1))}
+                      disabled={page <= 1}
+                      className={`px-3 py-1 text-sm rounded-md border ${
+                        page <= 1
+                          ? 'bg-gray-100 text-gray-400 border-gray-200'
+                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      Précédent
+                    </button>
+                    <button
+                      onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                      disabled={page >= totalPages}
+                      className={`px-3 py-1 text-sm rounded-md border ${
+                        page >= totalPages
+                          ? 'bg-gray-100 text-gray-400 border-gray-200'
+                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      Suivant
+                    </button>
                   </div>
-                )}
+                </div>
               </div>
-              <div className='mt-4 flex items-center space-x-2'>
-                <button
-                  onClick={confirmPayout}
-                  className={`inline-flex items-center px-4 py-2 rounded-md text-white ${
-                    isSubmittingPayout ||
-                    ((store.rib === null || editingRib) &&
-                      (payoutMethod === 'link'
-                        ? !ribFile
-                        : !ibanInput.trim() || !bicInput.trim())) ||
-                    (payoutMethod === 'database'
-                      ? Boolean(ibanError) || Boolean(bicError)
-                      : Boolean(ribUploadError))
-                      ? 'bg-gray-400 cursor-not-allowed'
-                      : 'bg-indigo-600 hover:bg-indigo-700'
-                  }`}
-                  disabled={
-                    isSubmittingPayout ||
-                    ((store.rib === null || editingRib) &&
-                      (payoutMethod === 'link'
-                        ? !ribFile
-                        : !ibanInput.trim() || !bicInput.trim())) ||
-                    (payoutMethod === 'database'
-                      ? Boolean(ibanError) || Boolean(bicError)
-                      : Boolean(ribUploadError))
-                  }
-                >
-                  {isSubmittingPayout && (
-                    <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
-                  )}
-                  Demander un versement
-                </button>
-                {store.rib && !editingRib && (
-                  <button
-                    onClick={() => {
-                      setEditingRib(true);
-                      setPayoutMethod(
-                        store.rib?.type === 'link' ? 'link' : 'database'
-                      );
-                    }}
-                    className='px-3 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
-                  >
-                    Modifier
-                  </button>
-                )}
-                {editingRib && (
-                  <button
-                    onClick={() => {
-                      setEditingRib(false);
-                      setRibFile(null);
-                      setIbanError(null);
-                      setBicError(null);
-                      setRibUploadError(null);
-                    }}
-                    className='px-3 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
-                  >
-                    Annuler
-                  </button>
-                )}
-              </div>
+
+              {(shipments || []).length === 0 ? (
+                <p className='text-gray-600'>Aucune vente pour le moment.</p>
+              ) : (
+                <table className='w-full'>
+                  <thead>
+                    <tr className='border-b border-gray-200'>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Date
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        ID
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Client
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Référence produit
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Payé
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Reçu
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Méthode
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Statut
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Réseau
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Poids
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Bordereau
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Annulation
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleShipments.map(s => (
+                      <tr
+                        key={s.id}
+                        className='border-b border-gray-100 hover:bg-gray-50'
+                      >
+                        <td className='py-4 px-4 text-gray-700'>
+                          {formatDate(s.created_at)}
+                        </td>
+                        <td className='py-4 px-4 text-gray-700'>
+                          <div className='space-y-1'>
+                            <div className='font-medium'>
+                              {s.shipment_id || '—'}
+                            </div>
+                            {s.tracking_url ? (
+                              <a
+                                href={s.tracking_url}
+                                target='_blank'
+                                rel='noopener noreferrer'
+                                className='text-blue-600 hover:underline'
+                              >
+                                Suivre
+                              </a>
+                            ) : (
+                              <span />
+                            )}
+                          </div>
+                        </td>
+                        <td className='py-4 px-4 text-gray-700'>
+                          <span
+                            className='truncate block max-w-[200px]'
+                            title={s.customer_stripe_id || ''}
+                          >
+                            {s.customer_stripe_id || '—'}
+                          </span>
+                        </td>
+                        <td className='py-4 px-4 text-gray-700'>
+                          {s.product_reference ?? '—'}
+                        </td>
+                        <td className='py-4 px-4 text-gray-900 font-semibold'>
+                          {formatValue(s.value)}
+                        </td>
+                        <td className='py-4 px-4 text-gray-900 font-semibold'>
+                          {formatValue(s?.reference_value ?? store?.reference_value ?? null)}
+                        </td>
+                        <td className='py-4 px-4 text-gray-700'>
+                          {formatMethod(s.delivery_method)}
+                        </td>
+                        <td className='py-4 px-4 text-gray-700'>
+                          <div className='space-y-1'>
+                            <div className='font-medium'>{s.status || '—'}</div>
+                            <div className='text-xs text-gray-500'>
+                              {getStatusDescription(s.status)}
+                            </div>
+                          </div>
+                        </td>
+                        <td className='py-4 px-4 text-gray-700'>
+                          {getNetworkDescription(s.delivery_network)}
+                        </td>
+                        <td className='py-4 px-4 text-gray-700'>
+                          {s.weight || '—'}
+                        </td>
+                        <td className='py-4 px-4'>
+                          <button
+                            onClick={() => handleShippingDocument(s)}
+                            disabled={
+                              !s.document_created ||
+                              docStatus[s.id] === 'loading'
+                            }
+                            className={'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}
+                            title={
+                              s.document_created
+                                ? 'Créer le bordereau'
+                                : 'Bordereau indisponible'
+                            }
+                          >
+                            {docStatus[s.id] === 'loading'
+                              ? 'Création...'
+                              : 'Créer le bordereau'}
+                          </button>
+                        </td>
+                        <td className='py-4 px-4'>
+                          <button
+                            onClick={() => handleCancel(s)}
+                            disabled={
+                              !s.shipment_id ||
+                              !s.isFinal ||
+                              !!s.cancel_requested ||
+                              cancelStatus[s.id] === 'loading'
+                            }
+                            className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                              s.cancel_requested ||
+                              cancelStatus[s.id] === 'success'
+                                ? 'bg-green-50 text-green-700 border-green-200'
+                                : cancelStatus[s.id] === 'error'
+                                  ? 'bg-red-50 text-red-700 border-red-200'
+                                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            }`}
+                            title={
+                              !s.shipment_id
+                                ? 'Annulation indisponible'
+                                : s.cancel_requested
+                                  ? 'Demande déjà envoyée'
+                                  : "Demander l'annulation"
+                            }
+                          >
+                            {cancelStatus[s.id] === 'loading'
+                              ? 'Envoi...'
+                              : s.cancel_requested
+                                ? 'Demande envoyée'
+                                : cancelStatus[s.id] === 'error'
+                                  ? 'Réessayer'
+                                  : "Demander l'annulation"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           )}
         </div>
-        {shipments.length === 0 && (
-          <div className='bg-white rounded-lg shadow p-6'>
-            <div className='flex items-center mb-2'>
-              <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
-              <h2 className='text-lg font-semibold text-gray-900'>
-                Mes ventes
-              </h2>
-            </div>
-            <p className='text-gray-600'>Aucune vente pour le moment.</p>
-          </div>
-        )}
       </div>
     </div>
   );

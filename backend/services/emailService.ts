@@ -121,6 +121,24 @@ interface SupportShippingDocMissingData {
   additionalNote?: string;
 }
 
+interface AdminRefundRequestData {
+  storeName: string;
+  storeOwnerEmail?: string;
+  storeSlug?: string;
+  shippingOrderId: string;
+  boxtalStatus?: string;
+  shipmentId?: string;
+  customerName?: string;
+  customerEmail?: string;
+  customerStripeId?: string;
+  productReference?: string;
+  amount?: number; // Montant produit (référence)
+  deliveryCost?: number; // Frais de livraison
+  total?: number; // Total à rembourser si applicable
+  currency?: string; // ex: EUR
+  paymentId?: string; // si disponible
+}
+
 class EmailService {
   private transporter: nodemailer.Transporter;
 
@@ -716,6 +734,94 @@ class EmailService {
       return true;
     } catch (error) {
       console.error("❌ Erreur envoi email SAV:", error);
+      return false;
+    }
+  }
+
+  // Email de demande de remboursement au SAV après annulation Boxtal
+  async sendAdminRefundRequest(data: AdminRefundRequestData): Promise<boolean> {
+    try {
+      const savEmail = process.env.SAV_EMAIL || process.env.SUPPORT_EMAIL || "";
+      if (!savEmail) {
+        console.warn("SAV_EMAIL/SUPPORT_EMAIL non configuré, email de remboursement non envoyé.");
+        return false;
+      }
+
+      const formattedAmount = this.formatAmount(data.amount, data.currency || "EUR");
+      const formattedDelivery = this.formatAmount(data.deliveryCost, data.currency || "EUR");
+      const formattedTotal = this.formatAmount(data.total, data.currency || "EUR");
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Demande de remboursement client</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #0d6efd 0%, #6c63ff 100%); color: white; padding: 20px; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
+            .section { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #0d6efd; }
+            .kv { margin: 0; }
+            .kv strong { display: inline-block; width: 220px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>💸 Remboursement à effectuer</h1>
+              <p>${data.storeName}${data.storeSlug ? ` — ${data.storeSlug}` : ""}</p>
+            </div>
+            <div class="content">
+              <div class="section">
+                <h3>Résumé</h3>
+                <p class="kv"><strong>Shipping Order ID :</strong> ${data.shippingOrderId}</p>
+                <p class="kv"><strong>Statut Boxtal :</strong> ${data.boxtalStatus || "N/A"}</p>
+                <p class="kv"><strong>Shipment ID :</strong> ${data.shipmentId || "N/A"}</p>
+                <p class="kv"><strong>Store owner :</strong> ${data.storeOwnerEmail || "N/A"}</p>
+              </div>
+
+              <div class="section">
+                <h3>Client</h3>
+                <p class="kv"><strong>Nom :</strong> ${data.customerName || "N/A"}</p>
+                <p class="kv"><strong>Email :</strong> ${data.customerEmail || "N/A"}</p>
+                <p class="kv"><strong>Stripe Customer ID :</strong> ${data.customerStripeId || "N/A"}</p>
+                <p class="kv"><strong>Payment ID :</strong> ${data.paymentId || "N/A"}</p>
+              </div>
+
+              <div class="section">
+                <h3>Montants</h3>
+                <p class="kv"><strong>Produit (référence) :</strong> ${formattedAmount || (typeof data.amount === "number" ? data.amount : "N/A")}</p>
+                <p class="kv"><strong>Frais de livraison :</strong> ${formattedDelivery || (typeof data.deliveryCost === "number" ? data.deliveryCost : "N/A")}</p>
+                <p class="kv"><strong>Total à rembourser :</strong> ${formattedTotal || (typeof data.total === "number" ? data.total : "N/A")}</p>
+                <p class="kv"><strong>Devise :</strong> ${(data.currency || "EUR").toUpperCase()}</p>
+              </div>
+
+              <p>Suite à l'annulation de la commande Boxtal, merci d'effectuer le remboursement au client via Stripe (recherche par email ou customer ID).</p>
+              <p><strong>PayLive - Service SAV</strong></p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const info = await this.transporter.sendMail({
+        from: `"PayLive SAV" <${process.env.SMTP_USER}>`,
+        to: savEmail,
+        subject: `💸 Remboursement à effectuer - ${data.storeName}${formattedTotal ? ` - ${formattedTotal}` : ""}`,
+        html: htmlContent,
+      });
+      console.log(`✅ Email remboursement envoyé à ${savEmail}`);
+      console.log("📨 sendMail result (refund):", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email remboursement:", error);
       return false;
     }
   }

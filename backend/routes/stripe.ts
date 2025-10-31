@@ -915,6 +915,7 @@ router.post(
                     value: (amount || 0) / 100,
                     delivery_cost:
                       dataBoxtal?.content?.deliveryPriceExclTax?.value || 0,
+                    reference_value: product_amount || 0,
                   })
                   .select("id")
                   .single();
