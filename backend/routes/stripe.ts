@@ -1227,11 +1227,58 @@ router.get("/get-customer-by-id", async (req, res) => {
       parcelPointCode: c.metadata?.parcel_point_code,
       homeDeliveryNetwork: c.metadata?.home_delivery_network,
       shippingOrderIds: c.metadata?.shipping_order_ids,
+      clerkUserId: (c.metadata as any)?.clerk_user_id,
     } as any;
     res.json({ customer: customerData });
   } catch (error) {
     console.error("Error retrieving customer by ID:", error);
     res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Nouveau endpoint: récupérer les comptes externes Clerk d’un utilisateur via clerk_user_id
+const { requireAuth } = require("../middleware/auth");
+router.get("/get-clerk-user-by-id", requireAuth, async (req, res) => {
+  try {
+    const clerkUserId = (req.query.clerkUserId as string) || "";
+    if (!clerkUserId) {
+      return res.status(400).json({ error: "Missing clerkUserId" });
+    }
+
+    const user = await clerkClient.users.getUser(clerkUserId);
+
+    const externalAccounts = (user?.externalAccounts || []).map((acc: any) => ({
+      id: acc.id,
+      provider: acc.provider,
+      username: acc.username || null,
+      emailAddress: acc.emailAddress || null,
+      providerUserId: acc.providerUserId || null,
+      verified:
+        acc.verification && acc.verification.status
+          ? acc.verification.status === "verified"
+          : null,
+    }));
+    const primaryEmail = (user?.emailAddresses || []).find(
+      (e: any) => e.id === user?.primaryEmailAddressId
+    )?.emailAddress || (user?.emailAddresses || [])[0]?.emailAddress || null;
+    const primaryPhone = (user?.phoneNumbers || []).find(
+      (p: any) => p.id === user?.primaryPhoneNumberId
+    )?.phoneNumber || (user?.phoneNumbers || [])[0]?.phoneNumber || null;
+    return res.json({
+      user: {
+        id: user.id,
+        firstName: user.firstName || null,
+        lastName: user.lastName || null,
+        imageUrl: user.imageUrl || null,
+        hasImage: !!user.imageUrl,
+        emailAddress: primaryEmail,
+        phoneNumber: primaryPhone,
+        externalAccounts,
+      },
+    });
+  } catch (error) {
+    console.error("Error retrieving Clerk user:", error);
+    return res.status(500).json({ error: (error as Error).message });
   }
 });
 

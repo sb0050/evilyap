@@ -3,7 +3,23 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
 import Spinner from '../components/Spinner';
-import { Wallet, ShoppingCart, ArrowRight, Upload, Info } from 'lucide-react';
+import {
+  Wallet,
+  ShoppingCart,
+  ArrowRight,
+  Upload,
+  Info,
+  Users,
+  ArrowUpDown,
+  RefreshCw,
+} from 'lucide-react';
+import {
+  FaFacebook,
+  FaGoogle,
+  FaTiktok,
+  FaApple,
+  FaShareAlt,
+} from 'react-icons/fa';
 import { Toast } from '../components/Toast';
 import { useToast } from '../utils/toast';
 import { apiPut, apiPost, apiPostForm, apiGet } from '../utils/api';
@@ -17,17 +33,17 @@ type RIBInfo = {
   bic?: string;
 };
 
-  type Store = {
-    id: number;
-    name: string;
-    slug: string;
-    balance?: number | null;
-    clerk_id?: string | null;
-    description?: string | null;
-    website?: string | null;
-    rib?: RIBInfo | null;
-    reference_value?: number | null;
-  };
+type Store = {
+  id: number;
+  name: string;
+  slug: string;
+  balance?: number | null;
+  clerk_id?: string | null;
+  description?: string | null;
+  website?: string | null;
+  rib?: RIBInfo | null;
+  reference_value?: number | null;
+};
 
 type Shipment = {
   id: number;
@@ -97,10 +113,38 @@ export default function DashboardPage() {
   // Toggle de la demande de versement
   const [showPayout, setShowPayout] = useState(false);
   // Navigation des sections du dashboard
-  const [section, setSection] = useState<'infos' | 'wallet' | 'sales'>('infos');
+  const [section, setSection] = useState<
+    'infos' | 'wallet' | 'sales' | 'clients'
+  >('infos');
   // Pagination pour la section Ventes
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState<number>(1);
+  // Barre de recherche sur l'ID (contains)
+  const [idSearch, setIdSearch] = useState<string>('');
+  const [reloadingSales, setReloadingSales] = useState<boolean>(false);
+  // États Clients (onglet dédié)
+  const [clientsPageSize, setClientsPageSize] = useState<number>(10);
+  const [clientsPage, setClientsPage] = useState<number>(1);
+  const [customersMap, setCustomersMap] = useState<Record<string, any>>({});
+  const [customersLoading, setCustomersLoading] = useState<boolean>(false);
+  const [clientIdSearch, setClientIdSearch] = useState<string>('');
+  const [clientsSortOrder, setClientsSortOrder] = useState<'asc' | 'desc'>(
+    'desc'
+  );
+  const [socialsMap, setSocialsMap] = useState<Record<string, any>>({});
+
+  const providerIconMap: Record<string, any> = {
+    google: FaGoogle,
+    facebook: FaFacebook,
+    tiktok: FaTiktok,
+    apple: FaApple,
+  };
+  const getProviderIcon = (provider?: string) => {
+    if (!provider) return null;
+    const key = provider.toLowerCase();
+    const found = Object.keys(providerIconMap).find(k => key.includes(k));
+    return found ? providerIconMap[found] : null;
+  };
   // Validation du site web (mêmes règles que onboarding)
   const isValidWebsite = (url: string) => {
     const value = (url || '').trim();
@@ -328,26 +372,168 @@ export default function DashboardPage() {
     }
   };
 
-  // Pagination: calculs dérivés
+  const handleReloadSales = async () => {
+    try {
+      if (!storeSlug) return;
+      setReloadingSales(true);
+      setError(null);
+      const token = await getToken();
+      const shipResp = await fetch(
+        `${apiBase}/api/shipments/store/${encodeURIComponent(storeSlug)}`,
+        {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
+      );
+      const shipJson = await shipResp.json().catch(() => ({}));
+      if (!shipResp.ok) {
+        const msg = shipJson?.error || 'Erreur lors du rechargement des ventes';
+        throw new Error(typeof msg === 'string' ? msg : 'Rechargement échoué');
+      }
+      setShipments(
+        Array.isArray(shipJson?.shipments) ? shipJson.shipments : []
+      );
+      showToast('Ventes rechargées', 'success');
+      // Réinitialiser la pagination si la page dépasse le total
+      setPage(1);
+    } catch (e: any) {
+      const rawMsg = e?.message || 'Erreur inconnue';
+      showToast(rawMsg, 'error');
+    } finally {
+      setReloadingSales(false);
+    }
+  };
+
+  // Filtre ID (contains) et pagination dérivée
+  const filteredShipments = (shipments || []).filter(s => {
+    const term = (idSearch || '').trim().toLowerCase();
+    if (!term) return true;
+    const idStr = (s.shipment_id || '').toLowerCase();
+    return idStr.includes(term);
+  });
   const totalPages = Math.max(
     1,
-    Math.ceil((shipments || []).length / pageSize)
+    Math.ceil(filteredShipments.length / pageSize)
   );
   const startIndex = (page - 1) * pageSize;
-  const visibleShipments = (shipments || []).slice(
+  const visibleShipments = filteredShipments.slice(
     startIndex,
     startIndex + pageSize
   );
 
   useEffect(() => {
-    // Clamp page si longueur change
-    const newTotal = Math.max(
-      1,
-      Math.ceil((shipments || []).length / pageSize)
-    );
+    // Clamp page si longueur filtrée change
+    const filteredLength = (shipments || []).filter(s => {
+      const term = (idSearch || '').trim().toLowerCase();
+      if (!term) return true;
+      const idStr = (s.shipment_id || '').toLowerCase();
+      return idStr.includes(term);
+    }).length;
+    const newTotal = Math.max(1, Math.ceil(filteredLength / pageSize));
     if (page > newTotal) setPage(newTotal);
     if (page < 1) setPage(1);
-  }, [shipments, pageSize]);
+  }, [shipments, pageSize, idSearch]);
+
+  // Chargement des clients Stripe basés sur les customer_stripe_id des shipments
+  useEffect(() => {
+    if (section !== 'clients') return;
+    const ids = Array.from(
+      new Set((shipments || []).map(s => s.customer_stripe_id).filter(Boolean))
+    ) as string[];
+    const idsToFetch = ids.filter(id => !(id in customersMap));
+    if (idsToFetch.length === 0) return;
+    setCustomersLoading(true);
+    Promise.all(
+      idsToFetch.map(async id => {
+        try {
+          const resp = await fetch(
+            `${apiBase}/api/stripe/get-customer-by-id?customerId=${encodeURIComponent(id)}`
+          );
+          const json = await resp.json().catch(() => ({}));
+          if (!resp.ok) {
+            console.warn(
+              'Erreur récupération client Stripe',
+              json?.error || json?.message
+            );
+            return { id, customer: null };
+          }
+          return { id, customer: json?.customer || null };
+        } catch (e) {
+          console.warn('Exception récupération client Stripe', e);
+          return { id, customer: null };
+        }
+      })
+    )
+      .then(results => {
+        setCustomersMap(prev => {
+          const next = { ...prev };
+          results.forEach(({ id, customer }) => {
+            if (customer) next[id] = customer;
+          });
+          return next;
+        });
+      })
+      .finally(() => setCustomersLoading(false));
+  }, [section, shipments]);
+
+  // Charger les réseaux sociaux (comptes externes) Clerk pour les clients Stripe qui exposent clerkUserId
+  useEffect(() => {
+    const run = async () => {
+      const entries = Object.values(customersMap || {}) as any[];
+      const ids = Array.from(
+        new Set(
+          entries
+            .map(c => c?.clerkUserId || c?.clerk_user_id)
+            .filter((v: any) => !!v)
+        )
+      ) as string[];
+      const toFetch = ids.filter(id => !(id in socialsMap));
+      if (toFetch.length === 0) return;
+      try {
+        const token = await getToken();
+        const results = await Promise.all(
+          toFetch.map(async clerkId => {
+            try {
+              const resp = await fetch(
+                `${apiBase}/api/stripe/get-clerk-user-by-id?clerkUserId=${encodeURIComponent(
+                  clerkId
+                )}`,
+                {
+                  headers: {
+                    Authorization: token ? `Bearer ${token}` : '',
+                  },
+                }
+              );
+              const json = await resp.json().catch(() => ({}));
+              if (!resp.ok) {
+                console.warn(
+                  'Erreur récupération comptes externes',
+                  json?.error || json?.message
+                );
+                return { clerkId, user: null };
+              }
+              const user = json?.user || null;
+              return { clerkId, user };
+            } catch (e) {
+              console.warn('Exception récupération comptes externes', e);
+              return { clerkId, accounts: [] };
+            }
+          })
+        );
+        setSocialsMap(prev => {
+          const next = { ...prev };
+          results.forEach(r => {
+            next[r.clerkId] = r.user || null;
+          });
+          return next;
+        });
+      } catch (e) {
+        console.warn('Erreur globale récupération comptes externes', e);
+      }
+    };
+    run();
+  }, [customersMap]);
 
   // Handlers de validation du nom (adaptés depuis Onboarding)
   const handleStoreNameFocus = () => {
@@ -743,6 +929,17 @@ export default function DashboardPage() {
             >
               <ShoppingCart className='w-4 h-4 mr-2' />
               <span>Ventes</span>
+            </button>
+            <button
+              onClick={() => setSection('clients')}
+              className={`flex items-center px-3 py-2 rounded-md border ${
+                section === 'clients'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <Users className='w-4 h-4 mr-2' />
+              <span>Clients</span>
             </button>
           </nav>
         </div>
@@ -1204,9 +1401,32 @@ export default function DashboardPage() {
                 </div>
                 <div className='flex items-center space-x-3'>
                   <div className='text-sm text-gray-600'>
-                    Page {page} / {totalPages} — {(shipments || []).length}{' '}
+                    Page {page} / {totalPages} — {filteredShipments.length}{' '}
                     ventes
                   </div>
+                  <button
+                    onClick={handleReloadSales}
+                    disabled={reloadingSales}
+                    className={`px-3 py-1 text-sm rounded-md border inline-flex items-center ${
+                      reloadingSales
+                        ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                    title='Recharger les ventes'
+                  >
+                    {reloadingSales ? (
+                      <>
+                        <RefreshCw className='w-4 h-4 mr-1 animate-spin text-gray-400' />
+                        <span>Rechargement…</span>
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className='w-4 h-4 mr-1 text-gray-600' />
+                        <span>Recharger</span>
+                      </>
+                    )}
+                  </button>
+
                   <label className='text-sm text-gray-700'>Lignes</label>
                   <select
                     value={pageSize}
@@ -1249,52 +1469,84 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {(shipments || []).length === 0 ? (
-                <p className='text-gray-600'>Aucune vente pour le moment.</p>
-              ) : (
-                <table className='w-full'>
-                  <thead>
-                    <tr className='border-b border-gray-200'>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Date
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        ID
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Client
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Référence produit
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Payé
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Reçu
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Méthode
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Statut
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Réseau
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Poids
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Bordereau
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Annulation
-                      </th>
+              <table className='w-full'>
+                <thead>
+                  <tr className='border-b border-gray-200'>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Date
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      ID
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Client
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Référence produit
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Payé
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Reçu
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Méthode
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Statut
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Réseau
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Poids
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Bordereau
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Annulation
+                    </th>
+                  </tr>
+                  <tr className='border-b border-gray-100'>
+                    <th className='py-2 px-4'></th>
+                    <th className='py-2 px-4'>
+                      <input
+                        type='text'
+                        value={idSearch}
+                        onChange={e => {
+                          setIdSearch(e.target.value);
+                          setPage(1);
+                        }}
+                        placeholder='Filtrer…'
+                        className='w-full  max-w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                      />
+                    </th>
+                    <th className='py-2 px-4'></th>
+                    <th className='py-2 px-4'></th>
+                    <th className='py-2 px-4'></th>
+                    <th className='py-2 px-4'></th>
+                    <th className='py-2 px-4'></th>
+                    <th className='py-2 px-4'></th>
+                    <th className='py-2 px-4'></th>
+                    <th className='py-2 px-4'></th>
+                    <th className='py-2 px-4'></th>
+                    <th className='py-2 px-4'></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleShipments.length === 0 ? (
+                    <tr>
+                      <td
+                        className='py-4 px-4 text-gray-600 text-center'
+                        colSpan={12}
+                      >
+                        Aucune vente pour le filtre courant.
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {visibleShipments.map(s => (
+                  ) : (
+                    visibleShipments.map(s => (
                       <tr
                         key={s.id}
                         className='border-b border-gray-100 hover:bg-gray-50'
@@ -1336,7 +1588,9 @@ export default function DashboardPage() {
                           {formatValue(s.value)}
                         </td>
                         <td className='py-4 px-4 text-gray-900 font-semibold'>
-                          {formatValue(s?.reference_value ?? store?.reference_value ?? null)}
+                          {formatValue(
+                            s?.reference_value ?? store?.reference_value ?? null
+                          )}
                         </td>
                         <td className='py-4 px-4 text-gray-700'>
                           {formatMethod(s.delivery_method)}
@@ -1362,7 +1616,9 @@ export default function DashboardPage() {
                               !s.document_created ||
                               docStatus[s.id] === 'loading'
                             }
-                            className={'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}
+                            className={
+                              'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            }
                             title={
                               s.document_created
                                 ? 'Créer le bordereau'
@@ -1409,10 +1665,511 @@ export default function DashboardPage() {
                           </button>
                         </td>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {section === 'clients' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center justify-between mb-4'>
+                <div className='flex items-center'>
+                  <Users className='w-5 h-5 text-indigo-600 mr-2' />
+                  <h2 className='text-lg font-semibold text-gray-900'>
+                    Clients
+                  </h2>
+                </div>
+                <div className='flex items-center space-x-3'>
+                  <div className='text-sm text-gray-600'>
+                    {customersLoading ? (
+                      <span>Chargement...</span>
+                    ) : (
+                      (() => {
+                        const allIds = Array.from(
+                          new Set(
+                            (shipments || [])
+                              .map(s => s.customer_stripe_id)
+                              .filter(Boolean)
+                          )
+                        ) as string[];
+                        const term = (clientIdSearch || '')
+                          .trim()
+                          .toLowerCase();
+                        const filteredIds = term
+                          ? allIds.filter(id =>
+                              (id || '').toLowerCase().includes(term)
+                            )
+                          : allIds;
+                        const totalClients = filteredIds.length;
+                        const totalPagesClients = Math.max(
+                          1,
+                          Math.ceil(totalClients / clientsPageSize)
+                        );
+                        return (
+                          <>
+                            Page {clientsPage} / {totalPagesClients} —{' '}
+                            {totalClients} clients
+                          </>
+                        );
+                      })()
+                    )}
+                  </div>
+
+                  <label className='text-sm text-gray-700'>Lignes</label>
+                  <select
+                    value={clientsPageSize}
+                    onChange={e => {
+                      const v = parseInt(e.target.value, 10);
+                      setClientsPageSize(isNaN(v) ? 10 : v);
+                      setClientsPage(1);
+                    }}
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                  >
+                    <option value={5}>5</option>
+                    <option value={10}>10</option>
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                  </select>
+                  <div className='flex items-center space-x-2'>
+                    {(() => {
+                      const uniqueIds = Array.from(
+                        new Set(
+                          (shipments || [])
+                            .map(s => s.customer_stripe_id)
+                            .filter(Boolean)
+                        )
+                      ) as string[];
+                      const totalClients = uniqueIds.length;
+                      const totalPagesClients = Math.max(
+                        1,
+                        Math.ceil(totalClients / clientsPageSize)
+                      );
+                      return (
+                        <>
+                          <button
+                            onClick={() =>
+                              setClientsPage(p => Math.max(1, p - 1))
+                            }
+                            disabled={clientsPage <= 1}
+                            className={`px-3 py-1 text-sm rounded-md border ${
+                              clientsPage <= 1
+                                ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            }`}
+                          >
+                            Précédent
+                          </button>
+                          <button
+                            onClick={() =>
+                              setClientsPage(p =>
+                                Math.min(totalPagesClients, p + 1)
+                              )
+                            }
+                            disabled={clientsPage >= totalPagesClients}
+                            className={`px-3 py-1 text-sm rounded-md border ${
+                              clientsPage >= totalPagesClients
+                                ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            }`}
+                          >
+                            Suivant
+                          </button>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </div>
+
+              {(() => {
+                const allIds = Array.from(
+                  new Set(
+                    (shipments || [])
+                      .map(s => s.customer_stripe_id)
+                      .filter(Boolean)
+                  )
+                ) as string[];
+                if (allIds.length === 0)
+                  return (
+                    <p className='text-gray-600'>
+                      Aucun client pour le moment.
+                    </p>
+                  );
+
+                // Filtre par Client ID
+                const term = (clientIdSearch || '').trim().toLowerCase();
+                const filteredIds = term
+                  ? allIds.filter(id => (id || '').toLowerCase().includes(term))
+                  : allIds;
+
+                // Sommes dépensées par client (somme des shipments.reference_value)
+                const spentMap: Record<string, number> = {};
+                (shipments || []).forEach(s => {
+                  const id = s.customer_stripe_id || '';
+                  if (!id) return;
+                  const v =
+                    typeof s.reference_value === 'number'
+                      ? s.reference_value || 0
+                      : 0;
+                  spentMap[id] = (spentMap[id] || 0) + v;
+                });
+
+                // Tri par "Dépensé"
+                const sortedIds = [...filteredIds].sort((a, b) => {
+                  const sa = spentMap[a] || 0;
+                  const sb = spentMap[b] || 0;
+                  return clientsSortOrder === 'asc' ? sa - sb : sb - sa;
+                });
+
+                // Pagination
+                const startIdx = (clientsPage - 1) * clientsPageSize;
+                const pageIds = sortedIds.slice(
+                  startIdx,
+                  startIdx + clientsPageSize
+                );
+
+                const rows = pageIds.map(id => ({
+                  id,
+                  data: customersMap[id] || null,
+                  spent: spentMap[id] || 0,
+                }));
+
+                return (
+                  <table className='w-full'>
+                    <thead>
+                      <tr className='border-b border-gray-200'>
+                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                          Client ID
+                        </th>
+                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                          Nom
+                        </th>
+                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                          Email
+                        </th>
+                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                          Téléphone
+                        </th>
+                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                          Adresse
+                        </th>
+                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                          <div className='flex items-center space-x-2'>
+                            <span>Dépensé</span>
+                            <button
+                              onClick={() =>
+                                setClientsSortOrder(o =>
+                                  o === 'asc' ? 'desc' : 'asc'
+                                )
+                              }
+                              className='p-1 rounded hover:bg-gray-100'
+                              title={`Trier ${clientsSortOrder === 'asc' ? '↓' : '↑'}`}
+                            >
+                              <ArrowUpDown className='w-4 h-4 text-gray-600' />
+                            </button>
+                          </div>
+                        </th>
+                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                          Réseaux
+                        </th>
+                      </tr>
+                      <tr className='border-b border-gray-100'>
+                        <th className='py-2 px-4'>
+                          <input
+                            type='text'
+                            value={clientIdSearch}
+                            onChange={e => {
+                              setClientIdSearch(e.target.value);
+                              setClientsPage(1);
+                            }}
+                            placeholder='Filtrer …'
+                            className='w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                          />
+                        </th>
+                        <th className='py-2 px-4'></th>
+                        <th className='py-2 px-4'></th>
+                        <th className='py-2 px-4'></th>
+                        <th className='py-2 px-4'></th>
+                        <th className='py-2 px-4'></th>
+                        <th className='py-2 px-4'></th>
+                        <th className='py-2 px-4'></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(r => {
+                        const a = r.data?.address || {};
+                        const addr = [
+                          a?.line1,
+                          `${a?.postal_code || ''} ${a?.city || ''}`.trim(),
+                          a?.country,
+                        ]
+                          .filter(Boolean)
+                          .join(', ');
+                        return (
+                          <tr
+                            key={r.id}
+                            className='border-b border-gray-100 hover:bg-gray-50'
+                          >
+                            <td className='py-4 px-4 text-gray-700'>
+                              <span
+                                className='truncate block max-w-[240px]'
+                                title={r.id}
+                              >
+                                {r.id}
+                              </span>
+                            </td>
+                            <td className='py-4 px-4 text-gray-700'>
+                              {(() => {
+                                const clerkId =
+                                  r.data?.clerkUserId || r.data?.clerk_user_id;
+                                const u = clerkId
+                                  ? socialsMap[clerkId] || null
+                                  : null;
+                                const name =
+                                  r.data?.name ||
+                                  [u?.firstName, u?.lastName]
+                                    .filter(Boolean)
+                                    .join(' ') ||
+                                  '—';
+                                return (
+                                  <div className='flex items-center space-x-2'>
+                                    {u?.hasImage && u?.imageUrl ? (
+                                      <img
+                                        src={u.imageUrl}
+                                        alt='avatar'
+                                        className='w-8 h-8 rounded-full object-cover'
+                                      />
+                                    ) : null}
+                                    <span>{name}</span>
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                            <td className='py-4 px-4 text-gray-700'>
+                              {r.data?.email || '—'}
+                            </td>
+                            <td className='py-4 px-4 text-gray-700'>
+                              {r.data?.phone || '—'}
+                            </td>
+                            <td className='py-4 px-4 text-gray-700'>
+                              {addr || '—'}
+                            </td>
+                            <td className='py-4 px-4 text-gray-700'>
+                              {formatValue(r.spent)}
+                            </td>
+                            <td className='py-4 px-4 text-gray-700'>
+                              {(() => {
+                                const clerkId =
+                                  r.data?.clerkUserId || r.data?.clerk_user_id;
+                                const u = clerkId
+                                  ? socialsMap[clerkId] || null
+                                  : null;
+                                const accounts = u?.externalAccounts || [];
+                                if (!u || !accounts || accounts.length === 0)
+                                  return '—';
+                                return (
+                                  <div className='space-y-1'>
+                                    {accounts.map((acc: any) => {
+                                      const providerKey = (
+                                        acc?.provider || ''
+                                      ).toLowerCase();
+                                      const Icon = getProviderIcon(
+                                        acc?.provider
+                                      );
+
+                                      const isAppleOrTikTok =
+                                        providerKey.includes('apple') ||
+                                        providerKey.includes('tiktok');
+
+                                      if (isAppleOrTikTok) {
+                                        // Pour Apple/TikTok: n'afficher que le logo si tous les champs sont vides
+                                        const email =
+                                          (acc?.emailAddress &&
+                                            acc.emailAddress.trim()) ||
+                                          '';
+                                        const firstName =
+                                          (acc?.firstName &&
+                                            acc.firstName.trim()) ||
+                                          '';
+                                        const lastName =
+                                          (acc?.lastName &&
+                                            acc.lastName.trim()) ||
+                                          '';
+                                        const username =
+                                          (acc?.username &&
+                                            String(acc.username).trim()) ||
+                                          '';
+                                        const phone =
+                                          (acc?.phoneNumber &&
+                                            String(acc.phoneNumber).trim()) ||
+                                          '';
+                                        const name = [firstName, lastName]
+                                          .filter(Boolean)
+                                          .join(' ');
+                                        const hasAny = Boolean(
+                                          email || name || phone || username
+                                        );
+
+                                        if (!hasAny) {
+                                          return (
+                                            <div
+                                              key={acc?.id || acc?.provider}
+                                              className='flex items-center space-x-2'
+                                            >
+                                              {Icon ? (
+                                                <Icon
+                                                  size={14}
+                                                  className='text-gray-600'
+                                                />
+                                              ) : (
+                                                <FaShareAlt
+                                                  size={14}
+                                                  className='text-gray-600'
+                                                />
+                                              )}
+                                            </div>
+                                          );
+                                        }
+
+                                        return (
+                                          <div
+                                            key={acc?.id || acc?.provider}
+                                            className='flex items-center space-x-2'
+                                          >
+                                            {Icon ? (
+                                              <Icon
+                                                size={14}
+                                                className='text-gray-600'
+                                              />
+                                            ) : (
+                                              <FaShareAlt
+                                                size={14}
+                                                className='text-gray-600'
+                                              />
+                                            )}
+                                            {email ? (
+                                              <span className='text-xs text-gray-700'>
+                                                {email}
+                                              </span>
+                                            ) : null}
+                                            {name ? (
+                                              <span className='text-xs text-gray-700'>
+                                                {name}
+                                              </span>
+                                            ) : null}
+                                            {phone ? (
+                                              <span className='text-xs text-gray-700'>
+                                                {phone}
+                                              </span>
+                                            ) : null}
+                                            {username ? (
+                                              <span className='text-xs text-gray-700'>
+                                                @{username}
+                                              </span>
+                                            ) : null}
+                                          </div>
+                                        );
+                                      }
+
+                                      // Autres providers : afficher les champs si disponibles, avec fallback user
+                                      const email =
+                                        (acc?.emailAddress &&
+                                          acc.emailAddress.trim()) ||
+                                        (u?.emailAddress || '').trim() ||
+                                        '';
+                                      const username =
+                                        (acc?.username &&
+                                          String(acc.username).trim()) ||
+                                        '';
+                                      const firstName = (
+                                        u?.firstName || ''
+                                      ).trim();
+                                      const lastName = (
+                                        u?.lastName || ''
+                                      ).trim();
+                                      const name = [firstName, lastName]
+                                        .filter(Boolean)
+                                        .join(' ');
+                                      const phone = (
+                                        u?.phoneNumber || ''
+                                      ).trim();
+                                      const hasAny = Boolean(
+                                        email || name || phone || username
+                                      );
+
+                                      if (!hasAny) {
+                                        return (
+                                          <div
+                                            key={acc?.id || acc?.provider}
+                                            className='flex items-center space-x-2'
+                                          >
+                                            {Icon ? (
+                                              <Icon
+                                                size={14}
+                                                className='text-gray-600'
+                                              />
+                                            ) : (
+                                              <FaShareAlt
+                                                size={14}
+                                                className='text-gray-600'
+                                              />
+                                            )}
+                                          </div>
+                                        );
+                                      }
+
+                                      return (
+                                        <div
+                                          key={acc?.id || acc?.provider}
+                                          className='flex items-center space-x-2'
+                                        >
+                                          {Icon ? (
+                                            <Icon
+                                              size={14}
+                                              className='text-gray-600'
+                                            />
+                                          ) : (
+                                            <FaShareAlt
+                                              size={14}
+                                              className='text-gray-600'
+                                            />
+                                          )}
+                                          {email ? (
+                                            <span className='text-xs text-gray-700'>
+                                              {email}
+                                            </span>
+                                          ) : null}
+                                          {name ? (
+                                            <span className='text-xs text-gray-700'>
+                                              {name}
+                                            </span>
+                                          ) : null}
+                                          {phone ? (
+                                            <span className='text-xs text-gray-700'>
+                                              {phone}
+                                            </span>
+                                          ) : null}
+                                          {username ? (
+                                            <span className='text-xs text-gray-700'>
+                                              @{username}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                );
+              })()}
             </div>
           )}
         </div>
