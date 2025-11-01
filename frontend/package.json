@@ -9,6 +9,7 @@
     "@heroicons/react": "^2.2.0",
     "@stripe/react-stripe-js": "^3.8.1",
     "@stripe/stripe-js": "7.7.0",
+    "canvas-confetti": "^1.9.4",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.534.0",
     "motion": "^12.23.24",

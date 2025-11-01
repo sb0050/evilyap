@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
 import Spinner from '../components/Spinner';
@@ -24,6 +24,8 @@ import {
 import { Toast } from '../components/Toast';
 import { useToast } from '../utils/toast';
 import { apiPut, apiPost, apiPostForm, apiGet } from '../utils/api';
+import SuccessConfetti from '../components/SuccessConfetti';
+
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
 
@@ -136,6 +138,22 @@ export default function DashboardPage() {
     'desc'
   );
   const [socialsMap, setSocialsMap] = useState<Record<string, any>>({});
+
+  // Popup de bienvenue après création de boutique
+  const [showWelcome, setShowWelcome] = useState<boolean>(false);
+  const location = useLocation();
+  const shareLink = storeSlug ? `https://paylive.cc/c/${storeSlug}` : '';
+
+  useEffect(() => {
+    //const created = (location.state as any)?.isStorecreated === true;
+    const created = true;
+    if (created) {
+      setShowWelcome(true);
+      // Nettoyer l'état d'historique pour éviter réaffichage en navigations suivantes
+      navigate(location.pathname, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const providerIconMap: Record<string, any> = {
     google: FaGoogle,
@@ -911,6 +929,15 @@ export default function DashboardPage() {
         />
       )}
       <Header />
+      {showWelcome && (
+        <SuccessConfetti
+          show={showWelcome}
+          onClose={() => setShowWelcome(false)}
+          title={'🎉 Félicitations !'}
+          subtitle={'Votre boutique est maintenant créée et prête à recevoir vos premiers clients'}
+          shareLink={shareLink}
+        />
+      )}
       {/* Accès contrôlé par Header; contenu rendu directement ici */}
       <div className='w-full mx-auto px-4 sm:px-6 lg:px-8 py-8'>
         {/* Errors are now surfaced via Toasts */}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
 import { Upload } from 'lucide-react';
 import { AddressElement } from '@stripe/react-stripe-js';
@@ -21,7 +22,9 @@ interface OnboardingFormData {
 }
 
 export default function OnboardingPage() {
+  const navigate = useNavigate();
   const { user } = useUser();
+  const [onboardingAllowed, setOnboardingAllowed] = useState<boolean | null>(null);
 
   // Préremplir le nom complet depuis Clerk
   useEffect(() => {
@@ -30,6 +33,33 @@ export default function OnboardingPage() {
       setFormData(prev => ({ ...prev, name: fullName }));
     }
   }, [user?.fullName]);
+
+  // Garde d'onboarding (fallback): ne pas afficher le contenu tant que la vérification n'est pas faite
+  useEffect(() => {
+    const check = async () => {
+      const email = user?.primaryEmailAddress?.emailAddress;
+      // Si Clerk charge ou pas d'email, rester en pending
+      if (!email) {
+        setOnboardingAllowed(null);
+        return;
+      }
+      try {
+        const resp = await fetch(
+          `${(import.meta as any).env.VITE_API_URL || 'http://localhost:5000'}/api/stores/check-owner/${encodeURIComponent(email)}`
+        );
+        const json = await resp.json();
+        if (json?.exists && json?.slug) {
+          window.location.href = `/dashboard/${encodeURIComponent(json.slug)}`;
+          return;
+        }
+        setOnboardingAllowed(true);
+      } catch (_e) {
+        // En cas d'erreur, laisser l'overlay du Header afficher l'erreur
+        setOnboardingAllowed(false);
+      }
+    };
+    check();
+  }, [user?.primaryEmailAddress?.emailAddress]);
 
   const { toast, showToast } = useToast();
   const [loading, setLoading] = useState(false);
@@ -204,7 +234,9 @@ export default function OnboardingPage() {
         }
         // rediriger vers le tableau de bord de la boutique avec le slug renvoyé par le backend
         const finalSlug = result?.store?.slug || slug;
-        window.location.href = `/dashboard/${encodeURIComponent(finalSlug)}`;
+        navigate(`/dashboard/${encodeURIComponent(finalSlug)}`, {
+          state: { isStorecreated: true },
+        });
       } else {
         throw new Error(
           result.error || 'Erreur lors de la création de la boutique'
@@ -283,6 +315,15 @@ export default function OnboardingPage() {
       setIsCheckingSlug(false);
     }
   };
+
+  // Masquer le contenu tant que la garde n'est pas 'ok' (pending ou erreur -> Header affiche overlay)
+  if (onboardingAllowed !== true) {
+    return (
+      <div className='min-h-screen bg-gray-50'>
+        <Header />
+      </div>
+    );
+  }
 
   // Toast notifications rendered when present
 

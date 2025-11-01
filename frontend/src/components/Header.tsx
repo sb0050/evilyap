@@ -69,6 +69,16 @@ export default function Header() {
       return 'ok';
     }
   );
+  const [onboardingGuardStatus, setOnboardingGuardStatus] = useState<
+    'ok' | 'pending' | 'error'
+  >(() => {
+    const path = window.location?.pathname || '';
+    return path.startsWith('/onboarding') ? 'pending' : 'ok';
+  });
+  const [onboardingGuardError, setOnboardingGuardError] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
   const apiBase =
     (import.meta as any).env.VITE_API_URL || 'http://localhost:5000';
   const [cartOpen, setCartOpen] = useState(false);
@@ -450,6 +460,53 @@ export default function Header() {
     checkDashboardGuard();
   }, [user, location.pathname]);
 
+  // Garde Onboarding: vérifier si l'utilisateur possède déjà une boutique
+  useLayoutEffect(() => {
+    const checkOnboardingGuard = async () => {
+      const path = location.pathname || '';
+      if (!path.startsWith('/onboarding')) {
+        setOnboardingGuardStatus('ok');
+        setOnboardingGuardError(null);
+        return;
+      }
+
+      // Basculer en pending pendant la vérification
+      setOnboardingGuardStatus('pending');
+
+      const email = user?.primaryEmailAddress?.emailAddress;
+      if (!email) {
+        // Si l'email n'est pas disponible (chargement Clerk), rester en pending
+        return;
+      }
+
+      try {
+        const resp = await fetch(
+          `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
+        );
+        const json = await resp.json();
+        if (!resp.ok) {
+          throw new Error(json?.error || 'Vérification propriétaire échouée');
+        }
+        if (json?.exists && json?.slug) {
+          // Déjà propriétaire: rediriger vers le dashboard
+          window.location.href = `/dashboard/${encodeURIComponent(json.slug)}`;
+          return;
+        }
+        // Pas de boutique: autoriser l'accès à l'onboarding
+        setOnboardingGuardStatus('ok');
+        setOnboardingGuardError(null);
+      } catch (_e) {
+        setOnboardingGuardError({
+          title: 'Erreur',
+          message:
+            "Impossible de vérifier votre statut d'onboarding. Veuillez réessayer.",
+        });
+        setOnboardingGuardStatus('error');
+      }
+    };
+    checkOnboardingGuard();
+  }, [user, location.pathname]);
+
   const handleDeleteItem = async (
     cartItemId: number,
     requireExpired?: boolean
@@ -643,6 +700,33 @@ export default function Header() {
           </div>
         </div>
       </header>
+      {/* Overlay spécifique Onboarding: bloque l'affichage pendant la vérification */}
+      {location.pathname.startsWith('/onboarding') &&
+        onboardingGuardStatus !== 'ok' && (
+          <div className='fixed inset-0 top-16 bg-gray-50 z-40 flex items-center justify-center'>
+            <div className='text-center px-4'>
+              {onboardingGuardStatus === 'pending' ? (
+                <Spinner
+                  size='lg'
+                  color='blue'
+                  variant='bottom'
+                  className='mx-auto mb-4'
+                />
+              ) : (
+                <>
+                  <div className='text-gray-400 text-xl mb-4'>😢</div>
+                  <h2 className='text-xl font-semibold text-gray-900 mb-2'>
+                    {onboardingGuardError?.title || 'Erreur'}
+                  </h2>
+                  <p className='text-gray-600'>
+                    {onboardingGuardError?.message ||
+                      'Une erreur est survenue pendant la vérification.'}
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       {guardStatus !== 'ok' &&
         !location.pathname.startsWith('/onboarding') &&
         location.pathname !== '/' &&
