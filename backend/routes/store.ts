@@ -306,12 +306,10 @@ router.put("/:storeSlug", async (req, res) => {
 
     // Validation website (facultatif, mais si présent doit être valide)
     if (website && !isValidWebsite(website)) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "Site web invalide: fournir un domaine avec TLD ou une URL complète",
-        });
+      return res.status(400).json({
+        error:
+          "Site web invalide: fournir un domaine avec TLD ou une URL complète",
+      });
     }
 
     const { data: existing, error: getErr } = await supabase

@@ -526,7 +526,7 @@ export default function DashboardPage() {
           ? cached.externalAccounts
           : [];
         const missingNames = accs.some(
-          (a: any) => !(a?.firstName) && !(a?.lastName)
+          (a: any) => !a?.firstName && !a?.lastName
         );
         return missingNames;
       });
@@ -2137,18 +2137,18 @@ export default function DashboardPage() {
                                           String(acc.username).trim()) ||
                                         '';
                                       const firstName =
-                                        ((acc?.firstName || '').trim() ||
-                                          (u?.firstName || '').trim());
+                                        (acc?.firstName || '').trim() ||
+                                        (u?.firstName || '').trim();
                                       const lastName =
-                                        ((acc?.lastName || '').trim() ||
-                                          (u?.lastName || '').trim());
+                                        (acc?.lastName || '').trim() ||
+                                        (u?.lastName || '').trim();
                                       const name = [firstName, lastName]
                                         .filter(Boolean)
                                         .join(' ');
                                       const phone =
-                                        ((acc?.phoneNumber &&
+                                        (acc?.phoneNumber &&
                                           String(acc.phoneNumber).trim()) ||
-                                          (u?.phoneNumber || '').trim());
+                                        (u?.phoneNumber || '').trim();
                                       const hasAny = Boolean(
                                         email || name || phone || username
                                       );

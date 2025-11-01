@@ -22,36 +22,6 @@ interface OnboardingFormData {
 
 export default function OnboardingPage() {
   const { user } = useUser();
-  // Redirection basée sur le rôle Clerk: ne rien faire pour admin, rediriger vers dashboard si rôle != 'customer'
-  useEffect(() => {
-    const role = (user?.publicMetadata as any)?.role;
-    if (!role || role === 'admin') return;
-    if (role !== 'customer') {
-      const email = user?.primaryEmailAddress?.emailAddress;
-      if (!email) return;
-      (async () => {
-        try {
-          const response = await fetch(
-            `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores/check-owner/${encodeURIComponent(email)}`
-          );
-          if (!response.ok) return;
-          const data = await response.json();
-          if (data?.exists) {
-            const storeSlug =
-              data.slug ||
-              (data.storeName
-                ? slugify(data.storeName, { lower: true, strict: true })
-                : undefined);
-            if (storeSlug) {
-              window.location.href = `/dashboard/${encodeURIComponent(storeSlug)}`;
-            }
-          }
-        } catch (_err) {
-          // Ignorer silencieusement; onboarding reste accessible
-        }
-      })();
-    }
-  }, [user]);
 
   // Préremplir le nom complet depuis Clerk
   useEffect(() => {

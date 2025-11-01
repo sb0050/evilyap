@@ -22,6 +22,7 @@ import AuthRedirect from './components/AuthRedirect';
 import PaymentReturnPage from './pages/PaymentReturnPage';
 import { frFR } from '@clerk/localizations';
 import DashboardPage from './pages/DashboardPage';
+import HowItWorksPage from './pages/HowItWorksPage';
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -59,6 +60,14 @@ function App() {
                   <SignedOut>
                     <RedirectToSignUp />
                   </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path='/howitworks'
+              element={
+                <>
+                  <HowItWorksPage />
                 </>
               }
             />

@@ -46,12 +46,10 @@ router.post("/", async (req, res) => {
       return res.status(500).json({ error: existErr.message });
     }
     if (existing) {
-      return res
-        .status(409)
-        .json({
-          error: "reference_exists",
-          message: "Cette reference existe déjà dans un autre panier",
-        });
+      return res.status(409).json({
+        error: "reference_exists",
+        message: "Cette reference existe déjà dans un autre panier",
+      });
     }
 
     const { data, error } = await supabase

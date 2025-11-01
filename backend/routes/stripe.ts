@@ -48,6 +48,7 @@ const formatWeight = (weight?: string): number => {
 // Configuration Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const CLOUDFRONT_URL = process.env.CLOUDFRONT_URL;
 
 if (!supabaseUrl || !supabaseKey) {
   console.error("Supabase environment variables are missing");
@@ -358,6 +359,16 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       }/payment/return?session_id={CHECKOUT_SESSION_ID}&store_name=${encodeURIComponent(
         slugify(storeName, { lower: true, strict: true }) || "default"
       )}`,
+      // Ajouter la collecte de consentement
+      consent_collection: {
+        terms_of_service: "required", // Rend la case à cocher obligatoire
+      },
+      // Personnaliser le texte associé (optionnel)
+      custom_text: {
+        terms_of_service_acceptance: {
+          message: `J'accepte les [conditions générales de vente](${CLOUDFRONT_URL}/documents/terms_and_conditions) et la [politique de confidentialité](${CLOUDFRONT_URL}/documents/privacy_policy) de PayLive.`,
+        },
+      },
       customer: customerId,
     } as any);
 
