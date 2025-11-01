@@ -18,6 +18,7 @@ import Spinner from './Spinner';
 import { animate } from 'motion';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Protect } from '@clerk/clerk-react';
+import slugify from 'slugify';
 
 // Variables de configuration du panier (modifiables)
 const CART_ITEM_TTL_MINUTES = 15; // durée de vie d’un article dans le panier
@@ -253,6 +254,48 @@ export default function Header() {
       window.removeEventListener('cart:updated', onCartUpdated);
     };
   }, [user, dashboardSlug]);
+
+  // Redirection basée sur le rôle Clerk: ne rien faire pour admin, rediriger vers dashboard si rôle != 'customer'
+  useEffect(() => {
+    const role = (user?.publicMetadata as any)?.role;
+    // Pas de redirection pour admin ni pour customer (onboarding reste accessible)
+    if (!role || role === 'admin' || role === 'customer') return;
+
+    const path = location.pathname || '';
+    // Ne pas interférer avec les pages spécifiques
+    if (path.startsWith('/dashboard') || path.startsWith('/payment')) {
+      return;
+    }
+
+    const email = user?.primaryEmailAddress?.emailAddress;
+    if (!email) return;
+
+    (async () => {
+      try {
+        // Utiliser le slug déjà connu si disponible, sinon vérifier côté backend
+        let storeSlug = dashboardSlug || null;
+        if (!storeSlug) {
+          const response = await fetch(
+            `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
+          );
+          if (!response.ok) return;
+          const data = await response.json();
+          if (data?.exists) {
+            storeSlug =
+              data.slug ||
+              (data.storeName
+                ? slugify(data.storeName, { lower: true, strict: true })
+                : undefined);
+          }
+        }
+        if (storeSlug) {
+          window.location.href = `/dashboard/${encodeURIComponent(storeSlug)}`;
+        }
+      } catch (_err) {
+        // Ignorer silencieusement; le header reste accessible
+      }
+    })();
+  }, [user, dashboardSlug, location.pathname]);
 
   // Déduire l’accès au dashboard à partir du rôle + présence de slug (évite fetch redondant)
   useEffect(() => {
