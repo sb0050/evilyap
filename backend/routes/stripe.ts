@@ -1258,12 +1258,18 @@ router.get("/get-clerk-user-by-id", requireAuth, async (req, res) => {
           ? acc.verification.status === "verified"
           : null,
     }));
-    const primaryEmail = (user?.emailAddresses || []).find(
-      (e: any) => e.id === user?.primaryEmailAddressId
-    )?.emailAddress || (user?.emailAddresses || [])[0]?.emailAddress || null;
-    const primaryPhone = (user?.phoneNumbers || []).find(
-      (p: any) => p.id === user?.primaryPhoneNumberId
-    )?.phoneNumber || (user?.phoneNumbers || [])[0]?.phoneNumber || null;
+    const primaryEmail =
+      (user?.emailAddresses || []).find(
+        (e: any) => e.id === user?.primaryEmailAddressId
+      )?.emailAddress ||
+      (user?.emailAddresses || [])[0]?.emailAddress ||
+      null;
+    const primaryPhone =
+      (user?.phoneNumbers || []).find(
+        (p: any) => p.id === user?.primaryPhoneNumberId
+      )?.phoneNumber ||
+      (user?.phoneNumbers || [])[0]?.phoneNumber ||
+      null;
     return res.json({
       user: {
         id: user.id,

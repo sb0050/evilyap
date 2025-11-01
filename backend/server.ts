@@ -12,6 +12,7 @@ import { emailService } from "./services/emailService";
 import uploadRoutes from "./routes/upload";
 import shipmentsRoutes from "./routes/shipments";
 import cartsRoutes from "./routes/carts";
+import supportRoutes from "./routes/support";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -50,6 +51,7 @@ app.use("/api/stores", storeRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/shipments", shipmentsRoutes);
 app.use("/api/carts", cartsRoutes);
+app.use("/api/support", supportRoutes);
 
 // Route de test
 app.get("/api/health", (req: Request, res: Response) => {

@@ -743,13 +743,24 @@ class EmailService {
     try {
       const savEmail = process.env.SAV_EMAIL || process.env.SUPPORT_EMAIL || "";
       if (!savEmail) {
-        console.warn("SAV_EMAIL/SUPPORT_EMAIL non configuré, email de remboursement non envoyé.");
+        console.warn(
+          "SAV_EMAIL/SUPPORT_EMAIL non configuré, email de remboursement non envoyé."
+        );
         return false;
       }
 
-      const formattedAmount = this.formatAmount(data.amount, data.currency || "EUR");
-      const formattedDelivery = this.formatAmount(data.deliveryCost, data.currency || "EUR");
-      const formattedTotal = this.formatAmount(data.total, data.currency || "EUR");
+      const formattedAmount = this.formatAmount(
+        data.amount,
+        data.currency || "EUR"
+      );
+      const formattedDelivery = this.formatAmount(
+        data.deliveryCost,
+        data.currency || "EUR"
+      );
+      const formattedTotal = this.formatAmount(
+        data.total,
+        data.currency || "EUR"
+      );
 
       const htmlContent = `
         <!DOCTYPE html>
@@ -771,31 +782,62 @@ class EmailService {
           <div class="container">
             <div class="header">
               <h1>💸 Remboursement à effectuer</h1>
-              <p>${data.storeName}${data.storeSlug ? ` — ${data.storeSlug}` : ""}</p>
+              <p>${data.storeName}${
+        data.storeSlug ? ` — ${data.storeSlug}` : ""
+      }</p>
             </div>
             <div class="content">
               <div class="section">
                 <h3>Résumé</h3>
-                <p class="kv"><strong>Shipping Order ID :</strong> ${data.shippingOrderId}</p>
-                <p class="kv"><strong>Statut Boxtal :</strong> ${data.boxtalStatus || "N/A"}</p>
-                <p class="kv"><strong>Shipment ID :</strong> ${data.shipmentId || "N/A"}</p>
-                <p class="kv"><strong>Store owner :</strong> ${data.storeOwnerEmail || "N/A"}</p>
+                <p class="kv"><strong>Shipping Order ID :</strong> ${
+                  data.shippingOrderId
+                }</p>
+                <p class="kv"><strong>Statut Boxtal :</strong> ${
+                  data.boxtalStatus || "N/A"
+                }</p>
+                <p class="kv"><strong>Shipment ID :</strong> ${
+                  data.shipmentId || "N/A"
+                }</p>
+                <p class="kv"><strong>Store owner :</strong> ${
+                  data.storeOwnerEmail || "N/A"
+                }</p>
               </div>
 
               <div class="section">
                 <h3>Client</h3>
-                <p class="kv"><strong>Nom :</strong> ${data.customerName || "N/A"}</p>
-                <p class="kv"><strong>Email :</strong> ${data.customerEmail || "N/A"}</p>
-                <p class="kv"><strong>Stripe Customer ID :</strong> ${data.customerStripeId || "N/A"}</p>
-                <p class="kv"><strong>Payment ID :</strong> ${data.paymentId || "N/A"}</p>
+                <p class="kv"><strong>Nom :</strong> ${
+                  data.customerName || "N/A"
+                }</p>
+                <p class="kv"><strong>Email :</strong> ${
+                  data.customerEmail || "N/A"
+                }</p>
+                <p class="kv"><strong>Stripe Customer ID :</strong> ${
+                  data.customerStripeId || "N/A"
+                }</p>
+                <p class="kv"><strong>Payment ID :</strong> ${
+                  data.paymentId || "N/A"
+                }</p>
               </div>
 
               <div class="section">
                 <h3>Montants</h3>
-                <p class="kv"><strong>Produit (référence) :</strong> ${formattedAmount || (typeof data.amount === "number" ? data.amount : "N/A")}</p>
-                <p class="kv"><strong>Frais de livraison :</strong> ${formattedDelivery || (typeof data.deliveryCost === "number" ? data.deliveryCost : "N/A")}</p>
-                <p class="kv"><strong>Total à rembourser :</strong> ${formattedTotal || (typeof data.total === "number" ? data.total : "N/A")}</p>
-                <p class="kv"><strong>Devise :</strong> ${(data.currency || "EUR").toUpperCase()}</p>
+                <p class="kv"><strong>Produit (référence) :</strong> ${
+                  formattedAmount ||
+                  (typeof data.amount === "number" ? data.amount : "N/A")
+                }</p>
+                <p class="kv"><strong>Frais de livraison :</strong> ${
+                  formattedDelivery ||
+                  (typeof data.deliveryCost === "number"
+                    ? data.deliveryCost
+                    : "N/A")
+                }</p>
+                <p class="kv"><strong>Total à rembourser :</strong> ${
+                  formattedTotal ||
+                  (typeof data.total === "number" ? data.total : "N/A")
+                }</p>
+                <p class="kv"><strong>Devise :</strong> ${(
+                  data.currency || "EUR"
+                ).toUpperCase()}</p>
               </div>
 
               <p>Suite à l'annulation de la commande Boxtal, merci d'effectuer le remboursement au client via Stripe (recherche par email ou customer ID).</p>
@@ -809,7 +851,9 @@ class EmailService {
       const info = await this.transporter.sendMail({
         from: `"PayLive SAV" <${process.env.SMTP_USER}>`,
         to: savEmail,
-        subject: `💸 Remboursement à effectuer - ${data.storeName}${formattedTotal ? ` - ${formattedTotal}` : ""}`,
+        subject: `💸 Remboursement à effectuer - ${data.storeName}${
+          formattedTotal ? ` - ${formattedTotal}` : ""
+        }`,
         html: htmlContent,
       });
       console.log(`✅ Email remboursement envoyé à ${savEmail}`);
@@ -969,6 +1013,112 @@ class EmailService {
       return true;
     } catch (error) {
       console.error("sendAdminError failed:", error);
+      return false;
+    }
+  }
+
+  // Message de support envoyé par un propriétaire de boutique (ou admin) vers l'admin
+  async sendAdminSupportMessage(data: {
+    storeName: string;
+    storeSlug: string;
+    ownerEmail?: string;
+    clerkUserId?: string;
+    message: string;
+  }): Promise<boolean> {
+    try {
+      const toEmail = process.env.SUPPORT_EMAIL || process.env.SAV_EMAIL || "";
+      if (!toEmail) {
+        console.warn(
+          "SUPPORT_EMAIL/SAV_EMAIL non configuré, email de support non envoyé."
+        );
+        return false;
+      }
+
+      const dateStr = new Date().toLocaleString("fr-FR", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+      const safeMsg = (data.message || "")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Demande de support</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #6c63ff 0%, #0d6efd 100%); color: white; padding: 24px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
+            .section { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #6c63ff; }
+            .kv { margin: 0; }
+            .kv strong { display: inline-block; width: 220px; }
+            .msg { white-space: pre-wrap; background: #fff; border: 1px solid #eee; padding: 12px; border-radius: 6px; }
+            .footer { text-align: center; margin-top: 20px; color: #666; font-size: 14px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>📩 Demande de support</h1>
+              <p>${data.storeName} — ${data.storeSlug}</p>
+            </div>
+            <div class="content">
+              <div class="section">
+                <h3>Résumé</h3>
+                <p class="kv"><strong>Boutique :</strong> ${data.storeName}</p>
+                <p class="kv"><strong>Slug :</strong> ${data.storeSlug}</p>
+                <p class="kv"><strong>Email propriétaire :</strong> ${
+                  data.ownerEmail || "N/A"
+                }</p>
+                <p class="kv"><strong>Clerk user ID :</strong> ${
+                  data.clerkUserId || "N/A"
+                }</p>
+                <p class="kv"><strong>Date :</strong> ${dateStr}</p>
+              </div>
+
+              <div class="section">
+                <h3>Message</h3>
+                <div class="msg">${safeMsg}</div>
+              </div>
+
+              <p>Merci de répondre au propriétaire de la boutique si une action est nécessaire.</p>
+              <p><strong>PayLive - Support</strong></p>
+            </div>
+            <div class="footer">
+              <p>Cet email a été envoyé automatiquement depuis le formulaire de support.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const mailOptions = {
+        from: `"PayLive Support" <${process.env.SMTP_USER}>`,
+        to: toEmail,
+        subject: `🆘 Support — ${data.storeName}`,
+        html: htmlContent,
+        replyTo: data.ownerEmail || undefined,
+      } as any;
+
+      const info = await this.transporter.sendMail(mailOptions);
+      console.log(`✅ Email de support envoyé à ${toEmail}`);
+      console.log("📨 sendMail result (support):", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email support:", error);
       return false;
     }
   }

@@ -13,6 +13,21 @@ import { animate } from 'motion';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Protect } from '@clerk/clerk-react';
 
+// Variables de configuration du panier (modifiables)
+const CART_ITEM_TTL_MINUTES = 2; // durée de vie d’un article dans le panier
+const CART_WARN_THRESHOLD_MINUTES = 1; // seuil d’alerte visuelle et animation
+const CART_TICK_MS = 1000; // cadence de mise à jour du timer
+
+// Dérivés en millisecondes
+const CART_ITEM_TTL_MS = CART_ITEM_TTL_MINUTES * 60 * 1000;
+const CART_WARN_THRESHOLD_MS = CART_WARN_THRESHOLD_MINUTES * 60 * 1000;
+
+// Classes CSS pour les états
+const CART_WARN_TEXT_CLASS = 'text-red-600';
+const CART_NORMAL_TEXT_CLASS = 'text-gray-700';
+const CART_WARN_TIMER_CLASS = 'text-red-600';
+const CART_NORMAL_TIMER_CLASS = 'text-gray-500';
+
 type OwnerStoreInfo = {
   exists: boolean;
   storeName?: string;
@@ -69,14 +84,62 @@ export default function Header() {
   const [now, setNow] = useState<number>(Date.now());
   const deletingIdsRef = useRef<Set<number>>(new Set());
 
+  // Animation d'avertissement d'expiration du panier (< 1 minute)
+  const warnCartExpiration = () => {
+    if (cartIconRef.current) {
+      animate(
+        cartIconRef.current,
+        {
+          color: ['#000', '#ff4d4d', '#000'],
+          scale: [1, 1.1, 1],
+          x: [0, -2, 2, -2, 2, 0],
+        } as any,
+        {
+          duration: 1.5,
+          easing: 'ease-in-out',
+          repeat: 2,
+        } as any
+      );
+    }
+  };
+
+  const [cartExpiryWarned, setCartExpiryWarned] = useState(false);
+
   useEffect(() => {
-    const interval = setInterval(() => setNow(Date.now()), 1000);
+    // Déclenche l'animation si au moins un article est sous le seuil
+    const ttlMsDisplay = CART_ITEM_TTL_MS;
+    let hasUnderMinute = false;
+    for (const group of cartGroups) {
+      for (const it of group.items) {
+        const created = it.created_at
+          ? new Date(it.created_at).getTime()
+          : null;
+        const leftMs = created
+          ? Math.max(0, ttlMsDisplay - (now - created))
+          : ttlMsDisplay;
+        if (leftMs > 0 && leftMs <= CART_WARN_THRESHOLD_MS) {
+          hasUnderMinute = true;
+          break;
+        }
+      }
+      if (hasUnderMinute) break;
+    }
+    if (hasUnderMinute && !cartExpiryWarned) {
+      warnCartExpiration();
+      setCartExpiryWarned(true);
+    } else if (!hasUnderMinute && cartExpiryWarned) {
+      setCartExpiryWarned(false);
+    }
+  }, [cartGroups, now, cartExpiryWarned]);
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), CART_TICK_MS);
     return () => clearInterval(interval);
   }, []);
 
-  // Suppression automatique des items expirés (TTL 5 minutes)
+  // Suppression automatique des items expirés
   useEffect(() => {
-    const ttlMs = 5 * 60 * 1000;
+    const ttlMs = CART_ITEM_TTL_MS;
     for (const group of cartGroups) {
       for (const it of group.items) {
         const created = it.created_at
@@ -360,6 +423,9 @@ export default function Header() {
     }
   };
 
+  // Déterminer le slug de boutique pour le checkout (première boutique du panier)
+  const checkoutSlug = cartGroups.find(g => g.store?.slug)?.store?.slug || null;
+
   return (
     <>
       <header className='bg-white shadow-sm border-b relative'>
@@ -418,85 +484,101 @@ export default function Header() {
                         Votre panier est vide.
                       </p>
                     ) : (
-                      <div className='space-y-3 max-h-80 overflow-auto'>
-                        {cartGroups.map((group, idx) => (
-                          <div
-                            key={idx}
-                            className='border border-gray-100 rounded p-2'
-                          >
-                            <div className='flex justify-between items-center mb-1'>
-                              <span className='text-sm font-medium text-gray-800'>
-                                {group.store?.name || 'Boutique inconnue'}
-                              </span>
-                              <span className='text-sm text-gray-600'>
-                                {group.total.toFixed(2)} €
-                              </span>
-                            </div>
-                            <ul className='space-y-1'>
-                              {group.items.map((it, i) => {
-                                const created = it.created_at
-                                  ? new Date(it.created_at).getTime()
-                                  : null;
-                                const ttlMs = 15 * 60 * 1000; // 15 minutes
-                                const leftMs = created
-                                  ? Math.max(0, ttlMs - (now - created))
-                                  : ttlMs;
-                                return (
-                                  <li
-                                    key={i}
-                                    className={`flex justify-between items-center text-sm ${leftMs === 10000 ? 'text-red-600' : 'text-gray-700'}`}
-                                  >
-                                    <span
-                                      className='truncate max-w-[60%]'
-                                      title={it.product_reference}
+                      <>
+                        <div className='space-y-3 max-h-80 overflow-auto'>
+                          {cartGroups.map((group, idx) => (
+                            <div
+                              key={idx}
+                              className='border border-gray-100 rounded p-2'
+                            >
+                              <div className='flex justify-between items-center mb-1'>
+                                <span className='text-sm font-medium text-gray-800'>
+                                  {group.store?.name || 'Boutique inconnue'}
+                                </span>
+                                <span className='text-sm text-gray-600'>
+                                  {group.total.toFixed(2)} €
+                                </span>
+                              </div>
+                              <ul className='space-y-1'>
+                                {group.items.map((it, i) => {
+                                  const created = it.created_at
+                                    ? new Date(it.created_at).getTime()
+                                    : null;
+                                  const ttlMs = CART_ITEM_TTL_MS;
+                                  const leftMs = created
+                                    ? Math.max(0, ttlMs - (now - created))
+                                    : ttlMs;
+                                  return (
+                                    <li
+                                      key={i}
+                                      className={`flex justify-between items-center text-sm ${leftMs <= CART_WARN_THRESHOLD_MS ? CART_WARN_TEXT_CLASS : CART_NORMAL_TEXT_CLASS}`}
                                     >
-                                      {it.product_reference}
-                                    </span>
-                                    <div className='flex items-center gap-2'>
-                                      {(() => {
-                                        const minutes = Math.floor(
-                                          leftMs / 60000
-                                        );
-                                        const seconds = Math.floor(
-                                          (leftMs % 60000) / 1000
-                                        );
-                                        const label = `${minutes}:${String(seconds).padStart(2, '0')}`;
-                                        return (
-                                          <span
-                                            className={`font-mono text-xs ${leftMs === 10000 ? 'text-red-600' : 'text-gray-500'}`}
-                                            title='Temps restant'
-                                          >
-                                            {label}
-                                          </span>
-                                        );
-                                      })()}
-                                      <span>
-                                        {Number(it.value || 0).toFixed(2)} €
-                                      </span>
-                                      <button
-                                        className='p-1 rounded hover:bg-red-50 text-red-600'
-                                        title='Supprimer cette référence'
-                                        aria-label='Supprimer'
-                                        onClick={() => handleDeleteItem(it.id)}
+                                      <span
+                                        className='truncate max-w-[60%]'
+                                        title={it.product_reference}
                                       >
-                                        <Trash2 className='w-4 h-4' />
-                                      </button>
-                                    </div>
-                                  </li>
-                                );
-                              })}
-                            </ul>
+                                        {it.product_reference}
+                                      </span>
+                                      <div className='flex items-center gap-2'>
+                                        {(() => {
+                                          const minutes = Math.floor(
+                                            leftMs / 60000
+                                          );
+                                          const seconds = Math.floor(
+                                            (leftMs % 60000) / 1000
+                                          );
+                                          const label = `${minutes}:${String(seconds).padStart(2, '0')}`;
+                                          return (
+                                            <span
+                                              className={`font-mono text-xs ${leftMs <= CART_WARN_THRESHOLD_MS ? CART_WARN_TIMER_CLASS : CART_NORMAL_TIMER_CLASS}`}
+                                              title='Temps restant'
+                                            >
+                                              {label}
+                                            </span>
+                                          );
+                                        })()}
+                                        <span>
+                                          {Number(it.value || 0).toFixed(2)} €
+                                        </span>
+                                        <button
+                                          className='p-1 rounded hover:bg-red-50 text-red-600'
+                                          title='Supprimer cette référence'
+                                          aria-label='Supprimer'
+                                          onClick={() =>
+                                            handleDeleteItem(it.id)
+                                          }
+                                        >
+                                          <Trash2 className='w-4 h-4' />
+                                        </button>
+                                      </div>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </div>
+                          ))}
+                          <div className='flex justify-between items-center pt-2 border-t border-gray-200'>
+                            <span className='text-sm font-semibold text-gray-900'>
+                              Total
+                            </span>
+                            <span className='text-sm font-semibold text-gray-900'>
+                              {Number(cartTotal || 0).toFixed(2)} €
+                            </span>
                           </div>
-                        ))}
-                        <div className='flex justify-between items-center pt-2 border-t border-gray-200'>
-                          <span className='text-sm font-semibold text-gray-900'>
-                            Total
-                          </span>
-                          <span className='text-sm font-semibold text-gray-900'>
-                            {Number(cartTotal || 0).toFixed(2)} €
-                          </span>
                         </div>
-                      </div>
+                        <button
+                          className={`mt-3 w-full px-3 py-2 rounded-md text-sm font-medium ${!checkoutSlug || cartGroups.length === 0 ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
+                          disabled={!checkoutSlug || cartGroups.length === 0}
+                          onClick={() => {
+                            if (checkoutSlug) {
+                              navigate(`/checkout/${checkoutSlug}`);
+                              setCartOpen(false);
+                            }
+                          }}
+                        >
+                          Procéder au paiement
+                        </button>
+                      </>
                     )}
                   </div>
                 )}
@@ -516,7 +598,12 @@ export default function Header() {
           <div className='fixed inset-0 top-16 bg-gray-50 z-40 flex items-center justify-center'>
             <div className='text-center px-4'>
               {guardStatus === 'pending' ? (
-                <Spinner size='lg' color='blue' variant='bottom' className='mx-auto mb-4' />
+                <Spinner
+                  size='lg'
+                  color='blue'
+                  variant='bottom'
+                  className='mx-auto mb-4'
+                />
               ) : (
                 <>
                   <div className='text-gray-400 text-xl mb-4'>😢</div>

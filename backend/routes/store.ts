@@ -1,10 +1,10 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
-import { clerkClient } from '@clerk/clerk-sdk-node';
+import { clerkClient } from "@clerk/clerk-sdk-node";
 import { emailService } from "../services/emailService";
 import { isValidIBAN, isValidBIC } from "ibantools";
-import slugify from 'slugify';
+import slugify from "slugify";
 
 const router = express.Router();
 
@@ -26,20 +26,19 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Helper: validation website (TLD domain or full URL with TLD)
 const isValidWebsite = (url?: string | null) => {
-  const value = (url || '').trim();
+  const value = (url || "").trim();
   if (!value) return true; // facultatif
   const domainOnlyRegex = /^(?:[a-zA-Z0-9-]{1,63}\.)+[a-zA-Z]{2,}$/;
   if (domainOnlyRegex.test(value)) return true;
   try {
     const parsed = new URL(value);
-    const host = parsed.hostname || '';
+    const host = parsed.hostname || "";
     const hasTld = /\.[a-zA-Z]{2,}$/.test(host);
     return hasTld;
   } catch {
     return false;
   }
 };
-
 
 // GET /api/stores - Récupérer tous les stores
 router.get("/", async (req, res) => {
@@ -235,15 +234,16 @@ router.post("/", async (req, res) => {
     }
 
     // Construire l'adresse JSON attendue
-    const addressJson = address && typeof address === "object"
-      ? {
-          city: address.city || null,
-          line1: address.line1 || null,
-          country: address.country || null,
-          postal_code: address.postal_code || null,
-          phone: phone || null,
-        }
-      : null;
+    const addressJson =
+      address && typeof address === "object"
+        ? {
+            city: address.city || null,
+            line1: address.line1 || null,
+            country: address.country || null,
+            postal_code: address.postal_code || null,
+            phone: phone || null,
+          }
+        : null;
 
     const { data, error } = await supabase
       .from("stores")
@@ -300,12 +300,18 @@ router.put("/:storeSlug", async (req, res) => {
       website?: string;
     };
 
-    if (!storeSlug) return res.status(400).json({ error: "Slug de boutique requis" });
+    if (!storeSlug)
+      return res.status(400).json({ error: "Slug de boutique requis" });
     const decodedSlug = decodeURIComponent(storeSlug);
 
     // Validation website (facultatif, mais si présent doit être valide)
     if (website && !isValidWebsite(website)) {
-      return res.status(400).json({ error: "Site web invalide: fournir un domaine avec TLD ou une URL complète" });
+      return res
+        .status(400)
+        .json({
+          error:
+            "Site web invalide: fournir un domaine avec TLD ou une URL complète",
+        });
     }
 
     const { data: existing, error: getErr } = await supabase
@@ -316,21 +322,23 @@ router.put("/:storeSlug", async (req, res) => {
 
     if (getErr && (getErr as any)?.code !== "PGRST116") {
       console.error("Erreur Supabase (get store):", getErr);
-      return res.status(500).json({ error: "Erreur lors de la récupération de la boutique" });
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la récupération de la boutique" });
     }
     if (!existing) {
       return res.status(404).json({ error: "Boutique non trouvée" });
     }
 
     const payload: any = {};
-    if (typeof name === 'string') payload.name = name;
-    if (typeof description === 'string') payload.description = description;
-    if (typeof website === 'string') payload.website = website || null;
+    if (typeof name === "string") payload.name = name;
+    if (typeof description === "string") payload.description = description;
+    if (typeof website === "string") payload.website = website || null;
 
     // Si le nom change, recalculer le slug côté backend et vérifier l'unicité
-    if (typeof name === 'string') {
-      const newName = (name || '').trim();
-      const currentName = ((existing as any)?.name || '').trim();
+    if (typeof name === "string") {
+      const newName = (name || "").trim();
+      const currentName = ((existing as any)?.name || "").trim();
       if (newName && newName !== currentName) {
         const newSlug = slugify(newName, { lower: true, strict: true });
         // Vérifier unicité du nouveau slug, en excluant la boutique actuelle
@@ -342,9 +350,14 @@ router.put("/:storeSlug", async (req, res) => {
 
         if (slugCheckErr && (slugCheckErr as any)?.code !== "PGRST116") {
           console.error("Erreur Supabase (vérif nouveau slug):", slugCheckErr);
-          return res.status(500).json({ error: "Erreur lors de la vérification du slug" });
+          return res
+            .status(500)
+            .json({ error: "Erreur lors de la vérification du slug" });
         }
-        if (existingByNewSlug && existingByNewSlug.id !== (existing as any)?.id) {
+        if (
+          existingByNewSlug &&
+          existingByNewSlug.id !== (existing as any)?.id
+        ) {
           return res.status(409).json({ error: "Ce nom existe déjà" });
         }
         payload.slug = newSlug;
@@ -360,7 +373,9 @@ router.put("/:storeSlug", async (req, res) => {
 
     if (updErr) {
       console.error("Erreur Supabase (update store):", updErr);
-      return res.status(500).json({ error: "Erreur lors de la mise à jour de la boutique" });
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la mise à jour de la boutique" });
     }
 
     return res.json({ success: true, store: updated });
@@ -419,7 +434,9 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
     const decodedSlug = decodeURIComponent(storeSlug);
 
     if (!method || (method !== "database" && method !== "link")) {
-      return res.status(400).json({ error: "Méthode invalide: 'database' ou 'link' requis" });
+      return res
+        .status(400)
+        .json({ error: "Méthode invalide: 'database' ou 'link' requis" });
     }
 
     const { data: store, error: getErr } = await supabase
@@ -430,7 +447,9 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
 
     if (getErr && (getErr as any)?.code !== "PGRST116") {
       console.error("Erreur Supabase (get store):", getErr);
-      return res.status(500).json({ error: "Erreur lors de la récupération de la boutique" });
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la récupération de la boutique" });
     }
     if (!store) {
       return res.status(404).json({ error: "Boutique non trouvée" });
@@ -441,7 +460,9 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
     let newRib: any = null;
     if (method === "database") {
       if (!iban || !bic) {
-        return res.status(400).json({ error: "IBAN et BIC requis pour la méthode 'database'" });
+        return res
+          .status(400)
+          .json({ error: "IBAN et BIC requis pour la méthode 'database'" });
       }
       if (!isValidIBAN(iban)) {
         return res.status(400).json({ error: "IBAN invalide" });
@@ -458,7 +479,9 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
     } else {
       // method === "link"
       if (!currentRib || currentRib?.type !== "link" || !currentRib?.url) {
-        return res.status(400).json({ error: "Aucun RIB (lien) enregistré pour cette boutique" });
+        return res
+          .status(400)
+          .json({ error: "Aucun RIB (lien) enregistré pour cette boutique" });
       }
       newRib = {
         type: "link",
@@ -477,7 +500,9 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
 
     if (updErr) {
       console.error("Erreur Supabase (update rib):", updErr);
-      return res.status(500).json({ error: "Erreur lors de la mise à jour du RIB" });
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la mise à jour du RIB" });
     }
 
     // Email SAV de demande de versement

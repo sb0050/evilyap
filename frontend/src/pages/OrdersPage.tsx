@@ -3,7 +3,7 @@ import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
 import { Toast } from '../components/Toast';
 import { useParams } from 'react-router-dom';
-import { Package, Truck, Undo2 } from 'lucide-react';
+import { Package, Truck, Undo2, ArrowUpDown } from 'lucide-react';
 
 type StoreInfo = { name: string; slug: string };
 
@@ -43,6 +43,9 @@ export default function OrdersPage() {
   >({});
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState<number>(1);
+  const [estimatedSortOrder, setEstimatedSortOrder] = useState<
+    'asc' | 'desc' | null
+  >(null);
   const [toast, setToast] = useState<{
     message: string;
     type: 'error' | 'info' | 'success';
@@ -124,13 +127,33 @@ export default function OrdersPage() {
     }
   };
 
+  // Tri par date estimée (prochain colis)
+  const sortedShipments = (() => {
+    if (!estimatedSortOrder) return shipments || [];
+    const toTime = (d?: string | null) => {
+      if (!d) return Number.POSITIVE_INFINITY;
+      try {
+        // Interpréter YYYY-MM-DD en date locale pour éviter les décalages
+        const [y, m, day] = (d || '').split('-').map(s => parseInt(s, 10));
+        if (!y || !m || !day) return new Date(d as string).getTime();
+        return new Date(y, m - 1, day).getTime();
+      } catch {
+        return Number.POSITIVE_INFINITY;
+      }
+    };
+    const arr = [...(shipments || [])];
+    arr.sort((a, b) => {
+      const ta = toTime(a.estimated_delivery_date);
+      const tb = toTime(b.estimated_delivery_date);
+      return estimatedSortOrder === 'asc' ? ta - tb : tb - ta;
+    });
+    return arr;
+  })();
+
   // Pagination helpers
-  const totalPages = Math.max(
-    1,
-    Math.ceil((shipments || []).length / pageSize)
-  );
+  const totalPages = Math.max(1, Math.ceil(sortedShipments.length / pageSize));
   const startIndex = (page - 1) * pageSize;
-  const visibleShipments = (shipments || []).slice(
+  const visibleShipments = sortedShipments.slice(
     startIndex,
     startIndex + pageSize
   );
@@ -358,7 +381,20 @@ export default function OrdersPage() {
                       Statut
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Estimée
+                      <div className='flex items-center space-x-2'>
+                        <span>Estimée</span>
+                        <button
+                          onClick={() =>
+                            setEstimatedSortOrder(o =>
+                              o === 'asc' ? 'desc' : 'asc'
+                            )
+                          }
+                          className='p-1 rounded hover:bg-gray-100'
+                          title={`Trier ${estimatedSortOrder === 'asc' ? '↓' : '↑'}`}
+                        >
+                          <ArrowUpDown className='w-4 h-4 text-gray-600' />
+                        </button>
+                      </div>
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Réseau
@@ -381,7 +417,27 @@ export default function OrdersPage() {
                         {formatDate(s.created_at)}
                       </td>
                       <td className='py-4 px-4 text-gray-900'>
-                        {s.store?.name || '—'}
+                        <div className='flex items-center space-x-2'>
+                          {(() => {
+                            const cloudBase = (
+                              import.meta.env.VITE_CLOUDFRONT_URL ||
+                              'https://d1tmgyvizond6e.cloudfront.net'
+                            ).replace(/\/+$/, '');
+                            const logoUrl = s.store_id
+                              ? `${cloudBase}/images/${s.store_id}`
+                              : null;
+                            return logoUrl ? (
+                              <img
+                                src={logoUrl}
+                                alt={s.store?.name || 'Boutique'}
+                                className='w-6 h-6 rounded-full object-cover'
+                              />
+                            ) : (
+                              <span className='inline-block w-6 h-6 rounded-full bg-gray-200' />
+                            );
+                          })()}
+                          <span>{s.store?.name || '—'}</span>
+                        </div>
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
                         {s.product_reference ?? '—'}

@@ -45,7 +45,8 @@ export default function AuthRedirect({ children }: AuthRedirectProps) {
 
         if (data.exists && (data.slug || data.storeName)) {
           // L'utilisateur a déjà une boutique, rediriger vers checkout/<slug>
-          const storeSlug = data.slug || data.storeName!.toLowerCase().replace(/\s+/g, '-');
+          const storeSlug =
+            data.slug || data.storeName!.toLowerCase().replace(/\s+/g, '-');
           navigate(`/checkout/${storeSlug}`);
         } else {
           // L'utilisateur n'a pas de boutique, rediriger vers onboarding

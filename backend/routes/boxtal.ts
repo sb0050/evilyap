@@ -624,7 +624,8 @@ router.delete("/shipping-orders/:id", async (req, res) => {
 
         let customerName: string | undefined = undefined;
         let customerEmail: string | undefined = undefined;
-        const customerStripeId: string | undefined = shipment?.customer_stripe_id || undefined;
+        const customerStripeId: string | undefined =
+          shipment?.customer_stripe_id || undefined;
         if (stripe && customerStripeId) {
           try {
             const customer = await stripe.customers.retrieve(customerStripeId);

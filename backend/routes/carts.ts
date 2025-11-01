@@ -15,12 +15,8 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 // POST /api/carts - Add item to cart
 router.post("/", async (req, res) => {
   try {
-    const {
-      store_id,
-      product_reference,
-      value,
-      customer_stripe_id,
-    } = req.body || {};
+    const { store_id, product_reference, value, customer_stripe_id } =
+      req.body || {};
 
     if (!customer_stripe_id) {
       return res
@@ -52,7 +48,10 @@ router.post("/", async (req, res) => {
     if (existing) {
       return res
         .status(409)
-        .json({ error: "reference_exists", message: "Cette reference existe déjà dans un autre panier" });
+        .json({
+          error: "reference_exists",
+          message: "Cette reference existe déjà dans un autre panier",
+        });
     }
 
     const { data, error } = await supabase
@@ -104,7 +103,8 @@ router.get("/summary", async (req, res) => {
       new Set(rows.map((r: any) => r.store_id).filter(Boolean))
     );
 
-    let storesMap: Record<number, { id: number; name: string; slug: string }> = {};
+    let storesMap: Record<number, { id: number; name: string; slug: string }> =
+      {};
     if (storeIds.length > 0) {
       const { data: storesData, error: storesErr } = await supabase
         .from("stores")
@@ -114,7 +114,10 @@ router.get("/summary", async (req, res) => {
         return res.status(500).json({ error: storesErr.message });
       }
       storesMap = (storesData || []).reduce(
-        (acc: Record<number, { id: number; name: string; slug: string }>, s: any) => {
+        (
+          acc: Record<number, { id: number; name: string; slug: string }>,
+          s: any
+        ) => {
           acc[s.id] = { id: s.id, name: s.name, slug: s.slug };
           return acc;
         },
@@ -125,10 +128,16 @@ router.get("/summary", async (req, res) => {
     const itemsByStore: Array<{
       store: { id: number; name: string; slug: string } | null;
       total: number;
-      items: Array<{ id: number; product_reference: string; value: number; created_at?: string }>;
+      items: Array<{
+        id: number;
+        product_reference: string;
+        value: number;
+        created_at?: string;
+      }>;
     }> = [];
 
-    const grouped: Record<string, { total: number; items: any[]; store: any }> = {};
+    const grouped: Record<string, { total: number; items: any[]; store: any }> =
+      {};
     for (const r of rows) {
       const key = String(r.store_id || "null");
       if (!grouped[key]) {
@@ -192,12 +201,18 @@ router.delete("/", async (req, res) => {
       }
 
       const ttlMs = 5 * 60 * 1000;
-      const createdMs = rec?.created_at ? new Date(rec.created_at as any).getTime() : null;
+      const createdMs = rec?.created_at
+        ? new Date(rec.created_at as any).getTime()
+        : null;
       const nowMs = Date.now();
       const leftMs = createdMs ? ttlMs - (nowMs - createdMs) : 0; // si pas de created_at, considérer expiré
       if (leftMs > 0) {
-        const expiresAt = createdMs ? new Date(createdMs + ttlMs).toISOString() : null;
-        return res.status(409).json({ error: "not_expired", timeLeftMs: leftMs, expiresAt });
+        const expiresAt = createdMs
+          ? new Date(createdMs + ttlMs).toISOString()
+          : null;
+        return res
+          .status(409)
+          .json({ error: "not_expired", timeLeftMs: leftMs, expiresAt });
       }
     }
 

@@ -12,6 +12,7 @@ import {
   Users,
   ArrowUpDown,
   RefreshCw,
+  LifeBuoy,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -114,8 +115,11 @@ export default function DashboardPage() {
   const [showPayout, setShowPayout] = useState(false);
   // Navigation des sections du dashboard
   const [section, setSection] = useState<
-    'infos' | 'wallet' | 'sales' | 'clients'
+    'infos' | 'wallet' | 'sales' | 'clients' | 'support'
   >('infos');
+  // Support: message de contact
+  const [supportMessage, setSupportMessage] = useState<string>('');
+  const [isSendingSupport, setIsSendingSupport] = useState<boolean>(false);
   // Pagination pour la section Ventes
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState<number>(1);
@@ -193,6 +197,31 @@ export default function DashboardPage() {
         return 'Retrait en boutique';
       default:
         return m;
+    }
+  };
+
+  const handleSendSupport = async () => {
+    const msg = (supportMessage || '').trim();
+    if (!msg) {
+      showToast('Veuillez saisir un message', 'error');
+      return;
+    }
+    try {
+      setIsSendingSupport(true);
+      const token = await getToken();
+      await apiPost(
+        '/api/support/contact',
+        { storeSlug, message: msg },
+        { headers: { Authorization: token ? `Bearer ${token}` : '' } }
+      );
+      showToast('Message envoyé à PayLive.', 'success');
+      setSupportMessage('');
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur inconnue';
+      const trimmed = (raw || '').replace(/^Error:\s*/, '');
+      showToast(trimmed || "Erreur lors de l'envoi", 'error');
+    } finally {
+      setIsSendingSupport(false);
     }
   };
 
@@ -930,6 +959,7 @@ export default function DashboardPage() {
               <ShoppingCart className='w-4 h-4 mr-2' />
               <span>Ventes</span>
             </button>
+
             <button
               onClick={() => setSection('clients')}
               className={`flex items-center px-3 py-2 rounded-md border ${
@@ -940,6 +970,17 @@ export default function DashboardPage() {
             >
               <Users className='w-4 h-4 mr-2' />
               <span>Clients</span>
+            </button>
+            <button
+              onClick={() => setSection('support')}
+              className={`flex items-center px-3 py-2 rounded-md border ${
+                section === 'support'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <LifeBuoy className='w-4 h-4 mr-2' />
+              <span>Support</span>
             </button>
           </nav>
         </div>
@@ -1884,7 +1925,7 @@ export default function DashboardPage() {
                               setClientIdSearch(e.target.value);
                               setClientsPage(1);
                             }}
-                            placeholder='Filtrer …'
+                            placeholder='Filtrer…'
                             className='w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
                           />
                         </th>
@@ -2170,6 +2211,46 @@ export default function DashboardPage() {
                   </table>
                 );
               })()}
+            </div>
+          )}
+
+          {section === 'support' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center mb-4'>
+                <LifeBuoy className='w-5 h-5 text-indigo-600 mr-2' />
+                <h2 className='text-lg font-semibold text-gray-900'>Support</h2>
+              </div>
+              <p className='text-gray-600 mb-4'>
+                Envoyez un message de contact à PayLive.
+              </p>
+              <div className='space-y-3'>
+                <label className='block text-sm font-medium text-gray-700'>
+                  Message
+                </label>
+                <textarea
+                  value={supportMessage}
+                  onChange={e => setSupportMessage(e.target.value)}
+                  rows={5}
+                  className='w-full border border-gray-300 rounded-md p-3 focus:ring-indigo-500 focus:border-indigo-500'
+                  placeholder={'Décrivez votre question ou votre problème…'}
+                />
+                <div className='flex items-center justify-end'>
+                  <button
+                    onClick={handleSendSupport}
+                    disabled={isSendingSupport || !supportMessage.trim()}
+                    className={`inline-flex items-center px-4 py-2 rounded-md ${
+                      isSendingSupport || !supportMessage.trim()
+                        ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                        : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    }`}
+                  >
+                    {isSendingSupport && (
+                      <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                    )}
+                    Envoyer
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
