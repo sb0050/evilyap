@@ -145,9 +145,7 @@ export default function DashboardPage() {
   const shareLink = storeSlug ? `https://paylive.cc/c/${storeSlug}` : '';
 
   useEffect(() => {
-    //const created = (location.state as any)?.isStorecreated === true;
-    const created = true;
-
+    const created = (location.state as any)?.isStorecreated === true;
     if (created) {
       setShowWelcome(true);
       // Nettoyer l'état d'historique pour éviter réaffichage en navigations suivantes
