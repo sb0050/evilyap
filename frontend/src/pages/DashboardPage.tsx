@@ -517,7 +517,19 @@ export default function DashboardPage() {
             .filter((v: any) => !!v)
         )
       ) as string[];
-      const toFetch = ids.filter(id => !(id in socialsMap));
+      // Recharger si l'utilisateur n'est pas encore en cache
+      // ou si les comptes externes en cache manquent les champs firstName/lastName
+      const toFetch = ids.filter(id => {
+        const cached = socialsMap[id];
+        if (!cached) return true;
+        const accs = Array.isArray(cached?.externalAccounts)
+          ? cached.externalAccounts
+          : [];
+        const missingNames = accs.some(
+          (a: any) => !(a?.firstName) && !(a?.lastName)
+        );
+        return missingNames;
+      });
       if (toFetch.length === 0) return;
       try {
         const token = await getToken();
@@ -1913,7 +1925,7 @@ export default function DashboardPage() {
                           </div>
                         </th>
                         <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Réseaux
+                          Réseaux Sociaux
                         </th>
                       </tr>
                       <tr className='border-b border-gray-100'>
@@ -2114,7 +2126,7 @@ export default function DashboardPage() {
                                         );
                                       }
 
-                                      // Autres providers : afficher les champs si disponibles, avec fallback user
+                                      // Autres providers : afficher les champs si disponibles, prioriser les infos du compte externe, fallback user
                                       const email =
                                         (acc?.emailAddress &&
                                           acc.emailAddress.trim()) ||
@@ -2124,18 +2136,19 @@ export default function DashboardPage() {
                                         (acc?.username &&
                                           String(acc.username).trim()) ||
                                         '';
-                                      const firstName = (
-                                        u?.firstName || ''
-                                      ).trim();
-                                      const lastName = (
-                                        u?.lastName || ''
-                                      ).trim();
+                                      const firstName =
+                                        ((acc?.firstName || '').trim() ||
+                                          (u?.firstName || '').trim());
+                                      const lastName =
+                                        ((acc?.lastName || '').trim() ||
+                                          (u?.lastName || '').trim());
                                       const name = [firstName, lastName]
                                         .filter(Boolean)
                                         .join(' ');
-                                      const phone = (
-                                        u?.phoneNumber || ''
-                                      ).trim();
+                                      const phone =
+                                        ((acc?.phoneNumber &&
+                                          String(acc.phoneNumber).trim()) ||
+                                          (u?.phoneNumber || '').trim());
                                       const hasAny = Boolean(
                                         email || name || phone || username
                                       );

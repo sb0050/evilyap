@@ -7,14 +7,20 @@ import {
   useUser,
   useAuth,
 } from '@clerk/clerk-react';
-import { LayoutDashboard, Truck, ShoppingCart, Trash2 } from 'lucide-react';
+import {
+  LayoutDashboard,
+  Truck,
+  ShoppingCart,
+  Trash2,
+  CreditCard,
+} from 'lucide-react';
 import Spinner from './Spinner';
 import { animate } from 'motion';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Protect } from '@clerk/clerk-react';
 
 // Variables de configuration du panier (modifiables)
-const CART_ITEM_TTL_MINUTES = 2; // durée de vie d’un article dans le panier
+const CART_ITEM_TTL_MINUTES = 15; // durée de vie d’un article dans le panier
 const CART_WARN_THRESHOLD_MINUTES = 1; // seuil d’alerte visuelle et animation
 const CART_TICK_MS = 1000; // cadence de mise à jour du timer
 
@@ -567,7 +573,7 @@ export default function Header() {
                           </div>
                         </div>
                         <button
-                          className={`mt-3 w-full px-3 py-2 rounded-md text-sm font-medium ${!checkoutSlug || cartGroups.length === 0 ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
+                          className={`mt-3 w-full px-3 py-2 rounded-md text-sm font-medium ${!checkoutSlug || cartGroups.length === 0 ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700'} flex items-center justify-center gap-2`}
                           disabled={!checkoutSlug || cartGroups.length === 0}
                           onClick={() => {
                             if (checkoutSlug) {
@@ -576,7 +582,8 @@ export default function Header() {
                             }
                           }}
                         >
-                          Procéder au paiement
+                          <CreditCard className='w-5 h-5' />
+                          <span>Procéder au paiement</span>
                         </button>
                       </>
                     )}

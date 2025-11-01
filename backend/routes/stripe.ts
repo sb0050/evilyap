@@ -1252,6 +1252,9 @@ router.get("/get-clerk-user-by-id", requireAuth, async (req, res) => {
       provider: acc.provider,
       username: acc.username || null,
       emailAddress: acc.emailAddress || null,
+      firstName: acc.firstName || null,
+      lastName: acc.lastName || null,
+      phoneNumber: acc.phoneNumber || null,
       providerUserId: acc.providerUserId || null,
       verified:
         acc.verification && acc.verification.status
