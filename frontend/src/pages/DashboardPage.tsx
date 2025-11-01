@@ -147,6 +147,7 @@ export default function DashboardPage() {
   useEffect(() => {
     //const created = (location.state as any)?.isStorecreated === true;
     const created = true;
+
     if (created) {
       setShowWelcome(true);
       // Nettoyer l'état d'historique pour éviter réaffichage en navigations suivantes
@@ -934,7 +935,9 @@ export default function DashboardPage() {
           show={showWelcome}
           onClose={() => setShowWelcome(false)}
           title={'🎉 Félicitations !'}
-          subtitle={'Votre boutique est maintenant créée et prête à recevoir vos premiers clients'}
+          subtitle={
+            'Votre boutique est maintenant créée et prête à recevoir vos premiers clients'
+          }
           shareLink={shareLink}
         />
       )}
