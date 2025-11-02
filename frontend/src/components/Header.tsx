@@ -266,7 +266,7 @@ export default function Header() {
   }, [user, dashboardSlug]);
 
   // Redirection basée sur le rôle Clerk: ne rien faire pour admin, rediriger vers dashboard si rôle != 'customer'
-  useEffect(() => {
+  /*useEffect(() => {
     const role = (user?.publicMetadata as any)?.role;
     // Pas de redirection pour admin ni pour customer (onboarding reste accessible)
     if (!role || role === 'admin' || role === 'customer') return;
@@ -305,7 +305,7 @@ export default function Header() {
         // Ignorer silencieusement; le header reste accessible
       }
     })();
-  }, [user, dashboardSlug, location.pathname]);
+  }, [user, dashboardSlug, location.pathname]);*/
 
   // Déduire l’accès au dashboard à partir du rôle + présence de slug (évite fetch redondant)
   useEffect(() => {
