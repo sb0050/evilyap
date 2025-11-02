@@ -1044,7 +1044,6 @@ export default function DashboardPage() {
                         import.meta.env.VITE_CLOUDFRONT_URL ||
                         'https://d1tmgyvizond6e.cloudfront.net'
                       ).replace(/\/+$/, '');
-                      console.log('store?.id', store?.id);
                       const storeLogo = store?.id
                         ? `${cloudBase}/images/${store.id}`
                         : undefined;

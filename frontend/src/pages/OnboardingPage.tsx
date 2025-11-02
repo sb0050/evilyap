@@ -270,6 +270,12 @@ export default function OnboardingPage() {
         );
       }
     } catch (error) {
+      // Lever le flag pour permettre au Header de reprendre la main
+      try {
+        navigate('/onboarding', { replace: true, state: undefined });
+      } catch (_e) {
+        // ignore
+      }
       console.error('Erreur lors de la création de la boutique:', error);
       showToast(
         error instanceof Error
