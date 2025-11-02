@@ -1024,6 +1024,11 @@ class EmailService {
     ownerEmail?: string;
     clerkUserId?: string;
     message: string;
+    attachments?: Array<{
+      filename: string;
+      content: Buffer;
+      contentType?: string;
+    }>;
   }): Promise<boolean> {
     try {
       const toEmail = process.env.SUPPORT_EMAIL || process.env.SAV_EMAIL || "";
@@ -1106,6 +1111,7 @@ class EmailService {
         subject: `🆘 Support — ${data.storeName}`,
         html: htmlContent,
         replyTo: data.ownerEmail || undefined,
+        attachments: data.attachments && data.attachments.length > 0 ? data.attachments : undefined,
       } as any;
 
       const info = await this.transporter.sendMail(mailOptions);
@@ -1119,6 +1125,123 @@ class EmailService {
       return true;
     } catch (error) {
       console.error("❌ Erreur envoi email support:", error);
+      return false;
+    }
+  }
+
+  // Message envoyé par un client au propriétaire de boutique
+  async sendCustomerMessageToStoreOwner(data: {
+    toEmail: string;
+    storeName: string;
+    storeSlug?: string;
+    customerEmail?: string;
+    customerName?: string;
+    shipmentId?: string;
+    trackingUrl?: string;
+    productReference?: string | number;
+    value?: number;
+    deliveryMethod?: string;
+    deliveryNetwork?: string;
+    message: string;
+    attachments?: Array<{
+      filename: string;
+      content: Buffer;
+      contentType?: string;
+    }>;
+  }): Promise<boolean> {
+    try {
+      if (!data.toEmail) {
+        console.warn("Destinataire (toEmail) manquant pour message client→propriétaire");
+        return false;
+      }
+
+      const dateStr = new Date().toLocaleString("fr-FR", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+      const safeMsg = (data.message || "")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Contact client</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+            .header { background: #0ea5e9; color: white; padding: 24px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
+            .section { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #0ea5e9; }
+            .kv { margin: 0; }
+            .kv strong { display: inline-block; width: 220px; }
+            .msg { white-space: pre-wrap; background: #fff; border: 1px solid #eee; padding: 12px; border-radius: 6px; }
+            .footer { text-align: center; margin-top: 20px; color: #666; font-size: 14px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>📨 Message client</h1>
+              <p>${data.storeName}${data.storeSlug ? ` — ${data.storeSlug}` : ""}</p>
+            </div>
+            <div class="content">
+              <div class="section">
+                <h3>Résumé</h3>
+                <p class="kv"><strong>Boutique :</strong> ${data.storeName}</p>
+                ${data.storeSlug ? `<p class="kv"><strong>Slug :</strong> ${data.storeSlug}</p>` : ""}
+                ${data.customerEmail ? `<p class="kv"><strong>Email client :</strong> ${data.customerEmail}</p>` : ""}
+                ${data.customerName ? `<p class="kv"><strong>Nom client :</strong> ${data.customerName}</p>` : ""}
+                ${data.shipmentId ? `<p class="kv"><strong>Shipment ID :</strong> ${data.shipmentId}</p>` : ""}
+                ${data.productReference ? `<p class="kv"><strong>Référence produit :</strong> ${data.productReference}</p>` : ""}
+                ${typeof data.value === 'number' ? `<p class="kv"><strong>Valeur :</strong> ${data.value} €</p>` : ""}
+                ${data.deliveryMethod ? `<p class="kv"><strong>Mode de livraison :</strong> ${data.deliveryMethod}</p>` : ""}
+                ${data.deliveryNetwork ? `<p class="kv"><strong>Réseau :</strong> ${data.deliveryNetwork}</p>` : ""}
+                <p class="kv"><strong>Date :</strong> ${dateStr}</p>
+              </div>
+
+              <div class="section">
+                <h3>Message</h3>
+                <div class="msg">${safeMsg}</div>
+              </div>
+
+              ${data.trackingUrl ? `<p><a href="${data.trackingUrl}" target="_blank">Suivre l’expédition</a></p>` : ""}
+
+              <p>Merci de répondre au client si une action est nécessaire.</p>
+              <p><strong>PayLive - Contact client</strong></p>
+            </div>
+            <div class="footer">
+              <p>Cet email a été envoyé automatiquement depuis la page "Mes commandes".</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const mailOptions = {
+        from: process.env.SMTP_USER || "no-reply@example.com",
+        to: data.toEmail,
+        subject: `📨 Client — ${data.storeName}${data.shipmentId ? ` (Shipment ${data.shipmentId})` : ""}`,
+        html: htmlContent,
+        replyTo: data.customerEmail || undefined,
+        attachments: data.attachments && data.attachments.length > 0 ? data.attachments : undefined,
+      } as any;
+
+      const info = await this.transporter.sendMail(mailOptions);
+      console.log("✅ Email client→propriétaire envoyé:", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Envoi email client→propriétaire échoué:", error);
       return false;
     }
   }

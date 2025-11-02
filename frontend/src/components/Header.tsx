@@ -310,7 +310,6 @@ export default function Header() {
   // Déduire l’accès au dashboard à partir du rôle + présence de slug (évite fetch redondant)
   useEffect(() => {
     const role = (user?.publicMetadata as any)?.role;
-    console.log('role', role);
     setCanAccessDashboard(
       Boolean(dashboardSlug) && (role === 'admin' || role === 'owner')
     );

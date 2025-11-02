@@ -13,6 +13,7 @@ import {
   ArrowUpDown,
   RefreshCw,
   LifeBuoy,
+  Copy,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -122,6 +123,7 @@ export default function DashboardPage() {
   // Support: message de contact
   const [supportMessage, setSupportMessage] = useState<string>('');
   const [isSendingSupport, setIsSendingSupport] = useState<boolean>(false);
+  const [supportFile, setSupportFile] = useState<File | null>(null);
   // Pagination pour la section Ventes
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState<number>(1);
@@ -143,6 +145,18 @@ export default function DashboardPage() {
   const [showWelcome, setShowWelcome] = useState<boolean>(false);
   const location = useLocation();
   const shareLink = storeSlug ? `https://paylive.cc/c/${storeSlug}` : '';
+  const [aliasCopied, setAliasCopied] = useState(false);
+
+  const handleCopyAlias = async () => {
+    try {
+      if (!shareLink) return;
+      await navigator.clipboard.writeText(shareLink);
+      setAliasCopied(true);
+      setTimeout(() => setAliasCopied(false), 2000);
+    } catch (err) {
+      console.error('Erreur lors de la copie du lien alias:', err);
+    }
+  };
 
   useEffect(() => {
     const created = (location.state as any)?.isStorecreated === true;
@@ -229,13 +243,16 @@ export default function DashboardPage() {
     try {
       setIsSendingSupport(true);
       const token = await getToken();
-      await apiPost(
-        '/api/support/contact',
-        { storeSlug, message: msg },
-        { headers: { Authorization: token ? `Bearer ${token}` : '' } }
-      );
+      const fd = new FormData();
+      if (storeSlug) fd.append('storeSlug', storeSlug);
+      fd.append('message', msg);
+      if (supportFile) fd.append('attachment', supportFile);
+      await apiPostForm('/api/support/contact', fd, {
+        headers: { Authorization: token ? `Bearer ${token}` : '' },
+      });
       showToast('Message envoyé à PayLive.', 'success');
       setSupportMessage('');
+      setSupportFile(null);
     } catch (e: any) {
       const raw = e?.message || 'Erreur inconnue';
       const trimmed = (raw || '').replace(/^Error:\s*/, '');
@@ -1029,15 +1046,44 @@ export default function DashboardPage() {
           {/* Section Infos boutique */}
           {store && section === 'infos' && (
             <div className='bg-white rounded-lg shadow p-6'>
-              <div className='flex items-center mb-4'>
-                <Info className='w-5 h-5 text-indigo-600 mr-2' />
-                <h2 className='text-lg font-semibold text-gray-900'>
-                  Informations de la boutique
-                </h2>
+              <div>
+                <div className='flex items-center mb-4'>
+                  <Info className='w-5 h-5 text-indigo-600 mr-2' />
+                  <h2 className='text-lg font-semibold text-gray-900'>
+                    Informations de la boutique
+                  </h2>
+                </div>
+                {/* Alias court vers la page de paiement */}
+                <div className='space-y-2'>
+                  <p className='text-xs text-gray-500'>
+                    Collez ce lien dans la bio de vos réseaux sociaux.
+                  </p>
+                  <div className='flex flex-col sm:flex-row items-center sm:items-center space-y-2 sm:space-y-0 sm:space-x-2 p-3'>
+                    <input
+                      type='text'
+                      value={shareLink}
+                      readOnly
+                      className='sm:flex-1 sm:max-w-lg bg-transparent text-xs sm:text-sm text-gray-700 outline-none min-w-0 truncate text-center '
+                    />
+                    <button
+                      onClick={handleCopyAlias}
+                      className={`flex items-center justify-center space-x-1 px-3 py-1.5 rounded-md text-xs sm:text-sm font-medium transition-colors w-full sm:w-auto flex-shrink-0 ${
+                        aliasCopied
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                      }`}
+                    >
+                      {!aliasCopied && (
+                        <Copy size={12} className='sm:w-3.5 sm:h-3.5' />
+                      )}
+                      <span>{aliasCopied ? 'Copié' : 'Copier'}</span>
+                    </button>
+                  </div>
+                </div>
               </div>
               {/* Affichage (non édité) */}
               {!editingInfo && (
-                <div className='space-y-4'>
+                <div className='space-y-4 mt-6'>
                   <div className='flex items-center space-x-4'>
                     {(() => {
                       const cloudBase = (
@@ -1088,6 +1134,7 @@ export default function DashboardPage() {
                       </p>
                     </div>
                   </div>
+
                   <div>
                     <button
                       onClick={() => setEditingInfo(true)}
@@ -1100,7 +1147,7 @@ export default function DashboardPage() {
               )}
               {/* Édition */}
               {editingInfo && (
-                <div className='space-y-4'>
+                <div className='space-y-4 mt-6'>
                   <div className='grid grid-cols-1 md:grid-cols-3 gap-4'>
                     <div>
                       <label
@@ -2274,6 +2321,25 @@ export default function DashboardPage() {
                   className='w-full border border-gray-300 rounded-md p-3 focus:ring-indigo-500 focus:border-indigo-500'
                   placeholder={'Décrivez votre question ou votre problème…'}
                 />
+                <div className='space-y-2'>
+                  <label className='block text-sm font-medium text-gray-700'>
+                    Pièce jointe (PDF/JPG/PNG) — facultatif
+                  </label>
+                  <input
+                    type='file'
+                    accept='application/pdf,image/png,image/jpeg'
+                    onChange={e => {
+                      const file = e.target.files?.[0] || null;
+                      setSupportFile(file);
+                    }}
+                    className='block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100'
+                  />
+                  {supportFile && (
+                    <p className='text-xs text-gray-500'>
+                      Fichier choisi: {supportFile.name}
+                    </p>
+                  )}
+                </div>
                 <div className='flex items-center justify-end'>
                   <button
                     onClick={handleSendSupport}

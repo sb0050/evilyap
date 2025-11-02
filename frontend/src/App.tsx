@@ -50,6 +50,20 @@ function App() {
                 </>
               }
             />
+            {/* Alias court vers Checkout */}
+            <Route
+              path='/c/:storeName'
+              element={
+                <>
+                  <SignedIn>
+                    <CheckoutPage />
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
+              }
+            />
             <Route
               path='/onboarding'
               element={
