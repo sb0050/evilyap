@@ -60,6 +60,7 @@ export default function OrdersPage() {
         setLoading(true);
         setError(null);
         const token = await getToken();
+        await (user as any).reload();
         const stripeId = (user?.publicMetadata as any)?.stripe_id as
           | string
           | undefined;

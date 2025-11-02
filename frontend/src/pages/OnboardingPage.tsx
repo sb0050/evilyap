@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useUser } from '@clerk/clerk-react';
+import { useUser, useAuth } from '@clerk/clerk-react';
 import { Upload } from 'lucide-react';
 import { AddressElement } from '@stripe/react-stripe-js';
 import { Address } from '@stripe/stripe-js';
@@ -24,6 +24,7 @@ interface OnboardingFormData {
 export default function OnboardingPage() {
   const navigate = useNavigate();
   const { user } = useUser();
+  const { getToken } = useAuth();
   // Accès et redirections sont centralisés dans Header
 
   // (Supprimé) redirections/guards locaux pour éviter la redondance
@@ -212,7 +213,7 @@ export default function OnboardingPage() {
         } catch (reloadErr) {
           console.warn('Échec du rafraîchissement de Clerk user:', reloadErr);
         }
-        // Créer le customer Stripe avec uniquement name + email + clerkUserId 
+        // Créer le customer Stripe avec uniquement name + email + clerkUserId
         // + mise a jour des metadata clerk avec le stripeid
         try {
           const stripeResp = await apiPost('/api/stripe/create-customer', {
@@ -224,18 +225,22 @@ export default function OnboardingPage() {
           const stripeIdCreated =
             stripeJson?.stripeId || stripeJson?.customer?.id;
           console.log('stripeIdCreated', stripeIdCreated);
-          if (stripeIdCreated && (user as any)?.update) {
+          if (stripeIdCreated) {
             try {
-              await (user as any).update({
-                publicMetadata: { stripe_id: stripeIdCreated },
-              });
-              // Recharger pour refléter immédiatement publicMetadata.stripe_id
-              if (typeof (user as any).reload === 'function') {
-                await (user as any).reload();
-              }
+              const token = await getToken();
+              const resp = await apiPost(
+                '/api/clerk/update-public-metadata',
+                { publicMetadata: { stripe_id: stripeIdCreated } },
+                {
+                  headers: {
+                    Authorization: token ? `Bearer ${token}` : '',
+                  },
+                }
+              );
+              await resp.json().catch(() => ({}));
             } catch (updErr) {
               console.warn(
-                'Mise à jour publicMetadata.stripe_id échouée:',
+                'Mise à jour publicMetadata.stripe_id échouée via backend:',
                 updErr
               );
             }
