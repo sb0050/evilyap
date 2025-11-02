@@ -1,8 +1,8 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
-import { clerkClient } from "@clerk/clerk-sdk-node";
-const { requireAuth } = require("../middleware/auth");
 import { emailService } from "../services/emailService";
+import { clerkClient } from "@clerk/express";
+import { getAuth } from "@clerk/express";
 
 const router = express.Router();
 
@@ -16,17 +16,18 @@ if (!supabaseUrl || !supabaseKey) {
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // POST /api/support/contact - Store owner sends a support message to admin
-router.post("/contact", requireAuth, async (req, res) => {
+router.post("/contact", async (req, res) => {
   try {
     const { storeSlug, message } = req.body as {
       storeSlug?: string;
       message?: string;
     };
 
-    const requesterId = (req as any)?.auth?.userId || null;
-    if (!requesterId) {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
       return res.status(401).json({ error: "Unauthorized" });
     }
+    const requesterId = auth.userId;
 
     const msg = (message || "").trim();
     if (!msg) {

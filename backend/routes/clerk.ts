@@ -1,14 +1,18 @@
+import { clerkClient } from "@clerk/express";
+import { getAuth } from "@clerk/express";
 import express from "express";
-import { clerkClient } from "@clerk/clerk-sdk-node";
-const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
 
 // POST /api/clerk/update-public-metadata
 // Met à jour les public metadata de l'utilisateur Clerk authentifié
-router.post("/update-public-metadata", requireAuth, async (req, res) => {
+router.post("/update-public-metadata", async (req, res) => {
   try {
-    const userId = (req as any)?.auth?.userId || null;
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const userId = auth.userId || null;
     if (!userId) {
       return res.status(401).json({ error: "Unauthorized" });
     }

@@ -1,7 +1,6 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
-const { requireAuth } = require("../middleware/auth");
-import { clerkClient } from "@clerk/clerk-sdk-node";
+import { clerkClient, getAuth } from "@clerk/express";
 
 const router = express.Router();
 
@@ -15,8 +14,12 @@ if (!supabaseUrl || !supabaseKey) {
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // GET /api/shipments/customer?stripeId=<id>&storeSlug=<slug?>
-router.get("/customer", requireAuth, async (req, res) => {
+router.get("/customer", async (req, res) => {
   try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
     const storeSlug = (req.query.storeSlug as string) || null;
     const stripeId = (req.query.stripeId as string) || "";
 
@@ -90,8 +93,12 @@ router.get("/customer", requireAuth, async (req, res) => {
 });
 
 // GET /api/shipments/stores-for-customer/:stripeId
-router.get("/stores-for-customer/:stripeId", requireAuth, async (req, res) => {
+router.get("/stores-for-customer/:stripeId", async (req, res) => {
   try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
     const stripeId = req.params.stripeId;
     if (!stripeId) {
       return res.status(400).json({ error: "Missing stripeId" });
@@ -132,8 +139,12 @@ router.get("/stores-for-customer/:stripeId", requireAuth, async (req, res) => {
 });
 
 // GET /api/shipments/store/:storeSlug - list shipments for a store (owner/admin only)
-router.get("/store/:storeSlug", requireAuth, async (req, res) => {
+router.get("/store/:storeSlug", async (req, res) => {
   try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
     const storeSlug = req.params.storeSlug;
     if (!storeSlug) {
       return res.status(400).json({ error: "Missing storeSlug" });
@@ -153,7 +164,7 @@ router.get("/store/:storeSlug", requireAuth, async (req, res) => {
       return res.status(500).json({ error: storeErr.message });
     }
 
-    const requesterId = (req as any)?.auth?.userId || null;
+    const requesterId = auth.userId || null;
     if (!requesterId) {
       return res.status(401).json({ error: "Unauthorized" });
     }

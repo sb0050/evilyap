@@ -2,8 +2,11 @@ import express from "express";
 import Stripe from "stripe";
 import { emailService } from "../services/emailService";
 import { createClient } from "@supabase/supabase-js";
-import { clerkClient } from "@clerk/clerk-sdk-node";
+
 import slugify from "slugify";
+
+import { getAuth } from "@clerk/express";
+import { clerkClient } from "@clerk/express";
 
 const router = express.Router();
 
@@ -1264,9 +1267,12 @@ router.get("/get-customer-by-id", async (req, res) => {
 });
 
 // Nouveau endpoint: récupérer les comptes externes Clerk d’un utilisateur via clerk_user_id
-const { requireAuth } = require("../middleware/auth");
-router.get("/get-clerk-user-by-id", requireAuth, async (req, res) => {
+router.get("/get-clerk-user-by-id", async (req, res) => {
   try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
     const clerkUserId = (req.query.clerkUserId as string) || "";
     if (!clerkUserId) {
       return res.status(400).json({ error: "Missing clerkUserId" });

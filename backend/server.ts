@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from "express";
 import cors = require("cors");
 import * as dotenv from "dotenv";
+import { clerkMiddleware } from "@clerk/express";
 // Charger les variables d'environnement
 dotenv.config();
 
@@ -25,6 +26,9 @@ app.use(
     credentials: true,
   })
 );
+
+// Appliquer Clerk à toutes les routes pour pouvoir utiliser getAuth(req)
+app.use(clerkMiddleware());
 
 // Pour les webhooks Stripe, nous devons traiter le raw body
 app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));

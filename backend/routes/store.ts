@@ -1,10 +1,11 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
-import { clerkClient } from "@clerk/clerk-sdk-node";
+
 import { emailService } from "../services/emailService";
 import { isValidIBAN, isValidBIC } from "ibantools";
 import slugify from "slugify";
+import { clerkClient } from "@clerk/express";
 
 const router = express.Router();
 
