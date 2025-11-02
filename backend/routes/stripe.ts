@@ -113,6 +113,37 @@ router.get("/get-customer-details", async (req, res) => {
   }
 });
 
+// Endpoint dédié pour créer un client Stripe (sans adresse/phone/shipping)
+router.post("/create-customer", async (req, res) => {
+  try {
+    const { name, email, clerkUserId } = req.body as {
+      name?: string;
+      email?: string;
+      clerkUserId?: string;
+    };
+
+    if (!name || !email) {
+      return res.status(400).json({ error: "name et email requis" });
+    }
+
+    const customer = await stripe.customers.create({
+      name,
+      email,
+      metadata: {
+        clerk_id: clerkUserId || "",
+      },
+    });
+
+    // Ne pas modifier le rôle Clerk ici; on renvoie juste le stripeId
+    return res.json({ success: true, stripeId: customer.id, customer });
+  } catch (error) {
+    console.error("Erreur lors de la création du client Stripe:", error);
+    return res
+      .status(500)
+      .json({ error: error instanceof Error ? error.message : "Erreur" });
+  }
+});
+
 // Route pour créer une session de checkout intégrée
 router.post("/create-checkout-session", async (req, res): Promise<void> => {
   try {
@@ -236,21 +267,6 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       }
 
       customerId = customer.id;
-
-      // Mettre à jour les métadonnées Clerk pour le rôle et stripe_id
-      try {
-        if (clerkUserId && customerId) {
-          await clerkClient.users.updateUserMetadata(clerkUserId, {
-            publicMetadata: { role: "customer" },
-            privateMetadata: { stripe_id: customerId },
-          });
-        }
-      } catch (err) {
-        console.error(
-          "Erreur lors de la mise à jour des métadonnées Clerk:",
-          err
-        );
-      }
     } catch (customerError) {
       console.error("Erreur lors de la gestion du client:", customerError);
       res

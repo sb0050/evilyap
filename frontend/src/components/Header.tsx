@@ -430,7 +430,9 @@ export default function Header() {
           const ownsStore = Boolean(
             store?.clerk_id && user?.id && store.clerk_id === user.id
           );
-          if (role === 'owner' && ownsStore) {
+          // Autoriser si l’utilisateur est propriétaire de la boutique,
+          // même si son rôle côté client n’est pas encore rafraîchi.
+          if (ownsStore) {
             setDashboardGuardError(null);
             setGuardStatus('ok');
             return;
@@ -488,8 +490,8 @@ export default function Header() {
           throw new Error(json?.error || 'Vérification propriétaire échouée');
         }
         if (json?.exists && json?.slug) {
-          // Déjà propriétaire: rediriger vers le dashboard
-          window.location.href = `/dashboard/${encodeURIComponent(json.slug)}`;
+          // Déjà propriétaire: rediriger vers le dashboard sans recharger la page
+          navigate(`/dashboard/${encodeURIComponent(json.slug)}`, { replace: true });
           return;
         }
         // Pas de boutique: autoriser l'accès à l'onboarding
@@ -506,6 +508,43 @@ export default function Header() {
     };
     checkOnboardingGuard();
   }, [user, location.pathname]);
+
+  // Redirections centralisées selon le statut des gardes et les slugs connus
+  useEffect(() => {
+    const path = location.pathname || '';
+    const isDashboardBase = path === '/dashboard';
+    const isOrdersBase = path === '/orders';
+    const isDashboard = path.startsWith('/dashboard');
+    const isOrders = path.startsWith('/orders');
+    const isOnboarding = path.startsWith('/onboarding');
+
+    // Attendre que les gardes aient quitté l'état pending
+    if (onboardingGuardStatus === 'pending') return;
+
+    // Bloquer l'accès au dashboard/orders si la garde dashboard est en erreur
+    if ((isDashboard || isOrders) && guardStatus === 'error') {
+      navigate('/onboarding', { replace: true });
+      return;
+    }
+
+    // Normaliser les routes de base vers les routes avec slug lorsque l'accès est ok
+    if (guardStatus === 'ok') {
+      if (isDashboardBase && dashboardSlug) {
+        navigate(`/dashboard/${dashboardSlug}`, { replace: true });
+        return;
+      }
+      if (isOrdersBase && ordersSlug) {
+        navigate(`/orders/${ordersSlug}`, { replace: true });
+        return;
+      }
+    }
+
+    // Si l'utilisateur est autorisé et se trouve sur l'onboarding, le rediriger vers son dashboard
+    if (isOnboarding && guardStatus === 'ok' && dashboardSlug) {
+      navigate(`/dashboard/${dashboardSlug}`, { replace: true });
+      return;
+    }
+  }, [guardStatus, onboardingGuardStatus, dashboardSlug, ordersSlug, location.pathname]);
 
   const handleDeleteItem = async (
     cartItemId: number,

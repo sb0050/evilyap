@@ -146,6 +146,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const created = (location.state as any)?.isStorecreated === true;
+    console.log('created', created);
+    //const created = true;
 
     if (created) {
       setShowWelcome(true);
@@ -1042,6 +1044,7 @@ export default function DashboardPage() {
                         import.meta.env.VITE_CLOUDFRONT_URL ||
                         'https://d1tmgyvizond6e.cloudfront.net'
                       ).replace(/\/+$/, '');
+                      console.log('store?.id', store?.id);
                       const storeLogo = store?.id
                         ? `${cloudBase}/images/${store.id}`
                         : undefined;

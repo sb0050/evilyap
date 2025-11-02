@@ -24,40 +24,9 @@ interface OnboardingFormData {
 export default function OnboardingPage() {
   const navigate = useNavigate();
   const { user } = useUser();
-  const [onboardingAllowed, setOnboardingAllowed] = useState<boolean | null>(
-    null
-  );
+  // Accès et redirections sont centralisés dans Header
 
-  // Redirection basée sur le rôle Clerk: ne rien faire pour admin, rediriger vers dashboard si rôle != 'customer'
-  useEffect(() => {
-    const role = (user?.publicMetadata as any)?.role;
-    if (!role || role === 'admin') return;
-    if (role !== 'customer') {
-      const email = user?.primaryEmailAddress?.emailAddress;
-      if (!email) return;
-      (async () => {
-        try {
-          const response = await fetch(
-            `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores/check-owner/${encodeURIComponent(email)}`
-          );
-          if (!response.ok) return;
-          const data = await response.json();
-          if (data?.exists) {
-            const storeSlug =
-              data.slug ||
-              (data.storeName
-                ? slugify(data.storeName, { lower: true, strict: true })
-                : undefined);
-            if (storeSlug) {
-              window.location.href = `/dashboard/${encodeURIComponent(storeSlug)}`;
-            }
-          }
-        } catch (_err) {
-          // Ignorer silencieusement; onboarding reste accessible
-        }
-      })();
-    }
-  }, [user]);
+  // (Supprimé) redirections/guards locaux pour éviter la redondance
 
   // Préremplir le nom complet depuis Clerk
   useEffect(() => {
@@ -67,32 +36,7 @@ export default function OnboardingPage() {
     }
   }, [user?.fullName]);
 
-  // Garde d'onboarding (fallback): ne pas afficher le contenu tant que la vérification n'est pas faite
-  useEffect(() => {
-    const check = async () => {
-      const email = user?.primaryEmailAddress?.emailAddress;
-      // Si Clerk charge ou pas d'email, rester en pending
-      if (!email) {
-        setOnboardingAllowed(null);
-        return;
-      }
-      try {
-        const resp = await fetch(
-          `${(import.meta as any).env.VITE_API_URL || 'http://localhost:5000'}/api/stores/check-owner/${encodeURIComponent(email)}`
-        );
-        const json = await resp.json();
-        if (json?.exists && json?.slug) {
-          window.location.href = `/dashboard/${encodeURIComponent(json.slug)}`;
-          return;
-        }
-        setOnboardingAllowed(true);
-      } catch (_e) {
-        // En cas d'erreur, laisser l'overlay du Header afficher l'erreur
-        setOnboardingAllowed(false);
-      }
-    };
-    check();
-  }, [user?.primaryEmailAddress?.emailAddress]);
+  // (Supprimé) garde fallback; Header gère l'accès et les overlays
 
   const { toast, showToast } = useToast();
   const [loading, setLoading] = useState(false);
@@ -250,6 +194,46 @@ export default function OnboardingPage() {
 
       if (response.ok) {
         console.log('Store created successfully:', result);
+        // Rafraîchir les métadonnées Clerk (rôle/stripe_id) côté client
+        try {
+          const clerkUser = user as any;
+          if (clerkUser && typeof clerkUser.reload === 'function') {
+            await clerkUser.reload();
+          }
+        } catch (reloadErr) {
+          console.warn('Échec du rafraîchissement de Clerk user:', reloadErr);
+        }
+        // Créer le customer Stripe avec uniquement name + email + clerkUserId
+        try {
+          const stripeResp = await apiPost('/api/stripe/create-customer', {
+            name: formData.name,
+            email: user.primaryEmailAddress.emailAddress,
+            clerkUserId: user.id,
+          });
+          const stripeJson = await stripeResp.json();
+          const stripeIdCreated =
+            stripeJson?.stripeId || stripeJson?.customer?.id;
+          console.log('stripeIdCreated', stripeIdCreated);
+          if (stripeIdCreated && (user as any)?.update) {
+            try {
+              await (user as any).update({
+                publicMetadata: { stripe_id: stripeIdCreated },
+              });
+              // Recharger pour refléter immédiatement publicMetadata.stripe_id
+              if (typeof (user as any).reload === 'function') {
+                await (user as any).reload();
+              }
+            } catch (updErr) {
+              console.warn(
+                'Mise à jour publicMetadata.stripe_id échouée:',
+                updErr
+              );
+            }
+          }
+        } catch (stripeErr) {
+          console.warn('Création du customer Stripe échouée:', stripeErr);
+        }
+
         // Uploader le logo après la création pour utiliser l'id immuable
         if (formData.logo && result?.store?.slug) {
           try {
@@ -267,9 +251,10 @@ export default function OnboardingPage() {
         }
         // rediriger vers le tableau de bord de la boutique avec le slug renvoyé par le backend
         const finalSlug = result?.store?.slug || slug;
-        navigate(`/dashboard/${encodeURIComponent(finalSlug)}`, {
+        /*navigate(`/dashboard/${encodeURIComponent(finalSlug)}`, {
           state: { isStorecreated: true },
-        });
+        });*/
+        console.log('navigate dashboard ', finalSlug);
       } else {
         throw new Error(
           result.error || 'Erreur lors de la création de la boutique'
@@ -349,14 +334,7 @@ export default function OnboardingPage() {
     }
   };
 
-  // Masquer le contenu tant que la garde n'est pas 'ok' (pending ou erreur -> Header affiche overlay)
-  if (onboardingAllowed !== true) {
-    return (
-      <div className='min-h-screen bg-gray-50'>
-        <Header />
-      </div>
-    );
-  }
+  // Le contenu est affiché; Header gère les redirections et overlays
 
   // Toast notifications rendered when present
 
