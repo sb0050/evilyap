@@ -475,6 +475,10 @@ export default function Header() {
       // Basculer en pending pendant la vérification
       setOnboardingGuardStatus('pending');
 
+      const skipAutoRedirect = Boolean(
+        (location.state as any)?.skipOnboardingRedirect
+      );
+
       const email = user?.primaryEmailAddress?.emailAddress;
       if (!email) {
         // Si l'email n'est pas disponible (chargement Clerk), rester en pending
@@ -490,8 +494,17 @@ export default function Header() {
           throw new Error(json?.error || 'Vérification propriétaire échouée');
         }
         if (json?.exists && json?.slug) {
-          // Déjà propriétaire: rediriger vers le dashboard sans recharger la page
-          navigate(`/dashboard/${encodeURIComponent(json.slug)}`, { replace: true });
+          // Déjà propriétaire
+          if (!skipAutoRedirect) {
+            // Rediriger vers le dashboard sans recharger la page
+            navigate(`/dashboard/${encodeURIComponent(json.slug)}`, {
+              replace: true,
+            });
+            return;
+          }
+          // Si l'onboarding demande explicitement de rester, autoriser l'accès
+          setOnboardingGuardStatus('ok');
+          setOnboardingGuardError(null);
           return;
         }
         // Pas de boutique: autoriser l'accès à l'onboarding
@@ -518,6 +531,10 @@ export default function Header() {
     const isOrders = path.startsWith('/orders');
     const isOnboarding = path.startsWith('/onboarding');
 
+    const skipAutoRedirect = Boolean(
+      (location.state as any)?.skipOnboardingRedirect
+    );
+
     // Attendre que les gardes aient quitté l'état pending
     if (onboardingGuardStatus === 'pending') return;
 
@@ -540,7 +557,7 @@ export default function Header() {
     }
 
     // Si l'utilisateur est autorisé et se trouve sur l'onboarding, le rediriger vers son dashboard
-    if (isOnboarding && guardStatus === 'ok' && dashboardSlug) {
+    if (isOnboarding && !skipAutoRedirect && guardStatus === 'ok' && dashboardSlug) {
       navigate(`/dashboard/${dashboardSlug}`, { replace: true });
       return;
     }

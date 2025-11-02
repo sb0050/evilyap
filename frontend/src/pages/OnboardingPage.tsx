@@ -162,6 +162,15 @@ export default function OnboardingPage() {
     }
 
     setLoading(true);
+    // Empêcher la redirection automatique du Header pendant les opérations post-création
+    try {
+      navigate('/onboarding', {
+        replace: true,
+        state: { skipOnboardingRedirect: true },
+      });
+    } catch (_e) {
+      // ignore
+    }
     console.log('Submitting form with data:', {
       storeName: formData.storeName,
       description: formData.description,
@@ -203,7 +212,8 @@ export default function OnboardingPage() {
         } catch (reloadErr) {
           console.warn('Échec du rafraîchissement de Clerk user:', reloadErr);
         }
-        // Créer le customer Stripe avec uniquement name + email + clerkUserId
+        // Créer le customer Stripe avec uniquement name + email + clerkUserId 
+        // + mise a jour des metadata clerk avec le stripeid
         try {
           const stripeResp = await apiPost('/api/stripe/create-customer', {
             name: formData.name,
@@ -251,10 +261,9 @@ export default function OnboardingPage() {
         }
         // rediriger vers le tableau de bord de la boutique avec le slug renvoyé par le backend
         const finalSlug = result?.store?.slug || slug;
-        /*navigate(`/dashboard/${encodeURIComponent(finalSlug)}`, {
+        navigate(`/dashboard/${encodeURIComponent(finalSlug)}`, {
           state: { isStorecreated: true },
-        });*/
-        console.log('navigate dashboard ', finalSlug);
+        });
       } else {
         throw new Error(
           result.error || 'Erreur lors de la création de la boutique'
