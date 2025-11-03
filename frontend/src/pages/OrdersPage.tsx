@@ -5,6 +5,7 @@ import { Toast } from '../components/Toast';
 import { useParams } from 'react-router-dom';
 import { Package, Truck, Undo2, ArrowUpDown } from 'lucide-react';
 import { apiPostForm } from '../utils/api';
+import Spinner from '../components/Spinner';
 
 type StoreInfo = { name: string; slug: string };
 
@@ -57,7 +58,9 @@ export default function OrdersPage() {
   const [contactOpen, setContactOpen] = useState<boolean>(false);
   const [contactMessage, setContactMessage] = useState<string>('');
   const [contactFile, setContactFile] = useState<File | null>(null);
-  const [selectedShipment, setSelectedShipment] = useState<Shipment | null>(null);
+  const [selectedShipment, setSelectedShipment] = useState<Shipment | null>(
+    null
+  );
   const [isSendingContact, setIsSendingContact] = useState<boolean>(false);
 
   const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000';
@@ -340,10 +343,12 @@ export default function OrdersPage() {
 
         <div className='bg-white rounded-lg shadow-md p-6'>
           {loading ? (
-            <div className='text-center py-12'>
-              <Package className='h-16 w-16 text-gray-300 mx-auto mb-4' />
-              <p className='text-gray-500'>Chargement des commandes...</p>
-            </div>
+            <Spinner
+              size='lg'
+              color='blue'
+              variant='bottom'
+              className='mx-auto mb-4'
+            />
           ) : error ? (
             <div className='text-center py-12'>
               <p className='text-red-600'>{error}</p>
@@ -589,7 +594,11 @@ export default function OrdersPage() {
                               ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
                               : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                           }`}
-                          title={!s.shipment_id ? 'Contact indisponible' : 'Contacter le propriétaire'}
+                          title={
+                            !s.shipment_id
+                              ? 'Contact indisponible'
+                              : 'Contacter le propriétaire'
+                          }
                         >
                           Contacter
                         </button>
@@ -602,25 +611,41 @@ export default function OrdersPage() {
           )}
         </div>
         {contactOpen && (
-          <div className='fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4' onClick={handleCloseContact}>
-            <div className='bg-white rounded-lg shadow-xl w-full max-w-md mx-4 overflow-hidden' onClick={e => e.stopPropagation()}>
+          <div
+            className='fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4'
+            onClick={handleCloseContact}
+          >
+            <div
+              className='bg-white rounded-lg shadow-xl w-full max-w-md mx-4 overflow-hidden'
+              onClick={e => e.stopPropagation()}
+            >
               <div className='p-4 border-b border-gray-200'>
-                <h3 className='text-lg font-semibold text-gray-900'>Contacter le propriétaire</h3>
+                <h3 className='text-lg font-semibold text-gray-900'>
+                  Contacter le propriétaire
+                </h3>
                 {selectedShipment?.shipment_id && (
-                  <p className='text-xs text-gray-600 mt-1'>Shipment: {selectedShipment.shipment_id}</p>
+                  <p className='text-xs text-gray-600 mt-1'>
+                    Shipment: {selectedShipment.shipment_id}
+                  </p>
                 )}
               </div>
               <div className='p-4 space-y-3'>
-                <label className='block text-sm font-medium text-gray-700'>Message</label>
+                <label className='block text-sm font-medium text-gray-700'>
+                  Message
+                </label>
                 <textarea
                   value={contactMessage}
                   onChange={e => setContactMessage(e.target.value)}
                   rows={5}
                   className='w-full border border-gray-300 rounded-md p-3 focus:ring-indigo-500 focus:border-indigo-500'
-                  placeholder={'Expliquez votre demande concernant cette expédition…'}
+                  placeholder={
+                    'Expliquez votre demande concernant cette expédition…'
+                  }
                 />
                 <div className='space-y-2'>
-                  <label className='block text-sm font-medium text-gray-700'>Pièce jointe (PDF/JPG/PNG) — optionnel</label>
+                  <label className='block text-sm font-medium text-gray-700'>
+                    Pièce jointe (PDF/JPG/PNG) — optionnel
+                  </label>
                   <input
                     type='file'
                     accept='application/pdf,image/png,image/jpeg'
@@ -631,17 +656,26 @@ export default function OrdersPage() {
                     className='block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100'
                   />
                   {contactFile && (
-                    <p className='text-xs text-gray-500'>Fichier choisi: {contactFile.name}</p>
+                    <p className='text-xs text-gray-500'>
+                      Fichier choisi: {contactFile.name}
+                    </p>
                   )}
                 </div>
               </div>
               <div className='px-4 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-end space-x-2'>
-                <button onClick={handleCloseContact} className='px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-100'>Annuler</button>
+                <button
+                  onClick={handleCloseContact}
+                  className='px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-100'
+                >
+                  Annuler
+                </button>
                 <button
                   onClick={handleSendContact}
                   disabled={isSendingContact || !contactMessage.trim()}
                   className={`inline-flex items-center px-4 py-2 rounded-md ${
-                    isSendingContact || !contactMessage.trim() ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    isSendingContact || !contactMessage.trim()
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-indigo-600 text-white hover:bg-indigo-700'
                   }`}
                 >
                   {isSendingContact && (

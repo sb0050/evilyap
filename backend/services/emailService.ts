@@ -139,6 +139,18 @@ interface AdminRefundRequestData {
   paymentId?: string; // si disponible
 }
 
+interface CustomerRefundEmailData {
+  customerEmail: string;
+  customerName?: string;
+  storeName: string;
+  paymentId: string;
+  refundId: string;
+  amount?: number;
+  currency?: string;
+  productReference?: string | number;
+  shipmentId?: string;
+}
+
 class EmailService {
   private transporter: nodemailer.Transporter;
 
@@ -869,6 +881,92 @@ class EmailService {
       return false;
     }
   }
+  // Email de confirmation de remboursement pour le client
+  async sendCustomerRefundConfirmation(
+    data: CustomerRefundEmailData
+  ): Promise<boolean> {
+    try {
+      const formattedAmount = this.formatAmount(data.amount, data.currency);
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Remboursement confirmé</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%); color: white; padding: 24px; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
+            .section { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #16a34a; }
+            .kv { margin: 0; }
+            .kv strong { display: inline-block; width: 220px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>💸 Remboursement confirmé</h1>
+              <p>${data.storeName}</p>
+            </div>
+            <div class="content">
+              <p>Bonjour ${data.customerName || ""},</p>
+              <p>Nous vous confirmons que votre demande de remboursement a été traitée avec succès.</p>
+              <div class="section">
+                <h3>Détails</h3>
+                <p class="kv"><strong>Montant remboursé :</strong> ${
+                  formattedAmount || "N/A"
+                }</p>
+                <p class="kv"><strong>Transaction (Payment ID) :</strong> ${
+                  data.paymentId
+                }</p>
+                <p class="kv"><strong>Remboursement (Refund ID) :</strong> ${
+                  data.refundId
+                }</p>
+                ${
+                  data.productReference
+                    ? `<p class="kv"><strong>Référence produit :</strong> ${data.productReference}</p>`
+                    : ""
+                }
+                ${
+                  data.shipmentId
+                    ? `<p class="kv"><strong>Commande d'expédition :</strong> ${data.shipmentId}</p>`
+                    : ""
+                }
+              </div>
+              <p>Le montant remboursé sera visible sur votre moyen de paiement sous quelques jours ouvrés.</p>
+              <p>Merci pour votre confiance.</p>
+              <p><strong>L'équipe ${data.storeName}</strong></p>
+            </div>
+            <div class="footer" style="text-align:center; margin-top:24px; color:#666; font-size:14px;">
+              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const info = await this.transporter.sendMail({
+        from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
+        to: data.customerEmail,
+        subject: `💸 Remboursement confirmé - ${data.storeName}`,
+        html: htmlContent,
+      });
+      console.log(
+        `✅ Email de remboursement client envoyé à ${data.customerEmail}`
+      );
+      console.log("📨 sendMail result (customer refund):", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email remboursement client:", error);
+      return false;
+    }
+  }
   async sendCustomerTrackingUpdate(
     data: CustomerTrackingEmailData
   ): Promise<boolean> {
@@ -1111,7 +1209,10 @@ class EmailService {
         subject: `🆘 Support — ${data.storeName}`,
         html: htmlContent,
         replyTo: data.ownerEmail || undefined,
-        attachments: data.attachments && data.attachments.length > 0 ? data.attachments : undefined,
+        attachments:
+          data.attachments && data.attachments.length > 0
+            ? data.attachments
+            : undefined,
       } as any;
 
       const info = await this.transporter.sendMail(mailOptions);
@@ -1151,7 +1252,9 @@ class EmailService {
   }): Promise<boolean> {
     try {
       if (!data.toEmail) {
-        console.warn("Destinataire (toEmail) manquant pour message client→propriétaire");
+        console.warn(
+          "Destinataire (toEmail) manquant pour message client→propriétaire"
+        );
         return false;
       }
 
@@ -1189,20 +1292,54 @@ class EmailService {
           <div class="container">
             <div class="header">
               <h1>📨 Message client</h1>
-              <p>${data.storeName}${data.storeSlug ? ` — ${data.storeSlug}` : ""}</p>
+              <p>${data.storeName}${
+        data.storeSlug ? ` — ${data.storeSlug}` : ""
+      }</p>
             </div>
             <div class="content">
               <div class="section">
                 <h3>Résumé</h3>
                 <p class="kv"><strong>Boutique :</strong> ${data.storeName}</p>
-                ${data.storeSlug ? `<p class="kv"><strong>Slug :</strong> ${data.storeSlug}</p>` : ""}
-                ${data.customerEmail ? `<p class="kv"><strong>Email client :</strong> ${data.customerEmail}</p>` : ""}
-                ${data.customerName ? `<p class="kv"><strong>Nom client :</strong> ${data.customerName}</p>` : ""}
-                ${data.shipmentId ? `<p class="kv"><strong>Shipment ID :</strong> ${data.shipmentId}</p>` : ""}
-                ${data.productReference ? `<p class="kv"><strong>Référence produit :</strong> ${data.productReference}</p>` : ""}
-                ${typeof data.value === 'number' ? `<p class="kv"><strong>Valeur :</strong> ${data.value} €</p>` : ""}
-                ${data.deliveryMethod ? `<p class="kv"><strong>Mode de livraison :</strong> ${data.deliveryMethod}</p>` : ""}
-                ${data.deliveryNetwork ? `<p class="kv"><strong>Réseau :</strong> ${data.deliveryNetwork}</p>` : ""}
+                ${
+                  data.storeSlug
+                    ? `<p class="kv"><strong>Slug :</strong> ${data.storeSlug}</p>`
+                    : ""
+                }
+                ${
+                  data.customerEmail
+                    ? `<p class="kv"><strong>Email client :</strong> ${data.customerEmail}</p>`
+                    : ""
+                }
+                ${
+                  data.customerName
+                    ? `<p class="kv"><strong>Nom client :</strong> ${data.customerName}</p>`
+                    : ""
+                }
+                ${
+                  data.shipmentId
+                    ? `<p class="kv"><strong>Shipment ID :</strong> ${data.shipmentId}</p>`
+                    : ""
+                }
+                ${
+                  data.productReference
+                    ? `<p class="kv"><strong>Référence produit :</strong> ${data.productReference}</p>`
+                    : ""
+                }
+                ${
+                  typeof data.value === "number"
+                    ? `<p class="kv"><strong>Valeur :</strong> ${data.value} €</p>`
+                    : ""
+                }
+                ${
+                  data.deliveryMethod
+                    ? `<p class="kv"><strong>Mode de livraison :</strong> ${data.deliveryMethod}</p>`
+                    : ""
+                }
+                ${
+                  data.deliveryNetwork
+                    ? `<p class="kv"><strong>Réseau :</strong> ${data.deliveryNetwork}</p>`
+                    : ""
+                }
                 <p class="kv"><strong>Date :</strong> ${dateStr}</p>
               </div>
 
@@ -1211,7 +1348,11 @@ class EmailService {
                 <div class="msg">${safeMsg}</div>
               </div>
 
-              ${data.trackingUrl ? `<p><a href="${data.trackingUrl}" target="_blank">Suivre l’expédition</a></p>` : ""}
+              ${
+                data.trackingUrl
+                  ? `<p><a href="${data.trackingUrl}" target="_blank">Suivre l’expédition</a></p>`
+                  : ""
+              }
 
               <p>Merci de répondre au client si une action est nécessaire.</p>
               <p><strong>PayLive - Contact client</strong></p>
@@ -1227,10 +1368,15 @@ class EmailService {
       const mailOptions = {
         from: process.env.SMTP_USER || "no-reply@example.com",
         to: data.toEmail,
-        subject: `📨 Client — ${data.storeName}${data.shipmentId ? ` (Shipment ${data.shipmentId})` : ""}`,
+        subject: `📨 Client — ${data.storeName}${
+          data.shipmentId ? ` (Shipment ${data.shipmentId})` : ""
+        }`,
         html: htmlContent,
         replyTo: data.customerEmail || undefined,
-        attachments: data.attachments && data.attachments.length > 0 ? data.attachments : undefined,
+        attachments:
+          data.attachments && data.attachments.length > 0
+            ? data.attachments
+            : undefined,
       } as any;
 
       const info = await this.transporter.sendMail(mailOptions);
@@ -1324,9 +1470,7 @@ class EmailService {
                 ${ribDetailsHtml}
               </div>
 
-              <div class="note">
-                <strong>Note:</strong> Le montant indiqué est à titre indicatif et correspond aux gains actuellement disponibles. Merci de vérifier et de procéder au versement selon les informations fournies.
-              </div>
+              
 
               <p>Merci de traiter cette demande de versement.</p>
               <p><strong>PayLive - Service SAV</strong></p>

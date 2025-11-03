@@ -14,6 +14,7 @@ import {
   RefreshCw,
   LifeBuoy,
   Copy,
+  HandCoins,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -1330,8 +1331,9 @@ export default function DashboardPage() {
                 <button
                   onClick={() => setShowPayout(true)}
                   disabled={(store?.balance ?? 0) <= 0}
-                  className={`px-4 py-2 rounded ${(store?.balance ?? 0) <= 0 ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
+                  className={`flex items-center px-4 py-2 rounded ${(store?.balance ?? 0) <= 0 ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
                 >
+                  <HandCoins className='w-5 h-5 mr-2' />
                   Retirer mes gains
                 </button>
               )}
@@ -1382,9 +1384,9 @@ export default function DashboardPage() {
                           </label>
                         </div>
                         {payoutMethod === 'link' && (
-                          <div className='mb-3'>
-                            <label className='block text-sm text-gray-700 mb-1'>
-                              RIB (PDF, PNG, JPG/JPEG)
+                          <div className='mb-3 space-y-2'>
+                            <label className='block text-sm font-medium text-gray-700'>
+                              Pièce jointe (PDF/JPG/PNG) — facultatif
                             </label>
                             <input
                               type='file'
@@ -1394,7 +1396,7 @@ export default function DashboardPage() {
                                 setRibFile(f);
                                 setRibUploadError(null);
                               }}
-                              className='w-full text-sm'
+                              className='block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100'
                             />
                             {uploadingRib && (
                               <p className='text-xs text-gray-500 mt-1'>
@@ -1759,12 +1761,11 @@ export default function DashboardPage() {
                           </button>
                         </td>
                         <td className='py-4 px-4'>
-                          {JSON.stringify(s)}
                           <button
                             onClick={() => handleCancel(s)}
                             disabled={
                               !s.shipment_id ||
-                              !s.is_final_destination ||
+                              s.is_final_destination ||
                               !!s.cancel_requested ||
                               cancelStatus[s.id] === 'loading'
                             }
@@ -1779,14 +1780,16 @@ export default function DashboardPage() {
                             title={
                               !s.shipment_id
                                 ? 'Annulation indisponible'
-                                : s.cancel_requested
+                                : s.cancel_requested ||
+                                    cancelStatus[s.id] === 'success'
                                   ? 'Demande déjà envoyée'
                                   : "Demander l'annulation"
                             }
                           >
                             {cancelStatus[s.id] === 'loading'
                               ? 'Envoi...'
-                              : s.cancel_requested
+                              : s.cancel_requested ||
+                                  cancelStatus[s.id] === 'success'
                                 ? 'Demande envoyée'
                                 : cancelStatus[s.id] === 'error'
                                   ? 'Réessayer'

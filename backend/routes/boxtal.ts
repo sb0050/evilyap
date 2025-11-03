@@ -595,7 +595,7 @@ router.delete("/shipping-orders/:id", async (req, res) => {
         const { data: shipment, error: shipErr } = await supabase
           .from("shipments")
           .select(
-            "id, store_id, shipment_id, customer_stripe_id, product_reference, value, reference_value, delivery_cost, status, tracking_url"
+            "id, store_id, shipment_id, customer_stripe_id, product_reference, value, reference_value, delivery_cost, status, tracking_url, payment_id"
           )
           .eq("shipment_id", id)
           .single();
@@ -666,6 +666,7 @@ router.delete("/shipping-orders/:id", async (req, res) => {
           deliveryCost: deliveryCostRaw,
           total: totalRaw,
           currency: "EUR",
+          paymentId: shipment?.payment_id,
         });
       }
     } catch (emailErr) {

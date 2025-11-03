@@ -208,6 +208,141 @@ router.post("/create-customer", async (req, res) => {
   }
 });
 
+router.get("/refund/:paymentId", async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    if (!paymentId) {
+      return res.status(400).json({ error: "Payment ID is required" });
+    }
+
+    const refund = await stripe.refunds.create({
+      payment_intent: paymentId,
+      reason: "requested_by_customer",
+    });
+    // envoyer mail au client pour confirmer le remboursement
+    try {
+      const paymentIntent = await stripe.paymentIntents.retrieve(paymentId);
+      let customerEmail: string | undefined =
+        paymentIntent?.receipt_email || undefined;
+      let customerName: string | undefined = undefined;
+      let storeName: string = "PayLive";
+      let productReference: string | number | undefined = undefined;
+      let shipmentId: string | undefined = undefined;
+      const currency: string = (paymentIntent?.currency || "eur").toUpperCase();
+      const refundedAmountNumber: number | undefined =
+        typeof (refund as any)?.amount === "number"
+          ? (refund as any).amount / 100
+          : undefined;
+
+      if (paymentIntent?.customer) {
+        try {
+          const cust = await stripe.customers.retrieve(
+            paymentIntent.customer as string
+          );
+          customerEmail = customerEmail || (cust as any)?.email || undefined;
+          customerName = (cust as any)?.name || customerName;
+        } catch (cErr) {
+          console.warn("refund: unable to retrieve Stripe customer:", cErr);
+        }
+      }
+
+      try {
+        const { data: shipment, error: shipErr } = await supabase
+          .from("shipments")
+          .select(
+            "id, store_id, product_reference, shipment_id, customer_stripe_id, value, delivery_cost"
+          )
+          .eq("payment_id", paymentId)
+          .maybeSingle();
+        if (!shipErr && shipment) {
+          productReference = (shipment as any)?.product_reference || undefined;
+          shipmentId = (shipment as any)?.shipment_id || undefined;
+          if ((shipment as any)?.store_id) {
+            const { data: store, error: storeErr } = await supabase
+              .from("stores")
+              .select("name")
+              .eq("id", (shipment as any).store_id)
+              .maybeSingle();
+            if (!storeErr && (store as any)?.name) {
+              storeName = (store as any).name as string;
+            }
+          }
+          if (!customerEmail && (shipment as any)?.customer_stripe_id) {
+            try {
+              const cust2 = await stripe.customers.retrieve(
+                (shipment as any).customer_stripe_id as string
+              );
+              customerEmail = (cust2 as any)?.email || customerEmail;
+              customerName = (cust2 as any)?.name || customerName;
+            } catch (c2Err) {
+              console.warn(
+                "refund: fallback retrieve Stripe customer failed:",
+                c2Err
+              );
+            }
+          }
+        }
+
+        // mettre à jour la balance de la boutique
+        const { data: store, error: storeErr } = await supabase
+          .from("stores")
+          .select("balance")
+          .eq("id", (shipment as any).store_id)
+          .maybeSingle();
+        if (!storeErr && (store as any)?.balance) {
+          const newBalance = (store as any).balance + refundedAmountNumber || 0;
+          await supabase
+            .from("stores")
+            .update({
+              balance: newBalance,
+            })
+            .eq("id", (shipment as any).store_id);
+        }
+      } catch (shipEx) {
+        console.warn("refund: error fetching shipment/store:", shipEx);
+      }
+
+      if (customerEmail) {
+        await emailService.sendCustomerRefundConfirmation({
+          customerEmail,
+          customerName: customerName || "Client",
+          storeName,
+          paymentId,
+          refundId: refund.id,
+          amount: refundedAmountNumber,
+          currency,
+          productReference,
+          shipmentId,
+        });
+      } else {
+        console.log(
+          "refund: no customer email available to send refund confirmation",
+          paymentId
+        );
+      }
+    } catch (emailEx) {
+      console.error(
+        "refund: error while preparing/sending customer refund email:",
+        emailEx
+      );
+    }
+
+    //mettre a jour la colonne refund de shipments
+    await supabase
+      .from("shipments")
+      .update({
+        refund: refund.id,
+      })
+      .eq("payment_id", paymentId);
+
+    return res.json({ success: true, refund });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ error: error instanceof Error ? error.message : "Erreur" });
+  }
+});
+
 // Route pour créer une session de checkout intégrée
 router.post("/create-checkout-session", async (req, res): Promise<void> => {
   try {
@@ -259,49 +394,44 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         limit: 1,
       });
 
-      const idempotencyKey = `customer_${(customerEmail || "").toLowerCase()}`;
       let customer: Stripe.Customer;
       console.log("Existing customers:", existingCustomers.data);
 
       if (existingCustomers.data.length > 0) {
         // Mettre à jour le client existant
-        customer = await stripe.customers.update(
-          existingCustomers.data[0].id,
-          {
-            name: customerName,
-            phone: phone,
-            address: {
-              line1: address.line1,
-              line2: address.line2 || "",
-              city: address.city,
-              state: address.state || "",
-              postal_code: address.postal_code,
-              country: address.country || "FR",
-            },
-            shipping:
-              deliveryMethod === "pickup_point" && parcelPoint
-                ? {
-                    name: customerName,
-                    phone: phone,
-                    address: {
-                      line1: parcelPoint.location.street,
-                      line2: parcelPoint.location.number || "",
-                      city: parcelPoint.location.city,
-                      state: parcelPoint.location.state || "",
-                      postal_code: parcelPoint.location.postalCode,
-                      country: parcelPoint.location.countryIsoCode || "FR",
-                    },
-                  }
-                : ({} as Stripe.CustomerUpdateParams.Shipping),
-            metadata: {
-              clerk_user_id: clerkUserId || "",
-              delivery_method: deliveryMethod || "",
-              home_delivery_network: deliveryNetwork || "",
-              store_name: storeName || "",
-            },
+        customer = await stripe.customers.update(existingCustomers.data[0].id, {
+          name: customerName,
+          phone: phone,
+          address: {
+            line1: address.line1,
+            line2: address.line2 || "",
+            city: address.city,
+            state: address.state || "",
+            postal_code: address.postal_code,
+            country: address.country || "FR",
           },
-          { idempotencyKey }
-        );
+          shipping:
+            deliveryMethod === "pickup_point" && parcelPoint
+              ? {
+                  name: customerName,
+                  phone: phone,
+                  address: {
+                    line1: parcelPoint.location.street,
+                    line2: parcelPoint.location.number || "",
+                    city: parcelPoint.location.city,
+                    state: parcelPoint.location.state || "",
+                    postal_code: parcelPoint.location.postalCode,
+                    country: parcelPoint.location.countryIsoCode || "FR",
+                  },
+                }
+              : ({} as Stripe.CustomerUpdateParams.Shipping),
+          metadata: {
+            clerk_user_id: clerkUserId || "",
+            delivery_method: deliveryMethod || "",
+            home_delivery_network: deliveryNetwork || "",
+            store_name: storeName || "",
+          },
+        });
         customerId = customer.id;
       }
     } catch (customerError) {
@@ -997,6 +1127,7 @@ router.post(
                     delivery_cost:
                       dataBoxtal?.content?.deliveryPriceExclTax?.value || 0,
                     reference_value: product_amount || 0,
+                    payment_id: paymentIntent?.id || null,
                   })
                   .select("id")
                   .single();
