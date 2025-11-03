@@ -204,15 +204,7 @@ router.post("/", async (req, res) => {
 
     // Créer un client Stripe avec les métadonnées
     let stripeCustomerId = null;
-    console.log("name:", name);
-    console.log("phone:", phone);
-    console.log("address:", address);
-    console.log("clerkUserId:", clerkUserId);
     if (name && phone && address && clerkUserId) {
-      console.log(
-        "name && phone && address && clerkUserId",
-        name && phone && address && clerkUserId
-      );
       try {
         const stripeCustomer = await stripe.customers.create({
           email: ownerEmail,

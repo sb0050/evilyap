@@ -213,41 +213,6 @@ export default function OnboardingPage() {
         } catch (reloadErr) {
           console.warn('Échec du rafraîchissement de Clerk user:', reloadErr);
         }
-        // Créer le customer Stripe avec uniquement name + email + clerkUserId
-        // + mise a jour des metadata clerk avec le stripeid
-        try {
-          const stripeResp = await apiPost('/api/stripe/create-customer', {
-            name: formData.name,
-            email: user.primaryEmailAddress.emailAddress,
-            clerkUserId: user.id,
-          });
-          const stripeJson = await stripeResp.json();
-          const stripeIdCreated =
-            stripeJson?.stripeId || stripeJson?.customer?.id;
-          console.log('stripeIdCreated', stripeIdCreated);
-          if (stripeIdCreated) {
-            try {
-              const token = await getToken();
-              const resp = await apiPost(
-                '/api/clerk/update-public-metadata',
-                { publicMetadata: { stripe_id: stripeIdCreated } },
-                {
-                  headers: {
-                    Authorization: token ? `Bearer ${token}` : '',
-                  },
-                }
-              );
-              await resp.json().catch(() => ({}));
-            } catch (updErr) {
-              console.warn(
-                'Mise à jour publicMetadata.stripe_id échouée via backend:',
-                updErr
-              );
-            }
-          }
-        } catch (stripeErr) {
-          console.warn('Création du customer Stripe échouée:', stripeErr);
-        }
 
         // Uploader le logo après la création pour utiliser l'id immuable
         if (formData.logo && result?.store?.slug) {
@@ -264,6 +229,7 @@ export default function OnboardingPage() {
             console.warn("Erreur lors de l'upload du logo:", err);
           }
         }
+
         // rediriger vers le tableau de bord de la boutique avec le slug renvoyé par le backend
         const finalSlug = result?.store?.slug || slug;
         navigate(`/dashboard/${encodeURIComponent(finalSlug)}`, {

@@ -16,7 +16,7 @@ interface SuccessConfettiProps {
 
 const SuccessConfetti: React.FC<SuccessConfettiProps> = ({
   onClose,
-  shareLink = 'https://paylive.cc/c/example',
+  shareLink = 'paylive.cc/c/example',
   isStorecreated = false,
 }) => {
   const [copied, setCopied] = useState(false);

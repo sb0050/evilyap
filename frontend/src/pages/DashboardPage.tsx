@@ -144,7 +144,7 @@ export default function DashboardPage() {
   // Popup de bienvenue après création de boutique
   const [showWelcome, setShowWelcome] = useState<boolean>(false);
   const location = useLocation();
-  const shareLink = storeSlug ? `https://paylive.cc/c/${storeSlug}` : '';
+  const shareLink = storeSlug ? `paylive.cc/c/${storeSlug}` : '';
   const [aliasCopied, setAliasCopied] = useState(false);
 
   const handleCopyAlias = async () => {
@@ -254,6 +254,7 @@ export default function DashboardPage() {
       setSupportMessage('');
       setSupportFile(null);
     } catch (e: any) {
+      console.log('e', e.message);
       const raw = e?.message || 'Erreur inconnue';
       const trimmed = (raw || '').replace(/^Error:\s*/, '');
       showToast(trimmed || "Erreur lors de l'envoi", 'error');
@@ -1058,12 +1059,12 @@ export default function DashboardPage() {
                   <p className='text-xs text-gray-500'>
                     Collez ce lien dans la bio de vos réseaux sociaux.
                   </p>
-                  <div className='flex flex-col sm:flex-row items-center sm:items-center space-y-2 sm:space-y-0 sm:space-x-2 p-3'>
+                  <div className='flex flex-col sm:flex-row items-center sm:items-center space-y-2 sm:space-y-0 sm:space-x-2 p-3 '>
                     <input
                       type='text'
                       value={shareLink}
                       readOnly
-                      className='sm:flex-1 sm:max-w-lg bg-transparent text-xs sm:text-sm text-gray-700 outline-none min-w-0 truncate text-center '
+                      className='mr-5 bg-transparent text-xs sm:text-sm text-gray-700 outline-none min-w-0 truncate text-left sm:text-left'
                     />
                     <button
                       onClick={handleCopyAlias}

@@ -75,7 +75,11 @@ router.post("/contact", upload.single("attachment"), async (req, res) => {
     }
 
     // Préparer les pièces jointes si fournies
-    let attachments: Array<{ filename: string; content: Buffer; contentType?: string }> = [];
+    let attachments: Array<{
+      filename: string;
+      content: Buffer;
+      contentType?: string;
+    }> = [];
     const file = (req as any).file as Express.Multer.File | undefined;
     if (file) {
       const allowed = ["application/pdf", "image/png", "image/jpeg"];
@@ -154,7 +158,9 @@ router.post(
         return res.status(404).json({ error: "Expédition non trouvée" });
       }
       if (!shipment.store_id) {
-        return res.status(400).json({ error: "store_id manquant pour cette expédition" });
+        return res
+          .status(400)
+          .json({ error: "store_id manquant pour cette expédition" });
       }
 
       const { data: store, error: storeErr2 } = await supabase
@@ -166,7 +172,9 @@ router.post(
         return res.status(500).json({ error: storeErr2.message });
       }
       if (!store || !(store as any).owner_email) {
-        return res.status(404).json({ error: "Boutique introuvable ou email propriétaire absent" });
+        return res
+          .status(404)
+          .json({ error: "Boutique introuvable ou email propriétaire absent" });
       }
 
       // Info client depuis Clerk
@@ -174,7 +182,8 @@ router.post(
       let customerName: string | undefined;
       try {
         const user = await clerkClient.users.getUser(requesterId);
-        customerEmail = (user?.primaryEmailAddress as any)?.emailAddress || undefined;
+        customerEmail =
+          (user?.primaryEmailAddress as any)?.emailAddress || undefined;
         const first = (user as any)?.firstName || "";
         const last = (user as any)?.lastName || "";
         const full = `${first} ${last}`.trim();
@@ -184,12 +193,18 @@ router.post(
       }
 
       // Pièce jointe
-      let attachments: Array<{ filename: string; content: Buffer; contentType?: string }> = [];
+      let attachments: Array<{
+        filename: string;
+        content: Buffer;
+        contentType?: string;
+      }> = [];
       const file = (req as any).file as Express.Multer.File | undefined;
       if (file) {
         const allowed = ["application/pdf", "image/png", "image/jpeg"];
         if (!allowed.includes(file.mimetype)) {
-          return res.status(400).json({ error: "Type de fichier non supporté" });
+          return res
+            .status(400)
+            .json({ error: "Type de fichier non supporté" });
         }
         attachments.push({
           filename: file.originalname,
@@ -216,7 +231,9 @@ router.post(
         });
       } catch (emailErr) {
         console.error("Erreur envoi email client→propriétaire:", emailErr);
-        return res.status(500).json({ error: "Erreur lors de l'envoi de l'email" });
+        return res
+          .status(500)
+          .json({ error: "Erreur lors de l'envoi de l'email" });
       }
 
       return res.json({ success: true });

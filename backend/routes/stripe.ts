@@ -136,8 +136,28 @@ router.post("/create-customer", async (req, res) => {
         clerk_id: clerkUserId || "",
       },
     });
+    const stripeIdCreated = customer.id;
+    if (stripeIdCreated) {
+      try {
+        const token = await getToken();
+        const resp = await apiPost(
+          "/api/clerk/update-public-metadata",
+          { publicMetadata: { stripe_id: stripeIdCreated, role: "customer" } },
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : "",
+            },
+          }
+        );
+        await resp.json().catch(() => ({}));
+      } catch (updErr) {
+        console.warn(
+          "Mise à jour publicMetadata.stripe_id échouée via backend:",
+          updErr
+        );
+      }
+    }
 
-    // Ne pas modifier le rôle Clerk ici; on renvoie juste le stripeId
     return res.json({ success: true, stripeId: customer.id, customer });
   } catch (error) {
     console.error("Erreur lors de la création du client Stripe:", error);
@@ -232,44 +252,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
             clerk_user_id: clerkUserId || "",
           },
         });
-      } else {
-        // Créer un nouveau client
-        const data: any = {
-          email: customerEmail,
-          name: customerName,
-          phone: phone,
-          address: {
-            line1: address.line1,
-            line2: address.line2 || "",
-            city: address.city,
-            state: address.state || "",
-            postal_code: address.postal_code,
-            country: address.country || "FR",
-          },
-          shipping:
-            deliveryMethod === "pickup_point" && parcelPoint
-              ? {
-                  name: customerName,
-                  phone: phone,
-                  address: {
-                    line1: parcelPoint.location.street,
-                    line2: parcelPoint.location.number || "",
-                    city: parcelPoint.location.city,
-                    state: parcelPoint.location.state || "",
-                    postal_code: parcelPoint.location.postalCode,
-                    country: parcelPoint.location.countryIsoCode || "FR",
-                  },
-                }
-              : ({} as Stripe.CustomerUpdateParams.Shipping),
-          metadata: {
-            clerk_user_id: clerkUserId || "",
-          },
-        };
-
-        customer = await stripe.customers.create(data);
       }
-
-      customerId = customer.id;
     } catch (customerError) {
       console.error("Erreur lors de la gestion du client:", customerError);
       res
