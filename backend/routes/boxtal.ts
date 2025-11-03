@@ -579,7 +579,7 @@ router.delete("/shipping-orders/:id", async (req, res) => {
         const newStatus = String(payload.content.status);
         const { error: updError } = await supabase
           .from("shipments")
-          .update({ status: newStatus })
+          .update({ status: newStatus, cancel_requested: true })
           .eq("shipment_id", id);
         if (updError) {
           console.error("Supabase update shipments status failed:", updError);
@@ -886,41 +886,6 @@ router.post(
                 );
               }
             }
-
-            // Préparer et envoyer l'email au propriétaire
-            const amount = Number(shipment.value || 0);
-            const pickupCode = (shipment as any)?.pickup_point?.code || "";
-            const deliveryMethod =
-              (shipment.delivery_method as any) || "pickup_point";
-            const deliveryNetwork = (shipment.delivery_network as any) || "";
-
-            const sentOwner = await emailService.sendStoreOwnerNotification({
-              ownerEmail: storeOwnerEmail,
-              storeName,
-              customerEmail,
-              customerName,
-              customerPhone: "",
-              deliveryMethod,
-              deliveryNetwork,
-              shippingAddress: {},
-              customerAddress: {},
-              pickupPointCode: pickupCode,
-              productReference: String(shipment.product_reference || ""),
-              amount,
-              weight: shipment.weight,
-              currency: "eur",
-              paymentId: "",
-              boxtalId: shippingOrderId,
-              shipmentId: shipment.shipment_id || shippingOrderId,
-              attachments,
-              documentPendingNote:
-                attachments.length === 0
-                  ? "Le document n'a pas pu être joint automatiquement; vous pouvez le télécharger depuis le Tabelau de Bord."
-                  : undefined,
-            });
-            console.log(
-              `DOCUMENT_CREATED: store owner email sent=${sentOwner} to ${storeOwnerEmail} for ${shippingOrderId}`
-            );
 
             // Mettre à jour les colonnes document_created et document_url
             try {

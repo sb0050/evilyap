@@ -15,6 +15,8 @@ import {
   LifeBuoy,
   Copy,
   HandCoins,
+  Pencil,
+  SendHorizontal,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -1142,6 +1144,7 @@ export default function DashboardPage() {
                       onClick={() => setEditingInfo(true)}
                       className='inline-flex items-center px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700'
                     >
+                      <Pencil className='w-5 h-5 mr-2' />
                       Modifier vos informations
                     </button>
                   </div>
@@ -1327,28 +1330,9 @@ export default function DashboardPage() {
                 </div>
               )}
               {/* Bouton qui révèle la section Demande de versement */}
-              {store && !showPayout && (
-                <button
-                  onClick={() => setShowPayout(true)}
-                  disabled={(store?.balance ?? 0) <= 0}
-                  className={`flex items-center px-4 py-2 rounded ${(store?.balance ?? 0) <= 0 ? 'bg-gray-300 text-gray-600 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
-                >
-                  <HandCoins className='w-5 h-5 mr-2' />
-                  Retirer mes gains
-                </button>
-              )}
-              {store && showPayout && (
+              {store && (
                 <div>
-                  <button
-                    onClick={() => setShowPayout(false)}
-                    className='px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
-                  >
-                    Annuler
-                  </button>
-                  <div className='mt-4 border-t pt-4'>
-                    <h3 className='text-md font-semibold text-gray-900 mb-2'>
-                      Demande de versement
-                    </h3>
+                  <div>
                     {store?.rib && !editingRib && (
                       <div className='mb-4'>
                         <p className='text-gray-700'>
@@ -1484,7 +1468,8 @@ export default function DashboardPage() {
                       {isSubmittingPayout && (
                         <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
                       )}
-                      Demander un versement
+                      <HandCoins className='w-5 h-5 mr-2' />
+                      Retirer mes gains
                     </button>
                     {store?.rib && !editingRib && (
                       <button
@@ -1537,24 +1522,13 @@ export default function DashboardPage() {
                   <button
                     onClick={handleReloadSales}
                     disabled={reloadingSales}
-                    className={`px-3 py-1 text-sm rounded-md border inline-flex items-center ${
-                      reloadingSales
-                        ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                    }`}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:text-gray-600'
                     title='Recharger les ventes'
                   >
-                    {reloadingSales ? (
-                      <>
-                        <RefreshCw className='w-4 h-4 mr-1 animate-spin text-gray-400' />
-                        <span>Rechargement…</span>
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw className='w-4 h-4 mr-1 text-gray-600' />
-                        <span>Recharger</span>
-                      </>
-                    )}
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
+                    />
+                    <span>Recharger</span>
                   </button>
 
                   <label className='text-sm text-gray-700'>Lignes</label>
@@ -1780,12 +1754,12 @@ export default function DashboardPage() {
                             title={
                               !s.shipment_id
                                 ? 'Annulation indisponible'
-                                : s.cancel_requested ||
-                                    cancelStatus[s.id] === 'success'
+                                : s.cancel_requested
                                   ? 'Demande déjà envoyée'
                                   : "Demander l'annulation"
                             }
                           >
+                            {s.cancel_requested}
                             {cancelStatus[s.id] === 'loading'
                               ? 'Envoi...'
                               : s.cancel_requested ||
@@ -1848,6 +1822,17 @@ export default function DashboardPage() {
                       })()
                     )}
                   </div>
+
+                  <button
+                    onClick={handleReloadSales}
+                    disabled={reloadingSales}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:text-gray-600'
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
+                    />
+                    <span>Recharger</span>
+                  </button>
 
                   <label className='text-sm text-gray-700'>Lignes</label>
                   <select
@@ -2359,6 +2344,7 @@ export default function DashboardPage() {
                       <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
                     )}
                     Envoyer
+                    <SendHorizontal className='w-5 h-5 ml-2' />
                   </button>
                 </div>
               </div>

@@ -3,7 +3,14 @@ import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
 import { Toast } from '../components/Toast';
 import { useParams } from 'react-router-dom';
-import { Package, Truck, Undo2, ArrowUpDown } from 'lucide-react';
+import {
+  Package,
+  Truck,
+  Undo2,
+  ArrowUpDown,
+  SendHorizontal,
+  RefreshCw,
+} from 'lucide-react';
 import { apiPostForm } from '../utils/api';
 import Spinner from '../components/Spinner';
 
@@ -39,6 +46,7 @@ export default function OrdersPage() {
   const { getToken } = useAuth();
   const [shipments, setShipments] = useState<Shipment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [reloadingOrders, setReloadingOrders] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [returnStatus, setReturnStatus] = useState<
     Record<number, 'idle' | 'loading' | 'success' | 'error'>
@@ -101,6 +109,39 @@ export default function OrdersPage() {
     };
     if (user?.id) run();
   }, [user, storeSlug]);
+
+  const handleRefreshOrders = async () => {
+    try {
+      setReloadingOrders(true);
+      setError(null);
+      const token = await getToken();
+      await (user as any).reload();
+      const stripeId = (user?.publicMetadata as any)?.stripe_id as
+        | string
+        | undefined;
+      if (!stripeId) {
+        throw new Error('stripe_id manquant dans les metadata du user');
+      }
+      const url = `${apiBase}/api/shipments/customer?stripeId=${encodeURIComponent(
+        stripeId
+      )}${storeSlug ? `&storeSlug=${encodeURIComponent(storeSlug)}` : ''}`;
+      const resp = await fetch(url, {
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      });
+      const json = await resp.json();
+      if (!resp.ok) {
+        throw new Error(json?.error || 'Erreur lors du chargement des commandes');
+      }
+      setShipments(Array.isArray(json?.shipments) ? json.shipments : []);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+      setError(msg);
+    } finally {
+      setReloadingOrders(false);
+    }
+  };
 
   const formatMethod = (m?: string | null) => {
     if (!m) return '—';
@@ -368,6 +409,16 @@ export default function OrdersPage() {
                   commandes
                 </div>
                 <div className='flex items-center space-x-3'>
+                  <button
+                    onClick={handleRefreshOrders}
+                    disabled={reloadingOrders}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:text-gray-600'
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${reloadingOrders ? 'animate-spin' : ''}`}
+                    />
+                    <span>Recharger</span>
+                  </button>
                   <label className='text-sm text-gray-700'>
                     Lignes par page
                   </label>
@@ -502,11 +553,6 @@ export default function OrdersPage() {
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
                         <div className='flex items-center space-x-2'>
-                          {s.delivery_method === 'home_delivery' ? (
-                            <Truck className='h-5 w-5 text-blue-500' />
-                          ) : (
-                            <Package className='h-5 w-5 text-gray-500' />
-                          )}
                           <span>{formatMethod(s.delivery_method)}</span>
                         </div>
                       </td>
@@ -537,7 +583,7 @@ export default function OrdersPage() {
                         {getNetworkDescription(s.delivery_network)}
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
-                        {s.pickup_point ? (
+                        {s.pickup_point?.code ? (
                           <div>
                             <strong>{s.pickup_point?.name}</strong>
                             <br />
@@ -572,10 +618,9 @@ export default function OrdersPage() {
                               ? 'Retour indisponible'
                               : s.return_requested
                                 ? 'Demande déjà envoyée'
-                                : 'Envoyer demande de retour'
+                                : 'Envoyer une demande de retour'
                           }
                         >
-                          <Undo2 className='h-4 w-4 mr-2' />
                           {returnStatus[s.id] === 'loading'
                             ? 'Envoi...'
                             : s.return_requested
@@ -597,10 +642,10 @@ export default function OrdersPage() {
                           title={
                             !s.shipment_id
                               ? 'Contact indisponible'
-                              : 'Contacter le propriétaire'
+                              : 'Contacter la boutique'
                           }
                         >
-                          Contacter
+                          Contacter la boutique
                         </button>
                       </td>
                     </tr>
@@ -621,7 +666,7 @@ export default function OrdersPage() {
             >
               <div className='p-4 border-b border-gray-200'>
                 <h3 className='text-lg font-semibold text-gray-900'>
-                  Contacter le propriétaire
+                  Contacter la boutique
                 </h3>
                 {selectedShipment?.shipment_id && (
                   <p className='text-xs text-gray-600 mt-1'>
@@ -682,6 +727,7 @@ export default function OrdersPage() {
                     <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
                   )}
                   Envoyer
+                  <SendHorizontal className='w-4 h-4 ml-2' />
                 </button>
               </div>
             </div>

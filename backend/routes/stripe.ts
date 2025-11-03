@@ -1306,7 +1306,7 @@ router.post(
                     attachments,
                     documentPendingNote:
                       attachments?.length === 0
-                        ? "Le bordereau d'envoi sera envoyé dans un autre email."
+                        ? "Vous pourrez télécarger votre bordereau d'envoi depuis votre tableau de bord dans quelques minutes."
                         : undefined,
                   }
                 );

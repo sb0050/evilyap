@@ -825,6 +825,69 @@ function CheckoutForm({
     return base + extra;
   };
 
+  const addToCart = async () => {
+    try {
+      if (!store?.id) {
+        return setPaymentError('Boutique invalide');
+      }
+      const product_reference = (formData.reference || '').trim();
+      if (!product_reference) {
+        return setPaymentError('Référence requise');
+      }
+      if (!(amount > 0)) {
+        return setPaymentError('Montant invalide');
+      }
+      const customerStripeId = customerData?.id;
+      if (!customerStripeId) {
+        return setPaymentError('Client Stripe introuvable');
+      }
+      const resp = await apiPost('/api/carts', {
+        store_id: store.id,
+        product_reference,
+        value: amount,
+        customer_stripe_id: customerStripeId,
+      });
+      const json = await resp.json();
+      console.log('addtocart: ', json);
+      if (resp.status === 409) {
+        const msg =
+          json?.message || 'Cette reference existe déjà dans un autre panier';
+        setPaymentError(msg);
+        showToast('Cette reference existe déjà dans un autre panier', 'error');
+        return;
+      }
+      if (!resp.ok) {
+        const msg =
+          json?.message || json?.error || "Erreur lors de l'ajout au panier";
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return;
+      }
+      setPaymentError(null);
+      showToast('Ajouté au panier pour une durée de 15 minutes', 'success');
+      // Notifier le header de rafraîchir le panier
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('cart:updated'));
+      }
+    } catch (e: any) {
+      const rawMsg = e?.message || "Erreur lors de l'ajout au panier";
+      setPaymentError(rawMsg);
+      if (typeof rawMsg === 'string' && rawMsg.includes('reference_exists')) {
+        showToast('Cette reference existe déjà dans un autre panier', 'error');
+      } else {
+        try {
+          const match =
+            typeof rawMsg === 'string' ? rawMsg.match(/\{.*\}/) : null;
+          const parsed = match ? JSON.parse(match[0]) : null;
+          const finalMsg = parsed?.message || rawMsg;
+          showToast(finalMsg, 'error');
+        } catch {
+          showToast(rawMsg, 'error');
+        }
+      }
+    }
+  };
+
   return (
     <div className='space-y-6'>
       {/* Référence de commande (obligatoire) */}
@@ -887,84 +950,7 @@ function CheckoutForm({
           <button
             type='button'
             disabled={isAddToCartDisabled}
-            onClick={async () => {
-              try {
-                if (!store?.id) {
-                  return setPaymentError('Boutique invalide');
-                }
-                const product_reference = (formData.reference || '').trim();
-                if (!product_reference) {
-                  return setPaymentError('Référence requise');
-                }
-                if (!(amount > 0)) {
-                  return setPaymentError('Montant invalide');
-                }
-                const customerStripeId = customerData?.id;
-                if (!customerStripeId) {
-                  return setPaymentError('Client Stripe introuvable');
-                }
-                const resp = await apiPost('/api/carts', {
-                  store_id: store.id,
-                  product_reference,
-                  value: amount,
-                  customer_stripe_id: customerStripeId,
-                });
-                const json = await resp.json();
-                if (resp.status === 409) {
-                  const msg =
-                    json?.message ||
-                    'Cette reference existe déjà dans un autre panier';
-                  setPaymentError(msg);
-                  showToast(
-                    'Cette reference existe déjà dans un autre panier',
-                    'error'
-                  );
-                  return;
-                }
-                if (!resp.ok) {
-                  const msg =
-                    json?.message ||
-                    json?.error ||
-                    "Erreur lors de l'ajout au panier";
-                  setPaymentError(msg);
-                  showToast(msg, 'error');
-                  return;
-                }
-                setPaymentError(null);
-                showToast(
-                  'Ajouté au panier pour une durée de 15 minutes',
-                  'success'
-                );
-                // Notifier le header de rafraîchir le panier
-                if (typeof window !== 'undefined') {
-                  window.dispatchEvent(new CustomEvent('cart:updated'));
-                }
-              } catch (e: any) {
-                const rawMsg = e?.message || "Erreur lors de l'ajout au panier";
-                setPaymentError(rawMsg);
-                if (
-                  typeof rawMsg === 'string' &&
-                  rawMsg.includes('reference_exists')
-                ) {
-                  showToast(
-                    'Cette reference existe déjà dans un autre panier',
-                    'error'
-                  );
-                } else {
-                  try {
-                    const match =
-                      typeof rawMsg === 'string'
-                        ? rawMsg.match(/\{.*\}/)
-                        : null;
-                    const parsed = match ? JSON.parse(match[0]) : null;
-                    const finalMsg = parsed?.message || rawMsg;
-                    showToast(finalMsg, 'error');
-                  } catch {
-                    showToast(rawMsg, 'error');
-                  }
-                }
-              }
-            }}
+            onClick={addToCart}
             className='flex items-center justify-center gap-1 mt-4 w-full sm:w-auto px-4 py-2.5 rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600'
           >
             <ShoppingCart className='w-4 h-4 mr-1' />
