@@ -41,6 +41,7 @@ export default function OnboardingPage() {
 
   const { toast, showToast } = useToast();
   const [loading, setLoading] = useState(false);
+  const [stripeCustomerId, setStripeCustomerId] = useState<string | null>(null);
   const [formData, setFormData] = useState<OnboardingFormData>({
     storeName: '',
     logo: null,
@@ -183,6 +184,30 @@ export default function OnboardingPage() {
       billingAddress,
     });
     try {
+      // Créer (ou récupérer) le client Stripe avant la création de la boutique
+      try {
+        const token = await getToken();
+        const createResp = await apiPost(
+          '/api/stripe/create-customer',
+          {
+            name: formData.name || user?.fullName || '',
+            email: user?.primaryEmailAddress?.emailAddress,
+            clerkUserId: user?.id,
+          },
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+          }
+        );
+        const createdJson = await createResp.json().catch(() => ({}));
+        const newStripeId =
+          createdJson?.stripeId || createdJson?.customer?.id || null;
+        if (newStripeId) setStripeCustomerId(newStripeId);
+      } catch (e) {
+        console.warn('Création du client Stripe échouée (continuation):', e);
+      }
+
       const slug =
         generatedSlug ||
         slugify(formData.storeName, { lower: true, strict: true });
@@ -198,6 +223,7 @@ export default function OnboardingPage() {
         phone: formData.phone,
         address: billingAddress,
         website: formData.website || undefined,
+        stripeCustomerId: stripeCustomerId || undefined,
       });
 
       const result = await response.json();

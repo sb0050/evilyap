@@ -68,7 +68,7 @@ type Shipment = {
   status?: string | null;
   estimated_delivery_date?: string | null;
   cancel_requested?: boolean | null;
-  isFinal?: boolean | null;
+  is_final_destination?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
 };
@@ -1759,11 +1759,12 @@ export default function DashboardPage() {
                           </button>
                         </td>
                         <td className='py-4 px-4'>
+                          {JSON.stringify(s)}
                           <button
                             onClick={() => handleCancel(s)}
                             disabled={
                               !s.shipment_id ||
-                              !s.isFinal ||
+                              !s.is_final_destination ||
                               !!s.cancel_requested ||
                               cancelStatus[s.id] === 'loading'
                             }

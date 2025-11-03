@@ -29,7 +29,7 @@ type Shipment = {
   delivery_cost?: number | null;
   tracking_url?: string | null;
   store?: StoreInfo | null;
-  isFinal?: boolean | null;
+  is_final_destination?: boolean | null;
 };
 
 export default function OrdersPage() {
@@ -552,7 +552,7 @@ export default function OrdersPage() {
                             !s.shipment_id ||
                             returnStatus[s.id] === 'loading' ||
                             !!s.return_requested ||
-                            !s.isFinal
+                            !s.is_final_destination
                           }
                           className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
                             s.return_requested ||

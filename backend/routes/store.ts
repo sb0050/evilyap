@@ -164,6 +164,7 @@ router.post("/", async (req, res) => {
       phone,
       address,
       website,
+      stripeCustomerId,
     } = req.body;
 
     if (!storeName || !ownerEmail) {
@@ -200,30 +201,6 @@ router.post("/", async (req, res) => {
 
     if (existingBySlug) {
       return res.status(409).json({ error: "Ce nom de boutique existe déjà" });
-    }
-
-    // Créer un client Stripe avec les métadonnées
-    let stripeCustomerId = null;
-    if (name && phone && address && clerkUserId) {
-      try {
-        const stripeCustomer = await stripe.customers.create({
-          email: ownerEmail,
-          name: name,
-          phone: phone,
-          metadata: {
-            store_name: storeName,
-            clerk_user_id: clerkUserId,
-          },
-        });
-        stripeCustomerId = stripeCustomer.id;
-        console.log("stripeCustomerId:", stripeCustomerId);
-      } catch (stripeError) {
-        console.error(
-          "Erreur lors de la création du client Stripe:",
-          stripeError
-        );
-        // On continue sans le client Stripe si ça échoue
-      }
     }
 
     // Construire l'adresse JSON attendue

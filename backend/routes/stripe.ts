@@ -129,36 +129,77 @@ router.post("/create-customer", async (req, res) => {
       return res.status(400).json({ error: "name et email requis" });
     }
 
-    const customer = await stripe.customers.create({
-      name,
-      email,
-      metadata: {
-        clerk_id: clerkUserId || "",
-      },
-    });
-    const stripeIdCreated = customer.id;
-    if (stripeIdCreated) {
+    // Idempotence: si un client existe déjà pour cet email, le réutiliser
+    let existingCustomer: Stripe.Customer | null = null;
+    try {
+      const existing = await stripe.customers.list({
+        email: email as string,
+        limit: 1,
+      });
+      console.log("Existing customers:", existing.data);
+      if (existing.data.length > 0) {
+        existingCustomer = existing.data[0];
+      }
+    } catch (listErr) {
+      console.warn(
+        "Erreur lors de la recherche du client Stripe par email:",
+        listErr
+      );
+    }
+
+    let customer: Stripe.Customer;
+    if (existingCustomer) {
+      // Mettre à jour minimalement le client existant (nom/metadata clerk_id)
       try {
-        const token = await getToken();
-        const resp = await apiPost(
-          "/api/clerk/update-public-metadata",
-          { publicMetadata: { stripe_id: stripeIdCreated, role: "customer" } },
-          {
-            headers: {
-              Authorization: token ? `Bearer ${token}` : "",
-            },
-          }
-        );
-        await resp.json().catch(() => ({}));
+        customer = await stripe.customers.update(existingCustomer.id, {
+          name,
+          metadata: {
+            clerk_id: clerkUserId || existingCustomer.metadata?.clerk_id || "",
+          },
+        });
+      } catch (updErr) {
+        console.warn("Impossible de mettre à jour le client existant:", updErr);
+        customer = existingCustomer;
+      }
+    } else {
+      // Créer avec Idempotency-Key basée sur l'email pour éviter les doublons en appels concurrents
+      customer = await stripe.customers.create(
+        {
+          name,
+          email,
+          metadata: {
+            clerk_id: clerkUserId || "",
+          },
+        },
+        {
+          idempotencyKey: `create_customer_${email}`,
+        } as any
+      );
+    }
+
+    const stripeId = customer.id;
+    console.log("Created/Updated Stripe Customer ID:", stripeId);
+    if (stripeId) {
+      // Mettre à jour les métadonnées publiques Clerk directement côté serveur
+      // en utilisant clerkClient, si l’utilisateur est authentifié
+      try {
+        const auth = getAuth(req);
+        const targetUserId = clerkUserId || auth?.userId;
+        if (auth?.isAuthenticated && targetUserId) {
+          console.log("Updating Clerk user:", targetUserId);
+          await clerkClient.users.updateUser(targetUserId, {
+            publicMetadata: { stripe_id: stripeId, role: "customer" },
+          } as any);
+        }
       } catch (updErr) {
         console.warn(
-          "Mise à jour publicMetadata.stripe_id échouée via backend:",
+          "Mise à jour Clerk publicMetadata (stripe_id) échouée:",
           updErr
         );
       }
     }
 
-    return res.json({ success: true, stripeId: customer.id, customer });
+    return res.json({ success: true, stripeId, customer });
   } catch (error) {
     console.error("Erreur lors de la création du client Stripe:", error);
     return res
@@ -218,40 +259,50 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         limit: 1,
       });
 
+      const idempotencyKey = `customer_${(customerEmail || "").toLowerCase()}`;
       let customer: Stripe.Customer;
+      console.log("Existing customers:", existingCustomers.data);
 
       if (existingCustomers.data.length > 0) {
         // Mettre à jour le client existant
-        customer = await stripe.customers.update(existingCustomers.data[0].id, {
-          name: customerName,
-          phone: phone,
-          address: {
-            line1: address.line1,
-            line2: address.line2 || "",
-            city: address.city,
-            state: address.state || "",
-            postal_code: address.postal_code,
-            country: address.country || "FR",
+        customer = await stripe.customers.update(
+          existingCustomers.data[0].id,
+          {
+            name: customerName,
+            phone: phone,
+            address: {
+              line1: address.line1,
+              line2: address.line2 || "",
+              city: address.city,
+              state: address.state || "",
+              postal_code: address.postal_code,
+              country: address.country || "FR",
+            },
+            shipping:
+              deliveryMethod === "pickup_point" && parcelPoint
+                ? {
+                    name: customerName,
+                    phone: phone,
+                    address: {
+                      line1: parcelPoint.location.street,
+                      line2: parcelPoint.location.number || "",
+                      city: parcelPoint.location.city,
+                      state: parcelPoint.location.state || "",
+                      postal_code: parcelPoint.location.postalCode,
+                      country: parcelPoint.location.countryIsoCode || "FR",
+                    },
+                  }
+                : ({} as Stripe.CustomerUpdateParams.Shipping),
+            metadata: {
+              clerk_user_id: clerkUserId || "",
+              delivery_method: deliveryMethod || "",
+              home_delivery_network: deliveryNetwork || "",
+              store_name: storeName || "",
+            },
           },
-          shipping:
-            deliveryMethod === "pickup_point" && parcelPoint
-              ? {
-                  name: customerName,
-                  phone: phone,
-                  address: {
-                    line1: parcelPoint.location.street,
-                    line2: parcelPoint.location.number || "",
-                    city: parcelPoint.location.city,
-                    state: parcelPoint.location.state || "",
-                    postal_code: parcelPoint.location.postalCode,
-                    country: parcelPoint.location.countryIsoCode || "FR",
-                  },
-                }
-              : ({} as Stripe.CustomerUpdateParams.Shipping),
-          metadata: {
-            clerk_user_id: clerkUserId || "",
-          },
-        });
+          { idempotencyKey }
+        );
+        customerId = customer.id;
       }
     } catch (customerError) {
       console.error("Erreur lors de la gestion du client:", customerError);
@@ -287,6 +338,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     const session = await stripe.checkout.sessions.create({
       ui_mode: "embedded",
       payment_method_types: ["card", "paypal"],
+      customer: customerId,
       payment_intent_data: {
         description: `store: ${storeName || ""} - reference: ${
           productReference || ""
@@ -371,7 +423,6 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           message: `J'accepte les [conditions générales de vente](${CLOUDFRONT_URL}/documents/terms_and_conditions) et la [politique de confidentialité](${CLOUDFRONT_URL}/documents/privacy_policy) de PayLive.`,
         },
       },
-      customer: customerId,
     } as any);
 
     res.json({
@@ -505,20 +556,37 @@ router.post(
         try {
           const session: any = event.data.object as any;
           console.log("Session metadata:", session.metadata);
-          const customer = await stripe.customers.retrieve(session.customer);
+          // Résoudre l'ID client en évitant les erreurs lorsque session.customer est null
+          let resolvedCustomerId: string | null =
+            typeof session.customer === "string"
+              ? (session.customer as string)
+              : null;
 
-          // Récupérer le payment intent pour les informations de paiement
-
+          // Récupérer le payment intent pour les informations de paiement et fallback customer
           try {
             if (session.payment_intent) {
               paymentIntent = await stripe.paymentIntents.retrieve(
                 session.payment_intent as string
               );
+              if (!resolvedCustomerId && paymentIntent?.customer) {
+                resolvedCustomerId = paymentIntent.customer as string;
+              }
             }
           } catch (e) {
             console.warn(
               "⚠️ Unable to retrieve PaymentIntent, falling back to session fields:",
               (e as any)?.message || e
+            );
+          }
+
+          let customer: Stripe.Customer | null = null;
+          if (resolvedCustomerId) {
+            customer = (await stripe.customers.retrieve(
+              resolvedCustomerId
+            )) as Stripe.Customer;
+          } else {
+            console.warn(
+              "checkout.session.completed without a linked customer; using session fallbacks"
             );
           }
 

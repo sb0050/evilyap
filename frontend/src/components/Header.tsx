@@ -99,6 +99,8 @@ export default function Header() {
   const cartRef = useRef<HTMLDivElement | null>(null);
   const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
   const [now, setNow] = useState<number>(Date.now());
+  // Garde pour éviter les appels multiples en mode Strict et re-renders
+  const hasEnsuredStripeCustomerRef = useRef<boolean>(false);
   const deletingIdsRef = useRef<Set<number>>(new Set());
 
   // Animation d'avertissement d'expiration du panier (< 1 minute)
@@ -177,11 +179,10 @@ export default function Header() {
     }
   }, [cartGroups, now]);
 
-  // Check if user is owner of any store
+  // 1) Vérifier une seule fois si l'utilisateur est propriétaire d'une boutique
   useEffect(() => {
     const checkOwner = async () => {
       const email = user?.primaryEmailAddress?.emailAddress;
-      console.log('email', email);
       if (!email) return;
       try {
         const resp = await fetch(
@@ -197,7 +198,12 @@ export default function Header() {
         // Silent failure; header remains minimal
       }
     };
+    checkOwner();
+    // dépendances réduites pour éviter les appels répétés
+  }, [user?.primaryEmailAddress?.emailAddress]);
 
+  // 2) Charger magasins et panier lorsqu'on connaît stripeCustomerId
+  useEffect(() => {
     const fetchCustomerStores = async () => {
       try {
         const token = await getToken();
@@ -220,23 +226,11 @@ export default function Header() {
       }
     };
 
-    checkOwner();
-    fetchCustomerStores();
-
     const fetchCart = async () => {
       try {
-        const email = user?.primaryEmailAddress?.emailAddress;
-        if (!email) return;
-        const resp = await fetch(
-          `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(email)}`
-        );
-        if (!resp.ok) return;
-        const json = await resp.json();
-        const stripeId = json?.customer?.id;
-        if (!stripeId) return;
-        setStripeCustomerId(stripeId);
+        if (!stripeCustomerId) return;
         const cartResp = await fetch(
-          `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(stripeId)}`
+          `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(stripeCustomerId)}`
         );
         if (!cartResp.ok) return;
         const cartJson = await cartResp.json();
@@ -248,6 +242,8 @@ export default function Header() {
         // ignore cart errors in header
       }
     };
+
+    fetchCustomerStores();
     fetchCart();
 
     const onCartUpdated = () => {
@@ -263,49 +259,66 @@ export default function Header() {
     return () => {
       window.removeEventListener('cart:updated', onCartUpdated);
     };
-  }, [user, dashboardSlug]);
+  }, [stripeCustomerId]);
 
-  // Redirection basée sur le rôle Clerk: ne rien faire pour admin, rediriger vers dashboard si rôle != 'customer'
-  /*useEffect(() => {
-    const role = (user?.publicMetadata as any)?.role;
-    // Pas de redirection pour admin ni pour customer (onboarding reste accessible)
-    if (!role || role === 'admin' || role === 'customer') return;
-
-    const path = location.pathname || '';
-    // Ne pas interférer avec les pages spécifiques
-    if (path.startsWith('/dashboard') || path.startsWith('/payment')) {
-      return;
-    }
-
-    const email = user?.primaryEmailAddress?.emailAddress;
-    if (!email) return;
-
-    (async () => {
+  // useEffect dédié: assurer l'existence du client Stripe une seule fois
+  useEffect(() => {
+    const ensureStripeCustomer = async () => {
       try {
-        // Utiliser le slug déjà connu si disponible, sinon vérifier côté backend
-        let storeSlug = dashboardSlug || null;
-        if (!storeSlug) {
-          const response = await fetch(
-            `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
+        const email = user?.primaryEmailAddress?.emailAddress;
+        if (!email) return;
+
+        if (stripeCustomerId) return; // déjà connu
+        if (hasEnsuredStripeCustomerRef.current) return; // éviter les doublons
+        hasEnsuredStripeCustomerRef.current = true;
+
+        // Essayer de récupérer le client existant
+        let stripeId: string | null = null;
+        try {
+          const resp = await fetch(
+            `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(email)}`
           );
-          if (!response.ok) return;
-          const data = await response.json();
-          if (data?.exists) {
-            storeSlug =
-              data.slug ||
-              (data.storeName
-                ? slugify(data.storeName, { lower: true, strict: true })
-                : undefined);
+          if (resp.ok) {
+            const json = await resp.json();
+            stripeId = json?.customer?.id || null;
+          }
+        } catch {
+          // ignore
+        }
+
+        // S'il n'existe pas, le créer côté backend (idempotent)
+        if (!stripeId) {
+          try {
+            const token = await getToken();
+            const createResp = await fetch(
+              `${apiBase}/api/stripe/create-customer`,
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  Authorization: token ? `Bearer ${token}` : '',
+                },
+                body: JSON.stringify({
+                  name: user?.fullName || email,
+                  email,
+                  clerkUserId: user?.id,
+                }),
+              }
+            );
+            const createJson = await createResp.json().catch(() => ({}));
+            stripeId = createJson?.stripeId || createJson?.customer?.id || null;
+          } catch {
+            // ignore
           }
         }
-        if (storeSlug) {
-          window.location.href = `/dashboard/${encodeURIComponent(storeSlug)}`;
-        }
-      } catch (_err) {
-        // Ignorer silencieusement; le header reste accessible
+
+        if (stripeId) setStripeCustomerId(stripeId);
+      } catch {
+        // ignore
       }
-    })();
-  }, [user, dashboardSlug, location.pathname]);*/
+    };
+    ensureStripeCustomer();
+  }, [user?.primaryEmailAddress?.emailAddress, stripeCustomerId]);
 
   // Déduire l’accès au dashboard à partir du rôle + présence de slug (évite fetch redondant)
   useEffect(() => {
@@ -313,7 +326,7 @@ export default function Header() {
     setCanAccessDashboard(
       Boolean(dashboardSlug) && (role === 'admin' || role === 'owner')
     );
-  }, [user, dashboardSlug]);
+  }, [user?.primaryEmailAddress?.emailAddress, dashboardSlug]);
 
   // Fermer le panier au clic en dehors
   useEffect(() => {
@@ -426,12 +439,24 @@ export default function Header() {
             return;
           }
 
+          // Si l'utilisateur n'est pas encore chargé, rester en pending pour éviter une erreur prématurée
+          if (!user || !user.id) {
+            setDashboardGuardError(null);
+            setGuardStatus('pending');
+            return;
+          }
+
           const ownsStore = Boolean(
             store?.clerk_id && user?.id && store.clerk_id === user.id
           );
+          const ownsStoreByEmail = Boolean(
+            store?.owner_email &&
+              user?.primaryEmailAddress?.emailAddress &&
+              store.owner_email === user.primaryEmailAddress.emailAddress
+          );
           // Autoriser si l’utilisateur est propriétaire de la boutique,
           // même si son rôle côté client n’est pas encore rafraîchi.
-          if (ownsStore) {
+          if (ownsStore || ownsStoreByEmail) {
             setDashboardGuardError(null);
             setGuardStatus('ok');
             return;
@@ -459,7 +484,7 @@ export default function Header() {
       setGuardStatus('ok');
     };
     checkDashboardGuard();
-  }, [user, location.pathname]);
+  }, [user, location.pathname]); // check si on doit pas mettre: user?.primaryEmailAddress?.emailAddress
 
   // Garde Onboarding: vérifier si l'utilisateur possède déjà une boutique
   useLayoutEffect(() => {
@@ -519,7 +544,7 @@ export default function Header() {
       }
     };
     checkOnboardingGuard();
-  }, [user, location.pathname]);
+  }, [user?.primaryEmailAddress?.emailAddress, location.pathname]);
 
   // Redirections centralisées selon le statut des gardes et les slugs connus
   useEffect(() => {
@@ -539,7 +564,10 @@ export default function Header() {
 
     // Bloquer l'accès au dashboard/orders si la garde dashboard est en erreur
     if ((isDashboard || isOrders) && guardStatus === 'error') {
-      navigate('/onboarding', { replace: true });
+      navigate('/onboarding', {
+        replace: true,
+        state: { skipOnboardingRedirect: true },
+      });
       return;
     }
 
@@ -556,11 +584,22 @@ export default function Header() {
     }
 
     // Si l'utilisateur est autorisé et se trouve sur l'onboarding, le rediriger vers son dashboard
-    if (isOnboarding && !skipAutoRedirect && guardStatus === 'ok' && dashboardSlug) {
+    if (
+      isOnboarding &&
+      !skipAutoRedirect &&
+      guardStatus === 'ok' &&
+      dashboardSlug
+    ) {
       navigate(`/dashboard/${dashboardSlug}`, { replace: true });
       return;
     }
-  }, [guardStatus, onboardingGuardStatus, dashboardSlug, ordersSlug, location.pathname]);
+  }, [
+    guardStatus,
+    onboardingGuardStatus,
+    dashboardSlug,
+    ordersSlug,
+    location.pathname,
+  ]);
 
   const handleDeleteItem = async (
     cartItemId: number,

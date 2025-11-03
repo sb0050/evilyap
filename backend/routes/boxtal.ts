@@ -1096,23 +1096,23 @@ router.post(
               if (tracking?.isFinal === true) {
                 const { error: finalErr } = await supabase
                   .from("shipments")
-                  .update({ isFinal: true })
+                  .update({ is_final_destination: true })
                   .eq("shipment_id", shippingOrderId);
                 if (finalErr) {
                   console.error(
-                    "TRACKING_CHANGED: error updating shipments.isFinal:",
+                    "TRACKING_CHANGED: error updating shipments.is_final_destination:",
                     finalErr
                   );
                 } else {
                   console.log(
-                    "TRACKING_CHANGED: shipments.isFinal set to TRUE for",
+                    "TRACKING_CHANGED: shipments.is_final_destination set to TRUE for",
                     shippingOrderId
                   );
                 }
               }
             } catch (finalEx) {
               console.error(
-                "TRACKING_CHANGED: exception updating shipments.isFinal:",
+                "TRACKING_CHANGED: exception updating shipments.is_final_destination:",
                 finalEx
               );
             }
