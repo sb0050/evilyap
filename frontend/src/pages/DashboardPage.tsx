@@ -1023,59 +1023,59 @@ export default function DashboardPage() {
           <nav className='flex flex-wrap items-center gap-1'>
             <button
               onClick={() => setSection('infos')}
-              className={`flex items-center basis-1/3 sm:basis-auto shrink-0 px-2 py-1 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+              className={`flex items-center sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
                 section === 'infos'
                   ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
               <Info className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
-              <span>Informations</span>
+              <span className='truncate'>Informations</span>
             </button>
             <button
               onClick={() => setSection('wallet')}
-              className={`flex items-center basis-1/3 sm:basis-auto shrink-0 px-2 py-1 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
                 section === 'wallet'
                   ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
               <Wallet className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
-              <span>Porte-monnaie</span>
+              <span className='truncate'>Porte-monnaie</span>
             </button>
             <button
               onClick={() => setSection('sales')}
-              className={`flex items-center basis-1/3 sm:basis-auto shrink-0 px-2 py-1 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
                 section === 'sales'
                   ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
               <ShoppingCart className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
-              <span>Ventes</span>
+              <span className='truncate'>Ventes</span>
             </button>
 
             <button
               onClick={() => setSection('clients')}
-              className={`flex items-center basis-1/3 sm:basis-auto shrink-0 px-2 py-1 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
                 section === 'clients'
                   ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
               <Users className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
-              <span>Clients</span>
+              <span className='truncate'>Clients</span>
             </button>
             <button
               onClick={() => setSection('support')}
-              className={`flex items-center basis-1/3 sm:basis-auto shrink-0 px-2 py-1 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
                 section === 'support'
                   ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
               <LifeBuoy className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
-              <span>Support</span>
+              <span className='truncate'>Support</span>
             </button>
           </nav>
         </div>
