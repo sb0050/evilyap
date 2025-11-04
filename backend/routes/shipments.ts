@@ -13,46 +13,26 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// GET /api/shipments/customer?stripeId=<id>&storeSlug=<slug?>
+// GET /api/shipments/customer?stripeId=<id>
 router.get("/customer", async (req, res) => {
   try {
     const auth = getAuth(req);
     if (!auth?.isAuthenticated) {
       return res.status(401).json({ error: "Unauthorized" });
     }
-    const storeSlug = (req.query.storeSlug as string) || null;
     const stripeId = (req.query.stripeId as string) || "";
 
     if (!stripeId) {
       return res.status(400).json({ error: "Missing stripeId" });
     }
 
-    let storeFilterId: number | null = null;
-
-    if (storeSlug) {
-      const { data: store, error: storeErr } = await supabase
-        .from("stores")
-        .select("id,name,slug")
-        .eq("slug", storeSlug)
-        .single();
-      if (storeErr) {
-        return res.status(500).json({ error: storeErr.message });
-      }
-      storeFilterId = store?.id ?? null;
-    }
-
-    const baseQuery = supabase
+    const { data, error } = await supabase
       .from("shipments")
       .select(
-        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, dropoff_point, pickup_point, weight, product_reference, value, created_at, status, estimated_delivery_date, cancel_requested, return_requested, is_final_destination, delivery_cost, tracking_url"
+        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, dropoff_point, pickup_point, weight, product_reference, value, reference_value, created_at, status, estimated_delivery_date, cancel_requested, return_requested, is_final_destination, delivery_cost, tracking_url"
       )
       .eq("customer_stripe_id", stripeId)
       .order("id", { ascending: false });
-
-    const { data, error } =
-      storeFilterId !== null
-        ? await baseQuery.eq("store_id", storeFilterId)
-        : await baseQuery;
 
     if (error) {
       return res.status(500).json({ error: error.message });
@@ -66,7 +46,7 @@ router.get("/customer", async (req, res) => {
     if (storeIds.length > 0) {
       const { data: storesData, error: storesError } = await supabase
         .from("stores")
-        .select("id,name,slug")
+        .select("id,name,slug, address, website, owner_email")
         .in("id", storeIds);
       if (storesError) {
         return res.status(500).json({ error: storesError.message });
@@ -104,10 +84,14 @@ router.get("/stores-for-customer/:stripeId", async (req, res) => {
       return res.status(400).json({ error: "Missing stripeId" });
     }
 
+    console.log("Fetching stores for customer with stripeId:", stripeId);
+
     const { data, error } = await supabase
       .from("shipments")
       .select("store_id")
       .eq("customer_stripe_id", stripeId);
+
+    console.log("Raw data from Supabase:", data);
 
     if (error) {
       return res.status(500).json({ error: error.message });

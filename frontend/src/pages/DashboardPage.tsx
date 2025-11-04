@@ -163,8 +163,6 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const created = (location.state as any)?.isStorecreated === true;
-    console.log('created', created);
-    //const created = true;
 
     if (created) {
       setShowWelcome(true);
@@ -1353,7 +1351,7 @@ export default function DashboardPage() {
                               checked={payoutMethod === 'link'}
                               onChange={() => setPayoutMethod('link')}
                             />
-                            Télécharger le RIB
+                            Télécharger l'IBAN/RIB
                           </label>
                           <label className='inline-flex items-center'>
                             <input
@@ -1370,7 +1368,7 @@ export default function DashboardPage() {
                         {payoutMethod === 'link' && (
                           <div className='mb-3 space-y-2'>
                             <label className='block text-sm font-medium text-gray-700'>
-                              Pièce jointe (PDF/JPG/PNG) — facultatif
+                              Pièce jointe (PDF/JPG/PNG)
                             </label>
                             <input
                               type='file'

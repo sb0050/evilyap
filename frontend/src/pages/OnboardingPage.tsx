@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUser, useAuth } from '@clerk/clerk-react';
-import { Upload } from 'lucide-react';
+import { Store, Upload } from 'lucide-react';
 import { AddressElement } from '@stripe/react-stripe-js';
 import { Address } from '@stripe/stripe-js';
 
@@ -183,6 +183,8 @@ export default function OnboardingPage() {
       website: formData.website,
       billingAddress,
     });
+    // Conserver l'ID Stripe obtenu localement pour l'utiliser immédiatement
+    let createdStripeId: string | null = null;
     try {
       // Créer (ou récupérer) le client Stripe avant la création de la boutique
       try {
@@ -201,9 +203,11 @@ export default function OnboardingPage() {
           }
         );
         const createdJson = await createResp.json().catch(() => ({}));
-        const newStripeId =
+        createdStripeId =
           createdJson?.stripeId || createdJson?.customer?.id || null;
-        if (newStripeId) setStripeCustomerId(newStripeId);
+        if (createdStripeId) {
+          setStripeCustomerId(createdStripeId);
+        }
       } catch (e) {
         console.warn('Création du client Stripe échouée (continuation):', e);
       }
@@ -211,6 +215,8 @@ export default function OnboardingPage() {
       const slug =
         generatedSlug ||
         slugify(formData.storeName, { lower: true, strict: true });
+      // Utiliser l'ID local si l'état React n'est pas encore mis à jour
+      const stripeIdToUse = createdStripeId || stripeCustomerId || undefined;
 
       const response = await apiPost('/api/stores', {
         storeName: formData.storeName,
@@ -223,7 +229,7 @@ export default function OnboardingPage() {
         phone: formData.phone,
         address: billingAddress,
         website: formData.website || undefined,
-        stripeCustomerId: stripeCustomerId || undefined,
+        stripeCustomerId: stripeIdToUse,
       });
 
       const result = await response.json();
@@ -587,7 +593,20 @@ export default function OnboardingPage() {
                 }}
                 className='w-full bg-indigo-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
               >
-                {loading ? 'Création en cours...' : 'Créer ma boutique'}
+                {loading ? (
+                  <span className='inline-flex items-center justify-center gap-2'>
+                    <span
+                      className='h-5 w-5 animate-spin rounded-full border-2 border-current border-t-transparent'
+                      aria-hidden='true'
+                    ></span>
+                    <span className='text-sm font-medium'>Création en cours…</span>
+                  </span>
+                ) : (
+                  <span className='inline-flex items-center justify-center gap-2'>
+                    <Store className='w-5 h-5' aria-hidden='true' />
+                    <span className='text-sm font-medium'>Créer ma boutique</span>
+                  </span>
+                )}
               </button>
             </form>
           </div>

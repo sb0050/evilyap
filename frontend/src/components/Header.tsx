@@ -562,12 +562,10 @@ export default function Header() {
     // Attendre que les gardes aient quitté l'état pending
     if (onboardingGuardStatus === 'pending') return;
 
-    // Bloquer l'accès au dashboard/orders si la garde dashboard est en erreur
+    // En cas d'erreur d'accès (boutique inexistante ou accès refusé),
+    // ne pas rediriger automatiquement vers l'onboarding.
+    // L'overlay d'erreur du Header s'affiche et bloque le contenu.
     if ((isDashboard || isOrders) && guardStatus === 'error') {
-      navigate('/onboarding', {
-        replace: true,
-        state: { skipOnboardingRedirect: true },
-      });
       return;
     }
 

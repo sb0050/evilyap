@@ -88,7 +88,7 @@ export default function OrdersPage() {
         }
         const url = `${apiBase}/api/shipments/customer?stripeId=${encodeURIComponent(
           stripeId
-        )}${storeSlug ? `&storeSlug=${encodeURIComponent(storeSlug)}` : ''}`;
+        )}`;
         const resp = await fetch(url, {
           headers: {
             Authorization: token ? `Bearer ${token}` : '',
@@ -124,7 +124,7 @@ export default function OrdersPage() {
       }
       const url = `${apiBase}/api/shipments/customer?stripeId=${encodeURIComponent(
         stripeId
-      )}${storeSlug ? `&storeSlug=${encodeURIComponent(storeSlug)}` : ''}`;
+      )}`;
       const resp = await fetch(url, {
         headers: {
           Authorization: token ? `Bearer ${token}` : '',
@@ -132,7 +132,9 @@ export default function OrdersPage() {
       });
       const json = await resp.json();
       if (!resp.ok) {
-        throw new Error(json?.error || 'Erreur lors du chargement des commandes');
+        throw new Error(
+          json?.error || 'Erreur lors du chargement des commandes'
+        );
       }
       setShipments(Array.isArray(json?.shipments) ? json.shipments : []);
     } catch (e) {
