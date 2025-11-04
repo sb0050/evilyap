@@ -848,7 +848,7 @@ function CheckoutForm({
         customer_stripe_id: customerStripeId,
       });
       const json = await resp.json();
-      console.log('addtocart: ', json);
+
       if (resp.status === 409) {
         const msg =
           json?.message || 'Cette reference existe déjà dans un autre panier';

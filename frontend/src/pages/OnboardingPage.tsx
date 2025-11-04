@@ -173,16 +173,7 @@ export default function OnboardingPage() {
     } catch (_e) {
       // ignore
     }
-    console.log('Submitting form with data:', {
-      storeName: formData.storeName,
-      description: formData.description,
-      logoPresent: !!formData.logo,
-      isAddressComplete,
-      name: formData.name,
-      phone: formData.phone,
-      website: formData.website,
-      billingAddress,
-    });
+
     // Conserver l'ID Stripe obtenu localement pour l'utiliser immédiatement
     let createdStripeId: string | null = null;
     try {
@@ -235,7 +226,6 @@ export default function OnboardingPage() {
       const result = await response.json();
 
       if (response.ok) {
-        console.log('Store created successfully:', result);
         // Rafraîchir les métadonnées Clerk (rôle/stripe_id) côté client
         try {
           const clerkUser = user as any;
@@ -305,7 +295,6 @@ export default function OnboardingPage() {
   const handleStoreNameBlur = async () => {
     const name = formData.storeName.trim();
     if (!name) {
-      console.log('storeName blur: empty');
       setShowValidationErrors(true);
       setWasStoreNameFocused(false);
       return;
