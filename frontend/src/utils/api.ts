@@ -25,13 +25,6 @@ const getApiBaseUrl = () => {
 
 const API_BASE_URL = getApiBaseUrl();
 
-// Debug: Afficher l'URL API utilisée
-console.log('🔧 API Base URL:', API_BASE_URL);
-console.log('🌐 Current hostname:', window.location.hostname);
-console.log('📍 Environment variables:', {
-  VITE_API_URL: import.meta.env.VITE_API_URL,
-});
-
 /**
  * Utilitaire pour faire des appels API avec la bonne URL de base
  */

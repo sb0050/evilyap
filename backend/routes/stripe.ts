@@ -827,7 +827,6 @@ router.post(
                 price_id: item.price.id,
               }));
             const product_amount = Math.round(products?.[0]?.amount_total || 0);
-            console.log("products:", products);
 
             // Récupérer les informations complètes de la boutique depuis Supabase
             let storeOwnerEmail = null;

@@ -263,7 +263,6 @@ export default function DashboardPage() {
       setSupportMessage('');
       setSupportFile(null);
     } catch (e: any) {
-      console.log('e', e.message);
       const raw = e?.message || 'Erreur inconnue';
       const trimmed = (raw || '').replace(/^Error:\s*/, '');
       showToast(trimmed || "Erreur lors de l'envoi", 'error');
@@ -887,7 +886,6 @@ export default function DashboardPage() {
         }
       }
       const payload: any = { name, description, website };
-      console.log('Payload slug:', store?.slug);
       const resp = await apiPut(
         `/api/stores/${encodeURIComponent(store.slug)}`,
         payload
