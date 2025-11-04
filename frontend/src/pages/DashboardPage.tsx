@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
 import Spinner from '../components/Spinner';
@@ -77,7 +77,6 @@ type Shipment = {
 };
 
 export default function DashboardPage() {
-  const { storeSlug } = useParams();
   const navigate = useNavigate();
   const { getToken } = useAuth();
   const { user } = useUser();
@@ -85,6 +84,8 @@ export default function DashboardPage() {
   const [shipments, setShipments] = useState<Shipment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [resolvedSlug, setResolvedSlug] = useState<string | null>(null);
+  const [noStore, setNoStore] = useState<boolean>(false);
   // Vérification d’existence et d’accès au dashboard gérées par Header
   const { toast, showToast, hideToast } = useToast();
 
@@ -133,6 +134,7 @@ export default function DashboardPage() {
   // Barre de recherche sur l'ID (contains)
   const [idSearch, setIdSearch] = useState<string>('');
   const [reloadingSales, setReloadingSales] = useState<boolean>(false);
+  const [reloadingBalance, setReloadingBalance] = useState<boolean>(false);
   // États Clients (onglet dédié)
   const [clientsPageSize, setClientsPageSize] = useState<number>(10);
   const [clientsPage, setClientsPage] = useState<number>(1);
@@ -147,7 +149,7 @@ export default function DashboardPage() {
   // Popup de bienvenue après création de boutique
   const [showWelcome, setShowWelcome] = useState<boolean>(false);
   const location = useLocation();
-  const shareLink = storeSlug ? `paylive.cc/c/${storeSlug}` : '';
+  const shareLink = resolvedSlug ? `paylive.cc/c/${resolvedSlug}` : '';
   const [aliasCopied, setAliasCopied] = useState(false);
 
   const handleCopyAlias = async () => {
@@ -245,7 +247,7 @@ export default function DashboardPage() {
       setIsSendingSupport(true);
       const token = await getToken();
       const fd = new FormData();
-      if (storeSlug) fd.append('storeSlug', storeSlug);
+      if (resolvedSlug) fd.append('storeSlug', resolvedSlug);
       fd.append('message', msg);
       if (supportFile) fd.append('attachment', supportFile);
       await apiPostForm('/api/support/contact', fd, {
@@ -442,12 +444,13 @@ export default function DashboardPage() {
 
   const handleReloadSales = async () => {
     try {
-      if (!storeSlug) return;
+      const slug = store?.slug || resolvedSlug;
+      if (!slug) return;
       setReloadingSales(true);
       setError(null);
       const token = await getToken();
       const shipResp = await fetch(
-        `${apiBase}/api/shipments/store/${encodeURIComponent(storeSlug)}`,
+        `${apiBase}/api/shipments/store/${encodeURIComponent(slug)}`,
         {
           headers: {
             Authorization: token ? `Bearer ${token}` : '',
@@ -470,6 +473,31 @@ export default function DashboardPage() {
       showToast(rawMsg, 'error');
     } finally {
       setReloadingSales(false);
+    }
+  };
+
+  const handleReloadBalance = async () => {
+    try {
+      const slug = store?.slug || resolvedSlug;
+      if (!slug) return;
+      setReloadingBalance(true);
+      setError(null);
+      const resp = await fetch(
+        `${apiBase}/api/stores/${encodeURIComponent(slug)}`
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok || !json?.store) {
+        const msg = json?.error || 'Erreur lors du rechargement du solde';
+        throw new Error(typeof msg === 'string' ? msg : 'Rechargement échoué');
+      }
+      const refreshed = json.store as Store;
+      setStore(prev => ({ ...(prev || refreshed), balance: refreshed?.balance ?? 0 }));
+      showToast('Solde rechargé', 'success');
+    } catch (e: any) {
+      const rawMsg = e?.message || 'Erreur inconnue';
+      showToast(rawMsg, 'error');
+    } finally {
+      setReloadingBalance(false);
     }
   };
 
@@ -685,39 +713,51 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    const load = async () => {
-      if (!storeSlug) {
-        setError('Nom de boutique manquant');
-        setLoading(false);
-        return;
-      }
-
+    const resolveStoreAndLoad = async () => {
       try {
-        // Fetch store info (includes balance and clerk_id)
+        // 1) Résoudre le slug si absent via check-owner
+        let slugToUse = resolvedSlug;
+        if (!slugToUse) {
+          const email = user?.primaryEmailAddress?.emailAddress || '';
+          if (!email) {
+            // Attendre que Clerk charge l'email
+            return;
+          }
+          const resp = await fetch(
+            `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
+          );
+          const json = await resp.json();
+          if (resp.ok && json?.exists && json?.slug) {
+            slugToUse = json.slug as string;
+            setResolvedSlug(slugToUse);
+          } else {
+            setNoStore(true);
+            setLoading(false);
+            return;
+          }
+        }
+
+        // 2) Charger la boutique
         const storeResp = await fetch(
-          `${apiBase}/api/stores/${encodeURIComponent(storeSlug)}`
+          `${apiBase}/api/stores/${encodeURIComponent(slugToUse)}`
         );
         const storeJson = await storeResp.json();
         if (!storeResp.ok) {
-          // L’overlay du Header affichera le message d’erreur de non-existence/accès
           setError(storeJson?.error || 'Boutique non trouvée');
           setLoading(false);
           return;
         }
         const s: Store = storeJson.store;
-
-        // Accès contrôlé via <Protect> de Clerk (fallback affichera un message si non autorisé)
-
         setStore(s);
         setName(s?.name || '');
         setDescription(s?.description || '');
         setWebsite(s?.website || '');
         setPayoutMethod(s?.rib?.type === 'link' ? 'link' : 'database');
 
-        // Fetch shipments for this store
+        // 3) Charger les ventes de la boutique
         const token = await getToken();
         const shipResp = await fetch(
-          `${apiBase}/api/shipments/store/${encodeURIComponent(storeSlug)}`,
+          `${apiBase}/api/shipments/store/${encodeURIComponent(slugToUse)}`,
           {
             headers: {
               Authorization: token ? `Bearer ${token}` : '',
@@ -729,7 +769,6 @@ export default function DashboardPage() {
           const msg = shipJson?.error || 'Erreur lors du chargement des ventes';
           if (shipResp.status === 403 || shipResp.status === 404) {
             setError(msg);
-            //showToast(msg, 'error');
             setLoading(false);
             return;
           }
@@ -744,12 +783,12 @@ export default function DashboardPage() {
         setLoading(false);
       }
     };
-    load();
-  }, [storeSlug, user?.id]);
+    resolveStoreAndLoad();
+  }, [resolvedSlug, user?.primaryEmailAddress?.emailAddress, user?.id]);
 
   const saveStoreInfo = async () => {
     setIsSubmittingModifications(true);
-    if (!storeSlug) return;
+    if (!resolvedSlug) return;
     setShowValidationErrors(true);
     // Vérifications similaires à onboarding
     if (!name.trim()) {
@@ -779,7 +818,7 @@ export default function DashboardPage() {
       }
       const payload: any = { name, description, website };
       const resp = await apiPut(
-        `/api/stores/${encodeURIComponent(storeSlug)}`,
+        `/api/stores/${encodeURIComponent(resolvedSlug)}`,
         payload
       );
       const json = await resp.json();
@@ -792,12 +831,7 @@ export default function DashboardPage() {
       setStore(updated);
       setEditingInfo(false);
       showToast('Informations de la boutique mises à jour.', 'success');
-      // Si le slug a changé, rediriger vers la nouvelle page du dashboard
-      if (updated?.slug && updated.slug !== storeSlug) {
-        navigate(`/dashboard/${encodeURIComponent(updated.slug)}`, {
-          replace: true,
-        });
-      }
+      // Plus de navigation liée au slug: rester sur `/dashboard` sans redirection
     } catch (err) {
       showToast(
         err instanceof Error ? err.message : 'Erreur inconnue',
@@ -809,7 +843,7 @@ export default function DashboardPage() {
   };
 
   const confirmPayout = async () => {
-    if (!storeSlug || !store) return;
+    if (!resolvedSlug || !store) return;
     setIbanError(null);
     setBicError(null);
     setRibUploadError(null);
@@ -872,7 +906,7 @@ export default function DashboardPage() {
       }
 
       const resp = await apiPost(
-        `/api/stores/${encodeURIComponent(storeSlug)}/confirm-payout`,
+        `/api/stores/${encodeURIComponent(resolvedSlug)}/confirm-payout`,
         payload
       );
       const json = await resp.json();
@@ -1312,9 +1346,16 @@ export default function DashboardPage() {
             <div className='bg-white rounded-lg shadow p-6'>
               <div className='flex items-center mb-4'>
                 <Wallet className='w-5 h-5 text-indigo-600 mr-2' />
-                <h2 className='text-lg font-semibold text-gray-900'>
-                  Porte-monnaie
-                </h2>
+                <h2 className='text-lg font-semibold text-gray-900'>Porte-monnaie</h2>
+                <button
+                  onClick={handleReloadBalance}
+                  disabled={reloadingBalance}
+                  className='inline-flex items-center ml-4 px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:text-gray-600'
+                  title='Recharger le solde'
+                >
+                  <RefreshCw className={`w-4 h-4 mr-1 ${reloadingBalance ? 'animate-spin' : ''}`} />
+                  <span>Recharger</span>
+                </button>
               </div>
               <p className='text-gray-600 mb-2'>
                 Montant accumulé suite aux achats des clients.

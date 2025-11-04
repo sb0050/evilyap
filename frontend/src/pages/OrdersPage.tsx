@@ -720,7 +720,7 @@ export default function OrdersPage() {
                         </div>
                         <StoreInfoPopover
                           s={s}
-                          preferUpwards={idx >= visibleShipments.length - 2} // Ajuster la position si le popover est en bas pour les deux dernières lignes
+                          preferUpwards={idx >= visibleShipments.length - 3} // Ajuster la position si le popover est en bas pour les deux dernières lignes
                         />
                       </td>
                       <td className='py-4 px-4 text-gray-700'>

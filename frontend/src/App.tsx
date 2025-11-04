@@ -99,7 +99,7 @@ function App() {
               }
             />
             <Route
-              path='/dashboard/:storeSlug'
+              path='/dashboard'
               element={
                 <>
                   <SignedIn>

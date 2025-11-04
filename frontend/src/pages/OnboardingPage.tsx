@@ -262,9 +262,8 @@ export default function OnboardingPage() {
           }
         }
 
-        // rediriger vers le tableau de bord de la boutique avec le slug renvoyé par le backend
-        const finalSlug = result?.store?.slug || slug;
-        navigate(`/dashboard/${encodeURIComponent(finalSlug)}`, {
+        // Rediriger vers le tableau de bord (sans slug) et afficher le welcome
+        navigate(`/dashboard`, {
           state: { isStorecreated: true },
         });
       } else {

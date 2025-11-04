@@ -121,8 +121,6 @@ router.get("/stores-for-customer/:stripeId", async (req, res) => {
       .select("store_id")
       .eq("customer_stripe_id", stripeId);
 
-    console.log("Raw data from Supabase:", data);
-
     if (error) {
       return res.status(500).json({ error: error.message });
     }

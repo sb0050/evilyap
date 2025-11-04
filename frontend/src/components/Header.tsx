@@ -13,12 +13,12 @@ import {
   ShoppingCart,
   Trash2,
   CreditCard,
+  Store,
 } from 'lucide-react';
 import Spinner from './Spinner';
 import { animate } from 'motion';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Protect } from '@clerk/clerk-react';
-import slugify from 'slugify';
 
 // Variables de configuration du panier (modifiables)
 const CART_ITEM_TTL_MINUTES = 15; // durée de vie d’un article dans le panier
@@ -48,9 +48,6 @@ export default function Header() {
   const { getToken } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [ordersSlug, setOrdersSlug] = useState<string | null>(null);
-  const [dashboardSlug, setDashboardSlug] = useState<string | null>(null);
-  const [canAccessDashboard, setCanAccessDashboard] = useState<boolean>(false);
   const [dashboardGuardError, setDashboardGuardError] = useState<{
     title: string;
     message: string;
@@ -65,7 +62,7 @@ export default function Header() {
       if (isExempt) return 'ok';
       const segments = path.split('/').filter(Boolean);
       const slugFromPath = decodeURIComponent(segments[1] || '');
-      if (path.startsWith('/dashboard/') || slugFromPath) return 'pending';
+      if (slugFromPath) return 'pending';
       return 'ok';
     }
   );
@@ -179,53 +176,11 @@ export default function Header() {
     }
   }, [cartGroups, now]);
 
-  // 1) Vérifier une seule fois si l'utilisateur est propriétaire d'une boutique
-  useEffect(() => {
-    const checkOwner = async () => {
-      const email = user?.primaryEmailAddress?.emailAddress;
-      if (!email) return;
-      try {
-        const resp = await fetch(
-          `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
-        );
-        if (!resp.ok) return;
-        const json = await resp.json();
-        if (json?.slug) {
-          setOrdersSlug(json.slug);
-          setDashboardSlug(json.slug);
-        }
-      } catch (err) {
-        // Silent failure; header remains minimal
-      }
-    };
-    checkOwner();
-    // dépendances réduites pour éviter les appels répétés
-  }, [user?.primaryEmailAddress?.emailAddress]);
+  // 1) Vérification propriétaire supprimée du Header (slug inutile pour orders/dashboard)
+  // Ancienne logique de récupération des slugs retirée pour simplification
 
-  // 2) Charger magasins et panier lorsqu'on connaît stripeCustomerId
+  // Charger le panier lorsqu'on connaît stripeCustomerId
   useEffect(() => {
-    const fetchCustomerStores = async () => {
-      try {
-        const token = await getToken();
-        if (!stripeCustomerId) return;
-        const resp = await fetch(
-          `${apiBase}/api/shipments/stores-for-customer/${encodeURIComponent(stripeCustomerId)}`,
-          {
-            headers: {
-              Authorization: token ? `Bearer ${token}` : '',
-            },
-          }
-        );
-        if (!resp.ok) return;
-        const json = await resp.json();
-        if (Array.isArray(json?.slugs) && json.slugs.length > 0) {
-          setOrdersSlug(prev => prev ?? json.slugs[0]);
-        }
-      } catch (err) {
-        // ignore
-      }
-    };
-
     const fetchCart = async () => {
       try {
         if (!stripeCustomerId) return;
@@ -242,8 +197,6 @@ export default function Header() {
         // ignore cart errors in header
       }
     };
-
-    fetchCustomerStores();
     fetchCart();
 
     const onCartUpdated = () => {
@@ -320,13 +273,7 @@ export default function Header() {
     ensureStripeCustomer();
   }, [user?.primaryEmailAddress?.emailAddress, stripeCustomerId]);
 
-  // Déduire l’accès au dashboard à partir du rôle + présence de slug (évite fetch redondant)
-  useEffect(() => {
-    const role = (user?.publicMetadata as any)?.role;
-    setCanAccessDashboard(
-      Boolean(dashboardSlug) && (role === 'admin' || role === 'owner')
-    );
-  }, [user?.primaryEmailAddress?.emailAddress, dashboardSlug]);
+  // Suppression de la déduction d’accès au dashboard basée sur des slugs
 
   // Fermer le panier au clic en dehors
   useEffect(() => {
@@ -366,10 +313,9 @@ export default function Header() {
 
       // Avant toute vérification, basculer en pending pour bloquer le contenu
       if (
+        path === '/dashboard' ||
         path.startsWith('/dashboard/') ||
-        (!path.startsWith('/dashboard/') &&
-          segments.length >= 2 &&
-          slugFromPath)
+        (!path.startsWith('/dashboard/') && segments.length >= 2 && slugFromPath)
       ) {
         setGuardStatus('pending');
       }
@@ -407,72 +353,38 @@ export default function Header() {
         return;
       }
 
-      // Vérification existence + propriété pour dashboard
-      if (path.startsWith('/dashboard/')) {
-        if (!slugFromPath) {
-          setDashboardGuardError({
-            title: 'Boutique non trouvée',
-            message: 'Le slug de boutique est manquant dans l’URL.',
-          });
-          setGuardStatus('error');
+      // Vérification spécifique du dashboard sans slug: s'assurer que l'utilisateur a une boutique
+      if (path === '/dashboard') {
+        const email = user?.primaryEmailAddress?.emailAddress;
+        if (!email) {
+          // Email non prêt: rester en pending jusqu'à Clerk
           return;
         }
-        const role = (user?.publicMetadata as any)?.role;
         try {
           const resp = await fetch(
-            `${apiBase}/api/stores/${encodeURIComponent(slugFromPath)}`
+            `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
           );
-          const json = await resp.json();
-          if (!resp.ok || !json?.store) {
+          const json: OwnerStoreInfo = await resp.json();
+          if (!resp.ok) {
+            throw new Error(json as any);
+          }
+          if (!json?.exists || !json?.slug) {
             setDashboardGuardError({
-              title: 'Boutique non trouvée',
-              message: `La boutique "${slugFromPath}" n'existe pas ou n'est plus disponible.`,
+              title: 'Aucune boutique',
+              message:
+                "Vous n'avez pas de boutique. Veuillez en créer une pour accéder au tableau de bord.",
             });
             setGuardStatus('error');
             return;
           }
-
-          const store = json.store;
-          if (role === 'admin') {
-            setDashboardGuardError(null);
-            setGuardStatus('ok');
-            return;
-          }
-
-          // Si l'utilisateur n'est pas encore chargé, rester en pending pour éviter une erreur prématurée
-          if (!user || !user.id) {
-            setDashboardGuardError(null);
-            setGuardStatus('pending');
-            return;
-          }
-
-          const ownsStore = Boolean(
-            store?.clerk_id && user?.id && store.clerk_id === user.id
-          );
-          const ownsStoreByEmail = Boolean(
-            store?.owner_email &&
-              user?.primaryEmailAddress?.emailAddress &&
-              store.owner_email === user.primaryEmailAddress.emailAddress
-          );
-          // Autoriser si l’utilisateur est propriétaire de la boutique,
-          // même si son rôle côté client n’est pas encore rafraîchi.
-          if (ownsStore || ownsStoreByEmail) {
-            setDashboardGuardError(null);
-            setGuardStatus('ok');
-            return;
-          }
-
-          setDashboardGuardError({
-            title: 'Accès refusé',
-            message:
-              "Vous n'avez pas les droits pour accéder au tableau de bord de cette boutique.",
-          });
-          setGuardStatus('error');
+          // Boutique trouvée
+          setDashboardGuardError(null);
+          setGuardStatus('ok');
         } catch (_e) {
           setDashboardGuardError({
             title: 'Erreur',
             message:
-              'Impossible de vérifier l’accès au tableau de bord. Veuillez réessayer.',
+              "Impossible de vérifier votre boutique. Veuillez réessayer.",
           });
           setGuardStatus('error');
         }
@@ -520,8 +432,8 @@ export default function Header() {
         if (json?.exists && json?.slug) {
           // Déjà propriétaire
           if (!skipAutoRedirect) {
-            // Rediriger vers le dashboard sans recharger la page
-            navigate(`/dashboard/${encodeURIComponent(json.slug)}`, {
+            // Rediriger vers le dashboard sans recharger la page (chemin simple)
+            navigate(`/dashboard`, {
               replace: true,
             });
             return;
@@ -569,33 +481,11 @@ export default function Header() {
       return;
     }
 
-    // Normaliser les routes de base vers les routes avec slug lorsque l'accès est ok
-    if (guardStatus === 'ok') {
-      if (isDashboardBase && dashboardSlug) {
-        navigate(`/dashboard/${dashboardSlug}`, { replace: true });
-        return;
-      }
-      // Ne plus normaliser '/orders' vers une version avec slug:
-      // l'onglet Orders s'appuie désormais sur l'utilisateur courant
-    }
+    // Ne plus normaliser '/dashboard' ni '/orders' vers des versions avec slug
 
-    // Si l'utilisateur est autorisé et se trouve sur l'onboarding, le rediriger vers son dashboard
-    if (
-      isOnboarding &&
-      !skipAutoRedirect &&
-      guardStatus === 'ok' &&
-      dashboardSlug
-    ) {
-      navigate(`/dashboard/${dashboardSlug}`, { replace: true });
-      return;
-    }
-  }, [
-    guardStatus,
-    onboardingGuardStatus,
-    dashboardSlug,
-    ordersSlug,
-    location.pathname,
-  ]);
+    // Redirection Onboarding -> Dashboard gérée par le garde Onboarding ci-dessus.
+    // Ici, ne pas forcer de redirection pour éviter de bloquer les nouveaux utilisateurs sans boutique.
+  }, [guardStatus, onboardingGuardStatus, location.pathname]);
 
   const handleDeleteItem = async (
     cartItemId: number,
@@ -649,9 +539,11 @@ export default function Header() {
                 }}
               >
                 <button
-                  className={`mr-4 px-3 py-2 rounded-md text-sm font-medium ${canAccessDashboard && dashboardSlug ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+                  className={
+                    'mr-4 px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700'
+                  }
                   onClick={() => {
-                    navigate(`/dashboard/${dashboardSlug}`);
+                    navigate(`/dashboard`);
                   }}
                 >
                   <span className='inline-flex items-center'>
@@ -838,6 +730,21 @@ export default function Header() {
                   <p className='text-gray-600'>
                     {dashboardGuardError?.message}
                   </p>
+                  {location.pathname === '/dashboard' && (
+                    <div className='mt-4'>
+                      <button
+                        onClick={() =>
+                          navigate('/onboarding', {
+                            state: { skipOnboardingRedirect: true },
+                          })
+                        }
+                        className='inline-flex items-center px-4 py-2 gap-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700'
+                      >
+                        <Store className='w-5 h-5' aria-hidden='true' />
+                        Créer ma boutique
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </div>
