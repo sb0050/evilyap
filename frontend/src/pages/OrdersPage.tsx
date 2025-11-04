@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
 import { Toast } from '../components/Toast';
-import { useParams } from 'react-router-dom';
 import {
   Package,
   Truck,
@@ -59,7 +58,6 @@ type Shipment = {
 };
 
 export default function OrdersPage() {
-  const { storeSlug } = useParams();
   const { user } = useUser();
   const { getToken } = useAuth();
   const [shipments, setShipments] = useState<Shipment[]>([]);
@@ -282,7 +280,7 @@ export default function OrdersPage() {
       }
     };
     if (user?.id) run();
-  }, [user, storeSlug]);
+  }, [user]);
 
   const handleRefreshOrders = async () => {
     try {

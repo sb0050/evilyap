@@ -575,10 +575,8 @@ export default function Header() {
         navigate(`/dashboard/${dashboardSlug}`, { replace: true });
         return;
       }
-      if (isOrdersBase && ordersSlug) {
-        navigate(`/orders/${ordersSlug}`, { replace: true });
-        return;
-      }
+      // Ne plus normaliser '/orders' vers une version avec slug:
+      // l'onglet Orders s'appuie désormais sur l'utilisateur courant
     }
 
     // Si l'utilisateur est autorisé et se trouve sur l'onboarding, le rediriger vers son dashboard
@@ -633,10 +631,9 @@ export default function Header() {
           <div className='flex justify-end items-center h-16 relative'>
             <SignedIn>
               <button
-                className={`mr-4 px-3 py-2 rounded-md text-sm font-medium ${ordersSlug ? 'bg-amber-600 text-white hover:bg-amber-700' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
-                disabled={!ordersSlug}
+                className='mr-4 px-3 py-2 rounded-md text-sm font-medium bg-amber-600 text-white hover:bg-amber-700'
                 onClick={() => {
-                  if (ordersSlug) navigate(`/orders/${ordersSlug}`);
+                  navigate('/orders');
                 }}
               >
                 <span className='inline-flex items-center'>

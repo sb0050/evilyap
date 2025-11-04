@@ -184,8 +184,7 @@ const PaymentReturnPage: React.FC = () => {
           <div className='mt-6'>
             <button
               onClick={() => {
-              const storeSlug = searchParams.get('store_name');
-              navigate(`/orders/${storeSlug}`);
+              navigate(`/orders`);
             }}
               className='w-full bg-blue-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-blue-700 transition-colors'
             >

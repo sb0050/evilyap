@@ -86,7 +86,7 @@ function App() {
               }
             />
             <Route
-              path='/orders/:storeSlug'
+              path='/orders'
               element={
                 <>
                   <SignedIn>
