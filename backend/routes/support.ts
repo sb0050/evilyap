@@ -25,9 +25,10 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 // POST /api/support/contact - Store owner sends a support message to admin
 router.post("/contact", upload.single("attachment"), async (req, res) => {
   try {
-    const { storeSlug, message } = req.body as {
+    const { storeSlug, message, context: rawContext } = req.body as {
       storeSlug?: string;
       message?: string;
+      context?: string;
     };
 
     const auth = getAuth(req);
@@ -100,6 +101,7 @@ router.post("/contact", upload.single("attachment"), async (req, res) => {
         ownerEmail: (store as any)?.owner_email || undefined,
         clerkUserId: requesterId || undefined,
         message: msg,
+        context: rawContext,
         attachments,
       });
     } catch (emailErr) {

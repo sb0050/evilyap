@@ -353,7 +353,7 @@ const LandingPage = () => {
               Essayez PayLive Gratuitement !
             </button>
             <a
-              href='#'
+              href='/howitworks'
               className='block text-center text-blue-400 text-sm underline hover:text-blue-300 transition-colors'
             >
               Comment ça marche ?
@@ -373,7 +373,7 @@ const LandingPage = () => {
               Essayez PayLive Gratuitement !
             </button>
             <a
-              href='#'
+              href='/howitworks'
               className='block text-blue-400 underline hover:text-blue-300 transition-colors'
             >
               Comment ça marche ?

@@ -163,18 +163,13 @@ router.post("/create-customer", async (req, res) => {
       }
     } else {
       // Créer avec Idempotency-Key basée sur l'email pour éviter les doublons en appels concurrents
-      customer = await stripe.customers.create(
-        {
-          name,
-          email,
-          metadata: {
-            clerk_id: clerkUserId || "",
-          },
+      customer = await stripe.customers.create({
+        name,
+        email,
+        metadata: {
+          clerk_id: clerkUserId || "",
         },
-        {
-          idempotencyKey: `create_customer_${email}`,
-        } as any
-      );
+      });
     }
 
     const stripeId = customer.id;
@@ -1306,7 +1301,7 @@ router.post(
                     attachments,
                     documentPendingNote:
                       attachments?.length === 0
-                        ? "Vous pourrez télécarger votre bordereau d'envoi depuis votre tableau de bord dans quelques minutes."
+                        ? "Vous pourrez télécharger votre bordereau d'envoi depuis votre tableau de bord dans quelques minutes."
                         : undefined,
                   }
                 );

@@ -128,6 +128,12 @@ export default function DashboardPage() {
   const [supportMessage, setSupportMessage] = useState<string>('');
   const [isSendingSupport, setIsSendingSupport] = useState<boolean>(false);
   const [supportFile, setSupportFile] = useState<File | null>(null);
+  // Aide sur une vente (popup similaire à OrdersPage)
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [helpMessage, setHelpMessage] = useState<string>('');
+  const [helpFile, setHelpFile] = useState<File | null>(null);
+  const [selectedSale, setSelectedSale] = useState<Shipment | null>(null);
+  const [isSendingHelp, setIsSendingHelp] = useState<boolean>(false);
   // Pagination pour la section Ventes
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState<number>(1);
@@ -263,6 +269,67 @@ export default function DashboardPage() {
       showToast(trimmed || "Erreur lors de l'envoi", 'error');
     } finally {
       setIsSendingSupport(false);
+    }
+  };
+
+  // Ouverture du popup "Besoin d'aide" pour une vente
+  const handleOpenHelp = (s: Shipment) => {
+    setSelectedSale(s);
+    setHelpMessage('');
+    setHelpFile(null);
+    setHelpOpen(true);
+  };
+
+  const handleCloseHelp = () => {
+    setHelpOpen(false);
+    setSelectedSale(null);
+  };
+
+  // Envoi du message d'aide au support PayLive avec le contexte de la ligne
+  const handleSendHelp = async () => {
+    const msg = (helpMessage || '').trim();
+    if (!msg) return;
+    try {
+      setIsSendingHelp(true);
+      const token = await getToken();
+      const fd = new FormData();
+      if (resolvedSlug) fd.append('storeSlug', resolvedSlug);
+      if (selectedSale?.shipment_id)
+        fd.append('shipmentId', selectedSale.shipment_id);
+      fd.append('message', msg);
+      // Contexte détaillé de la vente (pour faciliter le support)
+      fd.append(
+        'context',
+        JSON.stringify({
+          source: 'dashboard_sales_help',
+          saleId: selectedSale?.id ?? null,
+          shipmentId: selectedSale?.shipment_id ?? null,
+          productReference: selectedSale?.product_reference ?? null,
+          value: selectedSale?.value ?? null,
+          customerStripeId: selectedSale?.customer_stripe_id ?? null,
+          status: selectedSale?.status ?? null,
+          createdAt: selectedSale?.created_at ?? null,
+          deliveryMethod: selectedSale?.delivery_method ?? null,
+          deliveryNetwork: selectedSale?.delivery_network ?? null,
+          tracking_url: selectedSale?.tracking_url ?? null,
+          delivery_cost: selectedSale?.delivery_cost ?? null,
+        })
+      );
+      if (helpFile) fd.append('attachment', helpFile);
+      await apiPostForm('/api/support/contact', fd, {
+        headers: { Authorization: token ? `Bearer ${token}` : '' },
+      });
+      showToast('Message envoyé à PayLive.', 'success');
+      setHelpOpen(false);
+      setHelpMessage('');
+      setHelpFile(null);
+      setSelectedSale(null);
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur inconnue';
+      const trimmed = (raw || '').replace(/^Error:\s*/, '');
+      showToast(trimmed || "Erreur lors de l'envoi", 'error');
+    } finally {
+      setIsSendingHelp(false);
     }
   };
 
@@ -820,6 +887,8 @@ export default function DashboardPage() {
         }
       }
       const payload: any = { name, description, website };
+      console.log('Payload:', resolvedSlug);
+      console.log('Payload2:', store?.slug);
       const resp = await apiPut(
         `/api/stores/${encodeURIComponent(resolvedSlug)}`,
         payload
@@ -1658,6 +1727,9 @@ export default function DashboardPage() {
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Annulation
                     </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Aide
+                    </th>
                   </tr>
                   <tr className='border-b border-gray-100'>
                     <th className='py-2 px-4'></th>
@@ -1683,6 +1755,7 @@ export default function DashboardPage() {
                     <th className='py-2 px-4'></th>
                     <th className='py-2 px-4'></th>
                     <th className='py-2 px-4'></th>
+                    <th className='py-2 px-4'></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1690,7 +1763,7 @@ export default function DashboardPage() {
                     <tr>
                       <td
                         className='py-4 px-4 text-gray-600 text-center'
-                        colSpan={12}
+                        colSpan={13}
                       >
                         Aucune vente pour le filtre courant.
                       </td>
@@ -1789,7 +1862,7 @@ export default function DashboardPage() {
                               !!s.cancel_requested ||
                               cancelStatus[s.id] === 'loading'
                             }
-                            className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                            className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
                               s.cancel_requested ||
                               cancelStatus[s.id] === 'success'
                                 ? 'bg-green-50 text-green-700 border-green-200'
@@ -1814,6 +1887,17 @@ export default function DashboardPage() {
                                 : cancelStatus[s.id] === 'error'
                                   ? 'Réessayer'
                                   : "Demander l'annulation"}
+                          </button>
+                        </td>
+                        <td className='py-4 px-4'>
+                          <button
+                            onClick={() => handleOpenHelp(s)}
+                            className={
+                              'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            }
+                            title={"Besoin d'aide"}
+                          >
+                            Besoin d'aide
                           </button>
                         </td>
                       </tr>
@@ -2391,6 +2475,122 @@ export default function DashboardPage() {
                     )}
                     Envoyer
                     <SendHorizontal className='w-5 h-5 ml-2' />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          {/* Modal Besoin d'aide (affiché par-dessus toutes les sections) */}
+          {helpOpen && (
+            <div
+              className='fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4'
+              onClick={handleCloseHelp}
+            >
+              <div
+                className='bg-white rounded-lg shadow-xl w-full max-w-md mx-4 overflow-hidden'
+                onClick={e => e.stopPropagation()}
+              >
+                <div className='px-4 py-3 border-b border-gray-200'>
+                  <h3 className='text-lg font-semibold text-gray-900'>
+                    Besoin d'aide
+                  </h3>
+                  <p className='text-sm text-gray-600 mt-1'>
+                    Ce message sera envoyé à PayLive.
+                  </p>
+                </div>
+                <div className='p-4 space-y-3'>
+                  {selectedSale && (
+                    <div className='bg-gray-50 rounded-md p-3 border border-gray-200'>
+                      <div className='text-sm font-medium text-gray-800 mb-2'>
+                        Contexte de la vente
+                      </div>
+                      <div className='text-xs text-gray-700 space-y-1'>
+                        <div>
+                          <span className='font-semibold'>ID expédition:</span>{' '}
+                          {selectedSale.shipment_id || '—'}
+                        </div>
+                        <div>
+                          <span className='font-semibold'>
+                            Référence produit:
+                          </span>{' '}
+                          {selectedSale.product_reference ?? '—'}
+                        </div>
+                        <div>
+                          <span className='font-semibold'>Client ID:</span>{' '}
+                          {selectedSale.customer_stripe_id || '—'}
+                        </div>
+                        <div>
+                          <span className='font-semibold'>Statut:</span>{' '}
+                          {selectedSale.status || '—'}
+                        </div>
+                        <div>
+                          <span className='font-semibold'>Date:</span>{' '}
+                          {formatDate(selectedSale.created_at)}
+                        </div>
+                        <div>
+                          <span className='font-semibold'>Méthode:</span>{' '}
+                          {formatMethod(selectedSale.delivery_method)}
+                        </div>
+                        <div>
+                          <span className='font-semibold'>Réseau:</span>{' '}
+                          {getNetworkDescription(selectedSale.delivery_network)}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    <label className='block text-sm font-medium text-gray-700'>
+                      Message
+                    </label>
+                    <textarea
+                      value={helpMessage}
+                      onChange={e => setHelpMessage(e.target.value)}
+                      rows={5}
+                      className='w-full border border-gray-300 rounded-md p-3 focus:ring-indigo-500 focus:border-indigo-500'
+                      placeholder={'Décrivez votre question ou votre problème…'}
+                    />
+                  </div>
+                  <div className='space-y-2'>
+                    <label className='block text-sm font-medium text-gray-700'>
+                      Pièce jointe (PDF/JPG/PNG) — facultatif
+                    </label>
+                    <input
+                      type='file'
+                      accept='application/pdf,image/png,image/jpeg'
+                      onChange={e => {
+                        const file = e.target.files?.[0] || null;
+                        setHelpFile(file);
+                      }}
+                      className='block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100'
+                    />
+                    {helpFile && (
+                      <p className='text-xs text-gray-500'>
+                        Fichier choisi: {helpFile.name}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className='px-4 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-end space-x-2'>
+                  <button
+                    onClick={handleCloseHelp}
+                    className='px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-100'
+                  >
+                    Annuler
+                  </button>
+                  <button
+                    onClick={handleSendHelp}
+                    disabled={isSendingHelp || !helpMessage.trim()}
+                    className={`inline-flex items-center px-4 py-2 rounded-md ${
+                      isSendingHelp || !helpMessage.trim()
+                        ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                        : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    }`}
+                  >
+                    {isSendingHelp && (
+                      <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                    )}
+                    Envoyer
+                    <SendHorizontal className='w-4 h-4 ml-2' />
                   </button>
                 </div>
               </div>

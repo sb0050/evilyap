@@ -4,8 +4,6 @@ import Header from '../components/Header';
 import { Toast } from '../components/Toast';
 import {
   Package,
-  Truck,
-  Undo2,
   ArrowUpDown,
   SendHorizontal,
   RefreshCw,
@@ -797,17 +795,8 @@ export default function OrdersPage() {
                           </button>
                           <button
                             onClick={() => handleOpenContact(s)}
-                            disabled={!s.shipment_id}
-                            className={`px-2 py-1 rounded-md text-xs font-medium border ${
-                              !s.shipment_id
-                                ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                            }`}
-                            title={
-                              !s.shipment_id
-                                ? 'Contact indisponible'
-                                : 'Contacter la boutique'
-                            }
+                            className={`px-2 py-1 rounded-md text-xs font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50`}
+                            title='Contacter la boutique'
                           >
                             Contacter la boutique
                           </button>
@@ -994,17 +983,8 @@ export default function OrdersPage() {
                       <td className='py-4 px-4'>
                         <button
                           onClick={() => handleOpenContact(s)}
-                          disabled={!s.shipment_id}
-                          className={`px-3 py-2 rounded-md text-sm font-medium border ${
-                            !s.shipment_id
-                              ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                          }`}
-                          title={
-                            !s.shipment_id
-                              ? 'Contact indisponible'
-                              : 'Contacter la boutique'
-                          }
+                          className={`px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 `}
+                          title='Contacter la boutique'
                         >
                           Contacter la boutique
                         </button>

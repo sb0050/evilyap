@@ -1122,6 +1122,7 @@ class EmailService {
     ownerEmail?: string;
     clerkUserId?: string;
     message: string;
+    context?: any;
     attachments?: Array<{
       filename: string;
       content: Buffer;
@@ -1148,6 +1149,63 @@ class EmailService {
       const safeMsg = (data.message || "")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
+
+      const contextObj = (() => {
+        if (!data.context) return null;
+        try {
+          if (typeof data.context === "string") {
+            return JSON.parse(data.context);
+          }
+          return data.context;
+        } catch {
+          return { raw: String(data.context) };
+        }
+      })();
+
+      const contextHtml = (() => {
+        if (!contextObj) return "";
+        const entries: Array<[string, any]> = [];
+        const preferredOrder = [
+          "saleId",
+          "shipmentId",
+          "productReference",
+          "value",
+          "customerStripeId",
+          "status",
+          "createdAt",
+          "deliveryMethod",
+          "deliveryNetwork",
+          "tracking_url",
+          "trackingUrl",
+          "delivery_cost",
+          "deliveryCost",
+        ];
+        const addEntry = (k: string) => {
+          const v = (contextObj as any)[k];
+          if (v !== undefined) entries.push([k, v]);
+        };
+        preferredOrder.forEach(addEntry);
+        // Include any other keys not in preferred order
+        Object.keys(contextObj || {})
+          .filter(k => !preferredOrder.includes(k))
+          .forEach(k => addEntry(k));
+
+        const esc = (x: any) =>
+          String(x ?? "—")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+
+        const rows = entries
+          .map(([k, v]) => `<p class="kv"><strong>${esc(k)} :</strong> ${esc(v)}</p>`) 
+          .join("\n");
+
+        return `
+          <div class="section">
+            <h3>Contexte</h3>
+            ${rows || "<p class=\"kv\"><strong>raw:</strong> " + esc((contextObj as any)?.raw) + "</p>"}
+          </div>
+        `;
+      })();
 
       const htmlContent = `
         <!DOCTYPE html>
@@ -1191,6 +1249,8 @@ class EmailService {
                 <h3>Message</h3>
                 <div class="msg">${safeMsg}</div>
               </div>
+
+              ${contextHtml}
 
               <p>Merci de répondre au propriétaire de la boutique si une action est nécessaire.</p>
               <p><strong>PayLive - Support</strong></p>
