@@ -72,6 +72,9 @@ export default function OrdersPage() {
   const [estimatedSortOrder, setEstimatedSortOrder] = useState<
     'asc' | 'desc' | null
   >(null);
+  const [expandedCardIds, setExpandedCardIds] = useState<
+    Record<number, boolean>
+  >({});
   const [toast, setToast] = useState<{
     message: string;
     type: 'error' | 'info' | 'success';
@@ -549,9 +552,9 @@ export default function OrdersPage() {
         />
       )}
       <div className='max-w-fit mx-auto px-4 py-8'>
-        <div className='text-center mb-8'>
-          <Package className='h-12 w-12 text-amber-600 mx-auto mb-4' />
-          <h1 className='text-3xl font-bold text-gray-900 mb-2'>
+        <div className='text-center mb-6 sm:m'>
+          <Package className='hidden sm:block h-12 w-12 text-amber-600 mx-auto mb-4' />
+          <h1 className='text-xl sm:text-3xl font-bold text-gray-900 mb-2'>
             Suivi de mes commandes
           </h1>
         </div>
@@ -568,16 +571,9 @@ export default function OrdersPage() {
             <div className='text-center py-12'>
               <p className='text-red-600'>{error}</p>
             </div>
-          ) : shipments.length === 0 ? (
-            <div className='text-center py-12'>
-              <Package className='h-16 w-16 text-gray-300 mx-auto mb-4' />
-              <p className='text-gray-500'>
-                Aucune commande trouvée pour ce compte.
-              </p>
-            </div>
           ) : (
             <div className='overflow-x-auto'>
-              <div className='flex items-center justify-between mb-3 mt-1'>
+              <div className='hidden sm:flex items-center justify-between mb-3 mt-1'>
                 <div className='text-sm text-gray-600'>
                   Page {page} / {totalPages} — {(shipments || []).length}{' '}
                   commandes
@@ -586,7 +582,7 @@ export default function OrdersPage() {
                   <button
                     onClick={handleRefreshOrders}
                     disabled={reloadingOrders}
-                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:text-gray-600'
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                   >
                     <RefreshCw
                       className={`w-4 h-4 mr-1 ${reloadingOrders ? 'animate-spin' : ''}`}
@@ -636,7 +632,194 @@ export default function OrdersPage() {
                   </div>
                 </div>
               </div>
-              <table className='w-full'>
+              {/* Contrôles mobile: bouton Recharger seul */}
+              <div className='flex sm:hidden items-center justify-end mb-3 mt-1'>
+                <button
+                  onClick={handleRefreshOrders}
+                  disabled={reloadingOrders}
+                  className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                  title='Recharger les commandes'
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 mr-1 ${reloadingOrders ? 'animate-spin' : ''}`}
+                  />
+                  <span>Recharger</span>
+                </button>
+              </div>
+              {/* Vue mobile: cartes accordéon */}
+              <div className='block sm:hidden space-y-3'>
+                {sortedShipments.map((s, idx) => (
+                  <div
+                    key={s.id}
+                    className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
+                  >
+                    <div className='flex items-start justify-between'>
+                      <div className='flex items-center space-x-2'>
+                        {(() => {
+                          const cloudBase = (
+                            import.meta.env.VITE_CLOUDFRONT_URL ||
+                            'https://d1tmgyvizond6e.cloudfront.net'
+                          ).replace(/\/+$/, '');
+                          const logoUrl = s.store_id
+                            ? `${cloudBase}/images/${s.store_id}`
+                            : null;
+                          return logoUrl ? (
+                            <img
+                              src={logoUrl}
+                              alt={s.store?.name || 'Boutique'}
+                              className='w-6 h-6 rounded-full object-cover'
+                            />
+                          ) : (
+                            <span className='inline-block w-6 h-6 rounded-full bg-gray-200' />
+                          );
+                        })()}
+                        <div>
+                          <div className='text-sm font-semibold text-gray-900'>
+                            {s.store?.name || '—'}
+                          </div>
+                          <div className='text-xs text-gray-600'>
+                            {formatDate(s.created_at)}
+                          </div>
+                          <StoreInfoPopover
+                            s={s}
+                            preferUpwards={idx >= sortedShipments.length - 3}
+                          />
+                        </div>
+                      </div>
+                      <div className='text-sm font-semibold text-gray-900'>
+                        {formatValue(s.value)}
+                      </div>
+                    </div>
+                    <div className='mt-3 text-sm text-gray-700'>
+                      <div>
+                        <span className='font-medium'>Référence:</span>{' '}
+                        {s.product_reference ?? '—'}
+                      </div>
+                      <div>
+                        <span className='font-medium'>Statut:</span>{' '}
+                        {s.status || '—'}
+                      </div>
+                      <div>
+                        <span className='font-medium'>Méthode:</span>{' '}
+                        {formatMethod(s.delivery_method)}
+                      </div>
+                    </div>
+                    <div className='mt-3 flex items-center justify-between'>
+                      <div className='text-xs text-gray-600'>
+                        Estimée: {formatDate(s.estimated_delivery_date)}
+                      </div>
+                      <button
+                        onClick={() =>
+                          setExpandedCardIds(prev => ({
+                            ...prev,
+                            [s.id]: !prev[s.id],
+                          }))
+                        }
+                        className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        aria-expanded={Boolean(expandedCardIds[s.id])}
+                      >
+                        {expandedCardIds[s.id] ? 'Voir moins' : 'Voir plus'}
+                      </button>
+                    </div>
+                    {expandedCardIds[s.id] && (
+                      <div className='mt-3 space-y-2 text-sm'>
+                        <div>
+                          <span className='font-medium'>
+                            Explication du statut:
+                          </span>{' '}
+                          <span className='text-gray-600'>
+                            {getStatusDescription(s.status)}
+                          </span>
+                        </div>
+                        <div>
+                          <span className='font-medium'>Réseau:</span>{' '}
+                          {getNetworkDescription(s.delivery_network)}
+                        </div>
+                        <div>
+                          <span className='font-medium'>Point retrait:</span>{' '}
+                          {s.pickup_point?.code ? (
+                            <span>
+                              <strong>{s.pickup_point?.name}</strong>{' '}
+                              {s.pickup_point?.street}, {s.pickup_point?.city}{' '}
+                              {s.pickup_point?.postal_code}{' '}
+                              {s.pickup_point?.country}
+                            </span>
+                          ) : (
+                            '—'
+                          )}
+                        </div>
+                        <div className='flex items-center gap-2'>
+                          {s.tracking_url ? (
+                            <a
+                              href={s.tracking_url}
+                              target='_blank'
+                              rel='noopener noreferrer'
+                              className='text-blue-600 hover:underline text-xs'
+                            >
+                              Suivre la commande
+                            </a>
+                          ) : (
+                            <span />
+                          )}
+                        </div>
+                        <div className='flex items-center gap-2 pt-1'>
+                          <button
+                            onClick={() => handleReturn(s)}
+                            disabled={
+                              !s.shipment_id ||
+                              returnStatus[s.id] === 'loading' ||
+                              !!s.return_requested ||
+                              !s.is_final_destination
+                            }
+                            className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
+                              s.return_requested ||
+                              returnStatus[s.id] === 'success'
+                                ? 'bg-green-50 text-green-700 border-green-200'
+                                : returnStatus[s.id] === 'error'
+                                  ? 'bg-red-50 text-red-700 border-red-200'
+                                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            }`}
+                            title={
+                              !s.shipment_id
+                                ? 'Retour indisponible'
+                                : s.return_requested
+                                  ? 'Demande déjà envoyée'
+                                  : 'Envoyer une demande de retour'
+                            }
+                          >
+                            {returnStatus[s.id] === 'loading'
+                              ? 'Envoi...'
+                              : s.return_requested
+                                ? 'Demande envoyée'
+                                : returnStatus[s.id] === 'error'
+                                  ? 'Erreur'
+                                  : 'Demander le retour'}
+                          </button>
+                          <button
+                            onClick={() => handleOpenContact(s)}
+                            disabled={!s.shipment_id}
+                            className={`px-2 py-1 rounded-md text-xs font-medium border ${
+                              !s.shipment_id
+                                ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            }`}
+                            title={
+                              !s.shipment_id
+                                ? 'Contact indisponible'
+                                : 'Contacter la boutique'
+                            }
+                          >
+                            Contacter la boutique
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Vue bureau: tableau */}
+              <table className='w-full hidden sm:table'>
                 <thead>
                   <tr className='border-b border-gray-200'>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
@@ -783,7 +966,7 @@ export default function OrdersPage() {
                             !!s.return_requested ||
                             !s.is_final_destination
                           }
-                          className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                          className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
                             s.return_requested ||
                             returnStatus[s.id] === 'success'
                               ? 'bg-green-50 text-green-700 border-green-200'

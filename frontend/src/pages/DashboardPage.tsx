@@ -491,7 +491,10 @@ export default function DashboardPage() {
         throw new Error(typeof msg === 'string' ? msg : 'Rechargement échoué');
       }
       const refreshed = json.store as Store;
-      setStore(prev => ({ ...(prev || refreshed), balance: refreshed?.balance ?? 0 }));
+      setStore(prev => ({
+        ...(prev || refreshed),
+        balance: refreshed?.balance ?? 0,
+      }));
       showToast('Solde rechargé', 'success');
     } catch (e: any) {
       const rawMsg = e?.message || 'Erreur inconnue';
@@ -1008,70 +1011,70 @@ export default function DashboardPage() {
               onClick={() =>
                 navigate(`/checkout/${encodeURIComponent(store.slug)}`)
               }
-              className='inline-flex items-center px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
+              className='inline-flex items-center px-2 py-2 sm:px-4 sm:py-2 text-xs sm:text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
             >
               Formulaire de paiement
-              <ArrowRight className='w-4 h-4 ml-2' />
+              <ArrowRight className='w-3 h-3 sm:w-4 sm:h-4 ml-2' />
             </button>
           )}
         </div>
         {/* Onglets horizontaux au-dessus du contenu */}
         <div className='mb-6'>
-          <nav className='flex items-center gap-2'>
+          <nav className='flex flex-wrap items-center gap-1'>
             <button
               onClick={() => setSection('infos')}
-              className={`flex items-center px-3 py-2 rounded-md border ${
+              className={`flex items-center basis-1/3 sm:basis-auto shrink-0 px-2 py-1 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
                 section === 'infos'
                   ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
-              <Info className='w-4 h-4 mr-2' />
+              <Info className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
               <span>Informations</span>
             </button>
             <button
               onClick={() => setSection('wallet')}
-              className={`flex items-center px-3 py-2 rounded-md border ${
+              className={`flex items-center basis-1/3 sm:basis-auto shrink-0 px-2 py-1 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
                 section === 'wallet'
                   ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
-              <Wallet className='w-4 h-4 mr-2' />
+              <Wallet className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
               <span>Porte-monnaie</span>
             </button>
             <button
               onClick={() => setSection('sales')}
-              className={`flex items-center px-3 py-2 rounded-md border ${
+              className={`flex items-center basis-1/3 sm:basis-auto shrink-0 px-2 py-1 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
                 section === 'sales'
                   ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
-              <ShoppingCart className='w-4 h-4 mr-2' />
+              <ShoppingCart className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
               <span>Ventes</span>
             </button>
 
             <button
               onClick={() => setSection('clients')}
-              className={`flex items-center px-3 py-2 rounded-md border ${
+              className={`flex items-center basis-1/3 sm:basis-auto shrink-0 px-2 py-1 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
                 section === 'clients'
                   ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
-              <Users className='w-4 h-4 mr-2' />
+              <Users className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
               <span>Clients</span>
             </button>
             <button
               onClick={() => setSection('support')}
-              className={`flex items-center px-3 py-2 rounded-md border ${
+              className={`flex items-center basis-1/3 sm:basis-auto shrink-0 px-2 py-1 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
                 section === 'support'
                   ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
-              <LifeBuoy className='w-4 h-4 mr-2' />
+              <LifeBuoy className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
               <span>Support</span>
             </button>
           </nav>
@@ -1346,14 +1349,18 @@ export default function DashboardPage() {
             <div className='bg-white rounded-lg shadow p-6'>
               <div className='flex items-center mb-4'>
                 <Wallet className='w-5 h-5 text-indigo-600 mr-2' />
-                <h2 className='text-lg font-semibold text-gray-900'>Porte-monnaie</h2>
+                <h2 className='text-lg font-semibold text-gray-900'>
+                  Porte-monnaie
+                </h2>
                 <button
                   onClick={handleReloadBalance}
                   disabled={reloadingBalance}
-                  className='inline-flex items-center ml-4 px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:text-gray-600'
+                  className='inline-flex items-center ml-4 px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                   title='Recharger le solde'
                 >
-                  <RefreshCw className={`w-4 h-4 mr-1 ${reloadingBalance ? 'animate-spin' : ''}`} />
+                  <RefreshCw
+                    className={`w-4 h-4 mr-1 ${reloadingBalance ? 'animate-spin' : ''}`}
+                  />
                   <span>Recharger</span>
                 </button>
               </div>
@@ -1561,7 +1568,7 @@ export default function DashboardPage() {
                   <button
                     onClick={handleReloadSales}
                     disabled={reloadingSales}
-                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:text-gray-600'
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                     title='Recharger les ventes'
                   >
                     <RefreshCw
@@ -1760,7 +1767,7 @@ export default function DashboardPage() {
                               docStatus[s.id] === 'loading'
                             }
                             className={
-                              'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                              'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                             }
                             title={
                               s.document_created
@@ -1865,7 +1872,7 @@ export default function DashboardPage() {
                   <button
                     onClick={handleReloadSales}
                     disabled={reloadingSales}
-                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:text-gray-600'
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                   >
                     <RefreshCw
                       className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}

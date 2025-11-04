@@ -598,12 +598,16 @@ export default function OnboardingPage() {
                       className='h-5 w-5 animate-spin rounded-full border-2 border-current border-t-transparent'
                       aria-hidden='true'
                     ></span>
-                    <span className='text-sm font-medium'>Création en cours…</span>
+                    <span className='text-sm font-medium'>
+                      Création en cours…
+                    </span>
                   </span>
                 ) : (
                   <span className='inline-flex items-center justify-center gap-2'>
                     <Store className='w-5 h-5' aria-hidden='true' />
-                    <span className='text-sm font-medium'>Créer ma boutique</span>
+                    <span className='text-sm font-medium'>
+                      Créer ma boutique
+                    </span>
                   </span>
                 )}
               </button>

@@ -315,7 +315,9 @@ export default function Header() {
       if (
         path === '/dashboard' ||
         path.startsWith('/dashboard/') ||
-        (!path.startsWith('/dashboard/') && segments.length >= 2 && slugFromPath)
+        (!path.startsWith('/dashboard/') &&
+          segments.length >= 2 &&
+          slugFromPath)
       ) {
         setGuardStatus('pending');
       }
@@ -384,7 +386,7 @@ export default function Header() {
           setDashboardGuardError({
             title: 'Erreur',
             message:
-              "Impossible de vérifier votre boutique. Veuillez réessayer.",
+              'Impossible de vérifier votre boutique. Veuillez réessayer.',
           });
           setGuardStatus('error');
         }
@@ -518,18 +520,15 @@ export default function Header() {
     <>
       <header className='bg-white shadow-sm border-b relative'>
         <div className='max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative'>
-          <div className='flex justify-end items-center h-16 relative'>
+          <div className='flex sm:justify-end justify-between items-center h-16 relative'>
             <SignedIn>
               <button
-                className='mr-4 px-3 py-2 rounded-md text-sm font-medium bg-amber-600 text-white hover:bg-amber-700'
+                className='mr-2 sm:mr-4 px-2 py-2 sm:px-3 sm:py-2 rounded-md text-xs sm:text-sm font-medium bg-amber-600 text-white hover:bg-amber-700'
                 onClick={() => {
                   navigate('/orders');
                 }}
               >
-                <span className='inline-flex items-center'>
-                  <Truck className='w-4 h-4 mr-2' />
-                  Suivre mes commandes
-                </span>
+                <span className='inline-flex items-center'>Mes commandes</span>
               </button>
               <Protect
                 condition={() => {
@@ -540,14 +539,13 @@ export default function Header() {
               >
                 <button
                   className={
-                    'mr-4 px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700'
+                    'mr-2 sm:mr-4 px-2 py-2 sm:px-3 sm:py-2 rounded-md text-xs sm:text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700'
                   }
                   onClick={() => {
                     navigate(`/dashboard`);
                   }}
                 >
                   <span className='inline-flex items-center'>
-                    <LayoutDashboard className='w-4 h-4 mr-2' />
                     Tableau de bord
                   </span>
                 </button>
@@ -555,11 +553,11 @@ export default function Header() {
               {/* Panier */}
               <div className='mr-4 relative' ref={cartRef}>
                 <button
-                  className='px-3 py-2 rounded-md text-sm font-medium bg-slate-100 hover:bg-slate-200 text-gray-700 inline-flex items-center'
+                  className='px-2 py-2 sm:px-3 sm:py-2 rounded-md text-xs sm:text-sm font-medium bg-slate-100 hover:bg-slate-200 text-gray-700 inline-flex items-center'
                   onClick={() => setCartOpen(prev => !prev)}
                 >
                   <span ref={cartIconRef}>
-                    <ShoppingCart className='w-4 h-4 mr-2' />
+                    <ShoppingCart className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
                   </span>
                   <span>{Number(cartTotal || 0).toFixed(2)} €</span>
                 </button>
@@ -656,7 +654,7 @@ export default function Header() {
                           </div>
                         </div>
                         <button
-                          className={`mt-3 w-full px-3 py-2 rounded-md text-sm font-medium ${!checkoutSlug || cartGroups.length === 0 ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700'} flex items-center justify-center gap-2`}
+                          className={`mt-3 w-full px-2 py-1 sm:px-3 sm:py-2 rounded-md text-xs sm:text-sm font-medium ${!checkoutSlug || cartGroups.length === 0 ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700'} flex items-center justify-center gap-2`}
                           disabled={!checkoutSlug || cartGroups.length === 0}
                           onClick={() => {
                             if (checkoutSlug) {
@@ -665,7 +663,7 @@ export default function Header() {
                             }
                           }}
                         >
-                          <CreditCard className='w-5 h-5' />
+                          <CreditCard className='w-4 h-4 sm:w-5 sm:h-5' />
                           <span>Procéder au paiement</span>
                         </button>
                       </>
