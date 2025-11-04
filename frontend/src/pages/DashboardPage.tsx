@@ -155,7 +155,7 @@ export default function DashboardPage() {
   // Popup de bienvenue après création de boutique
   const [showWelcome, setShowWelcome] = useState<boolean>(false);
   const location = useLocation();
-  const shareLink = resolvedSlug ? `paylive.cc/c/${resolvedSlug}` : '';
+  const shareLink = store?.slug ? `paylive.cc/c/${store.slug}` : '';
   const [aliasCopied, setAliasCopied] = useState(false);
 
   const handleCopyAlias = async () => {
@@ -253,7 +253,7 @@ export default function DashboardPage() {
       setIsSendingSupport(true);
       const token = await getToken();
       const fd = new FormData();
-      if (resolvedSlug) fd.append('storeSlug', resolvedSlug);
+      if (store?.slug) fd.append('storeSlug', store.slug);
       fd.append('message', msg);
       if (supportFile) fd.append('attachment', supportFile);
       await apiPostForm('/api/support/contact', fd, {
@@ -293,7 +293,7 @@ export default function DashboardPage() {
       setIsSendingHelp(true);
       const token = await getToken();
       const fd = new FormData();
-      if (resolvedSlug) fd.append('storeSlug', resolvedSlug);
+      if (store?.slug) fd.append('storeSlug', store.slug);
       if (selectedSale?.shipment_id)
         fd.append('shipmentId', selectedSale.shipment_id);
       fd.append('message', msg);
@@ -511,7 +511,7 @@ export default function DashboardPage() {
 
   const handleReloadSales = async () => {
     try {
-      const slug = store?.slug || resolvedSlug;
+      const slug = store?.slug;
       if (!slug) return;
       setReloadingSales(true);
       setError(null);
@@ -545,7 +545,7 @@ export default function DashboardPage() {
 
   const handleReloadBalance = async () => {
     try {
-      const slug = store?.slug || resolvedSlug;
+      const slug = store?.slug;
       if (!slug) return;
       setReloadingBalance(true);
       setError(null);
@@ -858,7 +858,7 @@ export default function DashboardPage() {
 
   const saveStoreInfo = async () => {
     setIsSubmittingModifications(true);
-    if (!resolvedSlug) return;
+    if (!store?.slug) return;
     setShowValidationErrors(true);
     // Vérifications similaires à onboarding
     if (!name.trim()) {
@@ -887,10 +887,9 @@ export default function DashboardPage() {
         }
       }
       const payload: any = { name, description, website };
-      console.log('Payload:', resolvedSlug);
-      console.log('Payload2:', store?.slug);
+      console.log('Payload slug:', store?.slug);
       const resp = await apiPut(
-        `/api/stores/${encodeURIComponent(resolvedSlug)}`,
+        `/api/stores/${encodeURIComponent(store.slug)}`,
         payload
       );
       const json = await resp.json();
@@ -915,7 +914,7 @@ export default function DashboardPage() {
   };
 
   const confirmPayout = async () => {
-    if (!resolvedSlug || !store) return;
+    if (!store?.slug) return;
     setIbanError(null);
     setBicError(null);
     setRibUploadError(null);
@@ -978,7 +977,7 @@ export default function DashboardPage() {
       }
 
       const resp = await apiPost(
-        `/api/stores/${encodeURIComponent(resolvedSlug)}/confirm-payout`,
+        `/api/stores/${encodeURIComponent(store!.slug)}/confirm-payout`,
         payload
       );
       const json = await resp.json();
