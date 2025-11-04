@@ -10,11 +10,29 @@ import {
   ArrowUpDown,
   SendHorizontal,
   RefreshCw,
+  ExternalLink,
 } from 'lucide-react';
+import { Popover, Transition } from '@headlessui/react';
 import { apiPostForm } from '../utils/api';
 import Spinner from '../components/Spinner';
 
-type StoreInfo = { name: string; slug: string };
+type StoreAddress = {
+  line1?: string;
+  line2?: string;
+  postal_code?: string;
+  city?: string;
+  country?: string;
+  phone?: string;
+};
+
+type StoreInfo = {
+  name: string;
+  slug: string;
+  address?: StoreAddress | null;
+  website?: string | null;
+  owner_email?: string | null;
+  description?: string | null;
+};
 
 type Shipment = {
   id: number;
@@ -72,6 +90,162 @@ export default function OrdersPage() {
   const [isSendingContact, setIsSendingContact] = useState<boolean>(false);
 
   const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
+  const normalizeWebsite = (url?: string | null) => {
+    if (!url) return undefined;
+    const trimmed = (url || '').trim();
+    if (!trimmed) return undefined;
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    return `https://${trimmed}`;
+  };
+
+  const renderAddress = (a?: StoreAddress | null) => {
+    if (!a) return '—';
+    const parts = [
+      a.line1,
+      a.line2,
+      [a.postal_code, a.city].filter(Boolean).join(' '),
+      a.country,
+    ]
+      .filter(Boolean)
+      .map(p => (Array.isArray(p) ? p.filter(Boolean).join(' ') : p));
+    return parts.length ? parts.join('\n') : '—';
+  };
+
+  // Composant Popover positionné en dehors du tableau via CSS `position: fixed`
+  function StoreInfoPopover({
+    s,
+    preferUpwards = false,
+  }: {
+    s: Shipment;
+    preferUpwards?: boolean;
+  }) {
+    const [pos, setPos] = useState<{ top: number; left: number }>({
+      top: 0,
+      left: 0,
+    });
+    const computePos = (el: HTMLElement) => {
+      const rect = el.getBoundingClientRect();
+      const panelWidth = 320; // ~w-80
+      const margin = 8; // espace sous le bouton
+      const maxLeft = window.innerWidth - panelWidth - margin;
+      const left = Math.max(margin, Math.min(rect.left, maxLeft));
+      const guessHeight = 220; // estimation pour affichage vers le haut
+      const topDown = rect.bottom + margin;
+      const topUp = Math.max(margin, rect.top - guessHeight - margin);
+      const top = preferUpwards ? topUp : topDown;
+      setPos({ top, left });
+    };
+
+    return (
+      <Popover className='relative mt-1 inline-block'>
+        <Popover.Button
+          onClick={e => computePos(e.currentTarget)}
+          className='text-xs text-blue-600 hover:underline'
+        >
+          +infos
+        </Popover.Button>
+        <Transition
+          enter='transition ease-out duration-150'
+          enterFrom='opacity-0 translate-y-1'
+          enterTo='opacity-100 translate-y-0'
+          leave='transition ease-in duration-100'
+          leaveFrom='opacity-100 translate-y-0'
+          leaveTo='opacity-0 translate-y-1'
+        >
+          {/* On ne rend le Panel que lorsqu'il est ouvert */}
+          <Popover.Panel
+            style={{ top: pos.top, left: pos.left, position: 'fixed' }}
+            className='mt-0 w-80 rounded-md border border-gray-200 bg-white shadow-lg p-3 z-50'
+          >
+            <div className='flex items-start gap-2'>
+              {(() => {
+                const cloudBase = (
+                  import.meta.env.VITE_CLOUDFRONT_URL ||
+                  'https://d1tmgyvizond6e.cloudfront.net'
+                ).replace(/\/+$/, '');
+                const logoUrl = s.store_id
+                  ? `${cloudBase}/images/${s.store_id}`
+                  : null;
+                return logoUrl ? (
+                  <img
+                    src={logoUrl}
+                    alt={s.store?.name || 'Boutique'}
+                    className='w-10 h-10 rounded object-cover'
+                  />
+                ) : (
+                  <span className='inline-block w-10 h-10 rounded bg-gray-200' />
+                );
+              })()}
+              <div className='flex-1'>
+                <div className='font-semibold text-gray-900'>
+                  {s.store?.name || '—'}
+                </div>
+                <div className='text-xs text-gray-600 mt-1'>
+                  {s.store?.description || ''}
+                </div>
+              </div>
+            </div>
+            <div className='mt-3 space-y-2 text-sm'>
+              <div>
+                <div className='text-gray-500'>Adresse</div>
+                <div className='whitespace-pre-line text-gray-900'>
+                  {renderAddress(s.store?.address ?? null)}
+                </div>
+              </div>
+              <div>
+                <div className='text-gray-500'>Site web</div>
+                {(() => {
+                  const href = normalizeWebsite(s.store?.website ?? undefined);
+                  return href ? (
+                    <a
+                      href={href}
+                      target='_blank'
+                      rel='noopener noreferrer'
+                      className='text-blue-600 hover:underline'
+                    >
+                      {s.store?.website}
+                    </a>
+                  ) : (
+                    <span className='text-gray-900'>—</span>
+                  );
+                })()}
+              </div>
+              <div>
+                <div className='text-gray-500'>Email</div>
+                <div className='text-gray-900'>
+                  {s.store?.owner_email || '—'}
+                </div>
+              </div>
+              <div>
+                <div className='text-gray-500'>Téléphone</div>
+                <div className='text-gray-900'>
+                  {s.store?.address?.phone || '—'}
+                </div>
+              </div>
+            </div>
+            <div className='mt-3'>
+              {s.store?.slug ? (
+                <a
+                  href={`/checkout/${encodeURIComponent(s.store.slug)}`}
+                  target='_blank'
+                  rel='noopener noreferrer'
+                  className='inline-flex items-center px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 text-sm'
+                >
+                  Passer une autre commande
+                  <ExternalLink className='w-4 h-4 ml-2' />
+                </a>
+              ) : (
+                <span />
+              )}
+            </div>
+          </Popover.Panel>
+        </Transition>
+      </Popover>
+    );
+  }
+
+  // Popover Headless UI gère la fermeture extérieure et via Esc
 
   useEffect(() => {
     const run = async () => {
@@ -516,7 +690,7 @@ export default function OrdersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleShipments.map(s => (
+                  {visibleShipments.map((s, idx) => (
                     <tr
                       key={s.id}
                       className='border-b border-gray-100 hover:bg-gray-50'
@@ -524,7 +698,7 @@ export default function OrdersPage() {
                       <td className='py-4 px-4 text-gray-700'>
                         {formatDate(s.created_at)}
                       </td>
-                      <td className='py-4 px-4 text-gray-900'>
+                      <td className='py-4 px-4 text-gray-900 relative'>
                         <div className='flex items-center space-x-2'>
                           {(() => {
                             const cloudBase = (
@@ -546,6 +720,10 @@ export default function OrdersPage() {
                           })()}
                           <span>{s.store?.name || '—'}</span>
                         </div>
+                        <StoreInfoPopover
+                          s={s}
+                          preferUpwards={idx >= visibleShipments.length - 2} // Ajuster la position si le popover est en bas pour les deux dernières lignes
+                        />
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
                         {s.product_reference ?? '—'}
@@ -657,6 +835,7 @@ export default function OrdersPage() {
             </div>
           )}
         </div>
+        {/* Popover Headless UI gère son propre backdrop virtuel (clic extérieur) */}
         {contactOpen && (
           <div
             className='fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4'

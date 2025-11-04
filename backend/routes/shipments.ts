@@ -42,18 +42,48 @@ router.get("/customer", async (req, res) => {
       new Set((data || []).map((d: any) => d.store_id).filter(Boolean))
     );
 
-    let storesMap: Record<number, { name: string; slug: string }> = {};
+    let storesMap: Record<
+      number,
+      {
+        name: string;
+        slug: string;
+        description?: string | null;
+        address?: any | null;
+        website?: string | null;
+        owner_email?: string | null;
+      }
+    > = {};
     if (storeIds.length > 0) {
       const { data: storesData, error: storesError } = await supabase
         .from("stores")
-        .select("id,name,slug, address, website, owner_email")
+        .select("id,name,slug, description, address, website, owner_email")
         .in("id", storeIds);
       if (storesError) {
         return res.status(500).json({ error: storesError.message });
       }
       storesMap = (storesData || []).reduce(
-        (acc: Record<number, { name: string; slug: string }>, s: any) => {
-          acc[s.id] = { name: s.name, slug: s.slug };
+        (
+          acc: Record<
+            number,
+            {
+              name: string;
+              slug: string;
+              description?: string | null;
+              address?: any | null;
+              website?: string | null;
+              owner_email?: string | null;
+            }
+          >,
+          s: any
+        ) => {
+          acc[s.id] = {
+            name: s.name,
+            slug: s.slug,
+            description: s.description ?? null,
+            address: s.address ?? null,
+            website: s.website ?? null,
+            owner_email: s.owner_email ?? null,
+          };
           return acc;
         },
         {}
