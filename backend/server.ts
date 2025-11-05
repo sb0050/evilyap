@@ -34,7 +34,8 @@ const normalizeOrigin = (raw?: string) => {
 
 const allowedOrigins = (
   process.env.CLIENT_URL ||
-  process.env.CLIENT_URLS ||
+  "paylive-server-dev.vercel.app" ||
+  "https://paylive-server-dev.vercel.app" ||
   "http://localhost:3000"
 )
   .split(",")
