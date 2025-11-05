@@ -20,9 +20,26 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middleware
+// Normaliser les origines autorisées pour CORS (supporte domaine seul et liste séparée par virgules)
+const normalizeOrigin = (raw?: string) => {
+  const val = (raw || "").trim();
+  if (!val) return "http://localhost:3000";
+  // Déjà avec schéma
+  if (/^https?:\/\//i.test(val)) return val;
+  // Domaine ou localhost sans schéma
+  const isLocal = /^(localhost|127\.0\.0\.1)/i.test(val);
+  const scheme = isLocal ? "http" : "https";
+  return `${scheme}://${val}`;
+};
+
+const allowedOrigins = (process.env.CLIENT_URL || process.env.CLIENT_URLS || "http://localhost:3000")
+  .split(",")
+  .map((o) => normalizeOrigin(o))
+  .filter((o) => !!o);
+
 app.use(
   cors({
-    origin: [process.env.CLIENT_URL || "http://localhost:3000"],
+    origin: allowedOrigins,
     credentials: true,
   })
 );

@@ -7,8 +7,12 @@ const normalizeBaseUrl = (raw?: string) => {
   if (!val) return 'http://localhost:5000';
   // Support des formats ":5000" ou "localhost:5000" sans schéma
   if (val.startsWith(':')) return `http://localhost${val}`;
-  if (!/^https?:\/\//i.test(val)) return `http://${val}`;
-  return val;
+  // Si déjà avec schéma, retourner tel quel
+  if (/^https?:\/\//i.test(val)) return val;
+  // Choisir le schéma par défaut en fonction de l'environnement
+  const isLocal = /^(localhost|127\.0\.0\.1)/i.test(val);
+  const defaultScheme = isLocal ? 'http' : 'https';
+  return `${defaultScheme}://${val}`;
 };
 
 const getApiBaseUrl = () => {
