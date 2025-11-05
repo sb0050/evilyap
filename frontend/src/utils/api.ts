@@ -22,7 +22,7 @@ const getApiBaseUrl = () => {
       window.location.hostname.includes('ngrok-free.app')) &&
     import.meta.env.VITE_USE_NGROK === 'true';
 
-  const raw = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+  const raw = import.meta.env.API_URL || 'http://localhost:5000';
 
   return normalizeBaseUrl(raw);
 };

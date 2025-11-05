@@ -25,7 +25,7 @@ import DashboardPage from './pages/DashboardPage';
 import HowItWorksPage from './pages/HowItWorksPage';
 
 function App() {
-  const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+  const publishableKey = import.meta.env.CLERK_PUBLISHABLE_KEY;
 
   if (!publishableKey) {
     throw new Error('Missing Clerk Publishable Key');

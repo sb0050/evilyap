@@ -2,7 +2,7 @@ import React from 'react';
 import { Elements } from '@stripe/react-stripe-js';
 import { loadStripe, StripeElementsOptions } from '@stripe/stripe-js';
 
-const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY!);
+const stripePromise = loadStripe(import.meta.env.STRIPE_PUBLISHABLE_KEY!);
 
 interface StripeWrapperProps {
   children: React.ReactNode;
@@ -40,7 +40,7 @@ export default function StripeWrapper({
     },
   };
 
-  const googleMapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+  const googleMapsApiKey = import.meta.env.GOOGLE_MAPS_API_KEY;
 
   // Build elements options, merging defaults and incoming options
   const elementsOptions: StripeElementsOptions = clientSecret
