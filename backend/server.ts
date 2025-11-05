@@ -41,7 +41,6 @@ const allowedOrigins = (
   .map((o) => normalizeOrigin(o))
   .filter((o) => !!o);
 
-console.log("allowedOrigins", allowedOrigins);
 console.warn("CORS is enabled for:", allowedOrigins);
 app.use(
   cors({
