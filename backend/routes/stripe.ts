@@ -534,7 +534,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       ],
       mode: "payment",
       return_url: `${
-        process.env.FRONTEND_URL
+        process.env.CLIENT_URL
       }/payment/return?session_id={CHECKOUT_SESSION_ID}&store_name=${encodeURIComponent(
         slugify(storeName, { lower: true, strict: true }) || "default"
       )}`,
