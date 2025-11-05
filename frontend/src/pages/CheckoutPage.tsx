@@ -211,7 +211,7 @@ export default function CheckoutPage() {
 
       try {
         const response = await fetch(
-          `${import.meta.env.API_URL || 'http://localhost:5000'}/api/stores/${encodeURIComponent(storeName)}`
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores/${encodeURIComponent(storeName)}`
         );
         const data = await response.json();
 
@@ -269,7 +269,7 @@ export default function CheckoutPage() {
 
       try {
         const response = await fetch(
-          `${import.meta.env.API_URL || 'http://localhost:5000'}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(
             user.primaryEmailAddress.emailAddress
           )}`
         );
@@ -429,7 +429,7 @@ export default function CheckoutPage() {
       };
 
       const response = await fetch(
-        `${import.meta.env.API_URL || 'http://localhost:5000'}/api/stripe/create-checkout-session`,
+        `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stripe/create-checkout-session`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

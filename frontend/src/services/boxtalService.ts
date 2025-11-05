@@ -59,7 +59,7 @@ class BoxtalService {
     networks: string[] = ['SOGP', 'MONR', 'CHRP']
   ): Promise<BoxtalParcelPointsResponse> {
     try {
-      const apiUrl = import.meta.env.API_URL || 'http://localhost:5000';
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
       const response = await fetch(`${apiUrl}/api/boxtal/parcel-points`, {
         method: 'POST',

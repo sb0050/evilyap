@@ -519,7 +519,7 @@ export default function ParcelPointMap({
       };
 
       const response = await fetch(
-        `${import.meta.env.API_URL || 'http://localhost:5000'}/api/boxtal/parcel-points`,
+        `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/boxtal/parcel-points`,
         {
           method: 'POST',
           headers: {

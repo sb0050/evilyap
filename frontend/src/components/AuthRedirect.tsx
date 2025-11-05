@@ -32,7 +32,7 @@ export default function AuthRedirect({ children }: AuthRedirectProps) {
           user.primaryEmailAddress.emailAddress
         );
         const response = await fetch(
-          `${import.meta.env.API_URL || 'http://localhost:5000'}/api/stores/check-owner/${userEmail}`
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores/check-owner/${userEmail}`
         );
 
         if (!response.ok) {

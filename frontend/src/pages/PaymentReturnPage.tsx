@@ -45,7 +45,7 @@ const PaymentReturnPage: React.FC = () => {
 
     // Récupérer les détails de la session
     fetch(
-      `${import.meta.env.API_URL || 'http://localhost:5000'}/api/stripe/session/${sessionId}`
+      `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stripe/session/${sessionId}`
     )
       .then(response => {
         return response.json();
