@@ -1,7 +1,7 @@
 import express, { Request, Response, NextFunction } from "express";
 import cors = require("cors");
 import * as dotenv from "dotenv";
-import { clerkMiddleware, getAuth } from "@clerk/express";
+import { clerkMiddleware } from "@clerk/express";
 // Charger les variables d'environnement
 dotenv.config();
 
@@ -43,50 +43,8 @@ app.use(
   })
 );
 
-// Log minimal des requêtes et laisser passer les préflights CORS
-app.use((req: any, res: any, next: NextFunction) => {
-  const origin = req.headers.origin;
-  const acMethod = req.headers["access-control-request-method"] as
-    | string
-    | undefined;
-  const acHeaders = req.headers["access-control-request-headers"] as
-    | string
-    | undefined;
-  const hasAuth = !!req.headers.authorization;
-  console.log(
-    `[req] ${req.method} ${req.path} origin=${
-      origin || "-"
-    } hasAuth=${hasAuth} acMethod=${acMethod || "-"} acHeaders=${
-      acHeaders || "-"
-    }`
-  );
-  if (req.method === "OPTIONS") {
-    console.log("[preflight] responding 204 for CORS preflight");
-    return res.sendStatus(204);
-  }
-  next();
-});
-
-// Appliquer Clerk à toutes les routes pour pouvoir utiliser getAuth(req)
 //app.use(clerkMiddleware());
 
-// Log d'auth Clerk pour diagnostiquer les 401
-app.use((req, _res, next) => {
-  try {
-    const auth = getAuth(req);
-    const isAuth = !!auth?.isAuthenticated;
-    const userId = auth?.userId || null;
-    const sessionId = (auth as any)?.sessionId || null;
-    console.log(
-      `[auth] isAuthenticated=${isAuth} userId=${userId || "-"} sessionId=${
-        sessionId || "-"
-      }`
-    );
-  } catch (e) {
-    console.log("[auth] getAuth error:", e);
-  }
-  next();
-});
 // Pour les webhooks Stripe, nous devons traiter le raw body
 app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
 
