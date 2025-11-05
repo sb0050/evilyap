@@ -64,6 +64,18 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
 });
 
+// Déterminer la base interne pour les appels HTTP côté backend
+// Priorité: INTERNAL_API_BASE > VERCEL_URL (https) > localhost
+const getInternalBase = (): string => {
+  const explicit = (process.env.INTERNAL_API_BASE || "").trim();
+  if (explicit) return explicit;
+  const vercelUrl = (process.env.VERCEL_URL || "").trim();
+  if (vercelUrl) {
+    return /^https?:\/\//i.test(vercelUrl) ? vercelUrl : `https://${vercelUrl}`;
+  }
+  return `http://localhost:${process.env.PORT || 5000}`;
+};
+
 // Types pour les requêtes
 interface OrderItem {
   id: string;
@@ -959,9 +971,7 @@ router.post(
 
             if (deliveryMethod !== "store_pickup") {
               // Call internal Boxtal shipping-orders endpoint
-              const apiBase =
-                process.env.INTERNAL_API_BASE ||
-                `http://localhost:${process.env.PORT || 5000}`;
+              const apiBase = getInternalBase();
               const resp = await fetch(
                 `${apiBase}/api/boxtal/shipping-orders`,
                 {
@@ -993,9 +1003,7 @@ router.post(
                 // Attendre, tenter récupération du document 2× avec 2s de délai et notifier le propriétaire
                 try {
                   const shippingOrderIdForDoc = boxtalId;
-                  const base =
-                    process.env.INTERNAL_API_BASE ||
-                    `http://localhost:${process.env.PORT || 5000}`;
+                  const base = getInternalBase();
                   console.log("shippingOrderIdForDoc:", shippingOrderIdForDoc);
 
                   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -1155,9 +1163,7 @@ router.post(
               try {
                 if (boxtalId) {
                   console.log("boxtalId:", boxtalId);
-                  const base =
-                    process.env.INTERNAL_API_BASE ||
-                    `http://localhost:${process.env.PORT || 5000}`;
+                  const base = getInternalBase();
 
                   const trackingResp = await fetch(
                     `${base}/api/boxtal/shipping-orders/${encodeURIComponent(
