@@ -68,7 +68,7 @@ app.use((req: any, res: any, next: NextFunction) => {
 });
 
 // Appliquer Clerk à toutes les routes pour pouvoir utiliser getAuth(req)
-app.use(clerkMiddleware());
+//app.use(clerkMiddleware());
 
 const clerkForProtected = clerkMiddleware();
 const PUBLIC_PATH_PREFIXES = [
