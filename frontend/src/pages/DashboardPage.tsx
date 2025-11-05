@@ -27,7 +27,7 @@ import {
 } from 'react-icons/fa';
 import { Toast } from '../components/Toast';
 import { useToast } from '../utils/toast';
-import { apiPut, apiPost, apiPostForm, apiGet } from '../utils/api';
+import { apiPut, apiPost, apiPostForm, apiGet, API_BASE_URL } from '../utils/api';
 import SuccessConfetti from '../components/SuccessConfetti';
 
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
@@ -226,7 +226,7 @@ export default function DashboardPage() {
     reader.onload = ev => setLogoPreview(ev.target?.result as string);
     reader.readAsDataURL(file);
   };
-  const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+  const apiBase = API_BASE_URL;
 
   // Helpers d'affichage inspirés de OrdersPage
   const formatMethod = (m?: string | null) => {

@@ -10,7 +10,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { Popover, Transition } from '@headlessui/react';
-import { apiPostForm } from '../utils/api';
+import { apiPostForm, API_BASE_URL } from '../utils/api';
 import Spinner from '../components/Spinner';
 
 type StoreAddress = {
@@ -88,7 +88,7 @@ export default function OrdersPage() {
   );
   const [isSendingContact, setIsSendingContact] = useState<boolean>(false);
 
-  const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+  const apiBase = API_BASE_URL;
 
   const normalizeWebsite = (url?: string | null) => {
     if (!url) return undefined;

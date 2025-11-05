@@ -24,7 +24,7 @@ import {
 import StripeWrapper from '../components/StripeWrapper';
 import ParcelPointMap from '../components/ParcelPointMap';
 import { ParcelPointData } from '../components/ParcelPointMap';
-import { apiPost } from '../utils/api';
+import { apiPost, API_BASE_URL } from '../utils/api';
 import { Address } from '@stripe/stripe-js';
 import Header from '../components/Header';
 import { Toast } from '../components/Toast';
@@ -124,7 +124,7 @@ export default function CheckoutPage() {
 
   // Charger le panier pour ce store
   useEffect(() => {
-    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+    const apiBase = API_BASE_URL;
     const fetchCartForStore = async () => {
       try {
         const userEmail = user?.primaryEmailAddress?.emailAddress;

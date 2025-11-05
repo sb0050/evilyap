@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import Spinner from './Spinner';
 import { animate } from 'motion';
+import { API_BASE_URL } from '../utils/api';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Protect } from '@clerk/clerk-react';
 
@@ -76,8 +77,7 @@ export default function Header() {
     title: string;
     message: string;
   } | null>(null);
-  const apiBase =
-    (import.meta as any).env.VITE_API_URL || 'http://localhost:5000';
+  const apiBase = API_BASE_URL;
   const [cartOpen, setCartOpen] = useState(false);
   const [cartTotal, setCartTotal] = useState<number>(0);
   const [cartGroups, setCartGroups] = useState<
