@@ -70,32 +70,6 @@ app.use((req: any, res: any, next: NextFunction) => {
 // Appliquer Clerk à toutes les routes pour pouvoir utiliser getAuth(req)
 //app.use(clerkMiddleware());
 
-const clerkForProtected = clerkMiddleware();
-const PUBLIC_PATH_PREFIXES = [
-  "/api/health",
-  // Stores (public checks)
-  "/api/stores/check-owner",
-  "/api/stores/exists",
-  // Stripe endpoints utilisés côté client sans auth obligatoire
-  "/api/stripe/get-customer-details",
-  "/api/stripe/create-customer",
-  // Webhooks doivent rester accessibles (signés côté payload)
-  "/api/stripe/webhook",
-  "/api/boxtal/webhook",
-];
-
-const isPublicPath = (p: string) =>
-  PUBLIC_PATH_PREFIXES.some((prefix) => p.startsWith(prefix));
-
-app.use((req, res, next) => {
-  if (isPublicPath(req.path)) {
-    // Ignorer Clerk sur les routes publiques
-    return next();
-  }
-  // Appliquer Clerk sur toutes les autres routes (protégées)
-  return clerkForProtected(req, res, next);
-});
-
 // Log d'auth Clerk pour diagnostiquer les 401
 app.use((req, _res, next) => {
   try {
