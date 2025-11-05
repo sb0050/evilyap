@@ -32,6 +32,8 @@ const normalizeOrigin = (raw?: string) => {
   return `${scheme}://${val}`;
 };
 
+console.error("ERROR !!!! ", process.env.CLIENT_URL);
+
 app.use(
   cors({
     origin: [
