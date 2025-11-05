@@ -32,19 +32,13 @@ const normalizeOrigin = (raw?: string) => {
   return `${scheme}://${val}`;
 };
 
-const allowedOrigins = (
-  process.env.CLIENT_URL ||
-  "paylive-server-dev.vercel.app" ||
-  "https://paylive-server-dev.vercel.app" ||
-  "http://localhost:3000"
-)
-  .split(",")
-  .map((o) => normalizeOrigin(o))
-  .filter((o) => !!o);
-
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: [
+      "paylive-server-dev.vercel.app",
+      "http://paylive-server-dev.vercel.app", // si besoin d'une version http locale
+      "http://localhost:3000", // utile pour tester en local
+    ],
     credentials: true,
   })
 );
