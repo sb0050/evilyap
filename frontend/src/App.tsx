@@ -23,6 +23,8 @@ import PaymentReturnPage from './pages/PaymentReturnPage';
 import { frFR } from '@clerk/localizations';
 import DashboardPage from './pages/DashboardPage';
 import HowItWorksPage from './pages/HowItWorksPage';
+import PrivacyPolicy from './pages/PrivacyPolicy';
+import TermsAndConditions from './pages/TermsAndConditions';
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -37,6 +39,9 @@ function App() {
         <div className='min-h-screen bg-gray-50'>
           <Routes>
             <Route path='/' element={<LandingPage />} />
+            {/* Pages publiques: PDF */}
+            <Route path='/privacy_policy' element={<PrivacyPolicy />} />
+            <Route path='/terms_and_conditions' element={<TermsAndConditions />} />
             <Route
               path='/checkout/:storeName'
               element={
