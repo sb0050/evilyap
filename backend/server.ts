@@ -32,7 +32,11 @@ const normalizeOrigin = (raw?: string) => {
   return `${scheme}://${val}`;
 };
 
-const allowedOrigins = (process.env.CLIENT_URL || process.env.CLIENT_URLS || "http://localhost:3000")
+const allowedOrigins = (
+  process.env.CLIENT_URL ||
+  process.env.CLIENT_URLS ||
+  "http://localhost:3000"
+)
   .split(",")
   .map((o) => normalizeOrigin(o))
   .filter((o) => !!o);
@@ -45,13 +49,21 @@ app.use(
 );
 
 // Log minimal des requêtes et laisser passer les préflights CORS
-app.use((req, res, next) => {
+app.use((req: any, res: any, next: NextFunction) => {
   const origin = req.headers.origin;
-  const acMethod = req.headers["access-control-request-method"] as string | undefined;
-  const acHeaders = req.headers["access-control-request-headers"] as string | undefined;
+  const acMethod = req.headers["access-control-request-method"] as
+    | string
+    | undefined;
+  const acHeaders = req.headers["access-control-request-headers"] as
+    | string
+    | undefined;
   const hasAuth = !!req.headers.authorization;
   console.log(
-    `[req] ${req.method} ${req.path} origin=${origin || "-"} hasAuth=${hasAuth} acMethod=${acMethod || "-"} acHeaders=${acHeaders || "-"}`
+    `[req] ${req.method} ${req.path} origin=${
+      origin || "-"
+    } hasAuth=${hasAuth} acMethod=${acMethod || "-"} acHeaders=${
+      acHeaders || "-"
+    }`
   );
   if (req.method === "OPTIONS") {
     console.log("[preflight] responding 204 for CORS preflight");
@@ -61,32 +73,7 @@ app.use((req, res, next) => {
 });
 
 // Appliquer Clerk à toutes les routes pour pouvoir utiliser getAuth(req)
-// Appliquer Clerk uniquement aux routes protégées et ignorer les routes publiques
-// Ceci évite que Clerk renvoie 401 sur des endpoints publics ou sur les préflights
-const clerkForProtected = clerkMiddleware();
-const PUBLIC_PATH_PREFIXES = [
-  "/api/health",
-  // Stores (public checks)
-  "/api/stores/check-owner",
-  "/api/stores/exists",
-  // Stripe endpoints utilisés côté client sans auth obligatoire
-  "/api/stripe/get-customer-details",
-  "/api/stripe/create-customer",
-  // Webhooks doivent rester accessibles (signés côté payload)
-  "/api/stripe/webhook",
-  "/api/boxtal/webhook",
-];
-
-const isPublicPath = (p: string) => PUBLIC_PATH_PREFIXES.some((prefix) => p.startsWith(prefix));
-
-app.use((req, res, next) => {
-  if (isPublicPath(req.path)) {
-    // Ignorer Clerk sur les routes publiques
-    return next();
-  }
-  // Appliquer Clerk sur toutes les autres routes (protégées)
-  return clerkForProtected(req, res, next);
-});
+app.use(clerkMiddleware());
 
 // Log d'auth Clerk pour diagnostiquer les 401
 app.use((req, _res, next) => {
@@ -96,14 +83,15 @@ app.use((req, _res, next) => {
     const userId = auth?.userId || null;
     const sessionId = (auth as any)?.sessionId || null;
     console.log(
-      `[auth] isAuthenticated=${isAuth} userId=${userId || "-"} sessionId=${sessionId || "-"}`
+      `[auth] isAuthenticated=${isAuth} userId=${userId || "-"} sessionId=${
+        sessionId || "-"
+      }`
     );
   } catch (e) {
     console.log("[auth] getAuth error:", e);
   }
   next();
 });
-
 // Pour les webhooks Stripe, nous devons traiter le raw body
 app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
 
