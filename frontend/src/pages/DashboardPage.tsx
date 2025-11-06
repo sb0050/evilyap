@@ -539,7 +539,8 @@ export default function DashboardPage() {
       );
       const shipJson = await shipResp.json().catch(() => ({}));
       if (!shipResp.ok) {
-        const msg = shipJson?.error || 'Erreur lors du rechargement des ventes/clients';
+        const msg =
+          shipJson?.error || 'Erreur lors du rechargement des ventes/clients';
         throw new Error(typeof msg === 'string' ? msg : 'Rechargement échoué');
       }
       setShipments(
@@ -1199,19 +1200,6 @@ export default function DashboardPage() {
                     </button>
                   </div>
                 </div>
-                <div className='sm:hidden'>
-                  <button
-                    onClick={handleReloadSales}
-                    disabled={reloadingSales}
-                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                    title='Recharger les ventes'
-                  >
-                    <RefreshCw
-                      className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
-                    />
-                    <span>Recharger</span>
-                  </button>
-                </div>
               </div>
               {/* Affichage (non édité) */}
               {!editingInfo && (
@@ -1715,7 +1703,7 @@ export default function DashboardPage() {
                     onClick={handleReloadSales}
                     disabled={reloadingSales}
                     className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                    title="Recharger les ventes"
+                    title='Recharger les ventes'
                   >
                     <RefreshCw
                       className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
@@ -2155,7 +2143,7 @@ export default function DashboardPage() {
                     Clients
                   </h2>
                 </div>
-                 <div className='hidden sm:flex items-center space-x-3'>
+                <div className='hidden sm:flex items-center space-x-3'>
                   <div className='text-sm text-gray-600'>
                     {customersLoading ? (
                       <span>Chargement...</span>
