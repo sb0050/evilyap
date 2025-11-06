@@ -8,6 +8,7 @@ import {
   SendHorizontal,
   RefreshCw,
   ExternalLink,
+  ShoppingCart,
 } from 'lucide-react';
 import { Popover, Transition } from '@headlessui/react';
 import { apiPostForm, API_BASE_URL } from '../utils/api';
@@ -73,6 +74,7 @@ export default function OrdersPage() {
   const [expandedCardIds, setExpandedCardIds] = useState<
     Record<number, boolean>
   >({});
+  const [storeQuery, setStoreQuery] = useState<string>('');
   const [toast, setToast] = useState<{
     message: string;
     type: 'error' | 'info' | 'success';
@@ -357,7 +359,6 @@ export default function OrdersPage() {
 
   // Tri par date estimée (prochain colis)
   const sortedShipments = (() => {
-    if (!estimatedSortOrder) return shipments || [];
     const toTime = (d?: string | null) => {
       if (!d) return Number.POSITIVE_INFINITY;
       try {
@@ -369,12 +370,18 @@ export default function OrdersPage() {
         return Number.POSITIVE_INFINITY;
       }
     };
-    const arr = [...(shipments || [])];
-    arr.sort((a, b) => {
-      const ta = toTime(a.estimated_delivery_date);
-      const tb = toTime(b.estimated_delivery_date);
-      return estimatedSortOrder === 'asc' ? ta - tb : tb - ta;
-    });
+    let arr = [...(shipments || [])];
+    if (estimatedSortOrder) {
+      arr.sort((a, b) => {
+        const ta = toTime(a.estimated_delivery_date);
+        const tb = toTime(b.estimated_delivery_date);
+        return estimatedSortOrder === 'asc' ? ta - tb : tb - ta;
+      });
+    }
+    const q = (storeQuery || '').trim().toLowerCase();
+    if (q) {
+      arr = arr.filter(s => (s.store?.name || '').toLowerCase().includes(q));
+    }
     return arr;
   })();
 
@@ -549,10 +556,10 @@ export default function OrdersPage() {
           visible={toast.visible !== false}
         />
       )}
-      <div className='max-w-fit mx-auto px-4 py-8'>
+      <div className='max-w-fit mx-auto px-4 py-1'>
         <div className='text-center mb-6 sm:m'>
           <Package className='hidden sm:block h-12 w-12 text-amber-600 mx-auto mb-4' />
-          <h1 className='text-xl sm:text-3xl font-bold text-gray-900 mb-2'>
+          <h1 className='hidden sm:block text-xl sm:text-3xl font-bold text-gray-900 mb-2'>
             Suivi de mes commandes
           </h1>
         </div>
@@ -630,8 +637,14 @@ export default function OrdersPage() {
                   </div>
                 </div>
               </div>
-              {/* Contrôles mobile: bouton Recharger seul */}
-              <div className='flex sm:hidden items-center justify-end mb-3 mt-1'>
+              {/* Entête mobile: titre + logo à gauche, bouton Recharger à droite */}
+              <div className='flex sm:hidden items-center justify-between mb-3 mt-1'>
+                <div className='flex items-center'>
+                  <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
+                  <h2 className='text-lg font-semibold text-gray-900'>
+                    Mes ventes
+                  </h2>
+                </div>
                 <button
                   onClick={handleRefreshOrders}
                   disabled={reloadingOrders}
@@ -643,6 +656,20 @@ export default function OrdersPage() {
                   />
                   <span>Recharger</span>
                 </button>
+              </div>
+
+              {/* Recherche mobile: boutique (contains) */}
+              <div className='sm:hidden mb-3'>
+                <label className='block text-sm text-gray-700 mb-1'>
+                  Rechercher une boutique
+                </label>
+                <input
+                  type='text'
+                  value={storeQuery}
+                  onChange={e => setStoreQuery(e.target.value)}
+                  placeholder='Nom de la boutique'
+                  className='w-auto ml-1 border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                />
               </div>
 
               {/* Vue mobile: cartes accordéon */}
