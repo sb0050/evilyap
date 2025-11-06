@@ -27,7 +27,13 @@ import {
 } from 'react-icons/fa';
 import { Toast } from '../components/Toast';
 import { useToast } from '../utils/toast';
-import { apiPut, apiPost, apiPostForm, apiGet, API_BASE_URL } from '../utils/api';
+import {
+  apiPut,
+  apiPost,
+  apiPostForm,
+  apiGet,
+  API_BASE_URL,
+} from '../utils/api';
 import SuccessConfetti from '../components/SuccessConfetti';
 
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
@@ -151,6 +157,14 @@ export default function DashboardPage() {
     'desc'
   );
   const [socialsMap, setSocialsMap] = useState<Record<string, any>>({});
+
+  // États d’expansion pour les cartes mobiles
+  const [expandedSalesCardIds, setExpandedSalesCardIds] = useState<
+    Record<number, boolean>
+  >({});
+  const [expandedClientCardIds, setExpandedClientCardIds] = useState<
+    Record<string, boolean>
+  >({});
 
   // Popup de bienvenue après création de boutique
   const [showWelcome, setShowWelcome] = useState<boolean>(false);
@@ -525,13 +539,13 @@ export default function DashboardPage() {
       );
       const shipJson = await shipResp.json().catch(() => ({}));
       if (!shipResp.ok) {
-        const msg = shipJson?.error || 'Erreur lors du rechargement des ventes';
+        const msg = shipJson?.error || 'Erreur lors du rechargement des ventes/clients';
         throw new Error(typeof msg === 'string' ? msg : 'Rechargement échoué');
       }
       setShipments(
         Array.isArray(shipJson?.shipments) ? shipJson.shipments : []
       );
-      showToast('Ventes rechargées', 'success');
+      showToast('Ventes et Clients rechargés', 'success');
       // Réinitialiser la pagination si la page dépasse le total
       setPage(1);
     } catch (e: any) {
@@ -1185,6 +1199,19 @@ export default function DashboardPage() {
                     </button>
                   </div>
                 </div>
+                <div className='sm:hidden'>
+                  <button
+                    onClick={handleReloadSales}
+                    disabled={reloadingSales}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                    title='Recharger les ventes'
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
+                    />
+                    <span>Recharger</span>
+                  </button>
+                </div>
               </div>
               {/* Affichage (non édité) */}
               {!editingInfo && (
@@ -1626,7 +1653,7 @@ export default function DashboardPage() {
                     Mes ventes
                   </h2>
                 </div>
-                <div className='flex items-center space-x-3'>
+                <div className='hidden sm:flex items-center space-x-3'>
                   <div className='text-sm text-gray-600'>
                     Page {page} / {totalPages} — {filteredShipments.length}{' '}
                     ventes
@@ -1683,9 +1710,223 @@ export default function DashboardPage() {
                     </button>
                   </div>
                 </div>
+                <div className='sm:hidden'>
+                  <button
+                    onClick={handleReloadSales}
+                    disabled={reloadingSales}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                    title="Recharger les ventes"
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
+                    />
+                    <span>Recharger</span>
+                  </button>
+                </div>
               </div>
 
-              <table className='w-full'>
+              {/* Contrôles mobile: filtre ID */}
+              <div className='sm:hidden mb-3'>
+                <label className='block text-sm text-gray-700 mb-1'>
+                  Filtrer par ID
+                </label>
+                <input
+                  type='text'
+                  value={idSearch}
+                  onChange={e => {
+                    setIdSearch(e.target.value);
+                    setPage(1);
+                  }}
+                  placeholder='Ex: 123ABC'
+                  className='w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                />
+              </div>
+
+              {/* Vue mobile: cartes dépliables */}
+              <div className='block sm:hidden space-y-3'>
+                {visibleShipments.length === 0 ? (
+                  <div className='text-gray-600 text-center py-4'>
+                    Aucune vente pour le filtre courant.
+                  </div>
+                ) : (
+                  visibleShipments.map(s => (
+                    <div
+                      key={s.id}
+                      className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
+                    >
+                      <div className='flex items-start justify-between'>
+                        <div>
+                          <div className='text-sm font-semibold text-gray-900'>
+                            ID: {s.shipment_id || '—'}
+                          </div>
+                          <div className='text-xs text-gray-600'>
+                            {formatDate(s.created_at)}
+                          </div>
+                        </div>
+                        <div className='text-right'>
+                          <div className='text-sm font-semibold text-gray-900'>
+                            Payé: {formatValue(s.value)}
+                          </div>
+                          <div className='text-xs text-gray-600'>
+                            Reçu:{' '}
+                            {formatValue(
+                              s?.reference_value ??
+                                store?.reference_value ??
+                                null
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className='mt-3 text-sm text-gray-700'>
+                        <div>
+                          <span className='font-medium'>Référence:</span>{' '}
+                          {s.product_reference ?? '—'}
+                        </div>
+                        <div>
+                          <span className='font-medium'>Client ID:</span>{' '}
+                          <span
+                            className='truncate inline-block max-w-[220px]'
+                            title={s.customer_stripe_id || ''}
+                          >
+                            {s.customer_stripe_id || '—'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className='font-medium'>Méthode:</span>{' '}
+                          {formatMethod(s.delivery_method)}
+                        </div>
+                        <div>
+                          <span className='font-medium'>Statut:</span>{' '}
+                          {s.status || '—'}
+                        </div>
+                      </div>
+
+                      <div className='mt-3 flex items-center justify-between'>
+                        <div className='text-xs text-gray-600'>
+                          Réseau: {getNetworkDescription(s.delivery_network)}
+                        </div>
+                        <button
+                          onClick={() =>
+                            setExpandedSalesCardIds(prev => ({
+                              ...prev,
+                              [s.id]: !prev[s.id],
+                            }))
+                          }
+                          className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                          aria-expanded={Boolean(expandedSalesCardIds[s.id])}
+                        >
+                          {expandedSalesCardIds[s.id]
+                            ? 'Voir moins'
+                            : 'Voir plus'}
+                        </button>
+                      </div>
+
+                      {/* Bloc extensible */}
+                      <div
+                        className={`mt-3 space-y-2 text-sm transition-all duration-300 overflow-hidden ${
+                          expandedSalesCardIds[s.id]
+                            ? 'max-h-[1000px] opacity-100'
+                            : 'max-h-0 opacity-0'
+                        }`}
+                      >
+                        <div>
+                          <span className='font-medium'>
+                            Explication du statut:
+                          </span>{' '}
+                          <span className='text-gray-600'>
+                            {getStatusDescription(s.status)}
+                          </span>
+                        </div>
+                        <div>
+                          <span className='font-medium'>Poids:</span>{' '}
+                          {s.weight || '—'}
+                        </div>
+                        <div>
+                          <span className='font-medium'>Suivi:</span>{' '}
+                          {s.tracking_url ? (
+                            <a
+                              href={s.tracking_url}
+                              target='_blank'
+                              rel='noopener noreferrer'
+                              className='text-blue-600 hover:underline'
+                            >
+                              Suivre
+                            </a>
+                          ) : (
+                            '—'
+                          )}
+                        </div>
+
+                        <div className='flex flex-wrap items-center gap-2 pt-2'>
+                          <button
+                            onClick={() => handleShippingDocument(s)}
+                            disabled={
+                              !s.document_created ||
+                              docStatus[s.id] === 'loading'
+                            }
+                            className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                            title={
+                              s.document_created
+                                ? 'Créer le bordereau'
+                                : 'Bordereau indisponible'
+                            }
+                          >
+                            {docStatus[s.id] === 'loading'
+                              ? 'Création...'
+                              : 'Créer le bordereau'}
+                          </button>
+
+                          <button
+                            onClick={() => handleCancel(s)}
+                            disabled={
+                              !s.shipment_id ||
+                              s.is_final_destination ||
+                              !!s.cancel_requested ||
+                              cancelStatus[s.id] === 'loading'
+                            }
+                            className={`px-2 py-1 rounded-md text-xs border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
+                              s.cancel_requested ||
+                              cancelStatus[s.id] === 'success'
+                                ? 'bg-green-50 text-green-700 border-green-200'
+                                : cancelStatus[s.id] === 'error'
+                                  ? 'bg-red-50 text-red-700 border-red-200'
+                                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            }`}
+                            title={
+                              !s.shipment_id
+                                ? 'Annulation indisponible'
+                                : s.cancel_requested
+                                  ? 'Demande déjà envoyée'
+                                  : "Demander l'annulation"
+                            }
+                          >
+                            {cancelStatus[s.id] === 'loading'
+                              ? 'Envoi...'
+                              : s.cancel_requested ||
+                                  cancelStatus[s.id] === 'success'
+                                ? 'Demande envoyée'
+                                : cancelStatus[s.id] === 'error'
+                                  ? 'Réessayer'
+                                  : "Demander l'annulation"}
+                          </button>
+
+                          <button
+                            onClick={() => handleOpenHelp(s)}
+                            className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            title={"Besoin d'aide"}
+                          >
+                            Besoin d'aide
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Vue bureau: tableau */}
+              <table className='w-full hidden sm:table'>
                 <thead>
                   <tr className='border-b border-gray-200'>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
@@ -1914,7 +2155,7 @@ export default function DashboardPage() {
                     Clients
                   </h2>
                 </div>
-                <div className='flex items-center space-x-3'>
+                 <div className='hidden sm:flex items-center space-x-3'>
                   <div className='text-sm text-gray-600'>
                     {customersLoading ? (
                       <span>Chargement...</span>
@@ -2025,6 +2266,18 @@ export default function DashboardPage() {
                     })()}
                   </div>
                 </div>
+                <div className='sm:hidden'>
+                  <button
+                    onClick={handleReloadSales}
+                    disabled={reloadingSales}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
+                    />
+                    <span>Recharger</span>
+                  </button>
+                </div>
               </div>
 
               {(() => {
@@ -2081,67 +2334,26 @@ export default function DashboardPage() {
                 }));
 
                 return (
-                  <table className='w-full'>
-                    <thead>
-                      <tr className='border-b border-gray-200'>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Client ID
-                        </th>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Nom
-                        </th>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Email
-                        </th>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Téléphone
-                        </th>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Adresse
-                        </th>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          <div className='flex items-center space-x-2'>
-                            <span>Dépensé</span>
-                            <button
-                              onClick={() =>
-                                setClientsSortOrder(o =>
-                                  o === 'asc' ? 'desc' : 'asc'
-                                )
-                              }
-                              className='p-1 rounded hover:bg-gray-100'
-                              title={`Trier ${clientsSortOrder === 'asc' ? '↓' : '↑'}`}
-                            >
-                              <ArrowUpDown className='w-4 h-4 text-gray-600' />
-                            </button>
-                          </div>
-                        </th>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Réseaux Sociaux
-                        </th>
-                      </tr>
-                      <tr className='border-b border-gray-100'>
-                        <th className='py-2 px-4'>
-                          <input
-                            type='text'
-                            value={clientIdSearch}
-                            onChange={e => {
-                              setClientIdSearch(e.target.value);
-                              setClientsPage(1);
-                            }}
-                            placeholder='Filtrer…'
-                            className='w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                          />
-                        </th>
-                        <th className='py-2 px-4'></th>
-                        <th className='py-2 px-4'></th>
-                        <th className='py-2 px-4'></th>
-                        <th className='py-2 px-4'></th>
-                        <th className='py-2 px-4'></th>
-                        <th className='py-2 px-4'></th>
-                        <th className='py-2 px-4'></th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  <>
+                    {/* Contrôles mobile: filtre Client ID */}
+                    <div className='sm:hidden mb-3'>
+                      <label className='block text-sm text-gray-700 mb-1'>
+                        Filtrer par Client ID
+                      </label>
+                      <input
+                        type='text'
+                        value={clientIdSearch}
+                        onChange={e => {
+                          setClientIdSearch(e.target.value);
+                          setClientsPage(1);
+                        }}
+                        placeholder='Ex: cus_...'
+                        className='w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                      />
+                    </div>
+
+                    {/* Vue mobile: cartes dépliables */}
+                    <div className='block sm:hidden space-y-3'>
                       {rows.map(r => {
                         const a = r.data?.address || {};
                         const addr = [
@@ -2151,68 +2363,94 @@ export default function DashboardPage() {
                         ]
                           .filter(Boolean)
                           .join(', ');
+                        const clerkId =
+                          r.data?.clerkUserId || r.data?.clerk_user_id;
+                        const u = clerkId ? socialsMap[clerkId] || null : null;
+                        const name =
+                          r.data?.name ||
+                          [u?.firstName, u?.lastName]
+                            .filter(Boolean)
+                            .join(' ') ||
+                          '—';
                         return (
-                          <tr
+                          <div
                             key={r.id}
-                            className='border-b border-gray-100 hover:bg-gray-50'
+                            className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
                           >
-                            <td className='py-4 px-4 text-gray-700'>
-                              <span
-                                className='truncate block max-w-[240px]'
-                                title={r.id}
-                              >
-                                {r.id}
-                              </span>
-                            </td>
-                            <td className='py-4 px-4 text-gray-700'>
-                              {(() => {
-                                const clerkId =
-                                  r.data?.clerkUserId || r.data?.clerk_user_id;
-                                const u = clerkId
-                                  ? socialsMap[clerkId] || null
-                                  : null;
-                                const name =
-                                  r.data?.name ||
-                                  [u?.firstName, u?.lastName]
-                                    .filter(Boolean)
-                                    .join(' ') ||
-                                  '—';
-                                return (
-                                  <div className='flex items-center space-x-2'>
-                                    {u?.hasImage && u?.imageUrl ? (
-                                      <img
-                                        src={u.imageUrl}
-                                        alt='avatar'
-                                        className='w-8 h-8 rounded-full object-cover'
-                                      />
-                                    ) : null}
-                                    <span>{name}</span>
+                            <div className='flex items-start justify-between'>
+                              <div className='flex items-center space-x-2'>
+                                {u?.hasImage && u?.imageUrl ? (
+                                  <img
+                                    src={u.imageUrl}
+                                    alt='avatar'
+                                    className='w-6 h-6 rounded-full object-cover'
+                                  />
+                                ) : (
+                                  <span className='inline-block w-6 h-6 rounded-full bg-gray-200' />
+                                )}
+                                <div>
+                                  <div className='text-sm font-semibold text-gray-900'>
+                                    {name}
                                   </div>
-                                );
-                              })()}
-                            </td>
-                            <td className='py-4 px-4 text-gray-700'>
-                              {r.data?.email || '—'}
-                            </td>
-                            <td className='py-4 px-4 text-gray-700'>
-                              {r.data?.phone || '—'}
-                            </td>
-                            <td className='py-4 px-4 text-gray-700'>
-                              {addr || '—'}
-                            </td>
-                            <td className='py-4 px-4 text-gray-700'>
-                              {formatValue(r.spent)}
-                            </td>
-                            <td className='py-4 px-4 text-gray-700'>
+                                  <div
+                                    className='text-xs text-gray-600 truncate max-w-[220px]'
+                                    title={r.id}
+                                  >
+                                    {r.id}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className='text-sm font-semibold text-gray-900'>
+                                {formatValue(r.spent)}
+                              </div>
+                            </div>
+
+                            <div className='mt-3 text-sm text-gray-700'>
+                              <div>
+                                <span className='font-medium'>Email:</span>{' '}
+                                {r.data?.email || '—'}
+                              </div>
+                              <div>
+                                <span className='font-medium'>Téléphone:</span>{' '}
+                                {r.data?.phone || '—'}
+                              </div>
+                              <div>
+                                <span className='font-medium'>Adresse:</span>{' '}
+                                {addr || '—'}
+                              </div>
+                            </div>
+
+                            <div className='mt-3 flex items-center justify-end'>
+                              <button
+                                onClick={() =>
+                                  setExpandedClientCardIds(prev => ({
+                                    ...prev,
+                                    [r.id]: !prev[r.id],
+                                  }))
+                                }
+                                className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                aria-expanded={Boolean(
+                                  expandedClientCardIds[r.id]
+                                )}
+                              >
+                                {expandedClientCardIds[r.id]
+                                  ? 'Voir moins'
+                                  : 'Voir plus'}
+                              </button>
+                            </div>
+
+                            <div
+                              className={`mt-3 space-y-2 text-sm transition-all duration-300 overflow-hidden ${
+                                expandedClientCardIds[r.id]
+                                  ? 'max-h-[1000px] opacity-100'
+                                  : 'max-h-0 opacity-0'
+                              }`}
+                            >
+                              <div className='font-medium'>Réseaux sociaux</div>
                               {(() => {
-                                const clerkId =
-                                  r.data?.clerkUserId || r.data?.clerk_user_id;
-                                const u = clerkId
-                                  ? socialsMap[clerkId] || null
-                                  : null;
                                 const accounts = u?.externalAccounts || [];
                                 if (!u || !accounts || accounts.length === 0)
-                                  return '—';
+                                  return <div>—</div>;
                                 return (
                                   <div className='space-y-1'>
                                     {accounts.map((acc: any) => {
@@ -2222,13 +2460,11 @@ export default function DashboardPage() {
                                       const Icon = getProviderIcon(
                                         acc?.provider
                                       );
-
                                       const isAppleOrTikTok =
                                         providerKey.includes('apple') ||
                                         providerKey.includes('tiktok');
 
                                       if (isAppleOrTikTok) {
-                                        // Pour Apple/TikTok: n'afficher que le logo si tous les champs sont vides
                                         const email =
                                           (acc?.emailAddress &&
                                             acc.emailAddress.trim()) ||
@@ -2249,9 +2485,427 @@ export default function DashboardPage() {
                                           (acc?.phoneNumber &&
                                             String(acc.phoneNumber).trim()) ||
                                           '';
+                                        const name2 = [firstName, lastName]
+                                          .filter(Boolean)
+                                          .join(' ');
+                                        const hasAny = Boolean(
+                                          email || name2 || phone || username
+                                        );
+                                        if (!hasAny) {
+                                          return (
+                                            <div
+                                              key={acc?.id || acc?.provider}
+                                              className='flex items-center space-x-2'
+                                            >
+                                              {Icon ? (
+                                                <Icon
+                                                  size={14}
+                                                  className='text-gray-600'
+                                                />
+                                              ) : (
+                                                <FaShareAlt
+                                                  size={14}
+                                                  className='text-gray-600'
+                                                />
+                                              )}
+                                            </div>
+                                          );
+                                        }
+                                        return (
+                                          <div
+                                            key={acc?.id || acc?.provider}
+                                            className='flex items-center space-x-2'
+                                          >
+                                            {Icon ? (
+                                              <Icon
+                                                size={14}
+                                                className='text-gray-600'
+                                              />
+                                            ) : (
+                                              <FaShareAlt
+                                                size={14}
+                                                className='text-gray-600'
+                                              />
+                                            )}
+                                            {email ? (
+                                              <span className='text-xs text-gray-700'>
+                                                {email}
+                                              </span>
+                                            ) : null}
+                                            {name2 ? (
+                                              <span className='text-xs text-gray-700'>
+                                                {name2}
+                                              </span>
+                                            ) : null}
+                                            {phone ? (
+                                              <span className='text-xs text-gray-700'>
+                                                {phone}
+                                              </span>
+                                            ) : null}
+                                            {username ? (
+                                              <span className='text-xs text-gray-700'>
+                                                @{username}
+                                              </span>
+                                            ) : null}
+                                          </div>
+                                        );
+                                      }
+
+                                      const email2 =
+                                        (acc?.emailAddress &&
+                                          acc.emailAddress.trim()) ||
+                                        (u?.emailAddress || '').trim() ||
+                                        '';
+                                      const username2 =
+                                        (acc?.username &&
+                                          String(acc.username).trim()) ||
+                                        '';
+                                      const firstName2 =
+                                        (acc?.firstName || '').trim() ||
+                                        (u?.firstName || '').trim();
+                                      const lastName2 =
+                                        (acc?.lastName || '').trim() ||
+                                        (u?.lastName || '').trim();
+                                      const name3 = [firstName2, lastName2]
+                                        .filter(Boolean)
+                                        .join(' ');
+                                      const phone2 =
+                                        (acc?.phoneNumber &&
+                                          String(acc.phoneNumber).trim()) ||
+                                        (u?.phoneNumber || '').trim();
+                                      const hasAny2 = Boolean(
+                                        email2 || name3 || phone2 || username2
+                                      );
+                                      if (!hasAny2) {
+                                        return (
+                                          <div
+                                            key={acc?.id || acc?.provider}
+                                            className='flex items-center space-x-2'
+                                          >
+                                            {Icon ? (
+                                              <Icon
+                                                size={14}
+                                                className='text-gray-600'
+                                              />
+                                            ) : (
+                                              <FaShareAlt
+                                                size={14}
+                                                className='text-gray-600'
+                                              />
+                                            )}
+                                          </div>
+                                        );
+                                      }
+                                      return (
+                                        <div
+                                          key={acc?.id || acc?.provider}
+                                          className='flex items-center space-x-2'
+                                        >
+                                          {Icon ? (
+                                            <Icon
+                                              size={14}
+                                              className='text-gray-600'
+                                            />
+                                          ) : (
+                                            <FaShareAlt
+                                              size={14}
+                                              className='text-gray-600'
+                                            />
+                                          )}
+                                          {email2 ? (
+                                            <span className='text-xs text-gray-700'>
+                                              {email2}
+                                            </span>
+                                          ) : null}
+                                          {name3 ? (
+                                            <span className='text-xs text-gray-700'>
+                                              {name3}
+                                            </span>
+                                          ) : null}
+                                          {phone2 ? (
+                                            <span className='text-xs text-gray-700'>
+                                              {phone2}
+                                            </span>
+                                          ) : null}
+                                          {username2 ? (
+                                            <span className='text-xs text-gray-700'>
+                                              @{username2}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Vue bureau: tableau */}
+                    <table className='w-full hidden sm:table'>
+                      <thead>
+                        <tr className='border-b border-gray-200'>
+                          <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                            Client ID
+                          </th>
+                          <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                            Nom
+                          </th>
+                          <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                            Email
+                          </th>
+                          <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                            Téléphone
+                          </th>
+                          <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                            Adresse
+                          </th>
+                          <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                            <div className='flex items-center space-x-2'>
+                              <span>Dépensé</span>
+                              <button
+                                onClick={() =>
+                                  setClientsSortOrder(o =>
+                                    o === 'asc' ? 'desc' : 'asc'
+                                  )
+                                }
+                                className='p-1 rounded hover:bg-gray-100'
+                                title={`Trier ${clientsSortOrder === 'asc' ? '↓' : '↑'}`}
+                              >
+                                <ArrowUpDown className='w-4 h-4 text-gray-600' />
+                              </button>
+                            </div>
+                          </th>
+                          <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                            Réseaux Sociaux
+                          </th>
+                        </tr>
+                        <tr className='border-b border-gray-100'>
+                          <th className='py-2 px-4'>
+                            <input
+                              type='text'
+                              value={clientIdSearch}
+                              onChange={e => {
+                                setClientIdSearch(e.target.value);
+                                setClientsPage(1);
+                              }}
+                              placeholder='Filtrer…'
+                              className='w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                            />
+                          </th>
+                          <th className='py-2 px-4'></th>
+                          <th className='py-2 px-4'></th>
+                          <th className='py-2 px-4'></th>
+                          <th className='py-2 px-4'></th>
+                          <th className='py-2 px-4'></th>
+                          <th className='py-2 px-4'></th>
+                          <th className='py-2 px-4'></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(r => {
+                          const a = r.data?.address || {};
+                          const addr = [
+                            a?.line1,
+                            `${a?.postal_code || ''} ${a?.city || ''}`.trim(),
+                            a?.country,
+                          ]
+                            .filter(Boolean)
+                            .join(', ');
+                          return (
+                            <tr
+                              key={r.id}
+                              className='border-b border-gray-100 hover:bg-gray-50'
+                            >
+                              <td className='py-4 px-4 text-gray-700'>
+                                <span
+                                  className='truncate block max-w-[240px]'
+                                  title={r.id}
+                                >
+                                  {r.id}
+                                </span>
+                              </td>
+                              <td className='py-4 px-4 text-gray-700'>
+                                {(() => {
+                                  const clerkId =
+                                    r.data?.clerkUserId ||
+                                    r.data?.clerk_user_id;
+                                  const u = clerkId
+                                    ? socialsMap[clerkId] || null
+                                    : null;
+                                  const name =
+                                    r.data?.name ||
+                                    [u?.firstName, u?.lastName]
+                                      .filter(Boolean)
+                                      .join(' ') ||
+                                    '—';
+                                  return (
+                                    <div className='flex items-center space-x-2'>
+                                      {u?.hasImage && u?.imageUrl ? (
+                                        <img
+                                          src={u.imageUrl}
+                                          alt='avatar'
+                                          className='w-8 h-8 rounded-full object-cover'
+                                        />
+                                      ) : null}
+                                      <span>{name}</span>
+                                    </div>
+                                  );
+                                })()}
+                              </td>
+                              <td className='py-4 px-4 text-gray-700'>
+                                {r.data?.email || '—'}
+                              </td>
+                              <td className='py-4 px-4 text-gray-700'>
+                                {r.data?.phone || '—'}
+                              </td>
+                              <td className='py-4 px-4 text-gray-700'>
+                                {addr || '—'}
+                              </td>
+                              <td className='py-4 px-4 text-gray-700'>
+                                {formatValue(r.spent)}
+                              </td>
+                              <td className='py-4 px-4 text-gray-700'>
+                                {(() => {
+                                  const clerkId =
+                                    r.data?.clerkUserId ||
+                                    r.data?.clerk_user_id;
+                                  const u = clerkId
+                                    ? socialsMap[clerkId] || null
+                                    : null;
+                                  const accounts = u?.externalAccounts || [];
+                                  if (!u || !accounts || accounts.length === 0)
+                                    return '—';
+                                  return (
+                                    <div className='space-y-1'>
+                                      {accounts.map((acc: any) => {
+                                        const providerKey = (
+                                          acc?.provider || ''
+                                        ).toLowerCase();
+                                        const Icon = getProviderIcon(
+                                          acc?.provider
+                                        );
+
+                                        const isAppleOrTikTok =
+                                          providerKey.includes('apple') ||
+                                          providerKey.includes('tiktok');
+
+                                        if (isAppleOrTikTok) {
+                                          // Pour Apple/TikTok: n'afficher que le logo si tous les champs sont vides
+                                          const email =
+                                            (acc?.emailAddress &&
+                                              acc.emailAddress.trim()) ||
+                                            '';
+                                          const firstName =
+                                            (acc?.firstName &&
+                                              acc.firstName.trim()) ||
+                                            '';
+                                          const lastName =
+                                            (acc?.lastName &&
+                                              acc.lastName.trim()) ||
+                                            '';
+                                          const username =
+                                            (acc?.username &&
+                                              String(acc.username).trim()) ||
+                                            '';
+                                          const phone =
+                                            (acc?.phoneNumber &&
+                                              String(acc.phoneNumber).trim()) ||
+                                            '';
+                                          const name = [firstName, lastName]
+                                            .filter(Boolean)
+                                            .join(' ');
+                                          const hasAny = Boolean(
+                                            email || name || phone || username
+                                          );
+
+                                          if (!hasAny) {
+                                            return (
+                                              <div
+                                                key={acc?.id || acc?.provider}
+                                                className='flex items-center space-x-2'
+                                              >
+                                                {Icon ? (
+                                                  <Icon
+                                                    size={14}
+                                                    className='text-gray-600'
+                                                  />
+                                                ) : (
+                                                  <FaShareAlt
+                                                    size={14}
+                                                    className='text-gray-600'
+                                                  />
+                                                )}
+                                              </div>
+                                            );
+                                          }
+
+                                          return (
+                                            <div
+                                              key={acc?.id || acc?.provider}
+                                              className='flex items-center space-x-2'
+                                            >
+                                              {Icon ? (
+                                                <Icon
+                                                  size={14}
+                                                  className='text-gray-600'
+                                                />
+                                              ) : (
+                                                <FaShareAlt
+                                                  size={14}
+                                                  className='text-gray-600'
+                                                />
+                                              )}
+                                              {email ? (
+                                                <span className='text-xs text-gray-700'>
+                                                  {email}
+                                                </span>
+                                              ) : null}
+                                              {name ? (
+                                                <span className='text-xs text-gray-700'>
+                                                  {name}
+                                                </span>
+                                              ) : null}
+                                              {phone ? (
+                                                <span className='text-xs text-gray-700'>
+                                                  {phone}
+                                                </span>
+                                              ) : null}
+                                              {username ? (
+                                                <span className='text-xs text-gray-700'>
+                                                  @{username}
+                                                </span>
+                                              ) : null}
+                                            </div>
+                                          );
+                                        }
+
+                                        // Autres providers : afficher les champs si disponibles, prioriser les infos du compte externe, fallback user
+                                        const email =
+                                          (acc?.emailAddress &&
+                                            acc.emailAddress.trim()) ||
+                                          (u?.emailAddress || '').trim() ||
+                                          '';
+                                        const username =
+                                          (acc?.username &&
+                                            String(acc.username).trim()) ||
+                                          '';
+                                        const firstName =
+                                          (acc?.firstName || '').trim() ||
+                                          (u?.firstName || '').trim();
+                                        const lastName =
+                                          (acc?.lastName || '').trim() ||
+                                          (u?.lastName || '').trim();
                                         const name = [firstName, lastName]
                                           .filter(Boolean)
                                           .join(' ');
+                                        const phone =
+                                          (acc?.phoneNumber &&
+                                            String(acc.phoneNumber).trim()) ||
+                                          (u?.phoneNumber || '').trim();
                                         const hasAny = Boolean(
                                           email || name || phone || username
                                         );
@@ -2315,104 +2969,17 @@ export default function DashboardPage() {
                                             ) : null}
                                           </div>
                                         );
-                                      }
-
-                                      // Autres providers : afficher les champs si disponibles, prioriser les infos du compte externe, fallback user
-                                      const email =
-                                        (acc?.emailAddress &&
-                                          acc.emailAddress.trim()) ||
-                                        (u?.emailAddress || '').trim() ||
-                                        '';
-                                      const username =
-                                        (acc?.username &&
-                                          String(acc.username).trim()) ||
-                                        '';
-                                      const firstName =
-                                        (acc?.firstName || '').trim() ||
-                                        (u?.firstName || '').trim();
-                                      const lastName =
-                                        (acc?.lastName || '').trim() ||
-                                        (u?.lastName || '').trim();
-                                      const name = [firstName, lastName]
-                                        .filter(Boolean)
-                                        .join(' ');
-                                      const phone =
-                                        (acc?.phoneNumber &&
-                                          String(acc.phoneNumber).trim()) ||
-                                        (u?.phoneNumber || '').trim();
-                                      const hasAny = Boolean(
-                                        email || name || phone || username
-                                      );
-
-                                      if (!hasAny) {
-                                        return (
-                                          <div
-                                            key={acc?.id || acc?.provider}
-                                            className='flex items-center space-x-2'
-                                          >
-                                            {Icon ? (
-                                              <Icon
-                                                size={14}
-                                                className='text-gray-600'
-                                              />
-                                            ) : (
-                                              <FaShareAlt
-                                                size={14}
-                                                className='text-gray-600'
-                                              />
-                                            )}
-                                          </div>
-                                        );
-                                      }
-
-                                      return (
-                                        <div
-                                          key={acc?.id || acc?.provider}
-                                          className='flex items-center space-x-2'
-                                        >
-                                          {Icon ? (
-                                            <Icon
-                                              size={14}
-                                              className='text-gray-600'
-                                            />
-                                          ) : (
-                                            <FaShareAlt
-                                              size={14}
-                                              className='text-gray-600'
-                                            />
-                                          )}
-                                          {email ? (
-                                            <span className='text-xs text-gray-700'>
-                                              {email}
-                                            </span>
-                                          ) : null}
-                                          {name ? (
-                                            <span className='text-xs text-gray-700'>
-                                              {name}
-                                            </span>
-                                          ) : null}
-                                          {phone ? (
-                                            <span className='text-xs text-gray-700'>
-                                              {phone}
-                                            </span>
-                                          ) : null}
-                                          {username ? (
-                                            <span className='text-xs text-gray-700'>
-                                              @{username}
-                                            </span>
-                                          ) : null}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                );
-                              })()}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                                      })}
+                                    </div>
+                                  );
+                                })()}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </>
                 );
               })()}
             </div>

@@ -560,7 +560,111 @@ export default function Header() {
                   </button>
                   {cartOpen && (
                     <div className='absolute right-0 mt-2 w-80 bg-white border border-gray-200 rounded-md shadow-lg z-50 p-3'>
-                      {/* ... contenu du panier inchangé ... */}
+                      <h3 className='text-sm font-semibold text-gray-900 mb-2'>
+                        Panier
+                      </h3>
+                      {cartGroups.length === 0 ? (
+                        <p className='text-sm text-gray-500'>
+                          Votre panier est vide.
+                        </p>
+                      ) : (
+                        <>
+                          <div className='space-y-3 max-h-80 overflow-auto'>
+                            {cartGroups.map((group, idx) => (
+                              <div
+                                key={idx}
+                                className='border border-gray-100 rounded p-2'
+                              >
+                                <div className='flex justify-between items-center mb-1'>
+                                  <span className='text-sm font-medium text-gray-800'>
+                                    {group.store?.name || 'Boutique inconnue'}
+                                  </span>
+                                  <span className='text-sm text-gray-600'>
+                                    {group.total.toFixed(2)} €
+                                  </span>
+                                </div>
+                                <ul className='space-y-1'>
+                                  {group.items.map((it, i) => {
+                                    const created = it.created_at
+                                      ? new Date(it.created_at).getTime()
+                                      : null;
+                                    const ttlMs = CART_ITEM_TTL_MS;
+                                    const leftMs = created
+                                      ? Math.max(0, ttlMs - (now - created))
+                                      : ttlMs;
+                                    return (
+                                      <li
+                                        key={i}
+                                        className={`flex justify-between items-center text-sm ${leftMs <= CART_WARN_THRESHOLD_MS ? CART_WARN_TEXT_CLASS : CART_NORMAL_TEXT_CLASS}`}
+                                      >
+                                        <span
+                                          className='truncate max-w-[60%]'
+                                          title={it.product_reference}
+                                        >
+                                          {it.product_reference}
+                                        </span>
+                                        <div className='flex items-center gap-2'>
+                                          {(() => {
+                                            const minutes = Math.floor(
+                                              leftMs / 60000
+                                            );
+                                            const seconds = Math.floor(
+                                              (leftMs % 60000) / 1000
+                                            );
+                                            const label = `${minutes}:${String(seconds).padStart(2, '0')}`;
+                                            return (
+                                              <span
+                                                className={`font-mono text-xs ${leftMs <= CART_WARN_THRESHOLD_MS ? CART_WARN_TIMER_CLASS : CART_NORMAL_TIMER_CLASS}`}
+                                                title='Temps restant'
+                                              >
+                                                {label}
+                                              </span>
+                                            );
+                                          })()}
+                                          <span>
+                                            {Number(it.value || 0).toFixed(2)} €
+                                          </span>
+                                          <button
+                                            className='p-1 rounded hover:bg-red-50 text-red-600'
+                                            title='Supprimer cette référence'
+                                            aria-label='Supprimer'
+                                            onClick={() =>
+                                              handleDeleteItem(it.id)
+                                            }
+                                          >
+                                            <Trash2 className='w-4 h-4' />
+                                          </button>
+                                        </div>
+                                      </li>
+                                    );
+                                  })}
+                                </ul>
+                              </div>
+                            ))}
+                            <div className='flex justify-between items-center pt-2 border-t border-gray-200'>
+                              <span className='text-sm font-semibold text-gray-900'>
+                                Total
+                              </span>
+                              <span className='text-sm font-semibold text-gray-900'>
+                                {Number(cartTotal || 0).toFixed(2)} €
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            className={`mt-3 w-full px-2 py-1 sm:px-3 sm:py-2 rounded-md text-xs sm:text-sm font-medium ${!checkoutSlug || cartGroups.length === 0 ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700'} flex items-center justify-center gap-2`}
+                            disabled={!checkoutSlug || cartGroups.length === 0}
+                            onClick={() => {
+                              if (checkoutSlug) {
+                                navigate(`/checkout/${checkoutSlug}`);
+                                setCartOpen(false);
+                              }
+                            }}
+                          >
+                            <CreditCard className='w-4 h-4 sm:w-5 sm:h-5' />
+                            <span>Procéder au paiement</span>
+                          </button>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
