@@ -644,6 +644,7 @@ export default function OrdersPage() {
                   <span>Recharger</span>
                 </button>
               </div>
+
               {/* Vue mobile: cartes accordéon */}
               <div className='block sm:hidden space-y-3'>
                 {sortedShipments.map((s, idx) => (
@@ -688,6 +689,7 @@ export default function OrdersPage() {
                         {formatValue(s.value)}
                       </div>
                     </div>
+
                     <div className='mt-3 text-sm text-gray-700'>
                       <div>
                         <span className='font-medium'>Référence:</span>{' '}
@@ -702,6 +704,7 @@ export default function OrdersPage() {
                         {formatMethod(s.delivery_method)}
                       </div>
                     </div>
+
                     <div className='mt-3 flex items-center justify-between'>
                       <div className='text-xs text-gray-600'>
                         Estimée: {formatDate(s.estimated_delivery_date)}
@@ -719,90 +722,100 @@ export default function OrdersPage() {
                         {expandedCardIds[s.id] ? 'Voir moins' : 'Voir plus'}
                       </button>
                     </div>
-                    {expandedCardIds[s.id] && (
-                      <div className='mt-3 space-y-2 text-sm'>
-                        <div>
-                          <span className='font-medium'>
-                            Explication du statut:
-                          </span>{' '}
-                          <span className='text-gray-600'>
-                            {getStatusDescription(s.status)}
-                          </span>
-                        </div>
-                        <div>
-                          <span className='font-medium'>Réseau:</span>{' '}
-                          {getNetworkDescription(s.delivery_network)}
-                        </div>
-                        <div>
-                          <span className='font-medium'>Point retrait:</span>{' '}
-                          {s.pickup_point?.code ? (
-                            <span>
-                              <strong>{s.pickup_point?.name}</strong>{' '}
-                              {s.pickup_point?.street}, {s.pickup_point?.city}{' '}
-                              {s.pickup_point?.postal_code}{' '}
-                              {s.pickup_point?.country}
-                            </span>
-                          ) : (
-                            '—'
-                          )}
-                        </div>
-                        <div className='flex items-center gap-2'>
-                          {s.tracking_url ? (
-                            <a
-                              href={s.tracking_url}
-                              target='_blank'
-                              rel='noopener noreferrer'
-                              className='text-blue-600 hover:underline text-xs'
-                            >
-                              Suivre la commande
-                            </a>
-                          ) : (
-                            <span />
-                          )}
-                        </div>
-                        <div className='flex items-center gap-2 pt-1'>
-                          <button
-                            onClick={() => handleReturn(s)}
-                            disabled={
-                              !s.shipment_id ||
-                              returnStatus[s.id] === 'loading' ||
-                              !!s.return_requested ||
-                              !s.is_final_destination
-                            }
-                            className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
-                              s.return_requested ||
-                              returnStatus[s.id] === 'success'
-                                ? 'bg-green-50 text-green-700 border-green-200'
-                                : returnStatus[s.id] === 'error'
-                                  ? 'bg-red-50 text-red-700 border-red-200'
-                                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                            }`}
-                            title={
-                              !s.shipment_id
-                                ? 'Retour indisponible'
-                                : s.return_requested
-                                  ? 'Demande déjà envoyée'
-                                  : 'Envoyer une demande de retour'
-                            }
-                          >
-                            {returnStatus[s.id] === 'loading'
-                              ? 'Envoi...'
-                              : s.return_requested
-                                ? 'Demande envoyée'
-                                : returnStatus[s.id] === 'error'
-                                  ? 'Erreur'
-                                  : 'Demander le retour'}
-                          </button>
-                          <button
-                            onClick={() => handleOpenContact(s)}
-                            className={`px-2 py-1 rounded-md text-xs font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50`}
-                            title='Contacter la boutique'
-                          >
-                            Contacter la boutique
-                          </button>
-                        </div>
+
+                    {/* Bloc extensible — toujours présent dans le DOM */}
+                    <div
+                      className={`mt-3 space-y-2 text-sm transition-all duration-300 overflow-hidden ${
+                        expandedCardIds[s.id]
+                          ? 'max-h-[1000px] opacity-100'
+                          : 'max-h-0 opacity-0'
+                      }`}
+                    >
+                      <div>
+                        <span className='font-medium'>
+                          Explication du statut:
+                        </span>{' '}
+                        <span className='text-gray-600'>
+                          {getStatusDescription(s.status)}
+                        </span>
                       </div>
-                    )}
+
+                      <div>
+                        <span className='font-medium'>Réseau:</span>{' '}
+                        {getNetworkDescription(s.delivery_network)}
+                      </div>
+
+                      <div>
+                        <span className='font-medium'>Point retrait:</span>{' '}
+                        {s.pickup_point?.code ? (
+                          <span>
+                            <strong>{s.pickup_point?.name}</strong>{' '}
+                            {s.pickup_point?.street}, {s.pickup_point?.city}{' '}
+                            {s.pickup_point?.postal_code}{' '}
+                            {s.pickup_point?.country}
+                          </span>
+                        ) : (
+                          '—'
+                        )}
+                      </div>
+
+                      <div className='flex items-center gap-2'>
+                        {s.tracking_url ? (
+                          <a
+                            href={s.tracking_url}
+                            target='_blank'
+                            rel='noopener noreferrer'
+                            className='text-blue-600 hover:underline text-xs'
+                          >
+                            Suivre la commande
+                          </a>
+                        ) : (
+                          <span />
+                        )}
+                      </div>
+
+                      <div className='flex items-center gap-2 pt-1'>
+                        <button
+                          onClick={() => handleReturn(s)}
+                          disabled={
+                            !s.shipment_id ||
+                            returnStatus[s.id] === 'loading' ||
+                            !!s.return_requested ||
+                            !s.is_final_destination
+                          }
+                          className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
+                            s.return_requested ||
+                            returnStatus[s.id] === 'success'
+                              ? 'bg-green-50 text-green-700 border-green-200'
+                              : returnStatus[s.id] === 'error'
+                                ? 'bg-red-50 text-red-700 border-red-200'
+                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                          }`}
+                          title={
+                            !s.shipment_id
+                              ? 'Retour indisponible'
+                              : s.return_requested
+                                ? 'Demande déjà envoyée'
+                                : 'Envoyer une demande de retour'
+                          }
+                        >
+                          {returnStatus[s.id] === 'loading'
+                            ? 'Envoi...'
+                            : s.return_requested
+                              ? 'Demande envoyée'
+                              : returnStatus[s.id] === 'error'
+                                ? 'Erreur'
+                                : 'Demander le retour'}
+                        </button>
+
+                        <button
+                          onClick={() => handleOpenContact(s)}
+                          className='px-2 py-1 rounded-md text-xs font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        >
+                          Contacter la boutique
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
