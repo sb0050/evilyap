@@ -640,9 +640,9 @@ export default function OrdersPage() {
               {/* Entête mobile: titre + logo à gauche, bouton Recharger à droite */}
               <div className='flex sm:hidden items-center justify-between mb-3 mt-1'>
                 <div className='flex items-center'>
-                  <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
+                  <Package className='w-5 h-5 text-indigo-600 mr-2' />
                   <h2 className='text-lg font-semibold text-gray-900'>
-                    Mes ventes
+                    Mes commandes
                   </h2>
                 </div>
                 <button
