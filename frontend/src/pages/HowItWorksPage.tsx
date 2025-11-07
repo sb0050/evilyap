@@ -50,8 +50,8 @@ const HowItWorksPage = () => {
   const videos = [
     {
       id: 1,
-      url: 'https://app.videas.fr/embed/media/f4a7bfde-3f77-4fe7-bffa-20447c90f877/?title=false&logo=false&thumbnail_duration=false&controls=false&autoplay=true&loop=true',
-      title: 'PayLive Demo 1',
+      url: 'https://app.videas.fr/embed/media/e98e050e-ed46-455b-a9b4-9dc5c872ce8f/?title=false&logo=false&thumbnail_duration=false&controls=false&autoplay=true&loop=true',
+      title: 'PayLive Comment ça marche',
       description:
         'Découvrez comment PayLive révolutionne vos paiements en ligne',
       likes: '2.3K',
