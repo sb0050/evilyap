@@ -41,7 +41,10 @@ function App() {
             <Route path='/' element={<LandingPage />} />
             {/* Pages publiques: PDF */}
             <Route path='/privacy_policy' element={<PrivacyPolicy />} />
-            <Route path='/terms_and_conditions' element={<TermsAndConditions />} />
+            <Route
+              path='/terms_and_conditions'
+              element={<TermsAndConditions />}
+            />
             <Route
               path='/checkout/:storeName'
               element={
@@ -126,6 +129,14 @@ function App() {
                   <SignedOut>
                     <LandingPage />
                   </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path='/*'
+              element={
+                <>
+                  <LandingPage />
                 </>
               }
             />
