@@ -730,7 +730,7 @@ router.post(
       // Gérer les différents types d'événements
       switch (event.type) {
         case "DOCUMENT_CREATED":
-          console.log(
+          console.warn(
             `DOCUMENT_CREATED at ${new Date().toISOString()}`,
             JSON.stringify(event)
           );
@@ -912,7 +912,7 @@ router.post(
           }
           break;
         case "TRACKING_CHANGED":
-          console.log("TRACKING_CHANGED event:", JSON.stringify(event));
+          console.warn("TRACKING_CHANGED event:", JSON.stringify(event));
           try {
             const shippingOrderId: string = event?.shippingOrderId;
             const tracking = event?.payload?.trackings?.[0];
@@ -922,6 +922,31 @@ router.post(
                 "TRACKING_CHANGED: missing shippingOrderId or stripe/supabase not configured"
               );
               break;
+            }
+
+            // Mettre à jour la colonne tracking_url de shipments si elle existe
+            if (tracking?.packageTrackingUrl) {
+              try {
+                const { error: updErr } = await supabase
+                  .from("shipments")
+                  .update({ tracking_url: tracking?.packageTrackingUrl || "" })
+                  .eq("shipment_id", shippingOrderId);
+                if (updErr) {
+                  console.error(
+                    "TRACKING_CHANGED: error updating tracking_url:",
+                    updErr
+                  );
+                }
+                console.log(
+                  "TRACKING_CHANGED: updated tracking_url:",
+                  tracking?.packageTrackingUrl || ""
+                );
+              } catch (updEx) {
+                console.error(
+                  "TRACKING_CHANGED: exception updating tracking_url:",
+                  updEx
+                );
+              }
             }
 
             // N'envoyer l'email que si le statut a changé par rapport au dernier de l'historique
