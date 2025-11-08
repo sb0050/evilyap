@@ -17,6 +17,7 @@ import {
   HandCoins,
   Pencil,
   SendHorizontal,
+  BadgeCheck,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -54,8 +55,10 @@ type Store = {
   clerk_id?: string | null;
   description?: string | null;
   website?: string | null;
+  siret?: string | null;
   rib?: RIBInfo | null;
   reference_value?: number | null;
+  is_verified?: boolean;
 };
 
 type Shipment = {
@@ -98,6 +101,7 @@ export default function DashboardPage() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [website, setWebsite] = useState('');
+  const [siret, setSiret] = useState('');
   // Validation du nom (aligné sur Onboarding)
   const [isCheckingSlug, setIsCheckingSlug] = useState(false);
   const [slugExists, setSlugExists] = useState(false);
@@ -222,6 +226,92 @@ export default function DashboardPage() {
     }
   };
   const websiteInvalid = !!(website && !isValidWebsite(website));
+  // États et logique de vérification SIRET (alignés sur Onboarding)
+  const [isCheckingSiret, setIsCheckingSiret] = useState(false);
+  const [siretErrorMessage, setSiretErrorMessage] = useState('');
+  const [wasSiretFocused, setWasSiretFocused] = useState(false);
+  const [isSiretDirty, setIsSiretDirty] = useState(false);
+  const [lastCheckedSiret, setLastCheckedSiret] = useState('');
+  const [siretDetails, setSiretDetails] = useState<any | null>(null);
+  const isValidSiret = (value: string) => {
+    const digits = (value || '').replace(/\s+/g, '');
+    return /^\d{14}$/.test(digits);
+  };
+  const siretInvalid = siret ? !isValidSiret(siret) : false;
+
+  const handleSiretFocus = () => {
+    setWasSiretFocused(true);
+  };
+  const handleSiretChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = (e.target.value || '').replace(/\s+/g, '');
+    setSiret(value);
+    setIsSiretDirty(true);
+    setSiretDetails(null);
+    if (!value) {
+      setSiretErrorMessage('');
+      setLastCheckedSiret('');
+      setSiretDetails(null);
+    } else if (siretErrorMessage) {
+      setSiretErrorMessage('');
+    }
+  };
+  const checkSiretValidity = async () => {
+    const digits = (siret || '').replace(/\s+/g, '');
+    if (!/^\d{14}$/.test(digits)) return;
+    setIsCheckingSiret(true);
+    try {
+      const resp = await apiGet(
+        `/api/insee/siret/${encodeURIComponent(digits)}`
+      );
+      const json = await resp.json();
+      if (resp.ok && json?.success) {
+        setSiretErrorMessage('');
+        setLastCheckedSiret(digits);
+        setSiretDetails(json?.data || null);
+      } else {
+        const message = json?.error || 'SIRET invalide ou introuvable';
+        setSiretErrorMessage(message);
+        setLastCheckedSiret(digits);
+        setSiretDetails(null);
+      }
+    } catch (err) {
+      console.error('Vérification SIRET échouée:', err);
+      setSiretErrorMessage('Erreur lors de la vérification du SIRET');
+      setSiretDetails(null);
+    } finally {
+      setIsCheckingSiret(false);
+    }
+  };
+  const handleSiretBlur = async () => {
+    const value = (siret || '').trim();
+    if (!wasSiretFocused) {
+      setWasSiretFocused(false);
+      return;
+    }
+    if (!isSiretDirty) {
+      setWasSiretFocused(false);
+      return;
+    }
+    if (!value) {
+      setSiretErrorMessage('');
+      setSiretDetails(null);
+      setWasSiretFocused(false);
+      setIsSiretDirty(false);
+      return;
+    }
+    if (!/^\d{14}$/.test(value)) {
+      setSiretErrorMessage(
+        'Erreur de format de siret (Format attendu : 14 chiffres)'
+      );
+      setSiretDetails(null);
+      setWasSiretFocused(false);
+      setIsSiretDirty(false);
+      return;
+    }
+    await checkSiretValidity();
+    setWasSiretFocused(false);
+    setIsSiretDirty(false);
+  };
   // Upload logo (mêmes vérifications que onboarding)
   const handleLogoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -836,6 +926,7 @@ export default function DashboardPage() {
         setName(s?.name || '');
         setDescription(s?.description || '');
         setWebsite(s?.website || '');
+        setSiret((s as any)?.siret || '');
         setPayoutMethod(s?.rib?.type === 'link' ? 'link' : 'database');
 
         // 3) Charger les ventes de la boutique
@@ -883,6 +974,12 @@ export default function DashboardPage() {
       setIsSubmittingModifications(false);
       return;
     }
+    // SIRET facultatif: si fourni, il doit être valide et connu
+    if (siret && (siretInvalid || !!siretErrorMessage)) {
+      showToast('Veuillez saisir un SIRET valide (14 chiffres)', 'error');
+      setIsSubmittingModifications(false);
+      return;
+    }
     // La vérification d'unicité est effectuée côté backend; ne bloque pas côté frontend
     try {
       // Uploader le logo si un nouveau fichier est sélectionné
@@ -901,6 +998,19 @@ export default function DashboardPage() {
         }
       }
       const payload: any = { name, description, website };
+      const isSiretVerified =
+        Boolean(siret) &&
+        lastCheckedSiret === siret &&
+        !siretInvalid &&
+        !siretErrorMessage &&
+        !!siretDetails;
+      // Inclure SIRET si fourni et le flag is_verified si vérifié
+      if (siret) {
+        payload.siret = siret;
+      }
+      if (isSiretVerified) {
+        payload.is_verified = true;
+      }
       const resp = await apiPut(
         `/api/stores/${encodeURIComponent(store.slug)}`,
         payload
@@ -1085,7 +1195,21 @@ export default function DashboardPage() {
             <h1 className='text-2xl font-bold text-gray-900'>
               Tableau de bord
             </h1>
-            {store && <p className='text-gray-600'>{store.name}</p>}
+            {store && (
+              <div className='flex flex-col sm:flex-row sm:items-center gap-2  min-w-0'>
+                <p
+                  className='text-gray-600 truncate flex-1 min-w-0'
+                  title={store.name}
+                >
+                  {store.name}
+                </p>
+                {store.is_verified ? (
+                  <div className='inline-flex items-center gap-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit shrink-0'>
+                    <BadgeCheck className='w-3 h-3' /> Boutique vérifiée
+                  </div>
+                ) : null}
+              </div>
+            )}
           </div>
           {store && (
             <button
@@ -1183,7 +1307,7 @@ export default function DashboardPage() {
                       type='text'
                       value={shareLink}
                       readOnly
-                      className='mr-5 bg-transparent text-xs sm:text-sm text-gray-700 outline-none min-w-0 truncate text-left sm:text-left'
+                      className='mr-5 bg-transparent text-xs sm:text-sm text-gray-700 outline-none min-w-0 text-left truncate sm:text-left'
                     />
                     <button
                       onClick={handleCopyAlias}
@@ -1225,13 +1349,29 @@ export default function DashboardPage() {
                         </div>
                       );
                     })()}
-                    <div>
-                      <p className='text-sm text-gray-700'>
-                        <span className='font-medium'>Nom:</span> {store.name}
+                    <div className='min-w-0'>
+                      <p className='text-sm text-gray-700 min-w-0'>
+                        <span className='font-medium mr-1'>Nom:</span>
+                        <span
+                          className='truncate inline-block align-bottom max-w-full'
+                          title={store.name}
+                        >
+                          {store.name}
+                        </span>
                       </p>
                       <p className='text-sm text-gray-700'>
-                        <span className='font-medium'>Description:</span>{' '}
-                        {store.description || '-'}
+                        <span className='font-medium mr-1'>Description:</span>
+                        <span
+                          title={store.description || '-'}
+                          style={{
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          {store.description || '-'}
+                        </span>
                       </p>
                       <p className='text-sm text-gray-700'>
                         <span className='font-medium'>Site web:</span>{' '}
@@ -1331,7 +1471,6 @@ export default function DashboardPage() {
                         className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${website && websiteInvalid ? 'border-red-500' : 'border-gray-300'}`}
                         value={website}
                         onChange={e => setWebsite(e.target.value)}
-                        placeholder='ex: exemple.com ou https://exemple.com'
                       />
                       {website && websiteInvalid && (
                         <p className='mt-1 text-xs text-red-600'>
@@ -1340,6 +1479,171 @@ export default function DashboardPage() {
                         </p>
                       )}
                     </div>
+                  </div>
+                  {/* SIRET */}
+                  <div>
+                    <label
+                      htmlFor='siret'
+                      className='block text-sm font-medium text-gray-700 mb-2'
+                    >
+                      SIRET (14 chiffres, facultatif mais nécessaire pour
+                      obtenir le badge "boutique vérifiée")
+                    </label>
+                    <div className='relative'>
+                      <input
+                        id='siret'
+                        inputMode='numeric'
+                        value={siret}
+                        onChange={handleSiretChange}
+                        onFocus={handleSiretFocus}
+                        onBlur={handleSiretBlur}
+                        className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${showValidationErrors && siret && (siretInvalid || !!siretErrorMessage) ? 'border-red-500' : 'border-gray-300'}`}
+                        placeholder='12345678901234'
+                      />
+                      {isCheckingSiret && (
+                        <div className='absolute right-3 inset-y-0 flex items-center'>
+                          <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
+                        </div>
+                      )}
+                    </div>
+                    {(siret && showValidationErrors && siretInvalid) ||
+                    (siret && !!siretErrorMessage) ? (
+                      <p className='mt-2 text-sm text-red-600'>
+                        {siretErrorMessage ||
+                          'SIRET invalide. Entrez exactement 14 chiffres.'}
+                      </p>
+                    ) : null}
+
+                    {siret &&
+                    lastCheckedSiret === siret &&
+                    !siretInvalid &&
+                    !siretErrorMessage &&
+                    siretDetails
+                      ? (() => {
+                          const pick = (v: any) => {
+                            if (v === null || v === undefined) return null;
+                            const s = String(v).trim();
+                            if (!s || s === '[ND]') return null;
+                            return s;
+                          };
+                          const formatInseeDate = (iso: any) => {
+                            const s = pick(iso);
+                            if (!s) return null;
+                            const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+                            if (!m) return null;
+                            const months = [
+                              'Janvier',
+                              'Février',
+                              'Mars',
+                              'Avril',
+                              'Mai',
+                              'Juin',
+                              'Juillet',
+                              'Août',
+                              'Septembre',
+                              'Octobre',
+                              'Novembre',
+                              'Décembre',
+                            ];
+                            const year = m[1];
+                            const monthIndex = parseInt(m[2], 10) - 1;
+                            const day = m[3];
+                            const monthName = months[monthIndex] || '';
+                            if (!monthName) return null;
+                            return `${day} ${monthName} ${year}`;
+                          };
+                          const d = siretDetails;
+                          const e =
+                            d?.etablissement || d?.etablissements?.[0] || d;
+                          const ul = d?.uniteLegale || e?.uniteLegale || null;
+
+                          const denomination =
+                            pick(ul?.denominationUniteLegale) ||
+                            pick(ul?.denominationUsuelle1UniteLegale) ||
+                            pick(ul?.denominationUsuelle2UniteLegale) ||
+                            pick(ul?.denominationUsuelle3UniteLegale) ||
+                            pick(e?.enseigne1Etablissement) ||
+                            (pick(ul?.prenomUsuelUniteLegale) &&
+                            pick(ul?.nomUniteLegale)
+                              ? `${pick(ul?.prenomUsuelUniteLegale)} ${pick(ul?.nomUniteLegale)}`
+                              : null);
+
+                          const adr =
+                            e?.adresseEtablissement ||
+                            e?.adressePrincipaleEtablissement ||
+                            null;
+                          const line1 = [
+                            pick(adr?.numeroVoieEtablissement),
+                            pick(adr?.typeVoieEtablissement),
+                            pick(adr?.libelleVoieEtablissement),
+                            pick(adr?.complementAdresseEtablissement),
+                          ]
+                            .filter(Boolean)
+                            .join(' ');
+                          const city = [
+                            pick(adr?.codePostalEtablissement),
+                            pick(adr?.libelleCommuneEtablissement),
+                          ]
+                            .filter(Boolean)
+                            .join(' ');
+
+                          const hasName = !!denomination;
+                          const hasAddress = !!line1 || !!city;
+                          const hasSiren = !!pick(e?.siren);
+                          const creationDateDisplay =
+                            formatInseeDate(e?.dateCreationEtablissement) ||
+                            formatInseeDate(ul?.dateCreationUniteLegale);
+                          const hasDate = !!creationDateDisplay;
+
+                          if (!hasName && !hasAddress) return null;
+                          return (
+                            <div className='mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700'>
+                              <div className='flex items-center gap-2 mb-1 text-gray-800 font-medium'>
+                                <BadgeCheck className='w-4 h-4 text-green-600' />
+                                Données INSEE vérifiées
+                              </div>
+                              {hasName && (
+                                <div>
+                                  <span className='text-gray-600'>
+                                    Raison sociale:{' '}
+                                  </span>
+                                  <span className='font-medium'>
+                                    {denomination}
+                                  </span>
+                                </div>
+                              )}
+                              {hasSiren && (
+                                <div className='mt-1'>
+                                  <span className='text-gray-600'>SIREN: </span>
+                                  <span className='font-medium'>
+                                    {e?.siren}
+                                  </span>
+                                </div>
+                              )}
+                              {hasDate && (
+                                <div className='mt-1'>
+                                  <span className='text-gray-600'>
+                                    Date de création:{' '}
+                                  </span>
+                                  <span className='font-medium'>
+                                    {creationDateDisplay}
+                                  </span>
+                                </div>
+                              )}
+                              {hasAddress && (
+                                <div className='mt-1'>
+                                  <span className='text-gray-600'>
+                                    Adresse:{' '}
+                                  </span>
+                                  <span className='font-medium'>
+                                    {[line1, city].filter(Boolean).join(' — ')}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()
+                      : null}
                   </div>
                   <div>
                     <label className='block text-sm font-medium text-gray-700 mb-2'>
@@ -1400,9 +1704,11 @@ export default function DashboardPage() {
                         !name.trim() ||
                         (website && websiteInvalid) ||
                         slugExists ||
-                        isCheckingSlug
+                        isCheckingSlug ||
+                        (siret ? siretInvalid || !!siretErrorMessage : false) ||
+                        isCheckingSiret
                       }
-                      className={`inline-flex items-center px-4 py-2 rounded-md text-white ${!name.trim() || (website && websiteInvalid) || slugExists || isCheckingSlug ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+                      className={`inline-flex items-center px-4 py-2 rounded-md text-white ${!name.trim() || (website && websiteInvalid) || slugExists || isCheckingSlug || (siret ? siretInvalid || !!siretErrorMessage : false) || isCheckingSiret ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
                     >
                       {isSubmittingModifications && (
                         <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>

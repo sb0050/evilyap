@@ -164,6 +164,8 @@ router.post("/", async (req, res) => {
       phone,
       address,
       website,
+      siret,
+      is_verified,
       stripeCustomerId,
     } = req.body;
 
@@ -227,6 +229,8 @@ router.post("/", async (req, res) => {
           address: addressJson,
           website: website || null,
           clerk_id: clerkUserId || null,
+          siret: siret || null,
+          is_verified: is_verified === true ? true : false,
         },
       ])
       .select()
@@ -261,13 +265,16 @@ router.post("/", async (req, res) => {
 });
 
 // PUT /api/stores/:storeSlug - Mettre à jour nom/description/website
+// PUT /api/stores/:storeSlug - Mettre à jour nom/description/website/siret et éventuellement is_verified
 router.put("/:storeSlug", async (req, res) => {
   try {
     const { storeSlug } = req.params as { storeSlug?: string };
-    const { name, description, website } = req.body as {
+    const { name, description, website, siret, is_verified } = req.body as {
       name?: string;
       description?: string;
       website?: string;
+      siret?: string;
+      is_verified?: boolean;
     };
 
     if (!storeSlug)
@@ -302,6 +309,11 @@ router.put("/:storeSlug", async (req, res) => {
     if (typeof name === "string") payload.name = name;
     if (typeof description === "string") payload.description = description;
     if (typeof website === "string") payload.website = website || null;
+    if (typeof siret === "string") payload.siret = siret || null;
+    // Autoriser uniquement l'upgrade de vérification côté serveur
+    if (is_verified === true) {
+      payload.is_verified = true;
+    }
 
     // Si le nom change, recalculer le slug côté backend et vérifier l'unicité
     if (typeof name === "string") {

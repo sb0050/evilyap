@@ -20,6 +20,7 @@ import {
   ChevronUp,
   Edit,
   ShoppingCart,
+  BadgeCheck,
 } from 'lucide-react';
 import StripeWrapper from '../components/StripeWrapper';
 import ParcelPointMap from '../components/ParcelPointMap';
@@ -38,6 +39,7 @@ interface Store {
   owner_email: string;
   stripe_id?: string;
   website?: string;
+  is_verified?: boolean;
   address?: {
     city?: string;
     line1?: string;
@@ -514,12 +516,33 @@ export default function CheckoutPage() {
                   <ShoppingBag className='w-8 h-8 text-gray-500' />
                 </div>
               )}
-              <div>
-                <h1 className='text-2xl font-bold text-gray-900'>
-                  {store?.name ?? storeName}
-                </h1>
+              <div className='min-w-0'>
+                <div className='flex flex-col sm:flex-row sm:items-center gap-2 min-w-0'>
+                  <h1
+                    className='text-2xl font-bold text-gray-900 truncate max-w-full'
+                    title={store?.name ?? storeName}
+                  >
+                    {store?.name ?? storeName}
+                  </h1>
+                  {store?.is_verified ? (
+                    <div className='inline-flex items-center gap-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit'>
+                      <BadgeCheck className='w-3 h-3' /> Boutique vérifiée
+                    </div>
+                  ) : null}
+                </div>
                 {store?.description && (
-                  <p className='text-gray-600 mt-1'>{store.description}</p>
+                  <p
+                    className='text-gray-600 mt-1'
+                    title={store.description}
+                    style={{
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {store.description}
+                  </p>
                 )}
               </div>
             </div>

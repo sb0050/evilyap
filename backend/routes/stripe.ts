@@ -550,6 +550,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       }/payment/return?session_id={CHECKOUT_SESSION_ID}&store_name=${encodeURIComponent(
         slugify(storeName, { lower: true, strict: true }) || "default"
       )}`,
+      allow_promotion_codes: true,
       // Ajouter la collecte de consentement
       consent_collection: {
         terms_of_service: "required", // Rend la case à cocher obligatoire

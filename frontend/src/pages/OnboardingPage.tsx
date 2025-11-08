@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUser, useAuth } from '@clerk/clerk-react';
-import { Store, Upload } from 'lucide-react';
+import { Store, Upload, BadgeCheck } from 'lucide-react';
 import { AddressElement } from '@stripe/react-stripe-js';
 import { Address } from '@stripe/stripe-js';
 
@@ -19,6 +19,7 @@ interface OnboardingFormData {
   name: string;
   phone: string;
   website?: string;
+  siret: string;
 }
 
 export default function OnboardingPage() {
@@ -49,6 +50,7 @@ export default function OnboardingPage() {
     name: '',
     phone: '',
     website: '',
+    siret: '',
   });
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [isCheckingSlug, setIsCheckingSlug] = useState(false);
@@ -58,6 +60,14 @@ export default function OnboardingPage() {
   const [isStoreNameDirty, setIsStoreNameDirty] = useState(false);
   const [lastCheckedSlug, setLastCheckedSlug] = useState('');
   const [showValidationErrors, setShowValidationErrors] = useState(false);
+
+  // États pour la vérification SIRET via INSEE
+  const [isCheckingSiret, setIsCheckingSiret] = useState(false);
+  const [siretErrorMessage, setSiretErrorMessage] = useState('');
+  const [wasSiretFocused, setWasSiretFocused] = useState(false);
+  const [isSiretDirty, setIsSiretDirty] = useState(false);
+  const [lastCheckedSiret, setLastCheckedSiret] = useState('');
+  const [siretDetails, setSiretDetails] = useState<any | null>(null);
 
   // États pour l'adresse Stripe
   const [billingAddress, setBillingAddress] = useState<Address | null>(null);
@@ -85,6 +95,14 @@ export default function OnboardingPage() {
   const websiteInvalid = !!(
     formData.website && !isValidWebsite(formData.website)
   );
+
+  // Validation SIRET (basique: 14 chiffres)
+  const isValidSiret = (value: string) => {
+    const digits = (value || '').replace(/\s+/g, '');
+    return /^\d{14}$/.test(digits);
+  };
+  // SIRET facultatif: invalide uniquement si non vide et format incorrect
+  const siretInvalid = formData.siret ? !isValidSiret(formData.siret) : false;
 
   // Debug: tracer les raisons du disabled du bouton
   useEffect(() => {
@@ -154,6 +172,12 @@ export default function OnboardingPage() {
       return;
     }
 
+    // SIRET est facultatif: si fourni, il doit être valide et connu
+    if (formData.siret && (siretInvalid || !!siretErrorMessage)) {
+      showToast('Veuillez saisir un SIRET valide (14 chiffres)', 'error');
+      return;
+    }
+
     // Vérifier le format du site web s'il est fourni
     if (formData.website && !isValidWebsite(formData.website)) {
       showToast(
@@ -209,6 +233,12 @@ export default function OnboardingPage() {
       // Utiliser l'ID local si l'état React n'est pas encore mis à jour
       const stripeIdToUse = createdStripeId || stripeCustomerId || undefined;
 
+      const isSiretVerified = Boolean(formData.siret) &&
+        lastCheckedSiret === formData.siret &&
+        !siretInvalid &&
+        !siretErrorMessage &&
+        !!siretDetails;
+
       const response = await apiPost('/api/stores', {
         storeName: formData.storeName,
         storeDescription: formData.description,
@@ -220,6 +250,8 @@ export default function OnboardingPage() {
         phone: formData.phone,
         address: billingAddress,
         website: formData.website || undefined,
+        siret: formData.siret || undefined,
+        is_verified: isSiretVerified,
         stripeCustomerId: stripeIdToUse,
       });
 
@@ -318,6 +350,60 @@ export default function OnboardingPage() {
     setIsStoreNameDirty(false);
   };
 
+  // Gestion du champ SIRET (focus/change/blur)
+  const handleSiretFocus = () => {
+    setWasSiretFocused(true);
+  };
+
+  const handleSiretChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value.replace(/\s+/g, '');
+    setFormData(prev => ({ ...prev, siret: value }));
+    setIsSiretDirty(true);
+    setSiretDetails(null);
+    // Réinitialiser le message d'erreur lors de la saisie
+    if (!value) {
+      setSiretErrorMessage('');
+      setLastCheckedSiret('');
+      setSiretDetails(null);
+    } else if (siretErrorMessage) {
+      setSiretErrorMessage('');
+    }
+  };
+
+  const handleSiretBlur = async () => {
+    const siret = (formData.siret || '').trim();
+    if (!wasSiretFocused) {
+      setWasSiretFocused(false);
+      return;
+    }
+    if (!isSiretDirty) {
+      setWasSiretFocused(false);
+      return;
+    }
+    // SIRET facultatif: si vide, ne rien vérifier
+    if (!siret) {
+      setSiretErrorMessage('');
+      setSiretDetails(null);
+      setWasSiretFocused(false);
+      setIsSiretDirty(false);
+      return;
+    }
+    if (!/^\d{14}$/.test(siret)) {
+      setShowValidationErrors(true);
+      setSiretErrorMessage(
+        'Erreur de format de siret (Format attendu : 14 chiffres)'
+      );
+      setSiretDetails(null);
+      setWasSiretFocused(false);
+      setIsSiretDirty(false);
+      return;
+    }
+    // Revalider au blur si l’utilisateur a modifié la valeur
+    await checkSiretValidity();
+    setWasSiretFocused(false);
+    setIsSiretDirty(false);
+  };
+
   const checkSlugUniqueness = async () => {
     const name = formData.storeName.trim();
     if (!name) return;
@@ -337,6 +423,37 @@ export default function OnboardingPage() {
       setSlugExists(false);
     } finally {
       setIsCheckingSlug(false);
+    }
+  };
+
+  const checkSiretValidity = async () => {
+    const siret = (formData.siret || '').replace(/\s+/g, '');
+    if (!/^\d{14}$/.test(siret)) return; // pré-filtre
+    setIsCheckingSiret(true);
+    try {
+      const resp = await apiGet(
+        `/api/insee/siret/${encodeURIComponent(siret)}`
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok && json?.success) {
+        setSiretErrorMessage('');
+        setLastCheckedSiret(siret);
+        setSiretDetails(json?.data || null);
+      } else {
+        const message =
+          json?.header?.message ||
+          json?.error ||
+          'SIRET invalide ou introuvable';
+        setSiretErrorMessage(message);
+        setLastCheckedSiret(siret);
+        setSiretDetails(null);
+      }
+    } catch (err) {
+      console.error('Vérification SIRET échouée:', err);
+      setSiretErrorMessage('Erreur lors de la vérification du SIRET');
+      setSiretDetails(null);
+    } finally {
+      setIsCheckingSiret(false);
     }
   };
 
@@ -457,6 +574,163 @@ export default function OnboardingPage() {
                 )}
               </div>
 
+              {/* SIRET */}
+              <div>
+                <label
+                  htmlFor='siret'
+                  className='block text-sm font-medium text-gray-700 mb-2'
+                >
+                  SIRET (14 chiffres, facultatif mais nécessaire pour obtenir le
+                  badge "boutique vérifiée")
+                </label>
+                <div className='relative'>
+                  <input
+                    id='siret'
+                    inputMode='numeric'
+                    value={formData.siret}
+                    onChange={handleSiretChange}
+                    onFocus={handleSiretFocus}
+                    onBlur={handleSiretBlur}
+                    className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${showValidationErrors && (siretInvalid || !!siretErrorMessage) ? 'border-red-500' : 'border-gray-300'}`}
+                    placeholder='12345678901234'
+                  />
+                  {isCheckingSiret && (
+                    <div className='absolute right-3 inset-y-0 flex items-center'>
+                      <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
+                    </div>
+                  )}
+                </div>
+                {(formData.siret && showValidationErrors && siretInvalid) ||
+                (formData.siret && !!siretErrorMessage) ? (
+                  <p className='mt-2 text-sm text-red-600'>
+                    {siretErrorMessage ||
+                      'SIRET invalide. Entrez exactement 14 chiffres.'}
+                  </p>
+                ) : null}
+
+                {formData.siret &&
+                lastCheckedSiret === formData.siret &&
+                !siretInvalid &&
+                !siretErrorMessage &&
+                siretDetails
+                  ? (() => {
+                    const pick = (v: any) => {
+                      if (v === null || v === undefined) return null;
+                      const s = String(v).trim();
+                      if (!s || s === '[ND]') return null;
+                      return s;
+                    };
+                    const formatInseeDate = (iso: any) => {
+                      const s = pick(iso);
+                      if (!s) return null;
+                      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+                      if (!m) return null;
+                      const months = [
+                        'Janvier',
+                        'Février',
+                        'Mars',
+                        'Avril',
+                        'Mai',
+                        'Juin',
+                        'Juillet',
+                        'Août',
+                        'Septembre',
+                        'Octobre',
+                        'Novembre',
+                        'Décembre',
+                      ];
+                      const year = m[1];
+                      const monthIndex = parseInt(m[2], 10) - 1;
+                      const day = m[3];
+                      const monthName = months[monthIndex] || '';
+                      if (!monthName) return null;
+                      return `${day} ${monthName} ${year}`;
+                    };
+                      const d = siretDetails;
+                      const e = d?.etablissement || d?.etablissements?.[0] || d;
+                      const ul = d?.uniteLegale || e?.uniteLegale || null;
+
+                      const denomination =
+                        pick(ul?.denominationUniteLegale) ||
+                        pick(ul?.denominationUsuelle1UniteLegale) ||
+                        pick(ul?.denominationUsuelle2UniteLegale) ||
+                        pick(ul?.denominationUsuelle3UniteLegale) ||
+                        pick(e?.enseigne1Etablissement) ||
+                        (pick(ul?.prenomUsuelUniteLegale) &&
+                        pick(ul?.nomUniteLegale)
+                          ? `${pick(ul?.prenomUsuelUniteLegale)} ${pick(ul?.nomUniteLegale)}`
+                          : null);
+
+                      const adr =
+                        e?.adresseEtablissement ||
+                        e?.adressePrincipaleEtablissement ||
+                        null;
+                      const line1 = [
+                        pick(adr?.numeroVoieEtablissement),
+                        pick(adr?.typeVoieEtablissement),
+                        pick(adr?.libelleVoieEtablissement),
+                        pick(adr?.complementAdresseEtablissement),
+                      ]
+                        .filter(Boolean)
+                        .join(' ');
+                      const city = [
+                        pick(adr?.codePostalEtablissement),
+                        pick(adr?.libelleCommuneEtablissement),
+                      ]
+                        .filter(Boolean)
+                        .join(' ');
+
+                      const hasName = !!denomination;
+                      const hasAddress = !!line1 || !!city;
+                      const hasSiren = !!pick(e?.siren);
+                      const creationDateDisplay =
+                        formatInseeDate(e?.dateCreationEtablissement) ||
+                        formatInseeDate(ul?.dateCreationUniteLegale);
+                      const hasDate = !!creationDateDisplay;
+
+                      if (!hasName && !hasAddress) return null;
+                      return (
+                        <div className='mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700'>
+                          <div className='flex items-center gap-2 mb-1 text-gray-800 font-medium'>
+                            <BadgeCheck className='w-4 h-4 text-green-600' />
+                            Données INSEE vérifiées
+                          </div>
+                          {hasName && (
+                            <div>
+                              <span className='text-gray-600'>
+                                Raison sociale:{' '}
+                              </span>
+                              <span className='font-medium'>
+                                {denomination}
+                              </span>
+                            </div>
+                          )}
+                          {hasSiren && (
+                            <div className='mt-1'>
+                              <span className='text-gray-600'>SIREN: </span>
+                              <span className='font-medium'>{e?.siren}</span>
+                            </div>
+                          )}
+                          {hasDate && (
+                            <div className='mt-1'>
+                              <span className='text-gray-600'>Date de création: </span>
+                              <span className='font-medium'>{creationDateDisplay}</span>
+                            </div>
+                          )}
+                          {hasAddress && (
+                            <div className='mt-1'>
+                              <span className='text-gray-600'>Adresse: </span>
+                              <span className='font-medium'>
+                                {[line1, city].filter(Boolean).join(' — ')}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()
+                  : null}
+              </div>
+
               {/* Logo */}
               <div>
                 <label className='block text-sm font-medium text-gray-700 mb-2'>
@@ -567,6 +841,9 @@ export default function OnboardingPage() {
                   !isAddressComplete ||
                   !formData.name.trim() ||
                   !formData.phone.trim() ||
+                  (formData.siret
+                    ? siretInvalid || !!siretErrorMessage
+                    : false) ||
                   (formData.website ? websiteInvalid : false)
                 }
                 onMouseEnter={() => {
@@ -577,6 +854,9 @@ export default function OnboardingPage() {
                     !isAddressComplete ||
                     !formData.name.trim() ||
                     !formData.phone.trim() ||
+                    (formData.siret
+                      ? siretInvalid || !!siretErrorMessage
+                      : false) ||
                     (formData.website ? websiteInvalid : false);
                 }}
                 className='w-full bg-indigo-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors'
