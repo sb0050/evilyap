@@ -18,6 +18,8 @@ import {
   Pencil,
   SendHorizontal,
   BadgeCheck,
+  Tag,
+  Trash2,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -25,6 +27,7 @@ import {
   FaTiktok,
   FaApple,
   FaShareAlt,
+  FaArchive,
 } from 'react-icons/fa';
 import { Toast } from '../components/Toast';
 import { useToast } from '../utils/toast';
@@ -33,9 +36,11 @@ import {
   apiPost,
   apiPostForm,
   apiGet,
+  apiDelete,
   API_BASE_URL,
 } from '../utils/api';
 import SuccessConfetti from '../components/SuccessConfetti';
+import { RiDiscountPercentFill } from 'react-icons/ri';
 
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
@@ -132,7 +137,7 @@ export default function DashboardPage() {
   const [showPayout, setShowPayout] = useState(false);
   // Navigation des sections du dashboard
   const [section, setSection] = useState<
-    'infos' | 'wallet' | 'sales' | 'clients' | 'support'
+    'infos' | 'wallet' | 'sales' | 'clients' | 'promo' | 'support'
   >('infos');
   // Support: message de contact
   const [supportMessage, setSupportMessage] = useState<string>('');
@@ -161,6 +166,166 @@ export default function DashboardPage() {
     'desc'
   );
   const [socialsMap, setSocialsMap] = useState<Record<string, any>>({});
+
+  // États Code Promo
+  const [promoSelectedCouponId, setPromoSelectedCouponId] =
+    useState<string>('h11gpPmz');
+  const [promoCodeName, setPromoCodeName] = useState<string>('');
+  const [promoMinAmountEuro, setPromoMinAmountEuro] = useState<string>('');
+  const [promoFirstTime, setPromoFirstTime] = useState<boolean>(false);
+  const [promoExpiresDate, setPromoExpiresDate] = useState<string>('');
+  const [promoActive, setPromoActive] = useState<boolean>(true);
+  const [promoMaxRedemptions, setPromoMaxRedemptions] = useState<string>('');
+  const [promoCreating, setPromoCreating] = useState<boolean>(false);
+  const [promoCodes, setPromoCodes] = useState<any[]>([]);
+  const [promoListLoading, setPromoListLoading] = useState<boolean>(false);
+  const [promoSearchTerm, setPromoSearchTerm] = useState<string>('');
+  const [promoDeletingIds, setPromoDeletingIds] = useState<
+    Record<string, boolean>
+  >({});
+
+  // Options de coupons existants fournis
+  const couponOptions = [
+    { label: '- 10 euros', id: 'h11gpPmz' },
+    { label: '- 10 %', id: 'ffRAmojG' },
+    { label: '- 20 %', id: 'DwVUZbxA' },
+    { label: '- 20 euros', id: 'UZOAxT0a' },
+  ];
+
+  const fetchPromotionCodes = async () => {
+    try {
+      setPromoListLoading(true);
+      const token = await getToken();
+      const params = new URLSearchParams();
+      params.set('limit', '50');
+      if (store?.slug) params.set('storeSlug', store.slug);
+      const resp = await apiGet(
+        `/api/stripe/promotion-codes?${params.toString()}`,
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      setPromoCodes(Array.isArray(json?.data) ? json.data : []);
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur lors du chargement des codes promo';
+      const trimmed = (raw || '').replace(/^Error:\s*/, '');
+      showToast(trimmed, 'error');
+    } finally {
+      setPromoListLoading(false);
+    }
+  };
+
+  const handleDeletePromotionCode = async (id: string) => {
+    try {
+      if (!id) return;
+      setPromoDeletingIds(prev => ({ ...prev, [id]: true }));
+      const token = await getToken();
+      const resp = await apiDelete(
+        `/api/stripe/promotion-codes/${encodeURIComponent(id)}`,
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || 'Suppression du code promo échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Erreur');
+      }
+      showToast('Code promo supprimé', 'success');
+      await fetchPromotionCodes();
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur inconnue';
+      showToast(raw, 'error');
+    } finally {
+      setPromoDeletingIds(prev => ({ ...prev, [id]: false }));
+    }
+  };
+
+  const handleCreatePromotionCode = async () => {
+    try {
+      const code = (promoCodeName || '').trim();
+      if (!promoSelectedCouponId || !code) {
+        showToast('Veuillez choisir un coupon et saisir un code', 'error');
+        return;
+      }
+      // Validation date d'expiration
+      const todayStr = new Date().toISOString().slice(0, 10);
+      if ((promoExpiresDate || '').trim()) {
+        const d = (promoExpiresDate || '').trim();
+        if (d < todayStr) {
+          showToast(
+            'La date d’expiration doit être aujourd’hui ou plus tard',
+            'error'
+          );
+          return;
+        }
+      }
+      setPromoCreating(true);
+      const token = await getToken();
+      const minimum_amount = (() => {
+        const val = parseFloat((promoMinAmountEuro || '').replace(',', '.'));
+        if (Number.isFinite(val) && val > 0) return Math.round(val * 100);
+        return undefined;
+      })();
+      const expires_at = (() => {
+        const dateStr = (promoExpiresDate || '').trim();
+        if (!dateStr) return undefined;
+        const ms = Date.parse(dateStr);
+        if (Number.isFinite(ms)) return Math.floor(ms / 1000);
+        return undefined;
+      })();
+      const max_redemptions = (() => {
+        const val = parseInt((promoMaxRedemptions || '').trim(), 10);
+        if (Number.isFinite(val) && val > 0) return val;
+        return undefined;
+      })();
+
+      const body: any = {
+        couponId: promoSelectedCouponId,
+        code,
+        active: !!promoActive,
+        storeSlug: store?.slug,
+      };
+      if (
+        typeof minimum_amount === 'number' ||
+        typeof promoFirstTime === 'boolean'
+      ) {
+        body.minimum_amount = minimum_amount;
+        body.first_time_transaction = !!promoFirstTime;
+      }
+      if (typeof expires_at === 'number') body.expires_at = expires_at;
+      if (typeof max_redemptions === 'number')
+        body.max_redemptions = max_redemptions;
+
+      const resp = await apiPost('/api/stripe/promotion-codes', body, {
+        headers: { Authorization: token ? `Bearer ${token}` : '' },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || 'Création du code promo échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Erreur');
+      }
+      showToast('Code promo créé', 'success');
+      // Rafraîchir la liste
+      await fetchPromotionCodes();
+      // Reset partiel
+      setPromoCodeName('');
+      setPromoMinAmountEuro('');
+      setPromoFirstTime(false);
+      setPromoExpiresDate('');
+      setPromoActive(true);
+      setPromoMaxRedemptions('');
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur inconnue';
+      showToast(raw, 'error');
+    } finally {
+      setPromoCreating(false);
+    }
+  };
+
+  // Pas de reload automatique à l’ouverture de l’onglet 'promo'
+  // Le rechargement est désormais manuel via le bouton
 
   // États d’expansion pour les cartes mobiles
   const [expandedSalesCardIds, setExpandedSalesCardIds] = useState<
@@ -1270,6 +1435,17 @@ export default function DashboardPage() {
             >
               <Users className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
               <span className='truncate'>Clients</span>
+            </button>
+            <button
+              onClick={() => setSection('promo')}
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+                section === 'promo'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <Tag className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <span className='truncate'>Code Promo</span>
             </button>
             <button
               onClick={() => setSection('support')}
@@ -3276,6 +3452,409 @@ export default function DashboardPage() {
                   </>
                 );
               })()}
+            </div>
+          )}
+
+          {section === 'promo' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center justify-between mb-4'>
+                <div className='flex items-center'>
+                  <Tag className='w-5 h-5 text-indigo-600 mr-2' />
+                  <h2 className='text-lg font-semibold text-gray-900'>
+                    Code Promo
+                  </h2>
+                </div>
+              </div>
+
+              <p className='text-sm text-gray-600 mb-4'>
+                Créez un code promo lié à un coupon existant et visualisez les
+                codes de votre boutique.
+              </p>
+
+              <div className='grid grid-cols-1 md:grid-cols-2 gap-4 mb-6'>
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Coupon
+                  </label>
+                  <div className='space-y-2'>
+                    {couponOptions.map(opt => (
+                      <label key={opt.id} className='flex items-center gap-2'>
+                        <input
+                          type='radio'
+                          name='promo-coupon'
+                          value={opt.id}
+                          checked={promoSelectedCouponId === opt.id}
+                          onChange={e =>
+                            setPromoSelectedCouponId(e.target.value)
+                          }
+                          className='h-4 w-4'
+                        />
+                        <span className='text-sm text-gray-700'>
+                          {opt.label}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Nom du code
+                  </label>
+                  <input
+                    type='text'
+                    value={promoCodeName}
+                    onChange={e => setPromoCodeName(e.target.value)}
+                    placeholder='Ex: SUMMER20'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Montant minimum d’achat (€)
+                  </label>
+                  <input
+                    type='number'
+                    min='0'
+                    step='0.01'
+                    value={promoMinAmountEuro}
+                    onChange={e => setPromoMinAmountEuro(e.target.value)}
+                    placeholder='Ex: 50'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Restriction premiers achats
+                  </label>
+                  <div className='flex items-center gap-3'>
+                    <input
+                      id='promo-first-time'
+                      type='checkbox'
+                      checked={promoFirstTime}
+                      onChange={e => setPromoFirstTime(e.target.checked)}
+                      className='h-4 w-4'
+                    />
+                    <label
+                      htmlFor='promo-first-time'
+                      className='text-sm text-gray-700'
+                    >
+                      Ce code ne sera valable que pour les clients qui n’ont
+                      jamais effectué d’achat auparavant.
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Date d’expiration
+                  </label>
+                  <input
+                    type='date'
+                    min={new Date().toISOString().slice(0, 10)}
+                    value={promoExpiresDate}
+                    onChange={e => setPromoExpiresDate(e.target.value)}
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Nombre maximum d’utilisations
+                  </label>
+                  <input
+                    type='number'
+                    min='0'
+                    step='1'
+                    value={promoMaxRedemptions}
+                    onChange={e => setPromoMaxRedemptions(e.target.value)}
+                    placeholder='Ex: 10'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+              </div>
+
+              <div className='flex items-center gap-3 mb-6'>
+                <button
+                  onClick={handleCreatePromotionCode}
+                  disabled={promoCreating}
+                  className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                >
+                  {promoCreating && (
+                    <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                  )}
+                  <RiDiscountPercentFill className='w-4 h-4 mr-1' />
+                  <span>Créer le code promo</span>
+                </button>
+              </div>
+
+              {/* Barre de recherche par libellé du code */}
+              <div className='flex items-center justify-between mb-4'>
+                <div className='flex items-center'>
+                  <RiDiscountPercentFill className='w-5 h-5 text-indigo-600 mr-2' />
+                  <h2 className='text-lg font-semibold text-gray-900'>
+                    Mes Code Promo
+                  </h2>
+                </div>
+              </div>
+              <div className='flex items-center mb-3 gap-2'>
+                <input
+                  type='text'
+                  value={promoSearchTerm}
+                  onChange={e => setPromoSearchTerm(e.target.value)}
+                  placeholder={'Rechercher par code…'}
+                  className='w-full md:w-64 border border-gray-300 rounded-md px-3 py-2 text-sm'
+                />
+                {/* Bouton reload desktop à droite */}
+                <div className='sm:flex flex-end items-center space-x-3'>
+                  <button
+                    onClick={fetchPromotionCodes}
+                    disabled={promoListLoading}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${promoListLoading ? 'animate-spin' : ''}`}
+                    />
+                    <span>Recharger</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className='md:hidden space-y-3'>
+                {promoListLoading ? (
+                  <div className='text-sm text-gray-600'>Chargement...</div>
+                ) : promoCodes.length === 0 ? (
+                  <div className='text-sm text-gray-600'>Aucun code promo</div>
+                ) : (
+                  promoCodes
+                    .filter((p: any) => {
+                      const term = (promoSearchTerm || '').toLowerCase();
+                      if (!term) return true;
+                      return String(p?.code || '')
+                        .toLowerCase()
+                        .includes(term);
+                    })
+                    .map((p: any) => (
+                      <div
+                        key={p.id}
+                        className={`border border-gray-200 rounded-md p-3 ${p?.active === false ? 'opacity-60' : ''}`}
+                      >
+                        <div className='flex items-center justify-between'>
+                          <div className='text-base font-semibold text-gray-900'>
+                            {p.code}
+                          </div>
+                          <button
+                            onClick={() => handleDeletePromotionCode(p.id)}
+                            disabled={!!promoDeletingIds[p.id]}
+                            className='inline-flex items-center px-2 py-1 text-xs rounded-md bg-gray-600 text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                          >
+                            <FaArchive className='w-3 h-3 mr-1' />
+                            Archiver
+                          </button>
+                        </div>
+                        <div className='mt-2 text-sm text-gray-700 space-y-1'>
+                          <div>
+                            <span className='font-medium'>Coupon:</span>{' '}
+                            {(() => {
+                              const match = couponOptions.find(
+                                c => c.id === (p?.coupon?.id || '')
+                              );
+                              return (
+                                match?.label ||
+                                p?.coupon?.name ||
+                                p?.coupon?.id ||
+                                '—'
+                              );
+                            })()}
+                          </div>
+                          <div>
+                            <span className='font-medium'>Expiration:</span>{' '}
+                            {p.expires_at
+                              ? new Date(
+                                  p.expires_at * 1000
+                                ).toLocaleDateString('fr-FR')
+                              : '—'}
+                          </div>
+                          <div>
+                            <span className='font-medium'>Utilisations:</span>{' '}
+                            {p.times_redeemed ?? 0}
+                            {p.max_redemptions ? ` / ${p.max_redemptions}` : ''}
+                          </div>
+                          <div>
+                            <span className='font-medium'>Restrictions:</span>{' '}
+                            {(() => {
+                              const r = p.restrictions || {};
+                              const parts: string[] = [];
+                              if (
+                                typeof r.minimum_amount === 'number' &&
+                                r.minimum_amount > 0
+                              ) {
+                                parts.push(
+                                  `${(r.minimum_amount / 100).toFixed(2)}€ min.`
+                                );
+                              }
+                              if (r.first_time_transaction) {
+                                parts.push('premier achat');
+                              }
+                              return parts.length ? parts.join(' • ') : '—';
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                )}
+              </div>
+
+              <div className='hidden md:block overflow-x-auto border border-gray-200 rounded-md'>
+                <table className='min-w-full divide-y divide-gray-200 text-sm'>
+                  <thead className='bg-gray-50'>
+                    <tr>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Code
+                      </th>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Coupon
+                      </th>
+
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Expiration
+                      </th>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Utilisations
+                      </th>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Max
+                      </th>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Restrictions
+                      </th>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className='bg-white divide-y divide-gray-200'>
+                    {promoListLoading ? (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className='px-4 py-6 text-center text-gray-600'
+                        >
+                          Chargement...
+                        </td>
+                      </tr>
+                    ) : promoCodes.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className='px-4 py-6 text-center text-gray-600'
+                        >
+                          Aucun code promo
+                        </td>
+                      </tr>
+                    ) : (
+                      promoCodes
+                        .filter((p: any) => {
+                          const term = (promoSearchTerm || '').toLowerCase();
+                          if (!term) return true;
+                          return String(p?.code || '')
+                            .toLowerCase()
+                            .includes(term);
+                        })
+                        .map((p: any) => (
+                          <tr
+                            key={p.id}
+                            className={p?.active === false ? 'opacity-60' : ''}
+                          >
+                            <td className='px-4 py-3 text-gray-900 font-medium'>
+                              {p.code}
+                            </td>
+                            <td
+                              className='px-4 py-3 text-gray-700 truncate max-w-[12rem]'
+                              title={(() => {
+                                const match = couponOptions.find(
+                                  c => c.id === (p?.coupon?.id || '')
+                                );
+                                return (
+                                  match?.label ||
+                                  p?.coupon?.name ||
+                                  p?.coupon?.id ||
+                                  ''
+                                );
+                              })()}
+                            >
+                              {(() => {
+                                const match = couponOptions.find(
+                                  c => c.id === (p?.coupon?.id || '')
+                                );
+                                return (
+                                  match?.label ||
+                                  p?.coupon?.name ||
+                                  p?.coupon?.id ||
+                                  '—'
+                                );
+                              })()}
+                            </td>
+
+                            <td className='px-4 py-3 text-gray-700'>
+                              {p.expires_at
+                                ? new Date(
+                                    p.expires_at * 1000
+                                  ).toLocaleDateString('fr-FR')
+                                : '—'}
+                            </td>
+                            <td className='px-4 py-3 text-gray-700'>
+                              {p.times_redeemed ?? 0}
+                            </td>
+                            <td className='px-4 py-3 text-gray-700'>
+                              {p.max_redemptions ?? '—'}
+                            </td>
+                            <td className='px-4 py-3 text-gray-700'>
+                              {(() => {
+                                const r = p?.restrictions || {};
+                                const parts: string[] = [];
+                                if (typeof r.minimum_amount === 'number') {
+                                  const eur = (
+                                    r.minimum_amount / 100
+                                  ).toLocaleString('fr-FR', {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 2,
+                                  });
+                                  parts.push(`Min: ${eur} €`);
+                                }
+                                if (
+                                  typeof r.first_time_transaction === 'boolean'
+                                ) {
+                                  parts.push(
+                                    r.first_time_transaction
+                                      ? 'Premiers achats uniquement'
+                                      : 'Tous achats'
+                                  );
+                                }
+                                return parts.length ? parts.join(' • ') : '—';
+                              })()}
+                            </td>
+                            <td className='px-4 py-3 text-gray-700'>
+                              <button
+                                onClick={() => handleDeletePromotionCode(p.id)}
+                                disabled={!!promoDeletingIds[p.id]}
+                                className={`inline-flex items-center p-2 rounded-md border ${promoDeletingIds[p.id] ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-700 border-gray-300'}`}
+                                title={'Archiver'}
+                              >
+                                <FaArchive
+                                  className={`w-4 h-4 ${promoDeletingIds[p.id] ? 'opacity-60' : ''}`}
+                                />
+                                <span className='ml-1'>Archiver</span>
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 

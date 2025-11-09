@@ -1507,4 +1507,139 @@ router.get("/get-clerk-user-by-id", async (req, res) => {
   }
 });
 
+// Créer un code promo Stripe à partir d'un coupon
+router.post("/promotion-codes", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const {
+      couponId,
+      code,
+      minimum_amount,
+      first_time_transaction,
+      expires_at,
+      active = true,
+      max_redemptions,
+      storeSlug,
+    } = req.body || {};
+
+    if (!couponId || !code) {
+      return res
+        .status(400)
+        .json({ error: "couponId et code sont requis" });
+    }
+
+    const params: Stripe.PromotionCodeCreateParams = {
+      coupon: String(couponId),
+      code: String(code),
+      active: !!active,
+    } as Stripe.PromotionCodeCreateParams;
+
+    if (typeof max_redemptions === "number" && max_redemptions > 0) {
+      (params as any).max_redemptions = max_redemptions;
+    }
+    if (typeof expires_at === "number" && expires_at > 0) {
+      (params as any).expires_at = expires_at;
+    }
+    if (
+      typeof minimum_amount === "number" ||
+      typeof first_time_transaction === "boolean"
+    ) {
+      (params as any).restrictions = {
+        ...(typeof minimum_amount === "number" && minimum_amount > 0
+          ? { minimum_amount, minimum_amount_currency: "eur" }
+          : {}),
+        ...(typeof first_time_transaction === "boolean"
+          ? { first_time_transaction }
+          : {}),
+      } as Stripe.PromotionCodeCreateParams.Restrictions;
+    }
+
+    // Ajouter metadata avec le storeSlug si fourni
+    if (storeSlug) {
+      (params as any).metadata = {
+        storeSlug: String(storeSlug),
+      } as Record<string, string>;
+    }
+
+    const promotionCode = await stripe.promotionCodes.create(params);
+    return res.json({ promotionCode });
+  } catch (error) {
+    console.error("Erreur lors de la création du code promo:", error);
+    return res
+      .status(500)
+      .json({ error: error instanceof Error ? error.message : "Erreur" });
+  }
+});
+
+// Lister les codes promo (optionnellement filtré par couponId ou active)
+router.get("/promotion-codes", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { couponId, active, limit, storeSlug } = req.query as {
+      couponId?: string;
+      active?: string;
+      limit?: string;
+      storeSlug?: string;
+    };
+
+    const listParams: Stripe.PromotionCodeListParams = {
+      limit: Math.min(Math.max(parseInt(limit || "50", 10), 1), 100),
+    } as Stripe.PromotionCodeListParams;
+
+    if (couponId) (listParams as any).coupon = couponId;
+    if (typeof active !== "undefined")
+      (listParams as any).active = active === "true";
+
+    const result = await stripe.promotionCodes.list(listParams);
+
+    // Filtrage côté serveur par metadata.storeSlug si demandé
+    const data = Array.isArray(result.data) ? result.data : [];
+    const filtered = storeSlug
+      ? data.filter(pc => String((pc as any)?.metadata?.storeSlug || "") === String(storeSlug))
+      : data;
+
+    return res.json({ data: filtered });
+  } catch (error) {
+    console.error("Erreur lors du listage des codes promo:", error);
+    return res
+      .status(500)
+      .json({ error: error instanceof Error ? error.message : "Erreur" });
+  }
+});
+
+// Désactiver (supprimer logiquement) un code promo Stripe
+router.delete("/promotion-codes/:id", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { id } = req.params as { id?: string };
+    if (!id) {
+      return res.status(400).json({ error: "promotion code id requis" });
+    }
+
+    // Stripe ne supprime pas vraiment les codes promo; on les désactive
+    const promotionCode = await stripe.promotionCodes.update(String(id), {
+      active: false,
+    } as Stripe.PromotionCodeUpdateParams);
+
+    return res.json({ success: true, promotionCode });
+  } catch (error) {
+    console.error("Erreur lors de la désactivation du code promo:", error);
+    return res
+      .status(500)
+      .json({ error: error instanceof Error ? error.message : "Erreur" });
+  }
+});
+
 export default router;
