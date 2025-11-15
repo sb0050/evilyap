@@ -2,7 +2,9 @@ import express from "express";
 
 const router = express.Router();
 
-const INSEE_API_URL = (process.env.INSEE_API_URL || "https://api.insee.fr").replace(/\/+$/, "");
+const INSEE_API_URL = (
+  process.env.INSEE_API_URL || "https://api.insee.fr"
+).replace(/\/+$/, "");
 const INSEE_API_KEY = process.env.INSEE_API_KEY;
 
 if (!INSEE_API_KEY) {
@@ -11,7 +13,7 @@ if (!INSEE_API_KEY) {
   );
 }
 
-// GET /api/insee/siret/:siret - Vérifier un SIRET via l'API INSEE
+// GET /api/insee-bce/siret/:siret - Vérifier un SIRET via l'API INSEE
 router.get("/siret/:siret", async (req, res) => {
   try {
     const raw = (req.params.siret || "").trim();
@@ -59,7 +61,9 @@ router.get("/siret/:siret", async (req, res) => {
       return res.status(header.statut).json({ header });
     }
 
-    return res.status(resp.status).json(json || { error: `INSEE error ${resp.status}` });
+    return res
+      .status(resp.status)
+      .json(json || { error: `INSEE error ${resp.status}` });
   } catch (error) {
     console.error("Erreur vérification INSEE:", error);
     return res

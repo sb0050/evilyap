@@ -467,7 +467,7 @@ export default function DashboardPage() {
     setIsCheckingSiret(true);
     try {
       const resp = await apiGet(
-        `/api/insee/siret/${encodeURIComponent(digits)}`
+        `/api/insee-bce/siret/${encodeURIComponent(digits)}`
       );
       const json = await resp.json();
       if (resp.ok && json?.success) {
@@ -2860,7 +2860,8 @@ export default function DashboardPage() {
                 (shipments || []).forEach(s => {
                   const id = s.customer_stripe_id || '';
                   if (!id) return;
-                  const v = (s.paid_value ?? 0) - (s.estimated_delivery_cost ?? 0);
+                  const v =
+                    (s.paid_value ?? 0) - (s.estimated_delivery_cost ?? 0);
                   spentMap[id] = (spentMap[id] || 0) + v;
                 });
 

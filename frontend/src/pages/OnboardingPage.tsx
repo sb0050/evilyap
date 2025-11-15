@@ -233,7 +233,8 @@ export default function OnboardingPage() {
       // Utiliser l'ID local si l'état React n'est pas encore mis à jour
       const stripeIdToUse = createdStripeId || stripeCustomerId || undefined;
 
-      const isSiretVerified = Boolean(formData.siret) &&
+      const isSiretVerified =
+        Boolean(formData.siret) &&
         lastCheckedSiret === formData.siret &&
         !siretInvalid &&
         !siretErrorMessage &&
@@ -432,7 +433,7 @@ export default function OnboardingPage() {
     setIsCheckingSiret(true);
     try {
       const resp = await apiGet(
-        `/api/insee/siret/${encodeURIComponent(siret)}`
+        `/api/insee-bce/siret/${encodeURIComponent(siret)}`
       );
       const json = await resp.json().catch(() => ({}));
       if (resp.ok && json?.success) {
@@ -614,38 +615,38 @@ export default function OnboardingPage() {
                 !siretErrorMessage &&
                 siretDetails
                   ? (() => {
-                    const pick = (v: any) => {
-                      if (v === null || v === undefined) return null;
-                      const s = String(v).trim();
-                      if (!s || s === '[ND]') return null;
-                      return s;
-                    };
-                    const formatInseeDate = (iso: any) => {
-                      const s = pick(iso);
-                      if (!s) return null;
-                      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-                      if (!m) return null;
-                      const months = [
-                        'Janvier',
-                        'Février',
-                        'Mars',
-                        'Avril',
-                        'Mai',
-                        'Juin',
-                        'Juillet',
-                        'Août',
-                        'Septembre',
-                        'Octobre',
-                        'Novembre',
-                        'Décembre',
-                      ];
-                      const year = m[1];
-                      const monthIndex = parseInt(m[2], 10) - 1;
-                      const day = m[3];
-                      const monthName = months[monthIndex] || '';
-                      if (!monthName) return null;
-                      return `${day} ${monthName} ${year}`;
-                    };
+                      const pick = (v: any) => {
+                        if (v === null || v === undefined) return null;
+                        const s = String(v).trim();
+                        if (!s || s === '[ND]') return null;
+                        return s;
+                      };
+                      const formatInseeDate = (iso: any) => {
+                        const s = pick(iso);
+                        if (!s) return null;
+                        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+                        if (!m) return null;
+                        const months = [
+                          'Janvier',
+                          'Février',
+                          'Mars',
+                          'Avril',
+                          'Mai',
+                          'Juin',
+                          'Juillet',
+                          'Août',
+                          'Septembre',
+                          'Octobre',
+                          'Novembre',
+                          'Décembre',
+                        ];
+                        const year = m[1];
+                        const monthIndex = parseInt(m[2], 10) - 1;
+                        const day = m[3];
+                        const monthName = months[monthIndex] || '';
+                        if (!monthName) return null;
+                        return `${day} ${monthName} ${year}`;
+                      };
                       const d = siretDetails;
                       const e = d?.etablissement || d?.etablissements?.[0] || d;
                       const ul = d?.uniteLegale || e?.uniteLegale || null;
@@ -713,8 +714,12 @@ export default function OnboardingPage() {
                           )}
                           {hasDate && (
                             <div className='mt-1'>
-                              <span className='text-gray-600'>Date de création: </span>
-                              <span className='font-medium'>{creationDateDisplay}</span>
+                              <span className='text-gray-600'>
+                                Date de création:{' '}
+                              </span>
+                              <span className='font-medium'>
+                                {creationDateDisplay}
+                              </span>
                             </div>
                           )}
                           {hasAddress && (
@@ -788,7 +793,7 @@ export default function OnboardingPage() {
                       key={user?.id || 'nouser'}
                       options={{
                         mode: 'billing',
-                        allowedCountries: ['FR'],
+                        allowedCountries: ['FR', 'BE'],
                         fields: {
                           phone: 'always',
                         },

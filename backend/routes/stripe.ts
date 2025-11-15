@@ -1580,6 +1580,8 @@ router.post(
                     .map((d: any) => d?.code || d?.id || "")
                     .filter(Boolean)
                     .join(", ") || "",
+                productValue: (products?.[0]?.unit_price || 0) / 100,
+                estimatedDeliveryCost: estimatedDeliveryCost / 100,
               });
               console.log(
                 "Customer confirmation email sent",
@@ -1622,7 +1624,7 @@ router.post(
                     customerAddress: {},
                     pickupPointCode: pickupPoint.code || "",
                     productReference,
-                    amount: (products?.[0]?.unit_price || 0) / 100,
+                    amount: amount / 100,
                     weight,
                     currency,
                     paymentId,
@@ -1633,6 +1635,8 @@ router.post(
                         .map((d: any) => d?.code || d?.id || "")
                         .filter(Boolean)
                         .join(", ") || "",
+                    productValue: (products?.[0]?.unit_price || 0) / 100,
+                    estimatedDeliveryCost: estimatedDeliveryCost / 100,
                     attachments,
                     documentPendingNote:
                       attachments?.length === 0

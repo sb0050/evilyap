@@ -586,14 +586,8 @@ const HowItWorksPage = () => {
                       <>
                         PayLive est actuellement disponible dans les pays
                         suivants :<br />
-                        <b className='font-bold'>🇫🇷 France</b>,{' '}
-                        <b className='font-bold'>🇧🇪 Belgique</b>,{' '}
-                        <b className='font-bold'>🇨🇭 Suisse</b>,{' '}
-                        <b className='font-bold'>🇱🇺 Luxembourg</b>,{' '}
-                        <b className='font-bold'>🇮🇹 Italie</b>,{' '}
-                        <b className='font-bold'>🇩🇪 Allemagne</b>,{' '}
-                        <b className='font-bold'>🇪🇸 Espagne</b> et{' '}
-                        <b className='font-bold'>🇵🇹 Portugal</b>.
+                        <b className='font-bold'>🇫🇷 France</b>, et{' '}
+                        <b className='font-bold'>🇧🇪 Belgique</b>, .
                       </>
                     ),
                   },

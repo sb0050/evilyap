@@ -15,7 +15,7 @@ import shipmentsRoutes from "./routes/shipments";
 import cartsRoutes from "./routes/carts";
 import supportRoutes from "./routes/support";
 import clerkRoutes from "./routes/clerk";
-import inseeRoutes from "./routes/insee";
+import inseeBceRoutes from "./routes/insee-bce";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -81,7 +81,7 @@ app.use("/api/shipments", shipmentsRoutes);
 app.use("/api/carts", cartsRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api/clerk", clerkRoutes);
-app.use("/api/insee", inseeRoutes);
+app.use("/api/insee-bce", inseeBceRoutes);
 
 // Route de test
 app.get("/api/health", (req: Request, res: Response) => {
