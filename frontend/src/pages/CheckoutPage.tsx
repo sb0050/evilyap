@@ -524,11 +524,6 @@ export default function CheckoutPage() {
                   >
                     {store?.name ?? storeName}
                   </h1>
-                  {store?.is_verified ? (
-                    <div className='inline-flex items-center gap-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit'>
-                      <BadgeCheck className='w-3 h-3' /> Boutique vérifiée
-                    </div>
-                  ) : null}
                 </div>
                 {store?.description && (
                   <p
@@ -544,6 +539,14 @@ export default function CheckoutPage() {
                     {store.description}
                   </p>
                 )}
+                {store?.is_verified ? (
+                  <div
+                    title="Le SIRET de la boutique a été vérifié via l'INSEE"
+                    className='inline-flex items-center gap-1 mt-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit'
+                  >
+                    <BadgeCheck className='w-3 h-3' /> Boutique Vérifiée
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>

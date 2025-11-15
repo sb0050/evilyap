@@ -556,7 +556,7 @@ export default function Header() {
                     <span ref={cartIconRef}>
                       <ShoppingCart className='w-3 h-3 sm:w-4 sm:h-4 mr-1' />
                     </span>
-                    <span>{Number(cartTotal || 0).toFixed(2)} €</span>
+                    <span>{Number(cartTotal || 0).toFixed(2)}€</span>
                   </button>
                   {cartOpen && (
                     <div className='absolute right-0 mt-2 w-80 bg-white border border-gray-200 rounded-md shadow-lg z-50 p-3'>
@@ -576,11 +576,11 @@ export default function Header() {
                                 className='border border-gray-100 rounded p-2'
                               >
                                 <div className='flex justify-between items-center mb-1'>
-                                  <span className='text-sm font-medium text-gray-800'>
+                                  <span className='text-sm font-medium text-gray-800 truncate'>
                                     {group.store?.name || 'Boutique inconnue'}
                                   </span>
                                   <span className='text-sm text-gray-600'>
-                                    {group.total.toFixed(2)} €
+                                    {group.total.toFixed(2)}€
                                   </span>
                                 </div>
                                 <ul className='space-y-1'>
@@ -622,7 +622,7 @@ export default function Header() {
                                             );
                                           })()}
                                           <span>
-                                            {Number(it.value || 0).toFixed(2)} €
+                                            {Number(it.value || 0).toFixed(2)}€
                                           </span>
                                           <button
                                             className='p-1 rounded hover:bg-red-50 text-red-600'
@@ -646,12 +646,12 @@ export default function Header() {
                                 Total
                               </span>
                               <span className='text-sm font-semibold text-gray-900'>
-                                {Number(cartTotal || 0).toFixed(2)} €
+                                {Number(cartTotal || 0).toFixed(2)}€
                               </span>
                             </div>
                           </div>
                           <button
-                            className={`mt-3 w-full px-2 py-1 sm:px-3 sm:py-2 rounded-md text-xs sm:text-sm font-medium ${!checkoutSlug || cartGroups.length === 0 ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700'} flex items-center justify-center gap-2`}
+                            className={`flex items-center justify-center gap-1 mt-4 w-full  px-4 py-1.5 rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600 ${!checkoutSlug || cartGroups.length === 0 ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
                             disabled={!checkoutSlug || cartGroups.length === 0}
                             onClick={() => {
                               if (checkoutSlug) {

@@ -206,7 +206,7 @@ const networkConfig = {
     name: 'Colis Privé',
     color: '#8B5CF6',
     delay: '6 jours',
-    disabled: true,
+    disabled: false,
     shippingOfferCode: 'COPR-CoprRelaisRelaisNat',
     prices: {
       '250g': 3.54,
@@ -234,7 +234,7 @@ const homeDeliveryConfig = {
     disabled: false,
     prices: {
       '250g': 6.27,
-      '500g': 6.83,
+      '500g': 8.2,
       '1kg': 7.66,
       '2kg': 8.91,
       '3kg': 10.5,
@@ -250,11 +250,11 @@ const homeDeliveryConfig = {
     name: 'Colis Privé - Domicile Sans Signature',
     color: '#8B5CF6',
     delay: '6 jours',
-    disabled: true,
+    disabled: false,
     shippingOfferCode: 'COPR-CoprRelaisDomicileNat',
     prices: {
       '250g': 5.3,
-      '500g': 6.08,
+      '500g': 6.8,
       '1kg': 7.9,
       '2kg': 8.84,
       '3kg': 9.83,
@@ -274,7 +274,7 @@ const homeDeliveryConfig = {
     disabled: false,
     prices: {
       '250g': 7.24,
-      '500g': 8.15,
+      '500g': 8.61,
       '1kg': 9.87,
       '2kg': 11.07,
       '3kg': 12.15,
@@ -291,25 +291,12 @@ const homeDeliveryConfig = {
     color: '#F59E0B',
     delay: '24h',
     shippingOfferCode: 'CHRP-Chrono18',
-    disabled: false,
+    disabled: true,
     prices: {
       '250g': 9.18,
       '500g': 9.18,
       '1kg': 9.18,
       '2kg': 9.18,
-    },
-  },
-  UPS_HOME: {
-    name: 'UPS - Express',
-    color: '#FBBF24',
-    delay: '24h',
-    shippingOfferCode: 'UPSE-Express',
-    disabled: true,
-    prices: {
-      '250g': 9.19,
-      '500g': 9.19,
-      '1kg': 9.34,
-      '2kg': 9.34,
     },
   },
 };
@@ -703,8 +690,7 @@ export default function ParcelPointMap({
   const filteredParcelPoints = parcelPoints.filter(pointResponse => {
     const network = pointResponse.parcelPoint.network;
     // Exclure UPS, DHL et Colis Privé
-    if (network === 'UPSE' || network === 'DHLE' || network === 'COPR')
-      return false;
+    if (network === 'UPSE' || network === 'DHLE') return false;
     if (networkFilter === 'ALL') return true;
     return network === networkFilter;
   });
@@ -940,6 +926,23 @@ export default function ParcelPointMap({
                         onChange={e => setNetworkFilter(e.target.value)}
                       />
                     </label>
+                    <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
+                      <div>
+                        <div className='text-sm font-medium text-gray-900'>
+                          Colis Privé
+                        </div>
+                        <div className='text-xs text-gray-600'>
+                          Réseau COPR – points relais violet sur la carte.
+                        </div>
+                      </div>
+                      <input
+                        type='radio'
+                        name='networkFilter'
+                        value='COPR'
+                        checked={networkFilter === 'COPR'}
+                        onChange={e => setNetworkFilter(e.target.value)}
+                      />
+                    </label>
                   </div>
                 </div>
               )}
@@ -1022,6 +1025,10 @@ export default function ParcelPointMap({
               <div className='flex items-center space-x-1'>
                 <div className='w-3 h-3 bg-orange-500 rounded-full'></div>
                 <span className='text-gray-600'>Chronopost</span>
+              </div>
+              <div className='flex items-center space-x-1'>
+                <div className='w-3 h-3 bg-purple-500 rounded-full'></div>
+                <span className='text-gray-600'>Colis Privé</span>
               </div>
             </div>
           )}

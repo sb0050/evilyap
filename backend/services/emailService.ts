@@ -30,6 +30,7 @@ interface CustomerEmailData {
   pickupPointCode: string;
   estimatedDeliveryDate: string;
   trackingUrl: string;
+  promoCodes: string;
 }
 
 interface StoreOwnerEmailData {
@@ -68,6 +69,7 @@ interface StoreOwnerEmailData {
   paymentId: string;
   boxtalId: string;
   shipmentId?: string;
+  promoCodes?: string;
   // Pièces jointes optionnelles (ex: bordereau PDF)
   attachments?: Array<{
     filename: string;
@@ -308,6 +310,11 @@ class EmailService {
                     ? `<p><strong>Lien de suivi de la livraison :</strong> <a href="${data.trackingUrl}">Cliquez ici</a></p>`
                     : ""
                 }
+                ${
+                  data.promoCodes
+                    ? `<p><strong>Code promo utilisé :</strong> ${data.promoCodes}</p>`
+                    : ""
+                }
               </div>
               
               <p>📬 Vous recevrez prochainement un email avec les détails de livraison de votre commande.</p>
@@ -402,6 +409,13 @@ class EmailService {
             name: "UPS Access Point",
             link: "https://www.ups.com/fr/fr/business-solutions/expand-your-online-business/ups-access-point",
             imageFile: "ups.jpg",
+          };
+        }
+        if (code.startsWith("COPR")) {
+          return {
+            name: "Colis Privé",
+            link: "https://client.colisprive-store.com/relais",
+            imageFile: "colis_prive.jpg",
           };
         }
         return null;
@@ -1187,8 +1201,8 @@ class EmailService {
         preferredOrder.forEach(addEntry);
         // Include any other keys not in preferred order
         Object.keys(contextObj || {})
-          .filter(k => !preferredOrder.includes(k))
-          .forEach(k => addEntry(k));
+          .filter((k) => !preferredOrder.includes(k))
+          .forEach((k) => addEntry(k));
 
         const esc = (x: any) =>
           String(x ?? "—")
@@ -1196,13 +1210,21 @@ class EmailService {
             .replace(/>/g, "&gt;");
 
         const rows = entries
-          .map(([k, v]) => `<p class="kv"><strong>${esc(k)} :</strong> ${esc(v)}</p>`) 
+          .map(
+            ([k, v]) =>
+              `<p class="kv"><strong>${esc(k)} :</strong> ${esc(v)}</p>`
+          )
           .join("\n");
 
         return `
           <div class="section">
             <h3>Contexte</h3>
-            ${rows || "<p class=\"kv\"><strong>raw:</strong> " + esc((contextObj as any)?.raw) + "</p>"}
+            ${
+              rows ||
+              '<p class="kv"><strong>raw:</strong> ' +
+                esc((contextObj as any)?.raw) +
+                "</p>"
+            }
           </div>
         `;
       })();
@@ -1304,6 +1326,7 @@ class EmailService {
     deliveryMethod?: string;
     deliveryNetwork?: string;
     message: string;
+    promoCodes?: string;
     attachments?: Array<{
       filename: string;
       content: Buffer;
@@ -1411,6 +1434,11 @@ class EmailService {
               ${
                 data.trackingUrl
                   ? `<p><a href="${data.trackingUrl}" target="_blank">Suivre l’expédition</a></p>`
+                  : ""
+              }
+              ${
+                data.promoCodes
+                  ? `<p><strong>Code promo utilisé :</strong> ${data.promoCodes}</p>`
                   : ""
               }
 

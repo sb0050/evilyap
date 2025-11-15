@@ -62,7 +62,7 @@ type Store = {
   website?: string | null;
   siret?: string | null;
   rib?: RIBInfo | null;
-  reference_value?: number | null;
+  product_value?: number | null;
   is_verified?: boolean;
 };
 
@@ -80,7 +80,7 @@ type Shipment = {
   weight: string | null;
   product_reference: string | number | null;
   value: number | null;
-  reference_value?: number | null;
+  product_value?: number | null;
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
@@ -88,6 +88,7 @@ type Shipment = {
   is_final_destination?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
+  promo_codes?: string | null;
 };
 
 export default function DashboardPage() {
@@ -167,6 +168,16 @@ export default function DashboardPage() {
   );
   const [socialsMap, setSocialsMap] = useState<Record<string, any>>({});
 
+  // Charge les codes promo au premier accès à l’onglet Promo
+  const [promoLoadedOnce, setPromoLoadedOnce] = useState<boolean>(false);
+  useEffect(() => {
+    if (section === 'promo' && !promoLoadedOnce) {
+      fetchPromotionCodes()
+        .catch(() => {})
+        .finally(() => setPromoLoadedOnce(true));
+    }
+  }, [section, promoLoadedOnce]);
+
   // États Code Promo
   const [promoSelectedCouponId, setPromoSelectedCouponId] =
     useState<string>('h11gpPmz');
@@ -174,6 +185,7 @@ export default function DashboardPage() {
   const [promoMinAmountEuro, setPromoMinAmountEuro] = useState<string>('');
   const [promoFirstTime, setPromoFirstTime] = useState<boolean>(false);
   const [promoExpiresDate, setPromoExpiresDate] = useState<string>('');
+  const [promoExpiresTime, setPromoExpiresTime] = useState<string>('');
   const [promoActive, setPromoActive] = useState<boolean>(true);
   const [promoMaxRedemptions, setPromoMaxRedemptions] = useState<string>('');
   const [promoCreating, setPromoCreating] = useState<boolean>(false);
@@ -232,7 +244,7 @@ export default function DashboardPage() {
         const msg = json?.error || 'Suppression du code promo échouée';
         throw new Error(typeof msg === 'string' ? msg : 'Erreur');
       }
-      showToast('Code promo supprimé', 'success');
+      showToast('Code promo archivé', 'success');
       await fetchPromotionCodes();
     } catch (e: any) {
       const raw = e?.message || 'Erreur inconnue';
@@ -251,6 +263,11 @@ export default function DashboardPage() {
       }
       // Validation date d'expiration
       const todayStr = new Date().toISOString().slice(0, 10);
+      // Empêcher heure seule sans date
+      if (!(promoExpiresDate || '').trim() && (promoExpiresTime || '').trim()) {
+        showToast('Veuillez renseigner la date d’expiration', 'error');
+        return;
+      }
       if ((promoExpiresDate || '').trim()) {
         const d = (promoExpiresDate || '').trim();
         if (d < todayStr) {
@@ -259,6 +276,26 @@ export default function DashboardPage() {
             'error'
           );
           return;
+        }
+        // Heure obligatoire si une date est saisie
+        if (!(promoExpiresTime || '').trim()) {
+          showToast('Veuillez renseigner l’heure d’expiration', 'error');
+          return;
+        }
+        // Si la date est aujourd'hui et qu'une heure est fournie, vérifier qu'elle n'est pas passée
+        const timeStr = (promoExpiresTime || '').trim();
+        if (d === todayStr && timeStr) {
+          const now = new Date();
+          const hh = String(now.getHours()).padStart(2, '0');
+          const mm = String(now.getMinutes()).padStart(2, '0');
+          const nowHM = `${hh}:${mm}`;
+          if (timeStr < nowHM) {
+            showToast(
+              'L’heure d’expiration pour aujourd’hui doit être ultérieure à maintenant',
+              'error'
+            );
+            return;
+          }
         }
       }
       setPromoCreating(true);
@@ -271,7 +308,10 @@ export default function DashboardPage() {
       const expires_at = (() => {
         const dateStr = (promoExpiresDate || '').trim();
         if (!dateStr) return undefined;
-        const ms = Date.parse(dateStr);
+        const timeStr = (promoExpiresTime || '').trim();
+        if (!timeStr) return undefined; // heure obligatoire si date renseignée
+        const isoLocal = `${dateStr}T${timeStr}`;
+        const ms = Date.parse(isoLocal);
         if (Number.isFinite(ms)) return Math.floor(ms / 1000);
         return undefined;
       })();
@@ -1370,7 +1410,7 @@ export default function DashboardPage() {
                 </p>
                 {store.is_verified ? (
                   <div className='inline-flex items-center gap-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit shrink-0'>
-                    <BadgeCheck className='w-3 h-3' /> Boutique vérifiée
+                    <BadgeCheck className='w-3 h-3' /> Boutique Vérifiée
                   </div>
                 ) : null}
               </div>
@@ -1663,7 +1703,7 @@ export default function DashboardPage() {
                       className='block text-sm font-medium text-gray-700 mb-2'
                     >
                       SIRET (14 chiffres, facultatif mais nécessaire pour
-                      obtenir le badge "boutique vérifiée")
+                      obtenir le badge "Boutique Vérifiée")
                     </label>
                     <div className='relative'>
                       <input
@@ -2240,9 +2280,7 @@ export default function DashboardPage() {
                           <div className='text-xs text-gray-600'>
                             Reçu:{' '}
                             {formatValue(
-                              s?.reference_value ??
-                                store?.reference_value ??
-                                null
+                              s?.product_value ?? store?.product_value ?? null
                             )}
                           </div>
                         </div>
@@ -2311,6 +2349,10 @@ export default function DashboardPage() {
                         <div>
                           <span className='font-medium'>Poids:</span>{' '}
                           {s.weight || '—'}
+                        </div>
+                        <div>
+                          <span className='font-medium'>Code Promo:</span>{' '}
+                          {s.promo_codes?.replace(';', ', ') || '—'}
                         </div>
                         <div>
                           <span className='font-medium'>Suivi:</span>{' '}
@@ -2430,6 +2472,9 @@ export default function DashboardPage() {
                       Poids
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Code Promo
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Bordereau
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
@@ -2520,7 +2565,7 @@ export default function DashboardPage() {
                         </td>
                         <td className='py-4 px-4 text-gray-900 font-semibold'>
                           {formatValue(
-                            s?.reference_value ?? store?.reference_value ?? null
+                            s?.product_value ?? store?.product_value ?? null
                           )}
                         </td>
                         <td className='py-4 px-4 text-gray-700'>
@@ -2539,6 +2584,9 @@ export default function DashboardPage() {
                         </td>
                         <td className='py-4 px-4 text-gray-700'>
                           {s.weight || '—'}
+                        </td>
+                        <td className='py-4 px-4 text-gray-700'>
+                          {s.promo_codes?.replace(';', ', ') || '—'}
                         </td>
                         <td className='py-4 px-4'>
                           <button
@@ -2771,14 +2819,14 @@ export default function DashboardPage() {
                   ? allIds.filter(id => (id || '').toLowerCase().includes(term))
                   : allIds;
 
-                // Sommes dépensées par client (somme des shipments.reference_value)
+                // Sommes dépensées par client (somme des shipments.product_value)
                 const spentMap: Record<string, number> = {};
                 (shipments || []).forEach(s => {
                   const id = s.customer_stripe_id || '';
                   if (!id) return;
                   const v =
-                    typeof s.reference_value === 'number'
-                      ? s.reference_value || 0
+                    typeof s.product_value === 'number'
+                      ? s.product_value || 0
                       : 0;
                   spentMap[id] = (spentMap[id] || 0) + v;
                 });
@@ -3556,8 +3604,26 @@ export default function DashboardPage() {
                     min={new Date().toISOString().slice(0, 10)}
                     value={promoExpiresDate}
                     onChange={e => setPromoExpiresDate(e.target.value)}
+                    required={!!promoExpiresTime}
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Heure d’expiration
+                  </label>
+                  <input
+                    type='time'
+                    step='60'
+                    value={promoExpiresTime}
+                    onChange={e => setPromoExpiresTime(e.target.value)}
+                    required={!!promoExpiresDate}
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                  <p className='text-xs text-gray-500 mt-1'>
+                    L’heure est obligatoire si une date est renseignée.
+                  </p>
                 </div>
 
                 <div>
@@ -3672,9 +3738,13 @@ export default function DashboardPage() {
                           <div>
                             <span className='font-medium'>Expiration:</span>{' '}
                             {p.expires_at
-                              ? new Date(
-                                  p.expires_at * 1000
-                                ).toLocaleDateString('fr-FR')
+                              ? new Date(p.expires_at * 1000).toLocaleString(
+                                  'fr-FR',
+                                  {
+                                    dateStyle: 'short',
+                                    timeStyle: 'short',
+                                  }
+                                )
                               : '—'}
                           </div>
                           <div>
@@ -3800,9 +3870,13 @@ export default function DashboardPage() {
 
                             <td className='px-4 py-3 text-gray-700'>
                               {p.expires_at
-                                ? new Date(
-                                    p.expires_at * 1000
-                                  ).toLocaleDateString('fr-FR')
+                                ? new Date(p.expires_at * 1000).toLocaleString(
+                                    'fr-FR',
+                                    {
+                                      dateStyle: 'short',
+                                      timeStyle: 'short',
+                                    }
+                                  )
                                 : '—'}
                             </td>
                             <td className='px-4 py-3 text-gray-700'>

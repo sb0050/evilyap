@@ -54,6 +54,7 @@ type Shipment = {
   tracking_url?: string | null;
   store?: StoreInfo | null;
   is_final_destination?: boolean | null;
+  promo_codes?: string | null;
 };
 
 export default function OrdersPage() {
@@ -179,7 +180,7 @@ export default function OrdersPage() {
                 );
               })()}
               <div className='flex-1'>
-                <div className='font-semibold text-gray-900'>
+                <div className='font-semibold text-gray-900 truncate'>
                   {s.store?.name || '—'}
                 </div>
                 <div className='text-xs text-gray-600 mt-1'>
@@ -700,7 +701,7 @@ export default function OrdersPage() {
                           );
                         })()}
                         <div>
-                          <div className='text-sm font-semibold text-gray-900'>
+                          <div className='text-sm font-semibold text-gray-900 truncate'>
                             {s.store?.name || '—'}
                           </div>
                           <div className='text-xs text-gray-600'>
@@ -784,6 +785,10 @@ export default function OrdersPage() {
                         ) : (
                           '—'
                         )}
+                      </div>
+                      <div>
+                        <span className='font-medium'>Code Promo:</span>{' '}
+                        {s.promo_codes ? s.promo_codes.replace(';', ', ') : '—'}
                       </div>
 
                       <div className='flex items-center gap-2'>
@@ -892,6 +897,9 @@ export default function OrdersPage() {
                       Point retrait
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Code Promo
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Retour
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
@@ -985,6 +993,9 @@ export default function OrdersPage() {
                         ) : (
                           '—'
                         )}
+                      </td>
+                      <td className='py-4 px-4 text-gray-700'>
+                        {s.promo_codes ? s.promo_codes.replace(';', ', ') : '—'}
                       </td>
                       <td className='py-4 px-4'>
                         <button
