@@ -382,6 +382,10 @@ export default function ParcelPointMap({
   const [canShowRefreshMessages, setCanShowRefreshMessages] =
     useState<boolean>(true);
 
+  const [dynamicPricesByOfferCode, setDynamicPricesByOfferCode] = useState<
+    Record<string, Record<string, number>>
+  >({});
+
   // Helper pour changer le poids et propager au parent
   const applyWeightChange = (newWeight: string) => {
     setSelectedWeight(newWeight);
@@ -530,6 +534,58 @@ export default function ParcelPointMap({
     }
   };
 
+  const fetchCotationPrices = async () => {
+    try {
+      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const sender = {
+        country: storePickupAddress?.country || 'FR',
+        postal_code: storePickupAddress?.postal_code || '',
+        city: storePickupAddress?.city || '',
+      };
+      const recipient = {
+        country: address?.country || 'FR',
+        postal_code: address?.postal_code || '',
+        city: address?.city || '',
+      };
+      if (!recipient.postal_code || !recipient.city) {
+        return;
+      }
+      const resp = await fetch(`${apiBase}/api/boxtal/cotation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sender, recipient }),
+      });
+      if (!resp.ok) {
+        return;
+      }
+      const data = (await resp.json()) as Record<
+        string,
+        Record<string, { price?: any; characteristics?: any }>
+      >;
+      const next: Record<string, Record<string, number>> = {};
+      Object.keys(data || {}).forEach(offerCode => {
+        const perWeight = data[offerCode] || {};
+        const weightMap: Record<string, number> = {};
+        Object.keys(perWeight).forEach(wLabel => {
+          const p = perWeight[wLabel]?.price;
+          const excl = p && typeof p['tax-exclusive'] !== 'undefined'
+            ? Number(p['tax-exclusive'])
+            : undefined;
+          if (typeof excl === 'number' && Number.isFinite(excl)) {
+            weightMap[wLabel] = excl;
+          }
+        });
+        if (Object.keys(weightMap).length > 0) {
+          next[offerCode] = weightMap;
+        }
+      });
+      setDynamicPricesByOfferCode(next);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('Erreur cotation:', e);
+    }
+  };
+
   // Effet pour charger les points relais quand l'adresse change
   const lastLine1Ref = useRef<string | undefined>(undefined);
   const autoSelectRef = useRef<boolean>(false);
@@ -571,6 +627,7 @@ export default function ParcelPointMap({
   const handleManualRefresh = () => {
     if (address && address.line1) {
       fetchParcelPoints(address);
+      fetchCotationPrices();
       setNeedsRefresh(false);
     }
   };
@@ -670,9 +727,8 @@ export default function ParcelPointMap({
       return;
     }
     setSelectedHomeDelivery(deliveryKey);
-    // Calculer coût via homeDeliveryConfig
-    const price =
-      config?.prices[selectedWeight as keyof typeof config.prices] || 0;
+    const baseNetwork = String(deliveryKey).replace('_HOME', '');
+    const price = getDeliveryPrice(baseNetwork, true);
     const shippingOfferCode = config?.shippingOfferCode;
 
     if (onParcelPointSelect) {
@@ -700,15 +756,19 @@ export default function ParcelPointMap({
     network: string,
     isHomeDelivery: boolean = false
   ): number => {
+    const getByOffer = (offerCode?: string) => {
+      const val = offerCode
+        ? dynamicPricesByOfferCode[offerCode]?.[selectedWeight]
+        : undefined;
+      return typeof val === 'number' ? val : 0;
+    };
     if (isHomeDelivery) {
       const homeKey = `${network}_HOME` as keyof typeof homeDeliveryConfig;
-      const config = homeDeliveryConfig[homeKey];
-      if (!config || !config.prices) return 0;
-      return config.prices[selectedWeight as keyof typeof config.prices] || 0;
+      const cfg = homeDeliveryConfig[homeKey];
+      return getByOffer(cfg?.shippingOfferCode);
     } else {
-      const config = networkConfig[network as keyof typeof networkConfig];
-      if (!config || !config.prices) return 0;
-      return config.prices[selectedWeight as keyof typeof config.prices] || 0;
+      const cfg = networkConfig[network as keyof typeof networkConfig];
+      return getByOffer(cfg?.shippingOfferCode);
     }
   };
 

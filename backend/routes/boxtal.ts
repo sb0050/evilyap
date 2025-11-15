@@ -174,12 +174,17 @@ router.post("/cotation", async (req, res) => {
           params.append("expediteur.ville", String(sender.city));
           params.append("expediteur.type", "entreprise");
           params.append("destinataire.pays", String(recipient.country));
-          params.append("destinataire.code_postal", String(recipient.postal_code));
+          params.append(
+            "destinataire.code_postal",
+            String(recipient.postal_code)
+          );
           params.append("destinataire.ville", String(recipient.city));
           params.append("destinataire.type", "particulier");
           params.append("offers[0]", net.replace(/-/g, ""));
 
-          const url = `${BOXTAL_API_V1_CONFIG.api_url}/cotation?${params.toString()}`;
+          const url = `${
+            BOXTAL_API_V1_CONFIG.api_url
+          }/cotation?${params.toString()}`;
           const resp = await fetch(url, options);
           if (!resp.ok) {
             return;
@@ -194,6 +199,8 @@ router.post("/cotation", async (req, res) => {
           result[net][w.label] = {
             price: singleOffer?.price || null,
             characteristics: singleOffer?.characteristics || null,
+            delivery: singleOffer?.delivery || null,
+            collection: singleOffer?.collection || null,
           };
         });
 
