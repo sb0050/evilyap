@@ -79,8 +79,7 @@ type Shipment = {
   pickup_point: object | null;
   weight: string | null;
   product_reference: string | number | null;
-  value: number | null;
-  product_value?: number | null;
+  paid_value: number | null;
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
@@ -89,6 +88,8 @@ type Shipment = {
   delivery_cost?: number | null;
   tracking_url?: string | null;
   promo_codes?: string | null;
+  product_value?: number | null;
+  estimated_delivery_cost?: number | null;
 };
 
 export default function DashboardPage() {
@@ -613,7 +614,7 @@ export default function DashboardPage() {
           saleId: selectedSale?.id ?? null,
           shipmentId: selectedSale?.shipment_id ?? null,
           productReference: selectedSale?.product_reference ?? null,
-          value: selectedSale?.value ?? null,
+          value: selectedSale?.paid_value ?? null,
           customerStripeId: selectedSale?.customer_stripe_id ?? null,
           status: selectedSale?.status ?? null,
           createdAt: selectedSale?.created_at ?? null,
@@ -2275,14 +2276,33 @@ export default function DashboardPage() {
                         </div>
                         <div className='text-right'>
                           <div className='text-sm font-semibold text-gray-900'>
-                            Payé: {formatValue(s.value)}
+                            Payé: {formatValue(s.paid_value)}
                           </div>
                           <div className='text-xs text-gray-600'>
                             Reçu:{' '}
                             {formatValue(
-                              s?.product_value ?? store?.product_value ?? null
+                              (s.paid_value ?? 0) -
+                                (s.estimated_delivery_cost ?? 0)
                             )}
                           </div>
+                          {s.promo_codes && (
+                            <div className='text-xs text-gray-500'>
+                              <span className='line-through'>
+                                {formatValue(s.product_value)}
+                              </span>{' '}
+                              (
+                              {formatValue(
+                                Math.max(
+                                  0,
+                                  (s.product_value ?? 0) -
+                                    ((s.paid_value ?? 0) -
+                                      (s.estimated_delivery_cost ?? 0))
+                                )
+                              )}{' '}
+                              de remise avec le code :
+                              {s.promo_codes?.replace(/;/g, ', ')})
+                            </div>
+                          )}
                         </div>
                       </div>
 
@@ -2350,10 +2370,7 @@ export default function DashboardPage() {
                           <span className='font-medium'>Poids:</span>{' '}
                           {s.weight || '—'}
                         </div>
-                        <div>
-                          <span className='font-medium'>Code Promo:</span>{' '}
-                          {s.promo_codes?.replace(';', ', ') || '—'}
-                        </div>
+
                         <div>
                           <span className='font-medium'>Suivi:</span>{' '}
                           {s.tracking_url ? (
@@ -2471,9 +2488,7 @@ export default function DashboardPage() {
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Poids
                     </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Code Promo
-                    </th>
+
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Bordereau
                     </th>
@@ -2485,7 +2500,6 @@ export default function DashboardPage() {
                     </th>
                   </tr>
                   <tr className='border-b border-gray-100'>
-                    <th className='py-2 px-4'></th>
                     <th className='py-2 px-4'>
                       <input
                         type='text'
@@ -2516,7 +2530,7 @@ export default function DashboardPage() {
                     <tr>
                       <td
                         className='py-4 px-4 text-gray-600 text-center'
-                        colSpan={13}
+                        colSpan={12}
                       >
                         Aucune vente pour le filtre courant.
                       </td>
@@ -2561,12 +2575,37 @@ export default function DashboardPage() {
                           {s.product_reference ?? '—'}
                         </td>
                         <td className='py-4 px-4 text-gray-900 font-semibold'>
-                          {formatValue(s.value)}
+                          {formatValue(s.paid_value)}
                         </td>
                         <td className='py-4 px-4 text-gray-900 font-semibold'>
-                          {formatValue(
-                            s?.product_value ?? store?.product_value ?? null
-                          )}
+                          {(() => {
+                            const hasPromo = !!s.promo_codes;
+                            const finalValue =
+                              (s.paid_value ?? 0) -
+                              (s.estimated_delivery_cost ?? 0);
+                            return (
+                              <>
+                                {formatValue(finalValue)}
+                                {hasPromo && (
+                                  <div className='text-xs text-gray-500 mt-1'>
+                                    <span className='line-through'>
+                                      {formatValue(s.product_value)}
+                                    </span>{' '}
+                                    (
+                                    {formatValue(
+                                      Math.max(
+                                        0,
+                                        (s.product_value ?? 0) -
+                                          (finalValue ?? 0)
+                                      )
+                                    )}{' '}
+                                    de remise avec le code:{' '}
+                                    {s.promo_codes!.replace(';', ', ')})
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
                         </td>
                         <td className='py-4 px-4 text-gray-700'>
                           {formatMethod(s.delivery_method)}
@@ -2585,9 +2624,7 @@ export default function DashboardPage() {
                         <td className='py-4 px-4 text-gray-700'>
                           {s.weight || '—'}
                         </td>
-                        <td className='py-4 px-4 text-gray-700'>
-                          {s.promo_codes?.replace(';', ', ') || '—'}
-                        </td>
+
                         <td className='py-4 px-4'>
                           <button
                             onClick={() => handleShippingDocument(s)}
@@ -2819,15 +2856,11 @@ export default function DashboardPage() {
                   ? allIds.filter(id => (id || '').toLowerCase().includes(term))
                   : allIds;
 
-                // Sommes dépensées par client (somme des shipments.product_value)
                 const spentMap: Record<string, number> = {};
                 (shipments || []).forEach(s => {
                   const id = s.customer_stripe_id || '';
                   if (!id) return;
-                  const v =
-                    typeof s.product_value === 'number'
-                      ? s.product_value || 0
-                      : 0;
+                  const v = (s.paid_value ?? 0) - (s.estimated_delivery_cost ?? 0);
                   spentMap[id] = (spentMap[id] || 0) + v;
                 });
 

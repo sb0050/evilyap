@@ -152,7 +152,7 @@ router.post(
       const { data: shipment, error: shipErr } = await supabase
         .from("shipments")
         .select(
-          "id, store_id, shipment_id, tracking_url, product_reference, value, delivery_method, delivery_network"
+          "id, store_id, shipment_id, tracking_url, product_reference, product_value, delivery_method, delivery_network"
         )
         .eq("shipment_id", shipmentId)
         .maybeSingle();
@@ -229,7 +229,7 @@ router.post(
           shipmentId: (shipment as any).shipment_id || undefined,
           trackingUrl: (shipment as any).tracking_url || undefined,
           productReference: (shipment as any).product_reference || undefined,
-          value: (shipment as any).value || undefined,
+          value: (shipment as any).product_value || undefined,
           deliveryMethod: (shipment as any).delivery_method || undefined,
           deliveryNetwork: (shipment as any).delivery_network || undefined,
           message: msg,

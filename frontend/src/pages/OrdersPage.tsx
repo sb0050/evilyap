@@ -44,7 +44,7 @@ type Shipment = {
   pickup_point: any | null;
   weight: string | null;
   product_reference: string | null;
-  value: number | null;
+  paid_value: number | null;
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
@@ -55,6 +55,8 @@ type Shipment = {
   store?: StoreInfo | null;
   is_final_destination?: boolean | null;
   promo_codes?: string | null;
+  product_value?: number | null;
+  estimated_delivery_cost?: number | null;
 };
 
 export default function OrdersPage() {
@@ -714,7 +716,7 @@ export default function OrdersPage() {
                         </div>
                       </div>
                       <div className='text-sm font-semibold text-gray-900'>
-                        {formatValue(s.value)}
+                        {formatValue(s.paid_value)}
                       </div>
                     </div>
 
@@ -730,6 +732,37 @@ export default function OrdersPage() {
                       <div>
                         <span className='font-medium'>Méthode:</span>{' '}
                         {formatMethod(s.delivery_method)}
+                      </div>
+                      <div>
+                        <span className='font-medium'>Valeur produit:</span>{' '}
+                        {(() => {
+                          const hasPromo = !!s.promo_codes;
+                          const finalValue = hasPromo
+                            ? (s.paid_value ?? 0) -
+                              (s.estimated_delivery_cost ?? 0)
+                            : s.product_value;
+                          return (
+                            <>
+                              {formatValue(finalValue)}
+                              {hasPromo && (
+                                <div className='text-xs text-gray-500'>
+                                  <span className='line-through'>
+                                    {formatValue(s.product_value)}
+                                  </span>{' '}
+                                  (
+                                  {formatValue(
+                                    Math.max(
+                                      0,
+                                      (s.product_value ?? 0) - (finalValue ?? 0)
+                                    )
+                                  )}{' '}
+                                  de remise avec le code:{' '}
+                                  {s.promo_codes!.replace(';', ', ')})
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
 
@@ -774,7 +807,7 @@ export default function OrdersPage() {
                       </div>
 
                       <div>
-                        <span className='font-medium'>Point retrait:</span>{' '}
+                        <span className='font-medium'>Point Retrait:</span>{' '}
                         {s.pickup_point?.code ? (
                           <span>
                             <strong>{s.pickup_point?.name}</strong>{' '}
@@ -785,10 +818,6 @@ export default function OrdersPage() {
                         ) : (
                           '—'
                         )}
-                      </div>
-                      <div>
-                        <span className='font-medium'>Code Promo:</span>{' '}
-                        {s.promo_codes ? s.promo_codes.replace(';', ', ') : '—'}
                       </div>
 
                       <div className='flex items-center gap-2'>
@@ -863,7 +892,10 @@ export default function OrdersPage() {
                       Boutique
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Référence produit
+                      Référence Produit
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Valeur Produit
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Payé
@@ -891,14 +923,15 @@ export default function OrdersPage() {
                       </div>
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Écart Livraison
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Réseau
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Point retrait
+                      Point Retrait
                     </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Code Promo
-                    </th>
+
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Retour
                     </th>
@@ -947,7 +980,37 @@ export default function OrdersPage() {
                         {s.product_reference ?? '—'}
                       </td>
                       <td className='py-4 px-4 text-gray-900 font-semibold'>
-                        {formatValue(s.value)}
+                        {(() => {
+                          const hasPromo = !!s.promo_codes;
+                          const finalValue = hasPromo
+                            ? (s.paid_value ?? 0) -
+                              (s.estimated_delivery_cost ?? 0)
+                            : s.product_value;
+                          return (
+                            <>
+                              {formatValue(finalValue)}
+                              {hasPromo && (
+                                <div className='text-xs text-gray-500 mt-1'>
+                                  <span className='line-through'>
+                                    {formatValue(s.product_value)}
+                                  </span>{' '}
+                                  (
+                                  {formatValue(
+                                    Math.max(
+                                      0,
+                                      (s.product_value ?? 0) - (finalValue ?? 0)
+                                    )
+                                  )}{' '}
+                                  de remise avec le code:{' '}
+                                  {s.promo_codes!.replace(';', ', ')})
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </td>
+                      <td className='py-4 px-4 text-gray-900 font-semibold'>
+                        {formatValue(s.paid_value)}
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
                         <div className='flex items-center space-x-2'>
@@ -977,6 +1040,22 @@ export default function OrdersPage() {
                       <td className='py-4 px-4 text-gray-700'>
                         {formatDate(s.estimated_delivery_date)}
                       </td>
+                      <td className='py-4 px-4 text-gray-900 font-semibold'>
+                        {(() => {
+                          const diff =
+                            (s.estimated_delivery_cost ?? 0) -
+                            (s.delivery_cost ?? 0);
+                          const color =
+                            diff > 0
+                              ? 'text-green-600'
+                              : diff < 0
+                                ? 'text-red-600'
+                                : 'text-gray-900';
+                          return (
+                            <span className={color}>{formatValue(diff)}</span>
+                          );
+                        })()}
+                      </td>
                       <td className='py-4 px-4 text-gray-700'>
                         {getNetworkDescription(s.delivery_network)}
                       </td>
@@ -994,9 +1073,7 @@ export default function OrdersPage() {
                           '—'
                         )}
                       </td>
-                      <td className='py-4 px-4 text-gray-700'>
-                        {s.promo_codes ? s.promo_codes.replace(';', ', ') : '—'}
-                      </td>
+
                       <td className='py-4 px-4'>
                         <button
                           onClick={() => handleReturn(s)}
