@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronUp, ChevronDown, Heart } from 'lucide-react';
 import { BE, FR } from 'country-flag-icons/react/3x2';
@@ -80,6 +80,45 @@ const HowItWorksPage = () => {
       v.play().catch(() => {});
     }
   };
+  const ensurePlay = (index: number) => {
+    if (isDesktop) return;
+    const v = videoRefs.current[index];
+    if (!v) return;
+    v.muted = true;
+    const attempt = () => {
+      const p = v.play();
+      if (p && typeof (p as any).catch === 'function') {
+        (p as Promise<void>).catch(() => {
+          setTimeout(attempt, 250);
+        });
+      }
+    };
+    if (v.readyState < 2) {
+      const onCanPlay = () => {
+        v.removeEventListener('canplay', onCanPlay);
+        attempt();
+      };
+      v.addEventListener('canplay', onCanPlay);
+    } else {
+      attempt();
+    }
+  };
+
+  useLayoutEffect(() => {
+    if (isDesktop) return;
+    ensurePlay(currentSlide);
+  }, [currentSlide, isDesktop]);
+
+  useEffect(() => {
+    if (isDesktop) return;
+    const handler = () => ensurePlay(currentSlide);
+    document.addEventListener('touchend', handler, { once: true });
+    document.addEventListener('click', handler, { once: true });
+    return () => {
+      document.removeEventListener('touchend', handler);
+      document.removeEventListener('click', handler);
+    };
+  }, [currentSlide, isDesktop]);
 
   useEffect(() => {
     if (isDesktop) return;
