@@ -137,6 +137,20 @@ const LandingPage = () => {
     }
   };
 
+  useEffect(() => {
+    if (isDesktop) return;
+    const v = videoRefs.current[currentSlide];
+    if (!v) return;
+    const playNow = () => tryPlay(currentSlide);
+    playNow();
+    v.addEventListener('loadedmetadata', playNow);
+    v.addEventListener('canplay', playNow);
+    return () => {
+      v.removeEventListener('loadedmetadata', playNow);
+      v.removeEventListener('canplay', playNow);
+    };
+  }, [currentSlide, isDesktop]);
+
   // Auto-play functionality
   useEffect(() => {
     if (!isAutoPlaying) return;
@@ -265,6 +279,7 @@ const LandingPage = () => {
                 autoPlay
                 loop
                 playsInline
+                webkit-playsinline="true"
                 preload='auto'
                 controls={false}
                 controlsList='nodownload nofullscreen noplaybackrate'
