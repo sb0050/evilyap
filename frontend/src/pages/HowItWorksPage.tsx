@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronUp, ChevronDown, Heart } from 'lucide-react';
 import { BE, FR } from 'country-flag-icons/react/3x2';
@@ -71,6 +71,15 @@ const HowItWorksPage = () => {
   ];
 
   const activeVideos = isDesktop ? videos : mobileVideos;
+  const videoRefs = useRef<HTMLVideoElement[]>([]);
+  const tryPlay = (index: number) => {
+    if (isDesktop) return;
+    const v = videoRefs.current[index];
+    if (v) {
+      v.muted = true;
+      v.play().catch(() => {});
+    }
+  };
 
   // Auto-play functionality
   useEffect(() => {
@@ -103,6 +112,7 @@ const HowItWorksPage = () => {
     if (activeVideos[nextIndex]) {
       preloadVideo(activeVideos[nextIndex].url);
     }
+    tryPlay(currentSlide);
   }, [currentSlide, activeVideos]);
 
   const nextSlide = () => {
@@ -167,6 +177,7 @@ const HowItWorksPage = () => {
       <div
         className='relative flex-1 w-full bg-black'
         onContextMenu={e => e.preventDefault()}
+        onTouchStart={() => tryPlay(currentSlide)}
       >
         {activeVideos.map((video, index) => (
           <div
@@ -206,8 +217,13 @@ const HowItWorksPage = () => {
                 playsInline
                 preload='auto'
                 controls={false}
+                controlsList='nodownload nofullscreen noplaybackrate'
                 disablePictureInPicture
                 onContextMenu={e => e.preventDefault()}
+                onLoadedData={() => tryPlay(index)}
+                ref={el => {
+                  if (el) videoRefs.current[index] = el;
+                }}
                 style={{
                   border: 'none',
                   outline: 'none',
@@ -286,7 +302,7 @@ const HowItWorksPage = () => {
               py-2 px-3 rounded-lg font-bold text-lg text-center hover:from-purple-700 hover:to-blue-700 
               transition-all duration-300 transform hover:scale-105 shadow-lg'
             >
-              Essayez PayLive !
+              Essayez PayLive!
             </button>
 
             <a

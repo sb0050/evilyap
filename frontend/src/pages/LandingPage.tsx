@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronUp, ChevronDown, Heart } from 'lucide-react';
 
@@ -127,6 +127,15 @@ const LandingPage = () => {
   ];
 
   const activeVideos = isDesktop ? videos : mobileVideos;
+  const videoRefs = useRef<HTMLVideoElement[]>([]);
+  const tryPlay = (index: number) => {
+    if (isDesktop) return;
+    const v = videoRefs.current[index];
+    if (v) {
+      v.muted = true;
+      v.play().catch(() => {});
+    }
+  };
 
   // Auto-play functionality
   useEffect(() => {
@@ -159,6 +168,7 @@ const LandingPage = () => {
     if (activeVideos[nextIndex]) {
       preloadVideo(activeVideos[nextIndex].url);
     }
+    tryPlay(currentSlide);
   }, [currentSlide, activeVideos]);
 
   const nextSlide = () => {
@@ -217,6 +227,7 @@ const LandingPage = () => {
       <div
         className='relative flex-1 w-full bg-black'
         onContextMenu={e => e.preventDefault()}
+        onTouchStart={() => tryPlay(currentSlide)}
       >
         {activeVideos.map((video, index) => (
           <div
@@ -256,8 +267,13 @@ const LandingPage = () => {
                 playsInline
                 preload='auto'
                 controls={false}
+                controlsList='nodownload nofullscreen noplaybackrate'
                 disablePictureInPicture
                 onContextMenu={e => e.preventDefault()}
+                onLoadedData={() => tryPlay(index)}
+                ref={el => {
+                  if (el) videoRefs.current[index] = el;
+                }}
                 style={{
                   border: 'none',
                   outline: 'none',
@@ -404,7 +420,7 @@ const LandingPage = () => {
               font-bold text-lg text-center hover:from-purple-700 hover:to-blue-700 transition-all 
               duration-300 transform hover:scale-105 shadow-lg'
             >
-              Essayez PayLive !
+              Essayez PayLive!
             </button>
             <a
               href='/howitworks'
