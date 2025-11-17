@@ -25,6 +25,7 @@ import DashboardPage from './pages/DashboardPage';
 import HowItWorksPage from './pages/HowItWorksPage';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsAndConditions from './pages/TermsAndConditions';
+import FormPage from './pages/FormPage';
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -44,6 +45,14 @@ function App() {
             <Route
               path='/terms_and_conditions'
               element={<TermsAndConditions />}
+            />
+            <Route
+              path='/form'
+              element={
+                <>
+                  <FormPage />
+                </>
+              }
             />
             <Route
               path='/checkout/:storeName'

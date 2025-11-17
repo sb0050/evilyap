@@ -16,6 +16,7 @@ import cartsRoutes from "./routes/carts";
 import supportRoutes from "./routes/support";
 import clerkRoutes from "./routes/clerk";
 import inseeBceRoutes from "./routes/insee-bce";
+import formsRoutes from "./routes/forms";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -82,6 +83,7 @@ app.use("/api/carts", cartsRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api/clerk", clerkRoutes);
 app.use("/api/insee-bce", inseeBceRoutes);
+app.use("/api/forms", formsRoutes);
 
 // Route de test
 app.get("/api/health", (req: Request, res: Response) => {
