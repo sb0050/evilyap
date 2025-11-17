@@ -302,7 +302,7 @@ const HowItWorksPage = () => {
               py-2 px-3 rounded-lg font-bold text-lg text-center hover:from-purple-700 hover:to-blue-700 
               transition-all duration-300 transform hover:scale-105 shadow-lg'
             >
-              Essayez PayLive!
+              Essayez PayLive !
             </button>
 
             <a

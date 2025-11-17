@@ -416,17 +416,18 @@ const LandingPage = () => {
           <div className='flex items-center gap-2 mb-5'>
             <button
               onClick={() => handleCTAClick()}
-              className='flex-1 bg-gradient-to-r from-purple-600 to-blue-600 text-white py-2 px-3 rounded-lg 
+              className='flex-1 bg-gradient-to-r
+               from-purple-600 to-blue-600 text-white py-2 px-1 rounded-lg 
               font-bold text-lg text-center hover:from-purple-700 hover:to-blue-700 transition-all 
               duration-300 transform hover:scale-105 shadow-lg'
             >
-              Essayez PayLive!
+              Essayez PayLive !
             </button>
             <a
               href='/howitworks'
               className='px-3 py-2 rounded-lg text-white text-sm font-medium bg-white/10 border border-white/30 hover:bg-white/20 transition-colors'
             >
-              Comment ça marche ?
+              Comment ça marche
             </a>
           </div>
         </div>
