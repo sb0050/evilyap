@@ -85,6 +85,12 @@ const HowItWorksPage = () => {
     const v = videoRefs.current[index];
     if (!v) return;
     v.muted = true;
+    v.volume = 0;
+    v.autoplay = true;
+    try { v.setAttribute('muted', ''); } catch {}
+    try { v.setAttribute('autoplay', ''); } catch {}
+    try { v.setAttribute('playsinline', ''); } catch {}
+    try { v.setAttribute('webkit-playsinline', 'true'); } catch {}
     const attempt = () => {
       const p = v.play();
       if (p && typeof (p as any).catch === 'function') {
@@ -99,6 +105,7 @@ const HowItWorksPage = () => {
         attempt();
       };
       v.addEventListener('canplay', onCanPlay);
+      try { v.load(); } catch {}
     } else {
       attempt();
     }
@@ -112,12 +119,32 @@ const HowItWorksPage = () => {
   useEffect(() => {
     if (isDesktop) return;
     const handler = () => ensurePlay(currentSlide);
-    document.addEventListener('touchend', handler, { once: true });
+    document.addEventListener('touchstart', handler, { once: true, passive: true });
+    document.addEventListener('touchend', handler, { once: true, passive: true });
+    document.addEventListener('pointerdown', handler, { once: true });
     document.addEventListener('click', handler, { once: true });
+    document.addEventListener('scroll', handler, { once: true, capture: true });
     return () => {
-      document.removeEventListener('touchend', handler);
-      document.removeEventListener('click', handler);
+      document.removeEventListener('touchstart', handler as any);
+      document.removeEventListener('touchend', handler as any);
+      document.removeEventListener('pointerdown', handler as any);
+      document.removeEventListener('click', handler as any);
+      document.removeEventListener('scroll', handler as any);
     };
+  }, [currentSlide, isDesktop]);
+
+  useEffect(() => {
+    if (isDesktop) return;
+    const v = videoRefs.current[currentSlide];
+    if (!v) return;
+    const observer = new IntersectionObserver(entries => {
+      const entry = entries[0];
+      if (entry && entry.isIntersecting) {
+        ensurePlay(currentSlide);
+      }
+    }, { threshold: 0.4 });
+    observer.observe(v);
+    return () => observer.disconnect();
   }, [currentSlide, isDesktop]);
 
   useEffect(() => {
