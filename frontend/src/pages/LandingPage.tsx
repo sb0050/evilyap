@@ -260,7 +260,7 @@ const LandingPage = () => {
             ) : (
               <video
                 src={video.url}
-                className='w-full h-full object-cover'
+                className='w-full h-full object-contain'
                 muted
                 autoPlay
                 loop
