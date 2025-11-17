@@ -11,6 +11,7 @@ import { Toast } from '../components/Toast';
 import { useToast } from '../utils/toast';
 import Header from '../components/Header';
 import StripeWrapper from '../components/StripeWrapper';
+import { FR, BE } from 'country-flag-icons/react/3x2';
 
 interface OnboardingFormData {
   storeName: string;
@@ -68,6 +69,7 @@ export default function OnboardingPage() {
   const [isSiretDirty, setIsSiretDirty] = useState(false);
   const [lastCheckedSiret, setLastCheckedSiret] = useState('');
   const [siretDetails, setSiretDetails] = useState<any | null>(null);
+  const [companyCountry, setCompanyCountry] = useState<'FR' | 'BE'>('FR');
 
   // États pour l'adresse Stripe
   const [billingAddress, setBillingAddress] = useState<Address | null>(null);
@@ -101,8 +103,24 @@ export default function OnboardingPage() {
     const digits = (value || '').replace(/\s+/g, '');
     return /^\d{14}$/.test(digits);
   };
+  const isValidBce = (value: string) => {
+    const digits = (value || '')
+      .replace(/\s+/g, '')
+      .replace(/^BE/i, '')
+      .replace(/\./g, '');
+    return /^\d{10}$/.test(digits);
+  };
+  const normalizeCompanyId = (value: string) => {
+    const v = (value || '').trim();
+    if (companyCountry === 'FR') return v.replace(/\s+/g, '');
+    return v.replace(/\s+/g, '').replace(/^BE/i, '').replace(/\./g, '');
+  };
   // SIRET facultatif: invalide uniquement si non vide et format incorrect
-  const siretInvalid = formData.siret ? !isValidSiret(formData.siret) : false;
+  const siretInvalid = formData.siret
+    ? companyCountry === 'FR'
+      ? !isValidSiret(formData.siret)
+      : !isValidBce(formData.siret)
+    : false;
 
   // Debug: tracer les raisons du disabled du bouton
   useEffect(() => {
@@ -372,7 +390,7 @@ export default function OnboardingPage() {
   };
 
   const handleSiretBlur = async () => {
-    const siret = (formData.siret || '').trim();
+    const raw = (formData.siret || '').trim();
     if (!wasSiretFocused) {
       setWasSiretFocused(false);
       return;
@@ -382,22 +400,40 @@ export default function OnboardingPage() {
       return;
     }
     // SIRET facultatif: si vide, ne rien vérifier
-    if (!siret) {
+    if (!raw) {
       setSiretErrorMessage('');
       setSiretDetails(null);
       setWasSiretFocused(false);
       setIsSiretDirty(false);
       return;
     }
-    if (!/^\d{14}$/.test(siret)) {
-      setShowValidationErrors(true);
-      setSiretErrorMessage(
-        'Erreur de format de siret (Format attendu : 14 chiffres)'
-      );
-      setSiretDetails(null);
-      setWasSiretFocused(false);
-      setIsSiretDirty(false);
-      return;
+    if (companyCountry === 'FR') {
+      const siret = raw.replace(/\s+/g, '');
+      if (!/^\d{14}$/.test(siret)) {
+        setShowValidationErrors(true);
+        setSiretErrorMessage(
+          'Erreur de format de siret (Format attendu : 14 chiffres)'
+        );
+        setSiretDetails(null);
+        setWasSiretFocused(false);
+        setIsSiretDirty(false);
+        return;
+      }
+    } else {
+      const bce = raw
+        .replace(/\s+/g, '')
+        .replace(/^BE/i, '')
+        .replace(/\./g, '');
+      if (!/^\d{10}$/.test(bce)) {
+        setShowValidationErrors(true);
+        setSiretErrorMessage(
+          'Erreur de format de BCE (Format attendu : 10 chiffres)'
+        );
+        setSiretDetails(null);
+        setWasSiretFocused(false);
+        setIsSiretDirty(false);
+        return;
+      }
     }
     // Revalider au blur si l’utilisateur a modifié la valeur
     await checkSiretValidity();
@@ -428,30 +464,39 @@ export default function OnboardingPage() {
   };
 
   const checkSiretValidity = async () => {
-    const siret = (formData.siret || '').replace(/\s+/g, '');
-    if (!/^\d{14}$/.test(siret)) return; // pré-filtre
+    const normalized = normalizeCompanyId(formData.siret || '');
+    if (!normalized) return;
+    if (companyCountry === 'FR' && !/^\d{14}$/.test(normalized)) return;
+    if (companyCountry === 'BE' && !/^\d{10}$/.test(normalized)) return;
     setIsCheckingSiret(true);
     try {
+      const endpoint = companyCountry === 'FR' ? 'siret' : 'bce';
       const resp = await apiGet(
-        `/api/insee-bce/siret/${encodeURIComponent(siret)}`
+        `/api/insee-bce/${endpoint}/${encodeURIComponent(normalized)}`
       );
       const json = await resp.json().catch(() => ({}));
       if (resp.ok && json?.success) {
         setSiretErrorMessage('');
-        setLastCheckedSiret(siret);
+        setLastCheckedSiret(normalized);
         setSiretDetails(json?.data || null);
       } else {
         const message =
           json?.header?.message ||
           json?.error ||
-          'SIRET invalide ou introuvable';
+          (companyCountry === 'FR'
+            ? 'SIRET invalide ou introuvable'
+            : 'BCE invalide ou introuvable');
         setSiretErrorMessage(message);
-        setLastCheckedSiret(siret);
+        setLastCheckedSiret(normalized);
         setSiretDetails(null);
       }
     } catch (err) {
-      console.error('Vérification SIRET échouée:', err);
-      setSiretErrorMessage('Erreur lors de la vérification du SIRET');
+      console.error('Vérification SIRET/BCE échouée:', err);
+      setSiretErrorMessage(
+        companyCountry === 'FR'
+          ? 'Erreur lors de la vérification du SIRET'
+          : 'Erreur lors de la vérification du BCE'
+      );
       setSiretDetails(null);
     } finally {
       setIsCheckingSiret(false);
@@ -575,163 +620,250 @@ export default function OnboardingPage() {
                 )}
               </div>
 
-              {/* SIRET */}
+              {/* SIRET/BCE */}
               <div>
                 <label
                   htmlFor='siret'
                   className='block text-sm font-medium text-gray-700 mb-2'
                 >
-                  SIRET (14 chiffres, facultatif mais nécessaire pour obtenir le
-                  badge "boutique vérifiée")
+                  {companyCountry === 'FR'
+                    ? 'SIRET (14 chiffres, facultatif mais nécessaire pour obtenir le badge "boutique vérifiée")'
+                    : 'BCE (10 chiffres, facultatif mais nécessaire pour obtenir le badge "boutique vérifiée")'}
                 </label>
-                <div className='relative'>
-                  <input
-                    id='siret'
-                    inputMode='numeric'
-                    value={formData.siret}
-                    onChange={handleSiretChange}
-                    onFocus={handleSiretFocus}
-                    onBlur={handleSiretBlur}
-                    className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${showValidationErrors && (siretInvalid || !!siretErrorMessage) ? 'border-red-500' : 'border-gray-300'}`}
-                    placeholder='12345678901234'
-                  />
-                  {isCheckingSiret && (
-                    <div className='absolute right-3 inset-y-0 flex items-center'>
-                      <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
-                    </div>
-                  )}
+                <div className='flex items-center gap-2'>
+                  <div className='flex items-center gap-2 px-2 py-2 border rounded-lg'>
+                    {companyCountry === 'FR' ? (
+                      <FR title='France' className='w-5 h-4' />
+                    ) : (
+                      <BE title='Belgique' className='w-5 h-4' />
+                    )}
+                    <select
+                      value={companyCountry}
+                      onChange={e =>
+                        setCompanyCountry(e.target.value as 'FR' | 'BE')
+                      }
+                      className='bg-transparent text-sm focus:outline-none'
+                    >
+                      <option value='FR'>France</option>
+                      <option value='BE'>Belgique</option>
+                    </select>
+                  </div>
+                  <div className='relative flex-1'>
+                    <input
+                      id='siret'
+                      inputMode='numeric'
+                      value={formData.siret}
+                      onChange={handleSiretChange}
+                      onFocus={handleSiretFocus}
+                      onBlur={handleSiretBlur}
+                      className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${showValidationErrors && (siretInvalid || !!siretErrorMessage) ? 'border-red-500' : 'border-gray-300'}`}
+                      placeholder={
+                        companyCountry === 'FR'
+                          ? '12345678901234'
+                          : '0123.456.789 ou BE0123456789'
+                      }
+                    />
+                    {isCheckingSiret && (
+                      <div className='absolute right-3 inset-y-0 flex items-center'>
+                        <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 {(formData.siret && showValidationErrors && siretInvalid) ||
                 (formData.siret && !!siretErrorMessage) ? (
                   <p className='mt-2 text-sm text-red-600'>
                     {siretErrorMessage ||
-                      'SIRET invalide. Entrez exactement 14 chiffres.'}
+                      (companyCountry === 'FR'
+                        ? 'SIRET invalide. Entrez exactement 14 chiffres.'
+                        : 'BCE invalide. Entrez exactement 10 chiffres.')}
                   </p>
                 ) : null}
 
                 {formData.siret &&
-                lastCheckedSiret === formData.siret &&
+                normalizeCompanyId(formData.siret) === lastCheckedSiret &&
                 !siretInvalid &&
                 !siretErrorMessage &&
                 siretDetails
                   ? (() => {
-                      const pick = (v: any) => {
-                        if (v === null || v === undefined) return null;
-                        const s = String(v).trim();
-                        if (!s || s === '[ND]') return null;
-                        return s;
-                      };
-                      const formatInseeDate = (iso: any) => {
-                        const s = pick(iso);
-                        if (!s) return null;
-                        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-                        if (!m) return null;
-                        const months = [
-                          'Janvier',
-                          'Février',
-                          'Mars',
-                          'Avril',
-                          'Mai',
-                          'Juin',
-                          'Juillet',
-                          'Août',
-                          'Septembre',
-                          'Octobre',
-                          'Novembre',
-                          'Décembre',
-                        ];
-                        const year = m[1];
-                        const monthIndex = parseInt(m[2], 10) - 1;
-                        const day = m[3];
-                        const monthName = months[monthIndex] || '';
-                        if (!monthName) return null;
-                        return `${day} ${monthName} ${year}`;
-                      };
-                      const d = siretDetails;
-                      const e = d?.etablissement || d?.etablissements?.[0] || d;
-                      const ul = d?.uniteLegale || e?.uniteLegale || null;
-
-                      const denomination =
-                        pick(ul?.denominationUniteLegale) ||
-                        pick(ul?.denominationUsuelle1UniteLegale) ||
-                        pick(ul?.denominationUsuelle2UniteLegale) ||
-                        pick(ul?.denominationUsuelle3UniteLegale) ||
-                        pick(e?.enseigne1Etablissement) ||
-                        (pick(ul?.prenomUsuelUniteLegale) &&
-                        pick(ul?.nomUniteLegale)
-                          ? `${pick(ul?.prenomUsuelUniteLegale)} ${pick(ul?.nomUniteLegale)}`
-                          : null);
-
-                      const adr =
-                        e?.adresseEtablissement ||
-                        e?.adressePrincipaleEtablissement ||
-                        null;
-                      const line1 = [
-                        pick(adr?.numeroVoieEtablissement),
-                        pick(adr?.typeVoieEtablissement),
-                        pick(adr?.libelleVoieEtablissement),
-                        pick(adr?.complementAdresseEtablissement),
-                      ]
-                        .filter(Boolean)
-                        .join(' ');
-                      const city = [
-                        pick(adr?.codePostalEtablissement),
-                        pick(adr?.libelleCommuneEtablissement),
-                      ]
-                        .filter(Boolean)
-                        .join(' ');
-
-                      const hasName = !!denomination;
-                      const hasAddress = !!line1 || !!city;
-                      const hasSiren = !!pick(e?.siren);
-                      const creationDateDisplay =
-                        formatInseeDate(e?.dateCreationEtablissement) ||
-                        formatInseeDate(ul?.dateCreationUniteLegale);
-                      const hasDate = !!creationDateDisplay;
-
-                      if (!hasName && !hasAddress) return null;
-                      return (
-                        <div className='mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700'>
-                          <div className='flex items-center gap-2 mb-1 text-gray-800 font-medium'>
-                            <BadgeCheck className='w-4 h-4 text-green-600' />
-                            Données INSEE vérifiées
+                      if (companyCountry === 'FR') {
+                        const pick = (v: any) => {
+                          if (v === null || v === undefined) return null;
+                          const s = String(v).trim();
+                          if (!s || s === '[ND]') return null;
+                          return s;
+                        };
+                        const formatInseeDate = (iso: any) => {
+                          const s = pick(iso);
+                          if (!s) return null;
+                          const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+                          if (!m) return null;
+                          const months = [
+                            'Janvier',
+                            'Février',
+                            'Mars',
+                            'Avril',
+                            'Mai',
+                            'Juin',
+                            'Juillet',
+                            'Août',
+                            'Septembre',
+                            'Octobre',
+                            'Novembre',
+                            'Décembre',
+                          ];
+                          const year = m[1];
+                          const monthIndex = parseInt(m[2], 10) - 1;
+                          const day = m[3];
+                          const monthName = months[monthIndex] || '';
+                          if (!monthName) return null;
+                          return `${day} ${monthName} ${year}`;
+                        };
+                        const d = siretDetails;
+                        const e =
+                          d?.etablissement || d?.etablissements?.[0] || d;
+                        const ul = d?.uniteLegale || e?.uniteLegale || null;
+                        const denomination =
+                          pick(ul?.denominationUniteLegale) ||
+                          pick(ul?.denominationUsuelle1UniteLegale) ||
+                          pick(ul?.denominationUsuelle2UniteLegale) ||
+                          pick(ul?.denominationUsuelle3UniteLegale) ||
+                          pick(e?.enseigne1Etablissement) ||
+                          (pick(ul?.prenomUsuelUniteLegale) &&
+                          pick(ul?.nomUniteLegale)
+                            ? `${pick(ul?.prenomUsuelUniteLegale)} ${pick(ul?.nomUniteLegale)}`
+                            : null);
+                        const adr =
+                          e?.adresseEtablissement ||
+                          e?.adressePrincipaleEtablissement ||
+                          null;
+                        const line1 = [
+                          pick(adr?.numeroVoieEtablissement),
+                          pick(adr?.typeVoieEtablissement),
+                          pick(adr?.libelleVoieEtablissement),
+                          pick(adr?.complementAdresseEtablissement),
+                        ]
+                          .filter(Boolean)
+                          .join(' ');
+                        const city = [
+                          pick(adr?.codePostalEtablissement),
+                          pick(adr?.libelleCommuneEtablissement),
+                        ]
+                          .filter(Boolean)
+                          .join(' ');
+                        const hasName = !!denomination;
+                        const hasAddress = !!line1 || !!city;
+                        const hasSiren = !!pick(e?.siren);
+                        const creationDateDisplay =
+                          formatInseeDate(e?.dateCreationEtablissement) ||
+                          formatInseeDate(ul?.dateCreationUniteLegale);
+                        const hasDate = !!creationDateDisplay;
+                        if (!hasName && !hasAddress) return null;
+                        return (
+                          <div className='mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700'>
+                            <div className='flex items-center gap-2 mb-1 text-gray-800 font-medium'>
+                              <BadgeCheck className='w-4 h-4 text-green-600' />
+                              Données INSEE vérifiées
+                            </div>
+                            {hasName && (
+                              <div>
+                                <span className='text-gray-600'>
+                                  Raison sociale:{' '}
+                                </span>
+                                <span className='font-medium'>
+                                  {denomination}
+                                </span>
+                              </div>
+                            )}
+                            {hasSiren && (
+                              <div className='mt-1'>
+                                <span className='text-gray-600'>SIREN: </span>
+                                <span className='font-medium'>{e?.siren}</span>
+                              </div>
+                            )}
+                            {hasDate && (
+                              <div className='mt-1'>
+                                <span className='text-gray-600'>
+                                  Date de création:{' '}
+                                </span>
+                                <span className='font-medium'>
+                                  {creationDateDisplay}
+                                </span>
+                              </div>
+                            )}
+                            {hasAddress && (
+                              <div className='mt-1'>
+                                <span className='text-gray-600'>Adresse: </span>
+                                <span className='font-medium'>
+                                  {[line1, city].filter(Boolean).join(' — ')}
+                                </span>
+                              </div>
+                            )}
                           </div>
-                          {hasName && (
-                            <div>
-                              <span className='text-gray-600'>
-                                Raison sociale:{' '}
-                              </span>
-                              <span className='font-medium'>
-                                {denomination}
-                              </span>
+                        );
+                      } else {
+                        const data =
+                          (siretDetails as any)?.data || siretDetails;
+                        const name =
+                          (data?.denomination as any) ||
+                          (data?.abbreviation as any) ||
+                          (data?.commercial_name as any) ||
+                          (data?.branch_name as any) ||
+                          '';
+                        const address =
+                          (data?.address?.full_address as any) || '';
+                        const cbe =
+                          (data?.cbe_number_formatted as any) ||
+                          (data?.cbe_number as any) ||
+                          '';
+                        const start = (data?.start_date as any) || '';
+                        const juridic = (data?.juridical_form as any) || '';
+
+                        const hasName = !!String(name).trim();
+                        const hasAddress = !!String(address).trim();
+                        const hasCbe = !!String(cbe).trim();
+                        const hasJuridic = !!String(juridic).trim();
+                        const hasStart = !!String(start).trim();
+                        if (!hasName && !hasAddress) return null;
+                        return (
+                          <div className='mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700'>
+                            <div className='flex items-center gap-2 mb-1 text-gray-800 font-medium'>
+                              <BadgeCheck className='w-4 h-4 text-green-600' />
+                              Données BCE vérifiées
                             </div>
-                          )}
-                          {hasSiren && (
-                            <div className='mt-1'>
-                              <span className='text-gray-600'>SIREN: </span>
-                              <span className='font-medium'>{e?.siren}</span>
-                            </div>
-                          )}
-                          {hasDate && (
-                            <div className='mt-1'>
-                              <span className='text-gray-600'>
-                                Date de création:{' '}
-                              </span>
-                              <span className='font-medium'>
-                                {creationDateDisplay}
-                              </span>
-                            </div>
-                          )}
-                          {hasAddress && (
-                            <div className='mt-1'>
-                              <span className='text-gray-600'>Adresse: </span>
-                              <span className='font-medium'>
-                                {[line1, city].filter(Boolean).join(' — ')}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      );
+                            {hasName && (
+                              <div>
+                                <span className='text-gray-600'>
+                                  Raison sociale:{' '}
+                                </span>
+                                <span className='font-medium'>{name}</span>
+                              </div>
+                            )}
+                            {hasJuridic && (
+                              <div className='mt-1'>
+                                <span className='text-gray-600'>
+                                  Forme juridique:{' '}
+                                </span>
+                                <span className='font-medium'>{juridic}</span>
+                              </div>
+                            )}
+                            {hasStart && (
+                              <div className='mt-1'>
+                                <span className='text-gray-600'>
+                                  Date de début:{' '}
+                                </span>
+                                <span className='font-medium'>{start}</span>
+                              </div>
+                            )}
+                            {hasAddress && (
+                              <div className='mt-1'>
+                                <span className='text-gray-600'>Adresse: </span>
+                                <span className='font-medium'>{address}</span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
                     })()
                   : null}
               </div>

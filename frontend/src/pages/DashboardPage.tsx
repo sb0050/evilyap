@@ -41,6 +41,7 @@ import {
 } from '../utils/api';
 import SuccessConfetti from '../components/SuccessConfetti';
 import { RiDiscountPercentFill } from 'react-icons/ri';
+import { FR, BE } from 'country-flag-icons/react/3x2';
 
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
@@ -439,11 +440,28 @@ export default function DashboardPage() {
   const [isSiretDirty, setIsSiretDirty] = useState(false);
   const [lastCheckedSiret, setLastCheckedSiret] = useState('');
   const [siretDetails, setSiretDetails] = useState<any | null>(null);
+  const [companyCountry, setCompanyCountry] = useState<'FR' | 'BE'>('FR');
   const isValidSiret = (value: string) => {
     const digits = (value || '').replace(/\s+/g, '');
     return /^\d{14}$/.test(digits);
   };
-  const siretInvalid = siret ? !isValidSiret(siret) : false;
+  const isValidBce = (value: string) => {
+    const digits = (value || '')
+      .replace(/\s+/g, '')
+      .replace(/^BE/i, '')
+      .replace(/\./g, '');
+    return /^\d{10}$/.test(digits);
+  };
+  const normalizeCompanyId = (value: string) => {
+    const v = (value || '').trim();
+    if (companyCountry === 'FR') return v.replace(/\s+/g, '');
+    return v.replace(/\s+/g, '').replace(/^BE/i, '').replace(/\./g, '');
+  };
+  const siretInvalid = siret
+    ? companyCountry === 'FR'
+      ? !isValidSiret(siret)
+      : !isValidBce(siret)
+    : false;
 
   const handleSiretFocus = () => {
     setWasSiretFocused(true);
@@ -462,34 +480,46 @@ export default function DashboardPage() {
     }
   };
   const checkSiretValidity = async () => {
-    const digits = (siret || '').replace(/\s+/g, '');
-    if (!/^\d{14}$/.test(digits)) return;
+    const normalized = normalizeCompanyId(siret || '');
+    if (!normalized) return;
+    if (companyCountry === 'FR' && !/^\d{14}$/.test(normalized)) return;
+    if (companyCountry === 'BE' && !/^\d{10}$/.test(normalized)) return;
     setIsCheckingSiret(true);
     try {
+      const endpoint = companyCountry === 'FR' ? 'siret' : 'bce';
       const resp = await apiGet(
-        `/api/insee-bce/siret/${encodeURIComponent(digits)}`
+        `/api/insee-bce/${endpoint}/${encodeURIComponent(normalized)}`
       );
-      const json = await resp.json();
+      const json = await resp.json().catch(() => ({}));
       if (resp.ok && json?.success) {
         setSiretErrorMessage('');
-        setLastCheckedSiret(digits);
+        setLastCheckedSiret(normalized);
         setSiretDetails(json?.data || null);
       } else {
-        const message = json?.error || 'SIRET invalide ou introuvable';
+        const message =
+          json?.header?.message ||
+          json?.error ||
+          (companyCountry === 'FR'
+            ? 'SIRET invalide ou introuvable'
+            : 'BCE invalide ou introuvable');
         setSiretErrorMessage(message);
-        setLastCheckedSiret(digits);
+        setLastCheckedSiret(normalized);
         setSiretDetails(null);
       }
     } catch (err) {
-      console.error('Vérification SIRET échouée:', err);
-      setSiretErrorMessage('Erreur lors de la vérification du SIRET');
+      console.error('Vérification SIRET/BCE échouée:', err);
+      setSiretErrorMessage(
+        companyCountry === 'FR'
+          ? 'Erreur lors de la vérification du SIRET'
+          : 'Erreur lors de la vérification du BCE'
+      );
       setSiretDetails(null);
     } finally {
       setIsCheckingSiret(false);
     }
   };
   const handleSiretBlur = async () => {
-    const value = (siret || '').trim();
+    const raw = (siret || '').trim();
     if (!wasSiretFocused) {
       setWasSiretFocused(false);
       return;
@@ -498,21 +528,38 @@ export default function DashboardPage() {
       setWasSiretFocused(false);
       return;
     }
-    if (!value) {
+    if (!raw) {
       setSiretErrorMessage('');
       setSiretDetails(null);
       setWasSiretFocused(false);
       setIsSiretDirty(false);
       return;
     }
-    if (!/^\d{14}$/.test(value)) {
-      setSiretErrorMessage(
-        'Erreur de format de siret (Format attendu : 14 chiffres)'
-      );
-      setSiretDetails(null);
-      setWasSiretFocused(false);
-      setIsSiretDirty(false);
-      return;
+    if (companyCountry === 'FR') {
+      const s = raw.replace(/\s+/g, '');
+      if (!/^\d{14}$/.test(s)) {
+        setSiretErrorMessage(
+          'Erreur de format de siret (Format attendu : 14 chiffres)'
+        );
+        setSiretDetails(null);
+        setWasSiretFocused(false);
+        setIsSiretDirty(false);
+        return;
+      }
+    } else {
+      const bce = raw
+        .replace(/\s+/g, '')
+        .replace(/^BE/i, '')
+        .replace(/\./g, '');
+      if (!/^\d{10}$/.test(bce)) {
+        setSiretErrorMessage(
+          'Erreur de format de BCE (Format attendu : 10 chiffres)'
+        );
+        setSiretDetails(null);
+        setWasSiretFocused(false);
+        setIsSiretDirty(false);
+        return;
+      }
     }
     await checkSiretValidity();
     setWasSiretFocused(false);
@@ -1180,9 +1227,14 @@ export default function DashboardPage() {
       setIsSubmittingModifications(false);
       return;
     }
-    // SIRET facultatif: si fourni, il doit être valide et connu
+    // Identifiant entreprise facultatif: doit être valide et vérifiable
     if (siret && (siretInvalid || !!siretErrorMessage)) {
-      showToast('Veuillez saisir un SIRET valide (14 chiffres)', 'error');
+      showToast(
+        companyCountry === 'FR'
+          ? 'Veuillez saisir un SIRET valide (14 chiffres)'
+          : 'Veuillez saisir un BCE valide (10 chiffres)',
+        'error'
+      );
       setIsSubmittingModifications(false);
       return;
     }
@@ -1206,7 +1258,7 @@ export default function DashboardPage() {
       const payload: any = { name, description, website };
       const isSiretVerified =
         Boolean(siret) &&
-        lastCheckedSiret === siret &&
+        lastCheckedSiret === normalizeCompanyId(siret) &&
         !siretInvalid &&
         !siretErrorMessage &&
         !!siretDetails;
@@ -1697,168 +1749,218 @@ export default function DashboardPage() {
                       )}
                     </div>
                   </div>
-                  {/* SIRET */}
+                  {/* SIRET/BCE */}
                   <div>
                     <label
                       htmlFor='siret'
                       className='block text-sm font-medium text-gray-700 mb-2'
                     >
-                      SIRET (14 chiffres, facultatif mais nécessaire pour
-                      obtenir le badge "Boutique Vérifiée")
+                      {companyCountry === 'FR'
+                        ? 'SIRET (14 chiffres, facultatif mais nécessaire pour obtenir le badge "Boutique Vérifiée")'
+                        : 'BCE (10 chiffres, facultatif mais nécessaire pour obtenir le badge "Boutique Vérifiée")'}
                     </label>
-                    <div className='relative'>
-                      <input
-                        id='siret'
-                        inputMode='numeric'
-                        value={siret}
-                        onChange={handleSiretChange}
-                        onFocus={handleSiretFocus}
-                        onBlur={handleSiretBlur}
-                        className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${showValidationErrors && siret && (siretInvalid || !!siretErrorMessage) ? 'border-red-500' : 'border-gray-300'}`}
-                        placeholder='12345678901234'
-                      />
-                      {isCheckingSiret && (
-                        <div className='absolute right-3 inset-y-0 flex items-center'>
-                          <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
-                        </div>
-                      )}
+                    <div className='flex items-center gap-2'>
+                      <div className='flex items-center gap-2 px-2 py-2 border rounded-lg'>
+                        {companyCountry === 'FR' ? (
+                          <FR title='France' className='w-5 h-4' />
+                        ) : (
+                          <BE title='Belgique' className='w-5 h-4' />
+                        )}
+                        <select
+                          value={companyCountry}
+                          onChange={e => setCompanyCountry(e.target.value as 'FR' | 'BE')}
+                          className='bg-transparent text-sm focus:outline-none'
+                        >
+                          <option value='FR'>France</option>
+                          <option value='BE'>Belgique</option>
+                        </select>
+                      </div>
+                      <div className='relative flex-1'>
+                        <input
+                          id='siret'
+                          inputMode='numeric'
+                          value={siret}
+                          onChange={handleSiretChange}
+                          onFocus={handleSiretFocus}
+                          onBlur={handleSiretBlur}
+                          className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${showValidationErrors && siret && (siretInvalid || !!siretErrorMessage) ? 'border-red-500' : 'border-gray-300'}`}
+                          placeholder={
+                            companyCountry === 'FR'
+                              ? '12345678901234'
+                              : '0123.456.789 ou BE0123456789'
+                          }
+                        />
+                        {isCheckingSiret && (
+                          <div className='absolute right-3 inset-y-0 flex items-center'>
+                            <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
+                          </div>
+                        )}
+                      </div>
                     </div>
                     {(siret && showValidationErrors && siretInvalid) ||
                     (siret && !!siretErrorMessage) ? (
                       <p className='mt-2 text-sm text-red-600'>
                         {siretErrorMessage ||
-                          'SIRET invalide. Entrez exactement 14 chiffres.'}
+                          (companyCountry === 'FR'
+                            ? 'SIRET invalide. Entrez exactement 14 chiffres.'
+                            : 'BCE invalide. Entrez exactement 10 chiffres.')}
                       </p>
                     ) : null}
 
                     {siret &&
-                    lastCheckedSiret === siret &&
+                    normalizeCompanyId(siret) === lastCheckedSiret &&
                     !siretInvalid &&
                     !siretErrorMessage &&
                     siretDetails
                       ? (() => {
-                          const pick = (v: any) => {
-                            if (v === null || v === undefined) return null;
-                            const s = String(v).trim();
-                            if (!s || s === '[ND]') return null;
-                            return s;
-                          };
-                          const formatInseeDate = (iso: any) => {
-                            const s = pick(iso);
-                            if (!s) return null;
-                            const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-                            if (!m) return null;
-                            const months = [
-                              'Janvier',
-                              'Février',
-                              'Mars',
-                              'Avril',
-                              'Mai',
-                              'Juin',
-                              'Juillet',
-                              'Août',
-                              'Septembre',
-                              'Octobre',
-                              'Novembre',
-                              'Décembre',
-                            ];
-                            const year = m[1];
-                            const monthIndex = parseInt(m[2], 10) - 1;
-                            const day = m[3];
-                            const monthName = months[monthIndex] || '';
-                            if (!monthName) return null;
-                            return `${day} ${monthName} ${year}`;
-                          };
-                          const d = siretDetails;
-                          const e =
-                            d?.etablissement || d?.etablissements?.[0] || d;
-                          const ul = d?.uniteLegale || e?.uniteLegale || null;
-
-                          const denomination =
-                            pick(ul?.denominationUniteLegale) ||
-                            pick(ul?.denominationUsuelle1UniteLegale) ||
-                            pick(ul?.denominationUsuelle2UniteLegale) ||
-                            pick(ul?.denominationUsuelle3UniteLegale) ||
-                            pick(e?.enseigne1Etablissement) ||
-                            (pick(ul?.prenomUsuelUniteLegale) &&
-                            pick(ul?.nomUniteLegale)
-                              ? `${pick(ul?.prenomUsuelUniteLegale)} ${pick(ul?.nomUniteLegale)}`
-                              : null);
-
-                          const adr =
-                            e?.adresseEtablissement ||
-                            e?.adressePrincipaleEtablissement ||
-                            null;
-                          const line1 = [
-                            pick(adr?.numeroVoieEtablissement),
-                            pick(adr?.typeVoieEtablissement),
-                            pick(adr?.libelleVoieEtablissement),
-                            pick(adr?.complementAdresseEtablissement),
-                          ]
-                            .filter(Boolean)
-                            .join(' ');
-                          const city = [
-                            pick(adr?.codePostalEtablissement),
-                            pick(adr?.libelleCommuneEtablissement),
-                          ]
-                            .filter(Boolean)
-                            .join(' ');
-
-                          const hasName = !!denomination;
-                          const hasAddress = !!line1 || !!city;
-                          const hasSiren = !!pick(e?.siren);
-                          const creationDateDisplay =
-                            formatInseeDate(e?.dateCreationEtablissement) ||
-                            formatInseeDate(ul?.dateCreationUniteLegale);
-                          const hasDate = !!creationDateDisplay;
-
-                          if (!hasName && !hasAddress) return null;
-                          return (
-                            <div className='mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700'>
-                              <div className='flex items-center gap-2 mb-1 text-gray-800 font-medium'>
-                                <BadgeCheck className='w-4 h-4 text-green-600' />
-                                Données INSEE vérifiées
+                          if (companyCountry === 'FR') {
+                            const pick = (v: any) => {
+                              if (v === null || v === undefined) return null;
+                              const s = String(v).trim();
+                              if (!s || s === '[ND]') return null;
+                              return s;
+                            };
+                            const formatInseeDate = (iso: any) => {
+                              const s = pick(iso);
+                              if (!s) return null;
+                              const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+                              if (!m) return null;
+                              const months = [
+                                'Janvier',
+                                'Février',
+                                'Mars',
+                                'Avril',
+                                'Mai',
+                                'Juin',
+                                'Juillet',
+                                'Août',
+                                'Septembre',
+                                'Octobre',
+                                'Novembre',
+                                'Décembre',
+                              ];
+                              const year = m[1];
+                              const monthIndex = parseInt(m[2], 10) - 1;
+                              const day = m[3];
+                              const monthName = months[monthIndex] || '';
+                              if (!monthName) return null;
+                              return `${day} ${monthName} ${year}`;
+                            };
+                            const d = siretDetails;
+                            const e = d?.etablissement || d?.etablissements?.[0] || d;
+                            const ul = d?.uniteLegale || e?.uniteLegale || null;
+                            const denomination =
+                              pick(ul?.denominationUniteLegale) ||
+                              pick(ul?.denominationUsuelle1UniteLegale) ||
+                              pick(ul?.denominationUsuelle2UniteLegale) ||
+                              pick(ul?.denominationUsuelle3UniteLegale) ||
+                              pick(e?.enseigne1Etablissement) ||
+                              (pick(ul?.prenomUsuelUniteLegale) && pick(ul?.nomUniteLegale)
+                                ? `${pick(ul?.prenomUsuelUniteLegale)} ${pick(ul?.nomUniteLegale)}`
+                                : null);
+                            const adr = e?.adresseEtablissement || e?.adressePrincipaleEtablissement || null;
+                            const line1 = [
+                              pick(adr?.numeroVoieEtablissement),
+                              pick(adr?.typeVoieEtablissement),
+                              pick(adr?.libelleVoieEtablissement),
+                              pick(adr?.complementAdresseEtablissement),
+                            ]
+                              .filter(Boolean)
+                              .join(' ');
+                            const city = [pick(adr?.codePostalEtablissement), pick(adr?.libelleCommuneEtablissement)]
+                              .filter(Boolean)
+                              .join(' ');
+                            const hasName = !!denomination;
+                            const hasAddress = !!line1 || !!city;
+                            const hasSiren = !!pick(e?.siren);
+                            const creationDateDisplay =
+                              formatInseeDate(e?.dateCreationEtablissement) ||
+                              formatInseeDate(ul?.dateCreationUniteLegale);
+                            const hasDate = !!creationDateDisplay;
+                            if (!hasName && !hasAddress) return null;
+                            return (
+                              <div className='mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700'>
+                                <div className='flex items-center gap-2 mb-1 text-gray-800 font-medium'>
+                                  <BadgeCheck className='w-4 h-4 text-green-600' />
+                                  Données INSEE vérifiées
+                                </div>
+                                {hasName && (
+                                  <div>
+                                    <span className='text-gray-600'>Raison sociale: </span>
+                                    <span className='font-medium'>{denomination}</span>
+                                  </div>
+                                )}
+                                {hasSiren && (
+                                  <div className='mt-1'>
+                                    <span className='text-gray-600'>SIREN: </span>
+                                    <span className='font-medium'>{e?.siren}</span>
+                                  </div>
+                                )}
+                                {hasDate && (
+                                  <div className='mt-1'>
+                                    <span className='text-gray-600'>Date de création: </span>
+                                    <span className='font-medium'>{creationDateDisplay}</span>
+                                  </div>
+                                )}
+                                {hasAddress && (
+                                  <div className='mt-1'>
+                                    <span className='text-gray-600'>Adresse: </span>
+                                    <span className='font-medium'>
+                                      {[line1, city].filter(Boolean).join(' — ')}
+                                    </span>
+                                  </div>
+                                )}
                               </div>
-                              {hasName && (
-                                <div>
-                                  <span className='text-gray-600'>
-                                    Raison sociale:{' '}
-                                  </span>
-                                  <span className='font-medium'>
-                                    {denomination}
-                                  </span>
+                            );
+                          } else {
+                            const data = (siretDetails as any)?.data || siretDetails;
+                            const name =
+                              (data?.denomination as any) ||
+                              (data?.abbreviation as any) ||
+                              (data?.commercial_name as any) ||
+                              (data?.branch_name as any) ||
+                              '';
+                            const address = (data?.address?.full_address as any) || '';
+                            const cbe = (data?.cbe_number_formatted as any) || (data?.cbe_number as any) || '';
+                            const start = (data?.start_date as any) || '';
+                            const hasName = !!String(name).trim();
+                            const hasAddress = !!String(address).trim();
+                            const hasCbe = !!String(cbe).trim();
+                            const hasStart = !!String(start).trim();
+                            if (!hasName && !hasAddress) return null;
+                            return (
+                              <div className='mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700'>
+                                <div className='flex items-center gap-2 mb-1 text-gray-800 font-medium'>
+                                  <BadgeCheck className='w-4 h-4 text-green-600' />
+                                  Données BCE vérifiées
                                 </div>
-                              )}
-                              {hasSiren && (
-                                <div className='mt-1'>
-                                  <span className='text-gray-600'>SIREN: </span>
-                                  <span className='font-medium'>
-                                    {e?.siren}
-                                  </span>
-                                </div>
-                              )}
-                              {hasDate && (
-                                <div className='mt-1'>
-                                  <span className='text-gray-600'>
-                                    Date de création:{' '}
-                                  </span>
-                                  <span className='font-medium'>
-                                    {creationDateDisplay}
-                                  </span>
-                                </div>
-                              )}
-                              {hasAddress && (
-                                <div className='mt-1'>
-                                  <span className='text-gray-600'>
-                                    Adresse:{' '}
-                                  </span>
-                                  <span className='font-medium'>
-                                    {[line1, city].filter(Boolean).join(' — ')}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          );
+                                {hasName && (
+                                  <div>
+                                    <span className='text-gray-600'>Raison sociale: </span>
+                                    <span className='font-medium'>{name}</span>
+                                  </div>
+                                )}
+                                {hasCbe && (
+                                  <div className='mt-1'>
+                                    <span className='text-gray-600'>Numéro BCE: </span>
+                                    <span className='font-medium'>{cbe}</span>
+                                  </div>
+                                )}
+                                {hasStart && (
+                                  <div className='mt-1'>
+                                    <span className='text-gray-600'>Date de début: </span>
+                                    <span className='font-medium'>{start}</span>
+                                  </div>
+                                )}
+                                {hasAddress && (
+                                  <div className='mt-1'>
+                                    <span className='text-gray-600'>Adresse: </span>
+                                    <span className='font-medium'>{address}</span>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
                         })()
                       : null}
                   </div>

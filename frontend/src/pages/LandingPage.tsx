@@ -86,16 +86,56 @@ const LandingPage = () => {
     },
   ];
 
+  const mobileVideos = [
+    {
+      id: 1,
+      url: `${import.meta.env.VITE_CLOUDFRONT_URL}/videos/00.mp4`,
+      title: 'PayLive Demo 1',
+      description:
+        'Découvrez comment PayLive révolutionne vos paiements en ligne',
+      likes: '2.3K',
+      comments: '156',
+      shares: '89',
+    },
+    {
+      id: 2,
+      url: `${import.meta.env.VITE_CLOUDFRONT_URL}/videos/01.mp4`,
+      title: 'PayLive Demo 2',
+      description: 'Intégration Stripe et Boxtal en quelques clics',
+      likes: '1.8K',
+      comments: '92',
+      shares: '67',
+    },
+    {
+      id: 3,
+      url: `${import.meta.env.VITE_CLOUDFRONT_URL}/videos/02.mp4`,
+      title: 'PayLive Demo 3',
+      description: 'Gestion clients simplifiée avec PayLive',
+      likes: '3.1K',
+      comments: '203',
+      shares: '124',
+    },
+    {
+      id: 4,
+      url: `${import.meta.env.VITE_CLOUDFRONT_URL}/videos/03.mp4`,
+      title: 'PayLive Demo 3',
+      description: 'Gestion clients simplifiée avec PayLive',
+      likes: '10.4K',
+      comments: '300',
+      shares: '200',
+    },
+  ];
+
+  const activeVideos = isDesktop ? videos : mobileVideos;
+
   // Auto-play functionality
   useEffect(() => {
     if (!isAutoPlaying) return;
-
     const interval = setInterval(() => {
-      setCurrentSlide(prev => (prev + 1) % videos.length);
-    }, 8000); // Change slide every 8 seconds
-
+      setCurrentSlide(prev => (prev + 1) % activeVideos.length);
+    }, 8000);
     return () => clearInterval(interval);
-  }, [isAutoPlaying, videos.length]);
+  }, [isAutoPlaying, activeVideos.length]);
 
   // Preload current and next video for better mobile performance
   useEffect(() => {
@@ -103,45 +143,36 @@ const LandingPage = () => {
       const link = document.createElement('link');
       link.rel = 'prefetch';
       link.href = url;
-      link.as = 'document';
+      const isMp4 = /\.mp4(\?|$)/i.test(url);
+      link.as = isMp4 ? 'video' : 'document';
       document.head.appendChild(link);
-
-      // Remove after 10 seconds to avoid the warning
       setTimeout(() => {
         if (document.head.contains(link)) {
           document.head.removeChild(link);
         }
       }, 10000);
     };
-
-    // Preload current video
-    if (videos[currentSlide]) {
-      preloadVideo(videos[currentSlide].url);
+    if (activeVideos[currentSlide]) {
+      preloadVideo(activeVideos[currentSlide].url);
     }
-
-    // Preload next video
-    const nextIndex = (currentSlide + 1) % videos.length;
-    if (videos[nextIndex]) {
-      preloadVideo(videos[nextIndex].url);
+    const nextIndex = (currentSlide + 1) % activeVideos.length;
+    if (activeVideos[nextIndex]) {
+      preloadVideo(activeVideos[nextIndex].url);
     }
-  }, [currentSlide, videos]);
+  }, [currentSlide, activeVideos]);
 
   const nextSlide = () => {
-    setCurrentSlide(prev => (prev + 1) % videos.length);
-    setIsAutoPlaying(false);
-    setTimeout(() => setIsAutoPlaying(true), 3000);
+    setCurrentSlide(prev => (prev + 1) % activeVideos.length);
   };
 
   const prevSlide = () => {
-    setCurrentSlide(prev => (prev - 1 + videos.length) % videos.length);
-    setIsAutoPlaying(false);
-    setTimeout(() => setIsAutoPlaying(true), 3000);
+    setCurrentSlide(
+      prev => (prev - 1 + activeVideos.length) % activeVideos.length
+    );
   };
 
   const goToSlide = (index: number) => {
     setCurrentSlide(index);
-    setIsAutoPlaying(false);
-    setTimeout(() => setIsAutoPlaying(true), 3000);
   };
 
   const toggleLike = (videoId: number) => {
@@ -160,9 +191,9 @@ const LandingPage = () => {
     <div className='h-screen w-full bg-white relative overflow-hidden flex flex-col'>
       {/* Header overlay - Mobile */}
       {!isDesktop && (
-        <div className='absolute top-0 left-0 right-0 z-30 bg-black/50 backdrop-blur-sm p-4'>
+        <div className='absolute top-0 left-0 right-0 z-30 bg-black/50 backdrop-blur-sm p-1'>
           <div className='text-center'>
-            <h1 className='text-white text-lg font-bold mb-1'>PayLive</h1>
+            <h1 className='text-white text-2xl font-bold mb-1'>PayLive</h1>
             <p className='text-white text-sm font-bold opacity-90'>
               Gérez efficacement vos ventes en Live Shopping
             </p>
@@ -187,7 +218,7 @@ const LandingPage = () => {
         className='relative flex-1 w-full bg-black'
         onContextMenu={e => e.preventDefault()}
       >
-        {videos.map((video, index) => (
+        {activeVideos.map((video, index) => (
           <div
             key={video.id}
             className={`absolute inset-0 transition-transform duration-500 ease-in-out ${
@@ -198,22 +229,43 @@ const LandingPage = () => {
                   : 'translate-y-full'
             }`}
           >
-            <iframe
-              src={video.url}
-              className='w-full h-full object-cover'
-              frameBorder='0'
-              allow='autoplay; fullscreen; accelerometer; gyroscope; picture-in-picture'
-              allowFullScreen
-              loading={index === currentSlide ? 'eager' : 'lazy'}
-              sandbox='allow-scripts allow-same-origin allow-presentation'
-              onContextMenu={e => e.preventDefault()}
-              style={{
-                border: 'none',
-                outline: 'none',
-                WebkitTransform: 'translateZ(0)',
-                transform: 'translateZ(0)',
-              }}
-            />
+            {isDesktop ? (
+              <iframe
+                src={video.url}
+                className='w-full h-full object-cover'
+                frameBorder='0'
+                allow='autoplay; fullscreen; accelerometer; gyroscope; picture-in-picture'
+                allowFullScreen
+                loading={index === currentSlide ? 'eager' : 'lazy'}
+                sandbox='allow-scripts allow-same-origin allow-presentation'
+                onContextMenu={e => e.preventDefault()}
+                style={{
+                  border: 'none',
+                  outline: 'none',
+                  WebkitTransform: 'translateZ(0)',
+                  transform: 'translateZ(0)',
+                }}
+              />
+            ) : (
+              <video
+                src={video.url}
+                className='w-full h-full object-cover'
+                muted
+                autoPlay
+                loop
+                playsInline
+                preload='auto'
+                controls={false}
+                disablePictureInPicture
+                onContextMenu={e => e.preventDefault()}
+                style={{
+                  border: 'none',
+                  outline: 'none',
+                  WebkitTransform: 'translateZ(0)',
+                  transform: 'translateZ(0)',
+                }}
+              />
+            )}
           </div>
         ))}
       </div>
@@ -239,20 +291,20 @@ const LandingPage = () => {
           </div>
 
           <button
-            onClick={() => toggleLike(videos[currentSlide].id)}
+            onClick={() => toggleLike(activeVideos[currentSlide].id)}
             className='flex flex-col items-center text-white hover:scale-110 transition-all duration-300'
           >
             <div className='w-12 h-12 bg-white/20 rounded-full flex items-center justify-center mb-1 backdrop-blur-sm'>
               <Heart
                 className={`w-6 h-6 transition-all duration-300 ${
-                  likedVideos.has(videos[currentSlide].id)
+                  likedVideos.has(activeVideos[currentSlide].id)
                     ? 'fill-red-500 text-red-500 scale-110'
                     : 'text-white'
                 }`}
               />
             </div>
             <span className='text-xs font-semibold'>
-              {videos[currentSlide].likes}
+              {activeVideos[currentSlide].likes}
             </span>
           </button>
 
@@ -274,7 +326,7 @@ const LandingPage = () => {
               </svg>
             </div>
             <span className='text-xs font-semibold mb-5'>
-              {videos[currentSlide].comments}
+              {activeVideos[currentSlide].comments}
             </span>
           </button>
         </div>
@@ -301,20 +353,20 @@ const LandingPage = () => {
           </div>
 
           <button
-            onClick={() => toggleLike(videos[currentSlide].id)}
+            onClick={() => toggleLike(activeVideos[currentSlide].id)}
             className='flex flex-col items-center text-white hover:scale-110 transition-all duration-300'
           >
             <div className='w-12 h-12 bg-white/20 rounded-full flex items-center justify-center mb-1 backdrop-blur-sm'>
               <Heart
                 className={`w-6 h-6 transition-all duration-300 ${
-                  likedVideos.has(videos[currentSlide].id)
+                  likedVideos.has(activeVideos[currentSlide].id)
                     ? 'fill-red-500 text-red-500 scale-110'
                     : 'text-white'
                 }`}
               />
             </div>
             <span className='text-xs font-semibold'>
-              {videos[currentSlide].likes}
+              {activeVideos[currentSlide].likes}
             </span>
           </button>
 
@@ -336,7 +388,7 @@ const LandingPage = () => {
               </svg>
             </div>
             <span className='text-xs font-semibold'>
-              {videos[currentSlide].comments}
+              {activeVideos[currentSlide].comments}
             </span>
           </button>
         </div>
@@ -345,16 +397,18 @@ const LandingPage = () => {
       {/* Bottom CTA - Mobile */}
       {!isDesktop && (
         <div className='absolute bottom-0 left-0 right-0 bg-black/70 backdrop-blur-sm p-4 z-30'>
-          <div className='space-y-2'>
+          <div className='flex items-center gap-2 mb-5'>
             <button
               onClick={() => handleCTAClick()}
-              className='block w-full bg-gradient-to-r from-purple-600 to-blue-600 text-white py-2 px-4 rounded-lg font-bold text-sm text-center hover:from-purple-700 hover:to-blue-700 transition-all duration-300 transform hover:scale-105 shadow-lg animate-pulse hover:animate-none'
+              className='flex-1 bg-gradient-to-r from-purple-600 to-blue-600 text-white py-2 px-3 rounded-lg 
+              font-bold text-lg text-center hover:from-purple-700 hover:to-blue-700 transition-all 
+              duration-300 transform hover:scale-105 shadow-lg'
             >
-              Essayez PayLive Gratuitement !
+              Essayez PayLive !
             </button>
             <a
               href='/howitworks'
-              className='block text-center text-blue-400 text-sm underline hover:text-blue-300 transition-colors'
+              className='px-3 py-2 rounded-lg text-white text-sm font-medium bg-white/10 border border-white/30 hover:bg-white/20 transition-colors'
             >
               Comment ça marche ?
             </a>
