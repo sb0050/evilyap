@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useUser, useAuth } from '@clerk/clerk-react';
 import { Store, Upload, BadgeCheck } from 'lucide-react';
 import { AddressElement } from '@stripe/react-stripe-js';
@@ -520,11 +520,13 @@ export default function OnboardingPage() {
         )}
         <div className='max-w-2xl mx-auto'>
           <div className='text-center mb-8'>
-            <img
-              src='/logo_paylive.png'
-              alt='PayLive'
-              className='mx-auto h-12 w-auto'
-            />
+            <Link to='/'>
+              <img
+                src='/logo_paylive.png'
+                alt='PayLive'
+                className='mx-auto h-12 w-auto'
+              />
+            </Link>
             <h1 className='mt-4 text-3xl font-bold text-gray-900'>
               Créez votre boutique
             </h1>
