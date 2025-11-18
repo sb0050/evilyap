@@ -532,7 +532,7 @@ export default function Header() {
               <Protect
                 condition={() => {
                   const role = (user?.publicMetadata as any)?.role;
-                  return role === 'admin' || role === 'owner';
+                  return role === 'owner';
                 }}
               >
                 <button

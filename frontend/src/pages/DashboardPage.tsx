@@ -170,19 +170,16 @@ export default function DashboardPage() {
   );
   const [socialsMap, setSocialsMap] = useState<Record<string, any>>({});
 
-  // Charge les codes promo au premier accès à l’onglet Promo
   const [promoLoadedOnce, setPromoLoadedOnce] = useState<boolean>(false);
   useEffect(() => {
     if (section === 'promo' && !promoLoadedOnce) {
-      fetchPromotionCodes()
-        .catch(() => {})
+      Promise.all([fetchPromotionCodes().catch(() => {}), fetchCoupons().catch(() => {})])
         .finally(() => setPromoLoadedOnce(true));
     }
   }, [section, promoLoadedOnce]);
 
-  // États Code Promo
   const [promoSelectedCouponId, setPromoSelectedCouponId] =
-    useState<string>('h11gpPmz');
+    useState<string>('');
   const [promoCodeName, setPromoCodeName] = useState<string>('');
   const [promoMinAmountEuro, setPromoMinAmountEuro] = useState<string>('');
   const [promoFirstTime, setPromoFirstTime] = useState<boolean>(false);
@@ -198,13 +195,30 @@ export default function DashboardPage() {
     Record<string, boolean>
   >({});
 
-  // Options de coupons existants fournis
-  const couponOptions = [
-    { label: '- 10 euros', id: 'h11gpPmz' },
-    { label: '- 10 %', id: 'ffRAmojG' },
-    { label: '- 20 %', id: 'DwVUZbxA' },
-    { label: '- 20 euros', id: 'UZOAxT0a' },
-  ];
+  const [couponOptions, setCouponOptions] = useState<{ id: string; name?: string | null }[]>([]);
+  const [promoCouponsLoading, setPromoCouponsLoading] = useState<boolean>(false);
+
+  const fetchCoupons = async () => {
+    try {
+      setPromoCouponsLoading(true);
+      const token = await getToken();
+      const resp = await apiGet(`/api/stripe/coupons`, {
+        headers: { Authorization: token ? `Bearer ${token}` : '' },
+      });
+      const json = await resp.json().catch(() => ({}));
+      const list = Array.isArray(json?.data) ? json.data : [];
+      setCouponOptions(list);
+      if (!promoSelectedCouponId && list.length > 0) {
+        setPromoSelectedCouponId(list[0].id);
+      }
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur lors du chargement des coupons';
+      const trimmed = (raw || '').replace(/^Error:\s*/, '');
+      showToast(trimmed, 'error');
+    } finally {
+      setPromoCouponsLoading(false);
+    }
+  };
 
   const fetchPromotionCodes = async () => {
     try {
@@ -3674,7 +3688,7 @@ export default function DashboardPage() {
                           className='h-4 w-4'
                         />
                         <span className='text-sm text-gray-700'>
-                          {opt.label}
+                          {opt.name || opt.id}
                         </span>
                       </label>
                     ))}
@@ -3864,7 +3878,7 @@ export default function DashboardPage() {
                                 c => c.id === (p?.coupon?.id || '')
                               );
                               return (
-                                match?.label ||
+                                match?.name ||
                                 p?.coupon?.name ||
                                 p?.coupon?.id ||
                                 '—'
@@ -3984,7 +3998,7 @@ export default function DashboardPage() {
                                   c => c.id === (p?.coupon?.id || '')
                                 );
                                 return (
-                                  match?.label ||
+                                  match?.name ||
                                   p?.coupon?.name ||
                                   p?.coupon?.id ||
                                   ''
@@ -3996,7 +4010,7 @@ export default function DashboardPage() {
                                   c => c.id === (p?.coupon?.id || '')
                                 );
                                 return (
-                                  match?.label ||
+                                  match?.name ||
                                   p?.coupon?.name ||
                                   p?.coupon?.id ||
                                   '—'

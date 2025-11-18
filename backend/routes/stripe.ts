@@ -1751,3 +1751,20 @@ router.post(
 );
 
 export default router;
+router.get("/coupons", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    const list = await stripe.coupons.list({ limit: 50 });
+    const data = (list.data || []).map((c) => ({
+      id: c.id,
+      name: c.name || null,
+    }));
+    res.json({ data });
+  } catch (error) {
+    res.status(500).json({ error: (error as any).message || "Internal error" });
+  }
+});

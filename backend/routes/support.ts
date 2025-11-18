@@ -64,18 +64,16 @@ router.post("/contact", upload.single("attachment"), async (req, res) => {
       return res.status(404).json({ error: "Boutique non trouvée" });
     }
 
-    let isAdmin = false;
     try {
       const user = await clerkClient.users.getUser(requesterId);
       const role = (user?.publicMetadata as any)?.role;
-      isAdmin = role === "admin";
     } catch (_e) {
       // default false
     }
 
     const isOwner =
       (store as any)?.clerk_id && (store as any).clerk_id === requesterId;
-    if (!isOwner && !isAdmin) {
+    if (!isOwner) {
       return res.status(403).json({ error: "Accès refusé !" });
     }
 

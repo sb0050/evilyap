@@ -26,6 +26,7 @@ import HowItWorksPage from './pages/HowItWorksPage';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsAndConditions from './pages/TermsAndConditions';
 import FormPage from './pages/FormPage';
+import AdminPage from './pages/AdminPage';
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -121,6 +122,19 @@ function App() {
                 <>
                   <SignedIn>
                     <DashboardPage />
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path='/admin'
+              element={
+                <>
+                  <SignedIn>
+                    <AdminPage />
                   </SignedIn>
                   <SignedOut>
                     <RedirectToSignUp />

@@ -1,6 +1,6 @@
 {
-  "name": "lm-outlet-app",
-  "version": "0.1.0",
+  "name": "paylive",
+  "version": "1.0.0",
   "private": true,
   "dependencies": {
     "@clerk/clerk-react": "5.38.0",

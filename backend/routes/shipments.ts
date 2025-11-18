@@ -179,17 +179,15 @@ router.get("/store/:storeSlug", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    let isAdmin = false;
     try {
       const user = await clerkClient.users.getUser(requesterId);
       const role = (user?.publicMetadata as any)?.role;
-      isAdmin = role === "admin";
     } catch (_e) {
       // default is not admin
     }
 
     const isOwner = store?.clerk_id && store.clerk_id === requesterId;
-    if (!isOwner && !isAdmin) {
+    if (!isOwner) {
       return res.status(403).json({ error: "Accès refusé !" });
     }
 
