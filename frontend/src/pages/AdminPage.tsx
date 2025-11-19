@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useUser, useAuth, SignedIn, SignedOut, RedirectToSignIn } from '@clerk/clerk-react';
+import { useUser, useAuth, SignedIn, SignedOut, RedirectToSignIn, UserButton } from '@clerk/clerk-react';
 import { apiPost } from '../utils/api';
 
 export default function AdminPage() {
@@ -39,6 +39,9 @@ export default function AdminPage() {
   return (
     <div className='min-h-screen bg-gray-50'>
       <SignedIn>
+        <div className='fixed top-4 right-4 z-50'>
+          <UserButton />
+        </div>
         {role === 'admin' ? (
           <div className='max-w-2xl mx-auto px-4 py-10'>
             <div className='mb-6'>

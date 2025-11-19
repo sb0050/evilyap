@@ -54,23 +54,54 @@ router.post("/prospect", async (req, res) => {
     const hasLogo = fs.existsSync(logoPath);
     const shots = [
       {
-        path: path.resolve(process.cwd(), "public", "demo_client_1.jpg"),
-        cid: "demo-client-1",
-        filename: "demo_client_1.jpg",
+        path: path.resolve(process.cwd(), "public", "1.jpg"),
+        cid: "client-1",
+        filename: "1.jpg",
       },
       {
-        path: path.resolve(process.cwd(), "public", "demo_client_2.jpg"),
-        cid: "demo-client-2",
-        filename: "demo_client_2.jpg",
+        path: path.resolve(process.cwd(), "public", "2.jpg"),
+        cid: "client-2",
+        filename: "2.jpg",
       },
       {
-        path: path.resolve(process.cwd(), "public", "demo_client_3.jpg"),
-        cid: "demo-client-3",
-        filename: "demo_client_3.jpg",
+        path: path.resolve(process.cwd(), "public", "3.jpg"),
+        cid: "client-3",
+        filename: "3.jpg",
+      },
+      {
+        path: path.resolve(process.cwd(), "public", "4.jpg"),
+        cid: "client-4",
+        filename: "4.jpg",
+      },
+      {
+        path: path.resolve(process.cwd(), "public", "5.jpg"),
+        cid: "client-5",
+        filename: "5.jpg",
+      },
+      {
+        path: path.resolve(process.cwd(), "public", "6.jpg"),
+        cid: "client-6",
+        filename: "6.jpg",
       },
     ];
     const existingShots = shots.filter((s) => fs.existsSync(s.path));
     const hasShots = existingShots.length > 0;
+    const perRow = 3;
+    const cellWidth = (100 / perRow).toFixed(3);
+    const gridRowsHtml = (() => {
+      const rows: string[] = [];
+      for (let i = 0; i < existingShots.length; i += perRow) {
+        const rowShots = existingShots.slice(i, i + perRow);
+        const rowHtml = `<tr>${rowShots
+          .map(
+            (s) =>
+              `<td style="width:${cellWidth}%; padding:2px;"><img src="cid:${s.cid}" alt="Capture Paylive" style="width:100%; border-radius:10px; box-shadow:0 6px 14px rgba(15,23,42,0.12); display:block;" /></td>`
+          )
+          .join("")}</tr>`;
+        rows.push(rowHtml);
+      }
+      return rows.join("");
+    })();
 
     const html = `<!DOCTYPE html>
     <html lang="fr">
@@ -80,7 +111,7 @@ router.post("/prospect", async (req, res) => {
       <title>Paylive — Prospection</title>
     </head>
     <body style="margin:0;padding:0;background:#f7f7fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans',sans-serif;color:#0f172a;">
-      <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:12px;box-shadow:0 10px 30px rgba(2,6,23,0.08);overflow:hidden;">
+      <div style="max-width:720px;margin:0 auto;background:#ffffff;border-radius:12px;box-shadow:0 10px 30px rgba(2,6,23,0.08);overflow:hidden;">
         <div style="background:linear-gradient(90deg,#7c3aed,#2563eb);padding:24px;text-align:center;">
           ${
             hasLogo
@@ -123,8 +154,16 @@ router.post("/prospect", async (req, res) => {
           </div>
 
           <div style="margin-top:18px;padding:14px;border-left:4px solid #7c3aed;background:#f3f4f6;border-radius:8px;">
-            <div style="font-weight:800;color:#111827;">0€ d’abonnement, aucun frais caché — <span style="color:#7c3aed;">seulement 4% par vente</span>.</div>
+            <div style="font-size:16px;font-weight:800;color:#111827;">0€ d’abonnement, aucun frais caché — <span style="color:#7c3aed;">seulement 4% par vente</span>.
+            <p style="margin:12px 0 0 0;font-size:16px;line-height:1.6;font-weight:700;">
+            Et en ce moment seulement, on t’offre tes 10 premiers live 
+            <span style="background:linear-gradient(90deg,#7c3aed,#2563eb);-webkit-background-clip:text;background-clip:text;color:#7c3aed;-webkit-text-fill-color:transparent;">sans commission</span>,
+            donc tu touches 100% de ce que tu vends ! 🔥
+          </p> 
+            </div>
           </div>
+
+          
 
           <p style="margin:18px 0 0 0;font-size:16px;line-height:1.6;">
             Je peux t’aider à <span style="font-weight:700;">créer ta boutique Paylive</span> et la personnaliser (logo, couleurs, bannières, photos…).
@@ -143,22 +182,9 @@ router.post("/prospect", async (req, res) => {
             hasShots
               ? `
           <div style="margin-top:24px;">
-            <div style="font-weight:700;color:#0f172a;margin-bottom:10px;">Aperçu du parcours client</div>
+            <div style="font-weight:700;color:#0f172a;margin-bottom:10px;">Quelques aperçus de l'interface</div>
             <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;">
-              <tr>
-                ${existingShots
-                  .map(
-                    (s) => `
-                <td style="width:${Math.floor(
-                  100 / existingShots.length
-                )}%; padding:6px;">
-                  <img src="cid:${
-                    s.cid
-                  }" alt="Capture Paylive" style="width:100%; border-radius:10px; box-shadow:0 6px 14px rgba(15,23,42,0.12); display:block;" />
-                </td>`
-                  )
-                  .join("")}
-              </tr>
+              ${gridRowsHtml}
             </table>
           </div>
           `
