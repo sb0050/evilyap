@@ -22,12 +22,10 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Protect } from '@clerk/clerk-react';
 
 // Variables de configuration du panier (modifiables)
-const CART_ITEM_TTL_MINUTES = 15; // durée de vie d’un article dans le panier
 const CART_WARN_THRESHOLD_MINUTES = 1; // seuil d’alerte visuelle et animation
 const CART_TICK_MS = 1000; // cadence de mise à jour du timer
 
 // Dérivés en millisecondes
-const CART_ITEM_TTL_MS = CART_ITEM_TTL_MINUTES * 60 * 1000;
 const CART_WARN_THRESHOLD_MS = CART_WARN_THRESHOLD_MINUTES * 60 * 1000;
 
 // Classes CSS pour les états
@@ -89,6 +87,8 @@ export default function Header() {
         product_reference: string;
         value: number;
         created_at?: string;
+        time_to_live?: number | null;
+        description?: string | null;
       }>;
     }>
   >([]);
@@ -122,17 +122,12 @@ export default function Header() {
   const [cartExpiryWarned, setCartExpiryWarned] = useState(false);
 
   useEffect(() => {
-    // Déclenche l'animation si au moins un article est sous le seuil
-    const ttlMsDisplay = CART_ITEM_TTL_MS;
     let hasUnderMinute = false;
     for (const group of cartGroups) {
       for (const it of group.items) {
-        const created = it.created_at
-          ? new Date(it.created_at).getTime()
-          : null;
-        const leftMs = created
-          ? Math.max(0, ttlMsDisplay - (now - created))
-          : ttlMsDisplay;
+        const created = it.created_at ? new Date(it.created_at).getTime() : null;
+        const ttlMsDisplay = Number(it.time_to_live ?? 15) * 60 * 1000;
+        const leftMs = created ? Math.max(0, ttlMsDisplay - (now - created)) : ttlMsDisplay;
         if (leftMs > 0 && leftMs <= CART_WARN_THRESHOLD_MS) {
           hasUnderMinute = true;
           break;
@@ -155,12 +150,10 @@ export default function Header() {
 
   // Suppression automatique des items expirés
   useEffect(() => {
-    const ttlMs = CART_ITEM_TTL_MS;
     for (const group of cartGroups) {
       for (const it of group.items) {
-        const created = it.created_at
-          ? new Date(it.created_at).getTime()
-          : null;
+        const created = it.created_at ? new Date(it.created_at).getTime() : null;
+        const ttlMs = Number(it.time_to_live ?? 15) * 60 * 1000;
         const leftMs = created ? ttlMs - (now - created) : ttlMs;
         if (leftMs <= 0 && !deletingIdsRef.current.has(it.id)) {
           deletingIdsRef.current.add(it.id);
@@ -588,7 +581,7 @@ export default function Header() {
                                     const created = it.created_at
                                       ? new Date(it.created_at).getTime()
                                       : null;
-                                    const ttlMs = CART_ITEM_TTL_MS;
+                                    const ttlMs = Number(it.time_to_live ?? 15) * 60 * 1000;
                                     const leftMs = created
                                       ? Math.max(0, ttlMs - (now - created))
                                       : ttlMs;
@@ -597,12 +590,22 @@ export default function Header() {
                                         key={i}
                                         className={`flex justify-between items-center text-sm ${leftMs <= CART_WARN_THRESHOLD_MS ? CART_WARN_TEXT_CLASS : CART_NORMAL_TEXT_CLASS}`}
                                       >
-                                        <span
-                                          className='truncate max-w-[60%]'
-                                          title={it.product_reference}
-                                        >
-                                          {it.product_reference}
-                                        </span>
+                                        <div className='flex-1'>
+                                          <div
+                                            className='truncate max-w-[60%]'
+                                            title={it.product_reference}
+                                          >
+                                            {it.product_reference}
+                                          </div>
+                                          {it.description ? (
+                                            <div
+                                              className='text-xs text-gray-500 truncate max-w-[60%]'
+                                              title={it.description || ''}
+                                            >
+                                              {it.description}
+                                            </div>
+                                          ) : null}
+                                        </div>
                                         <div className='flex items-center gap-2'>
                                           {(() => {
                                             const minutes = Math.floor(

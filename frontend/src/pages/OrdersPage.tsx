@@ -77,7 +77,10 @@ export default function OrdersPage() {
   const [expandedCardIds, setExpandedCardIds] = useState<
     Record<number, boolean>
   >({});
-  const [storeQuery, setStoreQuery] = useState<string>('');
+  const [ordersFilterField, setOrdersFilterField] = useState<
+    'store' | 'reference'
+  >('store');
+  const [ordersFilterTerm, setOrdersFilterTerm] = useState<string>('');
   const [toast, setToast] = useState<{
     message: string;
     type: 'error' | 'info' | 'success';
@@ -374,16 +377,20 @@ export default function OrdersPage() {
       }
     };
     let arr = [...(shipments || [])];
+    const term = (ordersFilterTerm || '').trim().toLowerCase();
+    if (term) {
+      if (ordersFilterField === 'store') {
+        arr = arr.filter(s => (s.store?.name || '').toLowerCase().includes(term));
+      } else {
+        arr = arr.filter(s => (s.product_reference || '').toLowerCase().includes(term));
+      }
+    }
     if (estimatedSortOrder) {
       arr.sort((a, b) => {
         const ta = toTime(a.estimated_delivery_date);
         const tb = toTime(b.estimated_delivery_date);
         return estimatedSortOrder === 'asc' ? ta - tb : tb - ta;
       });
-    }
-    const q = (storeQuery || '').trim().toLowerCase();
-    if (q) {
-      arr = arr.filter(s => (s.store?.name || '').toLowerCase().includes(q));
     }
     return arr;
   })();
@@ -397,14 +404,20 @@ export default function OrdersPage() {
   );
 
   useEffect(() => {
-    // Clamp page if shipments length or pageSize changes
-    const newTotal = Math.max(
-      1,
-      Math.ceil((shipments || []).length / pageSize)
-    );
+    const filteredLength = (() => {
+      const term = (ordersFilterTerm || '').trim().toLowerCase();
+      if (!term) return (shipments || []).length;
+      return (shipments || []).filter(s => {
+        if (ordersFilterField === 'store') {
+          return (s.store?.name || '').toLowerCase().includes(term);
+        }
+        return (s.product_reference || '').toLowerCase().includes(term);
+      }).length;
+    })();
+    const newTotal = Math.max(1, Math.ceil(filteredLength / pageSize));
     if (page > newTotal) setPage(newTotal);
     if (page < 1) setPage(1);
-  }, [shipments, pageSize]);
+  }, [shipments, pageSize, ordersFilterField, ordersFilterTerm]);
 
   const showToast = (
     message: string,
@@ -638,6 +651,31 @@ export default function OrdersPage() {
                       Suivant
                     </button>
                   </div>
+                  <div className='flex items-center space-x-2'>
+                    <span className='text-sm text-gray-700'>Filtrer par</span>
+                    <select
+                      value={ordersFilterField}
+                      onChange={e => {
+                        const v = e.target.value as 'store' | 'reference';
+                        setOrdersFilterField(v);
+                        setPage(1);
+                      }}
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    >
+                      <option value='store'>Boutique</option>
+                      <option value='reference'>Référence produit</option>
+                    </select>
+                    <input
+                      type='text'
+                      value={ordersFilterTerm}
+                      onChange={e => {
+                        setOrdersFilterTerm(e.target.value);
+                        setPage(1);
+                      }}
+                      placeholder='Saisir…'
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    />
+                  </div>
                 </div>
               </div>
               {/* Entête mobile: titre + logo à gauche, bouton Recharger à droite */}
@@ -661,18 +699,32 @@ export default function OrdersPage() {
                 </button>
               </div>
 
-              {/* Recherche mobile: boutique (contains) */}
               <div className='sm:hidden mb-3'>
-                <label className='block text-sm text-gray-700 mb-1'>
-                  Rechercher une boutique
-                </label>
-                <input
-                  type='text'
-                  value={storeQuery}
-                  onChange={e => setStoreQuery(e.target.value)}
-                  placeholder='Nom de la boutique'
-                  className='w-auto ml-1 border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                />
+                <div className='flex items-center space-x-2'>
+                  <span className='text-sm text-gray-700'>Filtrer par</span>
+                  <select
+                    value={ordersFilterField}
+                    onChange={e => {
+                      const v = e.target.value as 'store' | 'reference';
+                      setOrdersFilterField(v);
+                      setPage(1);
+                    }}
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                  >
+                    <option value='store'>Boutique</option>
+                    <option value='reference'>Référence produit</option>
+                  </select>
+                  <input
+                    type='text'
+                    value={ordersFilterTerm}
+                    onChange={e => {
+                      setOrdersFilterTerm(e.target.value);
+                      setPage(1);
+                    }}
+                    placeholder='Saisir…'
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                  />
+                </div>
               </div>
 
               {/* Vue mobile: cartes accordéon */}

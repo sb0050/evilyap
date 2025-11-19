@@ -156,8 +156,8 @@ router.post("/prospect", async (req, res) => {
           <div style="margin-top:18px;padding:14px;border-left:4px solid #7c3aed;background:#f3f4f6;border-radius:8px;">
             <div style="font-size:16px;font-weight:800;color:#111827;">0€ d’abonnement, aucun frais caché — <span style="color:#7c3aed;">seulement 4% par vente</span>.
             <p style="margin:12px 0 0 0;font-size:16px;line-height:1.6;font-weight:700;">
-            Et en ce moment seulement, on t’offre tes 10 premiers live 
-            <span style="background:linear-gradient(90deg,#7c3aed,#2563eb);-webkit-background-clip:text;background-clip:text;color:#7c3aed;-webkit-text-fill-color:transparent;">sans commission</span>,
+            Et en ce moment seulement, on t’offre tes 10 premiers live à seulement  
+            <span style="background:linear-gradient(90deg,#7c3aed,#2563eb);-webkit-background-clip:text;background-clip:text;color:#7c3aed;-webkit-text-fill-color:transparent;">1% de commission</span>,
             donc tu touches 100% de ce que tu vends ! 🔥
           </p> 
             </div>

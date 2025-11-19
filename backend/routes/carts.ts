@@ -12,21 +12,61 @@ if (!supabaseUrl || !supabaseKey) {
 }
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+async function deleteCartInternal(id: number, requireExpired?: boolean) {
+  if (!id || typeof id !== "number") {
+    return { success: false, error: "id requis pour la suppression" };
+  }
+  if (requireExpired) {
+    const { data: rec, error: selErr } = await supabase
+      .from("carts")
+      .select("id,created_at,time_to_live")
+      .eq("id", id)
+      .single();
+    if (selErr) {
+      if ((selErr as any)?.code === "PGRST116") {
+        return { success: false, error: "item_not_found" };
+      }
+      return { success: false, error: selErr.message };
+    }
+    const ttlMinutes = (rec as any)?.time_to_live ?? 5;
+    const ttlMs = Number(ttlMinutes) * 60 * 1000;
+    const createdMs = rec?.created_at
+      ? new Date(rec.created_at as any).getTime()
+      : null;
+    const nowMs = Date.now();
+    const leftMs = createdMs ? ttlMs - (nowMs - createdMs) : 0;
+    if (leftMs > 0) {
+      return { success: false, error: "not_expired" };
+    }
+  }
+  const { error } = await supabase.from("carts").delete().eq("id", id);
+  if (error) {
+    return { success: false, error: error.message };
+  }
+  return { success: true };
+}
+
 // POST /api/carts - Add item to cart
 router.post("/", async (req, res) => {
   try {
-    const { store_id, product_reference, value, customer_stripe_id } =
-      req.body || {};
+    const {
+      store_id,
+      product_reference,
+      value,
+      customer_stripe_id,
+      time_to_live,
+      description,
+    } = req.body || {};
 
     if (!customer_stripe_id) {
       return res
         .status(400)
         .json({ error: "customer_stripe_id requis pour le panier" });
     }
-    if (!store_id || !product_reference || typeof value !== "number") {
+    if (!store_id || !product_reference) {
       return res.status(400).json({
         error:
-          "store_id, product_reference et value (number) sont requis pour ajouter au panier",
+          "store_id et product_reference sont requis pour ajouter au panier",
       });
     }
 
@@ -58,8 +98,10 @@ router.post("/", async (req, res) => {
         {
           store_id,
           product_reference,
-          value,
+          value: typeof value === "number" ? value : 0,
           customer_stripe_id,
+          time_to_live: typeof time_to_live === "number" ? time_to_live : 15,
+          description: typeof description === "string" ? description : null,
           // Horodatage de création côté serveur (timestamptz)
           created_at: new Date().toISOString(),
         },
@@ -88,7 +130,9 @@ router.get("/summary", async (req, res) => {
 
     const { data: cartRows, error } = await supabase
       .from("carts")
-      .select("id,store_id,product_reference,value,created_at")
+      .select(
+        "id,store_id,product_reference,value,created_at,time_to_live,description"
+      )
       .eq("customer_stripe_id", stripeId)
       .order("id", { ascending: false });
 
@@ -97,8 +141,25 @@ router.get("/summary", async (req, res) => {
     }
 
     const rows = cartRows || [];
+    const nowMs = Date.now();
+    const expiredIds: number[] = [];
+    const validRows: any[] = [];
+    for (const r of rows as any[]) {
+      const ttlMinutes = typeof (r as any).time_to_live === "number" ? (r as any).time_to_live : 15;
+      const ttlMs = Number(ttlMinutes) * 60 * 1000;
+      const createdMs = (r as any)?.created_at ? new Date((r as any).created_at as any).getTime() : null;
+      const leftMs = createdMs ? ttlMs - (nowMs - createdMs) : 0;
+      if (leftMs <= 0) {
+        expiredIds.push((r as any).id as number);
+      } else {
+        validRows.push(r);
+      }
+    }
+    if (expiredIds.length > 0) {
+      await Promise.all(expiredIds.map(id => deleteCartInternal(id, true)));
+    }
     const storeIds = Array.from(
-      new Set(rows.map((r: any) => r.store_id).filter(Boolean))
+      new Set(validRows.map((r: any) => r.store_id).filter(Boolean))
     );
 
     let storesMap: Record<number, { id: number; name: string; slug: string }> =
@@ -136,7 +197,7 @@ router.get("/summary", async (req, res) => {
 
     const grouped: Record<string, { total: number; items: any[]; store: any }> =
       {};
-    for (const r of rows) {
+    for (const r of validRows) {
       const key = String(r.store_id || "null");
       if (!grouped[key]) {
         grouped[key] = {
@@ -150,6 +211,8 @@ router.get("/summary", async (req, res) => {
         product_reference: r.product_reference,
         value: r.value,
         created_at: (r as any).created_at,
+        time_to_live: (r as any).time_to_live,
+        description: (r as any).description,
       });
       grouped[key].total += r.value || 0;
     }
@@ -183,11 +246,11 @@ router.delete("/", async (req, res) => {
       return res.status(400).json({ error: "id requis pour la suppression" });
     }
 
-    // Si on demande de vérifier l'expiration, contrôler TTL=5min
+    // Si on demande de vérifier l'expiration, contrôler TTL spécifique à l'item
     if (requireExpired) {
       const { data: rec, error: selErr } = await supabase
         .from("carts")
-        .select("id,created_at")
+        .select("id,created_at,time_to_live")
         .eq("id", id)
         .single();
       if (selErr) {
@@ -198,7 +261,8 @@ router.delete("/", async (req, res) => {
         return res.status(500).json({ error: selErr.message });
       }
 
-      const ttlMs = 5 * 60 * 1000;
+      const ttlMinutes = (rec as any)?.time_to_live ?? 5;
+      const ttlMs = Number(ttlMinutes) * 60 * 1000;
       const createdMs = rec?.created_at
         ? new Date(rec.created_at as any).getTime()
         : null;
@@ -214,14 +278,73 @@ router.delete("/", async (req, res) => {
       }
     }
 
-    const { error } = await supabase.from("carts").delete().eq("id", id);
-    if (error) {
-      return res.status(500).json({ error: error.message });
+    const result = await deleteCartInternal(id, requireExpired);
+    if (!result.success) {
+      if (result.error === "item_not_found") {
+        return res.status(404).json({ error: "item_not_found" });
+      }
+      if (result.error === "not_expired") {
+        return res.status(409).json({ error: "not_expired" });
+      }
+      return res.status(500).json({ error: result.error || "unknown_error" });
     }
-
     return res.json({ success: true });
   } catch (e) {
     console.error("Error deleting from cart:", e);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+// GET /api/carts/store/:slug - list all carts for a given store
+router.get("/store/:slug", async (req, res) => {
+  try {
+    const slug = (req.params.slug || "").trim();
+    if (!slug) {
+      return res.status(400).json({ error: "slug requis" });
+    }
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id")
+      .eq("slug", slug)
+      .maybeSingle();
+    if (storeErr) {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!storeRow) {
+      return res.status(404).json({ error: "Boutique introuvable" });
+    }
+    const storeId = (storeRow as any)?.id;
+    const { data: carts, error } = await supabase
+      .from("carts")
+      .select(
+        "id, store_id, customer_stripe_id, product_reference, value, created_at, time_to_live, description"
+      )
+      .eq("store_id", storeId)
+      .order("id", { ascending: false });
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+    const rows = carts || [];
+    const nowMs = Date.now();
+    const expiredIds: number[] = [];
+    const validRows: any[] = [];
+    for (const r of rows as any[]) {
+      const ttlMinutes = typeof (r as any).time_to_live === "number" ? (r as any).time_to_live : 15;
+      const ttlMs = Number(ttlMinutes) * 60 * 1000;
+      const createdMs = (r as any)?.created_at ? new Date((r as any).created_at as any).getTime() : null;
+      const leftMs = createdMs ? ttlMs - (nowMs - createdMs) : 0;
+      if (leftMs <= 0) {
+        expiredIds.push((r as any).id as number);
+      } else {
+        validRows.push(r);
+      }
+    }
+    if (expiredIds.length > 0) {
+      await Promise.all(expiredIds.map(id => deleteCartInternal(id, true)));
+    }
+    return res.json({ carts: validRows || [] });
+  } catch (e) {
+    console.error("Error fetching store carts:", e);
     return res.status(500).json({ error: "Erreur interne du serveur" });
   }
 });

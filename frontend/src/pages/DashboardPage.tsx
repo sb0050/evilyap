@@ -20,6 +20,7 @@ import {
   BadgeCheck,
   Tag,
   Trash2,
+  Coins,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -79,7 +80,7 @@ type Shipment = {
   dropoff_point: any | null;
   pickup_point: object | null;
   weight: string | null;
-  product_reference: string | number | null;
+  product_reference: string | null;
   paid_value: number | null;
   created_at?: string | null;
   status?: string | null;
@@ -140,7 +141,7 @@ export default function DashboardPage() {
   const [showPayout, setShowPayout] = useState(false);
   // Navigation des sections du dashboard
   const [section, setSection] = useState<
-    'infos' | 'wallet' | 'sales' | 'clients' | 'promo' | 'support'
+    'infos' | 'wallet' | 'sales' | 'clients' | 'promo' | 'support' | 'carts'
   >('infos');
   // Support: message de contact
   const [supportMessage, setSupportMessage] = useState<string>('');
@@ -157,6 +158,10 @@ export default function DashboardPage() {
   const [page, setPage] = useState<number>(1);
   // Barre de recherche sur l'ID (contains)
   const [idSearch, setIdSearch] = useState<string>('');
+  const [salesFilterField, setSalesFilterField] = useState<
+    'id' | 'client' | 'reference'
+  >('id');
+  const [salesFilterTerm, setSalesFilterTerm] = useState<string>('');
   const [reloadingSales, setReloadingSales] = useState<boolean>(false);
   const [reloadingBalance, setReloadingBalance] = useState<boolean>(false);
   // États Clients (onglet dédié)
@@ -168,13 +173,68 @@ export default function DashboardPage() {
   const [clientsSortOrder, setClientsSortOrder] = useState<'asc' | 'desc'>(
     'desc'
   );
+  const [clientsFilterField, setClientsFilterField] = useState<
+    'id' | 'name' | 'email'
+  >('id');
+  const [clientsFilterTerm, setClientsFilterTerm] = useState<string>('');
   const [socialsMap, setSocialsMap] = useState<Record<string, any>>({});
+
+  // Paniers (création par le vendeur)
+  const [cartCustomerInput, setCartCustomerInput] = useState<string>('');
+  const [cartCustomerResults, setCartCustomerResults] = useState<
+    Array<{
+      id: string;
+      fullName: string;
+      email?: string | null;
+      stripeId?: string | null;
+    }>
+  >([]);
+  const [cartUsersLoading, setCartUsersLoading] = useState<boolean>(false);
+  const [cartSelectedUser, setCartSelectedUser] = useState<{
+    id: string;
+    fullName: string;
+    email?: string | null;
+    stripeId?: string | null;
+  } | null>(null);
+  const [cartReference, setCartReference] = useState<string>('');
+  const [cartDescription, setCartDescription] = useState<string>('');
+  const [cartAmountEuro, setCartAmountEuro] = useState<string>('');
+  const [cartTTLMinutes, setCartTTLMinutes] = useState<string>('15');
+  const [cartCreating, setCartCreating] = useState<boolean>(false);
+  const [storeCarts, setStoreCarts] = useState<any[]>([]);
+  const [cartDeletingIds, setCartDeletingIds] = useState<
+    Record<number, boolean>
+  >({});
+  const [cartReloading, setCartReloading] = useState<boolean>(false);
+  const [cartSearchTerm, setCartSearchTerm] = useState<string>('');
+  const [cartPageSize, setCartPageSize] = useState<number>(10);
+  const [cartPage, setCartPage] = useState<number>(1);
+  const [clerkUsersByStripeId, setClerkUsersByStripeId] = useState<
+    Record<
+      string,
+      {
+        id: string;
+        fullName: string;
+        email?: string | null;
+        imageUrl?: string | null;
+        hasImage?: boolean;
+      }
+    >
+  >({});
+  const [cartGroupPageSize, setCartGroupPageSize] = useState<
+    Record<string, number>
+  >({});
+  const [cartGroupPage, setCartGroupPage] = useState<Record<string, number>>(
+    {}
+  );
 
   const [promoLoadedOnce, setPromoLoadedOnce] = useState<boolean>(false);
   useEffect(() => {
     if (section === 'promo' && !promoLoadedOnce) {
-      Promise.all([fetchPromotionCodes().catch(() => {}), fetchCoupons().catch(() => {})])
-        .finally(() => setPromoLoadedOnce(true));
+      Promise.all([
+        fetchPromotionCodes().catch(() => {}),
+        fetchCoupons().catch(() => {}),
+      ]).finally(() => setPromoLoadedOnce(true));
     }
   }, [section, promoLoadedOnce]);
 
@@ -195,8 +255,11 @@ export default function DashboardPage() {
     Record<string, boolean>
   >({});
 
-  const [couponOptions, setCouponOptions] = useState<{ id: string; name?: string | null }[]>([]);
-  const [promoCouponsLoading, setPromoCouponsLoading] = useState<boolean>(false);
+  const [couponOptions, setCouponOptions] = useState<
+    { id: string; name?: string | null }[]
+  >([]);
+  const [promoCouponsLoading, setPromoCouponsLoading] =
+    useState<boolean>(false);
 
   const fetchCoupons = async () => {
     try {
@@ -942,12 +1005,39 @@ export default function DashboardPage() {
     }
   };
 
-  // Filtre ID (contains) et pagination dérivée
+  // Filtre Mes ventes: champ sélectionné + terme de recherche
   const filteredShipments = (shipments || []).filter(s => {
-    const term = (idSearch || '').trim().toLowerCase();
+    const term = (salesFilterTerm || idSearch || '').trim().toLowerCase();
     if (!term) return true;
-    const idStr = (s.shipment_id || '').toLowerCase();
-    return idStr.includes(term);
+    const field = salesFilterField;
+    if (field === 'id') {
+      const idStr = (s.shipment_id || '').toLowerCase();
+      return idStr.includes(term);
+    }
+    if (field === 'client') {
+      const stripeId = (s.customer_stripe_id || '').toLowerCase();
+      const customer = s.customer_stripe_id
+        ? customersMap[s.customer_stripe_id] || null
+        : null;
+      const clerkId = customer?.clerkUserId || customer?.clerk_user_id;
+      const user = clerkId ? socialsMap[clerkId] || null : null;
+      const nameParts = [user?.firstName || '', user?.lastName || '']
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      const customerName = (customer?.name || '').toLowerCase();
+      const email = (customer?.email || '' || user?.emailAddress || '')
+        .toLowerCase()
+        .trim();
+      return (
+        stripeId.includes(term) ||
+        customerName.includes(term) ||
+        nameParts.includes(term) ||
+        email.includes(term)
+      );
+    }
+    const refStr = (s.product_reference || '').toLowerCase();
+    return refStr.includes(term);
   });
   const totalPages = Math.max(
     1,
@@ -960,21 +1050,47 @@ export default function DashboardPage() {
   );
 
   useEffect(() => {
-    // Clamp page si longueur filtrée change
     const filteredLength = (shipments || []).filter(s => {
-      const term = (idSearch || '').trim().toLowerCase();
+      const term = (salesFilterTerm || idSearch || '').trim().toLowerCase();
       if (!term) return true;
-      const idStr = (s.shipment_id || '').toLowerCase();
-      return idStr.includes(term);
+      const field = salesFilterField;
+      if (field === 'id') {
+        const idStr = (s.shipment_id || '').toLowerCase();
+        return idStr.includes(term);
+      }
+      if (field === 'client') {
+        const stripeId = (s.customer_stripe_id || '').toLowerCase();
+        const customer = s.customer_stripe_id
+          ? customersMap[s.customer_stripe_id] || null
+          : null;
+        const clerkId = customer?.clerkUserId || customer?.clerk_user_id;
+        const user = clerkId ? socialsMap[clerkId] || null : null;
+        const nameParts = [user?.firstName || '', user?.lastName || '']
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        const customerName = (customer?.name || '').toLowerCase();
+        const email = (customer?.email || '' || user?.emailAddress || '')
+          .toLowerCase()
+          .trim();
+        return (
+          stripeId.includes(term) ||
+          customerName.includes(term) ||
+          nameParts.includes(term) ||
+          email.includes(term)
+        );
+      }
+      const refStr = (s.product_reference || '').toLowerCase();
+      return refStr.includes(term);
     }).length;
     const newTotal = Math.max(1, Math.ceil(filteredLength / pageSize));
     if (page > newTotal) setPage(newTotal);
     if (page < 1) setPage(1);
-  }, [shipments, pageSize, idSearch]);
+  }, [shipments, pageSize, salesFilterTerm, salesFilterField, idSearch]);
 
   // Chargement des clients Stripe basés sur les customer_stripe_id des shipments
   useEffect(() => {
-    if (section !== 'clients') return;
+    if (section !== 'clients' && section !== 'sales') return;
     const ids = Array.from(
       new Set((shipments || []).map(s => s.customer_stripe_id).filter(Boolean))
     ) as string[];
@@ -1083,6 +1199,195 @@ export default function DashboardPage() {
     };
     run();
   }, [customersMap]);
+
+  // Charger les paniers du store quand on ouvre l’onglet Panier
+  useEffect(() => {
+    if (section !== 'carts') return;
+    if (!store?.slug) return;
+    const run = async () => {
+      try {
+        const resp = await apiGet(
+          `/api/carts/store/${encodeURIComponent(store.slug)}`
+        );
+        const json = await resp.json().catch(() => ({}));
+        setStoreCarts(Array.isArray(json?.carts) ? json.carts : []);
+      } catch (e: any) {
+        const raw =
+          e?.message || 'Erreur lors du chargement des paniers du store';
+        showToast(raw, 'error');
+      }
+    };
+    run();
+  }, [section, store?.slug]);
+
+  useEffect(() => {
+    const loadUsers = async () => {
+      try {
+        if (section !== 'carts') return;
+        const token = await getToken();
+        const resp = await apiGet(`/api/clerk/users`, {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        });
+        const json = await resp.json().catch(() => ({}));
+        const arr = Array.isArray(json?.users) ? json.users : [];
+        const map: Record<string, any> = {};
+        arr.forEach((u: any) => {
+          if (u?.stripeId) {
+            map[String(u.stripeId)] = u;
+          }
+        });
+        setClerkUsersByStripeId(map);
+      } catch (e) {}
+    };
+    loadUsers();
+  }, [section]);
+
+  const searchClerkUsers = async (query: string) => {
+    try {
+      if (!query.trim()) {
+        setCartCustomerResults([]);
+        return;
+      }
+      setCartUsersLoading(true);
+      const token = await getToken();
+      const resp = await apiGet(
+        `/api/clerk/users?search=${encodeURIComponent(query)}`,
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      setCartCustomerResults(Array.isArray(json?.users) ? json.users : []);
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur recherche utilisateurs';
+      showToast(raw, 'error');
+    } finally {
+      setCartUsersLoading(false);
+    }
+  };
+
+  const handleCreateCart = async () => {
+    try {
+      const ref = (cartReference || '').trim();
+      const ttlRaw = (cartTTLMinutes || '').trim();
+      const ttl = parseInt(ttlRaw, 10);
+      const amt = parseFloat((cartAmountEuro || '').trim().replace(',', '.'));
+      if (!(amt > 0)) {
+        showToast('Veuillez saisir un montant supérieur à 0', 'error');
+        return;
+      }
+      if (!store?.id) {
+        showToast('Boutique introuvable', 'error');
+        return;
+      }
+      if (!cartSelectedUser) {
+        showToast('Veuillez sélectionner un client', 'error');
+        return;
+      }
+      if (!ref) {
+        showToast('Veuillez saisir la référence', 'error');
+        return;
+      }
+      if (!Number.isInteger(ttl) || ttl < 1) {
+        showToast('La durée du panier doit être un entier positif', 'error');
+        return;
+      }
+      setCartCreating(true);
+      let stripeId = cartSelectedUser.stripeId || '';
+      if (!stripeId) {
+        try {
+          const body: any = {
+            name: cartSelectedUser.fullName || '',
+            email: cartSelectedUser.email || '',
+            clerkUserId: cartSelectedUser.id,
+          };
+          const token = await getToken();
+          const resp = await apiPost('/api/stripe/create-customer', body, {
+            headers: { Authorization: token ? `Bearer ${token}` : '' },
+          });
+          const json = await resp.json().catch(() => ({}));
+          stripeId = json?.stripeId || json?.customer?.id || '';
+        } catch (e) {}
+      }
+      if (!stripeId) {
+        showToast(
+          "Impossible de déterminer l'identifiant Stripe du client",
+          'error'
+        );
+        return;
+      }
+      const payload: any = {
+        store_id: store.id,
+        product_reference: ref,
+        value: amt,
+        customer_stripe_id: stripeId,
+        time_to_live: Number.isFinite(ttl) ? ttl : 15,
+        description: (cartDescription || '').trim() || null,
+      };
+      const resp = await apiPost('/api/carts', payload);
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || 'Création du panier échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Erreur');
+      }
+      showToast('Panier créé', 'success');
+      setCartReference('');
+      setCartDescription('');
+      setCartTTLMinutes('15');
+      setCartAmountEuro('');
+      if (store?.slug) {
+        const r = await apiGet(
+          `/api/carts/store/${encodeURIComponent(store.slug)}`
+        );
+        const j = await r.json().catch(() => ({}));
+        setStoreCarts(Array.isArray(j?.carts) ? j.carts : []);
+      }
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur inconnue';
+      showToast(raw, 'error');
+    } finally {
+      setCartCreating(false);
+    }
+  };
+
+  const handleDeleteCart = async (id: number) => {
+    try {
+      if (!id) return;
+      setCartDeletingIds(prev => ({ ...prev, [id]: true }));
+      const resp = await apiDelete('/api/carts', {
+        body: JSON.stringify({ id }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || 'Suppression du panier échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Erreur');
+      }
+      showToast('Panier supprimé', 'success');
+      setStoreCarts(prev => (prev || []).filter((c: any) => c.id !== id));
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur inconnue';
+      showToast(raw, 'error');
+    } finally {
+      setCartDeletingIds(prev => ({ ...prev, [id]: false }));
+    }
+  };
+
+  const handleReloadCarts = async () => {
+    try {
+      if (!store?.slug) return;
+      setCartReloading(true);
+      const resp = await apiGet(
+        `/api/carts/store/${encodeURIComponent(store.slug)}`
+      );
+      const json = await resp.json().catch(() => ({}));
+      setStoreCarts(Array.isArray(json?.carts) ? json.carts : []);
+    } catch (e: any) {
+      showToast(e?.message || 'Erreur inconnue', 'error');
+    } finally {
+      setCartReloading(false);
+    }
+  };
 
   // Handlers de validation du nom (adaptés depuis Onboarding)
   const handleStoreNameFocus = () => {
@@ -1528,7 +1833,7 @@ export default function DashboardPage() {
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
-              <ShoppingCart className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <Coins className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
               <span className='truncate'>Ventes</span>
             </button>
 
@@ -1542,6 +1847,17 @@ export default function DashboardPage() {
             >
               <Users className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
               <span className='truncate'>Clients</span>
+            </button>
+            <button
+              onClick={() => setSection('carts')}
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+                section === 'carts'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <ShoppingCart className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <span className='truncate'>Panier</span>
             </button>
             <button
               onClick={() => setSection('promo')}
@@ -1782,7 +2098,9 @@ export default function DashboardPage() {
                         )}
                         <select
                           value={companyCountry}
-                          onChange={e => setCompanyCountry(e.target.value as 'FR' | 'BE')}
+                          onChange={e =>
+                            setCompanyCountry(e.target.value as 'FR' | 'BE')
+                          }
                           className='bg-transparent text-sm focus:outline-none'
                         >
                           <option value='FR'>France</option>
@@ -1861,7 +2179,8 @@ export default function DashboardPage() {
                               return `${day} ${monthName} ${year}`;
                             };
                             const d = siretDetails;
-                            const e = d?.etablissement || d?.etablissements?.[0] || d;
+                            const e =
+                              d?.etablissement || d?.etablissements?.[0] || d;
                             const ul = d?.uniteLegale || e?.uniteLegale || null;
                             const denomination =
                               pick(ul?.denominationUniteLegale) ||
@@ -1869,10 +2188,14 @@ export default function DashboardPage() {
                               pick(ul?.denominationUsuelle2UniteLegale) ||
                               pick(ul?.denominationUsuelle3UniteLegale) ||
                               pick(e?.enseigne1Etablissement) ||
-                              (pick(ul?.prenomUsuelUniteLegale) && pick(ul?.nomUniteLegale)
+                              (pick(ul?.prenomUsuelUniteLegale) &&
+                              pick(ul?.nomUniteLegale)
                                 ? `${pick(ul?.prenomUsuelUniteLegale)} ${pick(ul?.nomUniteLegale)}`
                                 : null);
-                            const adr = e?.adresseEtablissement || e?.adressePrincipaleEtablissement || null;
+                            const adr =
+                              e?.adresseEtablissement ||
+                              e?.adressePrincipaleEtablissement ||
+                              null;
                             const line1 = [
                               pick(adr?.numeroVoieEtablissement),
                               pick(adr?.typeVoieEtablissement),
@@ -1881,7 +2204,10 @@ export default function DashboardPage() {
                             ]
                               .filter(Boolean)
                               .join(' ');
-                            const city = [pick(adr?.codePostalEtablissement), pick(adr?.libelleCommuneEtablissement)]
+                            const city = [
+                              pick(adr?.codePostalEtablissement),
+                              pick(adr?.libelleCommuneEtablissement),
+                            ]
                               .filter(Boolean)
                               .join(' ');
                             const hasName = !!denomination;
@@ -1900,42 +2226,63 @@ export default function DashboardPage() {
                                 </div>
                                 {hasName && (
                                   <div>
-                                    <span className='text-gray-600'>Raison sociale: </span>
-                                    <span className='font-medium'>{denomination}</span>
+                                    <span className='text-gray-600'>
+                                      Raison sociale:{' '}
+                                    </span>
+                                    <span className='font-medium'>
+                                      {denomination}
+                                    </span>
                                   </div>
                                 )}
                                 {hasSiren && (
                                   <div className='mt-1'>
-                                    <span className='text-gray-600'>SIREN: </span>
-                                    <span className='font-medium'>{e?.siren}</span>
+                                    <span className='text-gray-600'>
+                                      SIREN:{' '}
+                                    </span>
+                                    <span className='font-medium'>
+                                      {e?.siren}
+                                    </span>
                                   </div>
                                 )}
                                 {hasDate && (
                                   <div className='mt-1'>
-                                    <span className='text-gray-600'>Date de création: </span>
-                                    <span className='font-medium'>{creationDateDisplay}</span>
+                                    <span className='text-gray-600'>
+                                      Date de création:{' '}
+                                    </span>
+                                    <span className='font-medium'>
+                                      {creationDateDisplay}
+                                    </span>
                                   </div>
                                 )}
                                 {hasAddress && (
                                   <div className='mt-1'>
-                                    <span className='text-gray-600'>Adresse: </span>
+                                    <span className='text-gray-600'>
+                                      Adresse:{' '}
+                                    </span>
                                     <span className='font-medium'>
-                                      {[line1, city].filter(Boolean).join(' — ')}
+                                      {[line1, city]
+                                        .filter(Boolean)
+                                        .join(' — ')}
                                     </span>
                                   </div>
                                 )}
                               </div>
                             );
                           } else {
-                            const data = (siretDetails as any)?.data || siretDetails;
+                            const data =
+                              (siretDetails as any)?.data || siretDetails;
                             const name =
                               (data?.denomination as any) ||
                               (data?.abbreviation as any) ||
                               (data?.commercial_name as any) ||
                               (data?.branch_name as any) ||
                               '';
-                            const address = (data?.address?.full_address as any) || '';
-                            const cbe = (data?.cbe_number_formatted as any) || (data?.cbe_number as any) || '';
+                            const address =
+                              (data?.address?.full_address as any) || '';
+                            const cbe =
+                              (data?.cbe_number_formatted as any) ||
+                              (data?.cbe_number as any) ||
+                              '';
                             const start = (data?.start_date as any) || '';
                             const hasName = !!String(name).trim();
                             const hasAddress = !!String(address).trim();
@@ -1950,26 +2297,36 @@ export default function DashboardPage() {
                                 </div>
                                 {hasName && (
                                   <div>
-                                    <span className='text-gray-600'>Raison sociale: </span>
+                                    <span className='text-gray-600'>
+                                      Raison sociale:{' '}
+                                    </span>
                                     <span className='font-medium'>{name}</span>
                                   </div>
                                 )}
                                 {hasCbe && (
                                   <div className='mt-1'>
-                                    <span className='text-gray-600'>Numéro BCE: </span>
+                                    <span className='text-gray-600'>
+                                      Numéro BCE:{' '}
+                                    </span>
                                     <span className='font-medium'>{cbe}</span>
                                   </div>
                                 )}
                                 {hasStart && (
                                   <div className='mt-1'>
-                                    <span className='text-gray-600'>Date de début: </span>
+                                    <span className='text-gray-600'>
+                                      Date de début:{' '}
+                                    </span>
                                     <span className='font-medium'>{start}</span>
                                   </div>
                                 )}
                                 {hasAddress && (
                                   <div className='mt-1'>
-                                    <span className='text-gray-600'>Adresse: </span>
-                                    <span className='font-medium'>{address}</span>
+                                    <span className='text-gray-600'>
+                                      Adresse:{' '}
+                                    </span>
+                                    <span className='font-medium'>
+                                      {address}
+                                    </span>
                                   </div>
                                 )}
                               </div>
@@ -2064,6 +2421,407 @@ export default function DashboardPage() {
             </div>
           )}
 
+          {section === 'carts' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center justify-between mb-4'>
+                <div className='flex items-center'>
+                  <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
+                  <h2 className='text-lg font-semibold text-gray-900'>
+                    Panier
+                  </h2>
+                </div>
+
+                <div className='sm:hidden'></div>
+              </div>
+
+              <p className='text-sm text-gray-600 mb-4'>
+                Créez des paniers prêts à payer pour vos clients. Ils n'ont plus
+                qu'à régler en un clic, sans saisir la référence ni le montant.
+              </p>
+              <div className='grid grid-cols-1 md:grid-cols-2 gap-4 mb-6'>
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Client
+                  </label>
+                  <input
+                    type='text'
+                    value={cartCustomerInput}
+                    onChange={e => {
+                      const v = e.target.value;
+                      setCartCustomerInput(v);
+                      searchClerkUsers(v);
+                    }}
+                    placeholder='Nom du client (contains)'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                  {cartUsersLoading ? (
+                    <div className='text-xs text-gray-600 mt-2'>Recherche…</div>
+                  ) : cartCustomerResults.length > 0 ? (
+                    <div className='mt-2 border border-gray-200 rounded-md max-h-48 overflow-auto bg-white'>
+                      {cartCustomerResults.map(u => (
+                        <button
+                          key={u.id}
+                          type='button'
+                          onClick={() => {
+                            setCartSelectedUser(u);
+                            setCartCustomerInput(u.fullName);
+                            setCartCustomerResults([]);
+                          }}
+                          className='w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center justify-between'
+                        >
+                          <span className='text-sm text-gray-800'>
+                            {u.fullName}
+                          </span>
+                          <span className='text-xs text-gray-600'>
+                            {u.email || ''}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {cartSelectedUser ? (
+                    <div className='mt-2 text-xs text-gray-600'>
+                      Sélectionné: {cartSelectedUser.fullName}{' '}
+                      {cartSelectedUser.email
+                        ? `(${cartSelectedUser.email})`
+                        : ''}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Référence
+                  </label>
+                  <input
+                    type='text'
+                    value={cartReference}
+                    onChange={e => setCartReference(e.target.value)}
+                    placeholder='Ex: REF-001'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Description
+                  </label>
+                  <input
+                    type='text'
+                    value={cartDescription}
+                    onChange={e => setCartDescription(e.target.value)}
+                    placeholder='Ex: Robe Noire'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Montant (€)
+                  </label>
+                  <input
+                    type='number'
+                    min='0.01'
+                    step='0.01'
+                    value={cartAmountEuro}
+                    onChange={e => setCartAmountEuro(e.target.value)}
+                    placeholder='Ex: 49.90'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Durée du panier (minutes)
+                  </label>
+                  <input
+                    type='number'
+                    min='1'
+                    step='1'
+                    value={cartTTLMinutes}
+                    onChange={e => {
+                      const v = e.target.value;
+                      // autoriser uniquement des entiers positifs
+                      const normalized = v.replace(/[^0-9]/g, '');
+                      setCartTTLMinutes(normalized);
+                    }}
+                    placeholder='15'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+              </div>
+
+              <div className='flex items-center gap-3 mb-6'>
+                <button
+                  onClick={handleCreateCart}
+                  disabled={
+                    cartCreating ||
+                    !cartSelectedUser ||
+                    !(cartReference || '').trim() ||
+                    !(parseFloat((cartAmountEuro || '').replace(',', '.')) > 0)
+                  }
+                  className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                >
+                  {cartCreating && (
+                    <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                  )}
+                  <span>Ajouter au panier</span>
+                </button>
+              </div>
+
+              <div className='mb-3 flex items-center justify-between'>
+                <input
+                  type='text'
+                  value={cartSearchTerm}
+                  onChange={e => {
+                    setCartSearchTerm(e.target.value);
+                    setCartPage(1);
+                  }}
+                  placeholder='Rechercher par nom du client…'
+                  className='w-full md:w-64 border border-gray-300 rounded-md px-3 py-2 text-sm'
+                />
+                <button
+                  onClick={handleReloadCarts}
+                  disabled={cartReloading}
+                  className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                  title='Recharger'
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 mr-1 ${cartReloading ? 'animate-spin' : ''}`}
+                  />
+                  Recharger
+                </button>
+              </div>
+
+              {(() => {
+                const groupsMap: Record<string, any[]> = {};
+                (storeCarts || []).forEach((c: any) => {
+                  const key = String(c.customer_stripe_id || '');
+                  if (!groupsMap[key]) groupsMap[key] = [];
+                  groupsMap[key].push(c);
+                });
+                const groups = Object.entries(groupsMap).map(
+                  ([stripeId, items]) => {
+                    const user = clerkUsersByStripeId[stripeId] || null;
+                    return { stripeId, user, items };
+                  }
+                );
+                const filtered = groups.filter(g => {
+                  const term = (cartSearchTerm || '').trim().toLowerCase();
+                  if (!term) return true;
+                  const name = (g.user?.fullName || '').toLowerCase();
+                  return name.includes(term);
+                });
+                const totalGroups = filtered.length;
+                const totalPages = Math.max(
+                  1,
+                  Math.ceil(totalGroups / cartPageSize)
+                );
+                const page = Math.min(cartPage, totalPages);
+                const start = (page - 1) * cartPageSize;
+                const pageGroups = filtered.slice(start, start + cartPageSize);
+
+                return (
+                  <div className='space-y-6'>
+                    {pageGroups.length === 0 ? (
+                      <div className='text-sm text-gray-600'>Aucun panier</div>
+                    ) : (
+                      pageGroups.map(g => (
+                        <div
+                          key={g.stripeId}
+                          className='border border-gray-200 rounded-md'
+                        >
+                          <div className='flex items-center gap-3 p-3 bg-gray-50 border-b border-gray-200'>
+                            {g.user?.hasImage && g.user?.imageUrl ? (
+                              <img
+                                src={g.user.imageUrl}
+                                alt={g.user.fullName || 'Client'}
+                                className='w-8 h-8 rounded-full object-cover'
+                              />
+                            ) : (
+                              <div className='w-8 h-8 rounded-full bg-gray-300'></div>
+                            )}
+                            <div>
+                              <div className='text-gray-900 font-semibold text-sm'>
+                                {g.user?.fullName || g.stripeId || 'Client'}
+                              </div>
+                              <div className='text-xs text-gray-600'>
+                                {g.user?.email || ''}
+                              </div>
+                            </div>
+                          </div>
+                          <div className='overflow-x-auto'>
+                            <table className='min-w-full divide-y divide-gray-200 text-sm'>
+                              <thead className='bg-white'>
+                                <tr>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Référence
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Description
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Durée (min)
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Montant (€)
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Créé
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Actions
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody className='bg-white divide-y divide-gray-200'>
+                                {(() => {
+                                  const gid = g.stripeId;
+                                  const size = cartGroupPageSize[gid] ?? 10;
+                                  const page = cartGroupPage[gid] ?? 1;
+                                  const start = (page - 1) * size;
+                                  const items = g.items.slice(
+                                    start,
+                                    start + size
+                                  );
+                                  return items.map((c: any) => (
+                                    <tr key={c.id}>
+                                      <td className='px-4 py-3 text-gray-900 font-medium'>
+                                        {c.product_reference || '—'}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {c.description || '—'}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {typeof c.time_to_live === 'number'
+                                          ? c.time_to_live
+                                          : '—'}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {typeof c.value === 'number'
+                                          ? c.value.toLocaleString('fr-FR', {
+                                              minimumFractionDigits: 2,
+                                              maximumFractionDigits: 2,
+                                            })
+                                          : '—'}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {c.created_at
+                                          ? new Date(
+                                              c.created_at
+                                            ).toLocaleString('fr-FR', {
+                                              dateStyle: 'short',
+                                              timeStyle: 'short',
+                                            })
+                                          : '—'}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        <button
+                                          onClick={() => handleDeleteCart(c.id)}
+                                          disabled={!!cartDeletingIds[c.id]}
+                                          className={`inline-flex items-center p-2 rounded-md border ${cartDeletingIds[c.id] ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-700 border-gray-300'}`}
+                                          title={'Supprimer'}
+                                        >
+                                          <Trash2
+                                            className={`w-4 h-4 ${cartDeletingIds[c.id] ? 'opacity-60' : ''}`}
+                                          />
+                                          <span className='ml-1'>
+                                            Supprimer
+                                          </span>
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  ));
+                                })()}
+                              </tbody>
+                            </table>
+                            {(() => {
+                              const gid = g.stripeId;
+                              const size = cartGroupPageSize[gid] ?? 10;
+                              const page = cartGroupPage[gid] ?? 1;
+                              const totalPages = Math.max(
+                                1,
+                                Math.ceil(g.items.length / size)
+                              );
+                              return (
+                                <div className='flex items-center justify-end gap-2 p-3'>
+                                  <div className='hidden sm:flex items-center space-x-3'>
+                                    <div className='text-sm text-gray-600'>
+                                      Page {page} / {totalPages} —{' '}
+                                      {g.items.length}
+                                    </div>
+                                    <label className='text-sm text-gray-700'>
+                                      Lignes
+                                    </label>
+                                    <select
+                                      value={size}
+                                      onChange={e => {
+                                        const v = parseInt(e.target.value, 10);
+                                        setCartGroupPageSize(prev => ({
+                                          ...prev,
+                                          [gid]: isNaN(v) ? 10 : v,
+                                        }));
+                                        setCartGroupPage(prev => ({
+                                          ...prev,
+                                          [gid]: 1,
+                                        }));
+                                      }}
+                                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                                    >
+                                      <option value={5}>5</option>
+                                      <option value={10}>10</option>
+                                      <option value={20}>20</option>
+                                    </select>
+                                    <div className='flex items-center space-x-2'>
+                                      <button
+                                        onClick={() =>
+                                          setCartGroupPage(prev => ({
+                                            ...prev,
+                                            [gid]: Math.max(1, page - 1),
+                                          }))
+                                        }
+                                        disabled={page <= 1}
+                                        className={`px-3 py-1 text-sm rounded-md border ${
+                                          page <= 1
+                                            ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                        }`}
+                                      >
+                                        Précédent
+                                      </button>
+                                      <button
+                                        onClick={() =>
+                                          setCartGroupPage(prev => ({
+                                            ...prev,
+                                            [gid]: Math.min(
+                                              totalPages,
+                                              page + 1
+                                            ),
+                                          }))
+                                        }
+                                        disabled={page >= totalPages}
+                                        className={`px-3 py-1 text-sm rounded-md border ${
+                                          page >= totalPages
+                                            ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                        }`}
+                                      >
+                                        Suivant
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
           {/* Section Porte-monnaie */}
           {section === 'wallet' && (
             <div className='bg-white rounded-lg shadow p-6'>
@@ -2275,9 +3033,9 @@ export default function DashboardPage() {
             <div className='bg-white rounded-lg shadow p-6'>
               <div className='flex items-center justify-between mb-4'>
                 <div className='flex items-center'>
-                  <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
+                  <Coins className='w-5 h-5 text-indigo-600 mr-2' />
                   <h2 className='text-lg font-semibold text-gray-900'>
-                    Mes ventes
+                    Ventes
                   </h2>
                 </div>
                 <div className='hidden sm:flex items-center space-x-3'>
@@ -2336,6 +3094,35 @@ export default function DashboardPage() {
                       Suivant
                     </button>
                   </div>
+                  <div className='flex items-center space-x-2'>
+                    <span className='text-sm text-gray-700'>Filtrer par</span>
+                    <select
+                      value={salesFilterField}
+                      onChange={e => {
+                        const v = e.target.value as
+                          | 'id'
+                          | 'client'
+                          | 'reference';
+                        setSalesFilterField(v);
+                        setPage(1);
+                      }}
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    >
+                      <option value='id'>ID</option>
+                      <option value='client'>Client</option>
+                      <option value='reference'>Référence produit</option>
+                    </select>
+                    <input
+                      type='text'
+                      value={salesFilterTerm}
+                      onChange={e => {
+                        setSalesFilterTerm(e.target.value);
+                        setPage(1);
+                      }}
+                      placeholder='Saisir…'
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    />
+                  </div>
                 </div>
                 <div className='sm:hidden'>
                   <button
@@ -2352,21 +3139,33 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {/* Contrôles mobile: filtre ID */}
               <div className='sm:hidden mb-3'>
-                <label className='block text-sm text-gray-700 mb-1'>
-                  Filtrer par ID
-                </label>
-                <input
-                  type='text'
-                  value={idSearch}
-                  onChange={e => {
-                    setIdSearch(e.target.value);
-                    setPage(1);
-                  }}
-                  placeholder='Ex: 123ABC'
-                  className='w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                />
+                <div className='flex items-center space-x-2'>
+                  <span className='text-sm text-gray-700'>Filtrer par</span>
+                  <select
+                    value={salesFilterField}
+                    onChange={e => {
+                      const v = e.target.value as 'id' | 'client' | 'reference';
+                      setSalesFilterField(v);
+                      setPage(1);
+                    }}
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                  >
+                    <option value='id'>ID</option>
+                    <option value='client'>Client</option>
+                    <option value='reference'>Référence produit</option>
+                  </select>
+                  <input
+                    type='text'
+                    value={salesFilterTerm}
+                    onChange={e => {
+                      setSalesFilterTerm(e.target.value);
+                      setPage(1);
+                    }}
+                    placeholder='Saisir…'
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                  />
+                </div>
               </div>
 
               {/* Vue mobile: cartes dépliables */}
@@ -2428,13 +3227,52 @@ export default function DashboardPage() {
                           {s.product_reference ?? '—'}
                         </div>
                         <div>
-                          <span className='font-medium'>Client ID:</span>{' '}
-                          <span
-                            className='truncate inline-block max-w-[220px]'
-                            title={s.customer_stripe_id || ''}
-                          >
-                            {s.customer_stripe_id || '—'}
-                          </span>
+                          {(() => {
+                            const stripeId = s.customer_stripe_id || '';
+                            const customer = stripeId
+                              ? customersMap[stripeId] || null
+                              : null;
+                            const clerkId =
+                              customer?.clerkUserId || customer?.clerk_user_id;
+                            const u = clerkId
+                              ? socialsMap[clerkId] || null
+                              : null;
+                            const name =
+                              customer?.name ||
+                              [u?.firstName, u?.lastName]
+                                .filter(Boolean)
+                                .join(' ') ||
+                              stripeId ||
+                              '—';
+                            const email = (
+                              u?.emailAddress ||
+                              customer?.email ||
+                              ''
+                            ).trim();
+                            return (
+                              <div className='flex items-center space-x-2'>
+                                {u?.hasImage && u?.imageUrl ? (
+                                  <img
+                                    src={u.imageUrl}
+                                    alt='avatar'
+                                    className='w-5 h-5 rounded-full object-cover'
+                                  />
+                                ) : (
+                                  <span className='inline-block w-5 h-5 rounded-full bg-gray-200' />
+                                )}
+                                <div>
+                                  <span className='font-medium'>Client:</span>{' '}
+                                  <span className='truncate inline-block max-w-[160px]'>
+                                    {name}
+                                  </span>
+                                  <div className='text-xs text-gray-600'>
+                                    <span className='font-medium'>Email:</span>{' '}
+                                    {email || '—'}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </div>
                         <div>
                           <span className='font-medium'>Méthode:</span>{' '}
@@ -2571,7 +3409,8 @@ export default function DashboardPage() {
               </div>
 
               {/* Vue bureau: tableau */}
-              <table className='w-full hidden sm:table'>
+              <div className='hidden sm:block overflow-x-auto'>
+                <table className='w-full'>
                 <thead>
                   <tr className='border-b border-gray-200'>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
@@ -2615,31 +3454,6 @@ export default function DashboardPage() {
                       Aide
                     </th>
                   </tr>
-                  <tr className='border-b border-gray-100'>
-                    <th className='py-2 px-4'>
-                      <input
-                        type='text'
-                        value={idSearch}
-                        onChange={e => {
-                          setIdSearch(e.target.value);
-                          setPage(1);
-                        }}
-                        placeholder='Filtrer…'
-                        className='w-full  max-w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                      />
-                    </th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                  </tr>
                 </thead>
                 <tbody>
                   {visibleShipments.length === 0 ? (
@@ -2680,12 +3494,53 @@ export default function DashboardPage() {
                           </div>
                         </td>
                         <td className='py-4 px-4 text-gray-700'>
-                          <span
-                            className='truncate block max-w-[200px]'
-                            title={s.customer_stripe_id || ''}
-                          >
-                            {s.customer_stripe_id || '—'}
-                          </span>
+                          {(() => {
+                            const stripeId = s.customer_stripe_id || '';
+                            const customer = stripeId
+                              ? customersMap[stripeId] || null
+                              : null;
+                            const clerkId =
+                              customer?.clerkUserId || customer?.clerk_user_id;
+                            const u = clerkId
+                              ? socialsMap[clerkId] || null
+                              : null;
+                            const name =
+                              customer?.name ||
+                              [u?.firstName, u?.lastName]
+                                .filter(Boolean)
+                                .join(' ') ||
+                              stripeId ||
+                              '—';
+                            const email = (
+                              u?.emailAddress ||
+                              customer?.email ||
+                              ''
+                            ).trim();
+                            return (
+                              <div className='flex items-center space-x-2'>
+                                {u?.hasImage && u?.imageUrl ? (
+                                  <img
+                                    src={u.imageUrl}
+                                    alt='avatar'
+                                    className='w-6 h-6 rounded-full object-cover'
+                                  />
+                                ) : (
+                                  <span className='inline-block w-6 h-6 rounded-full bg-gray-200' />
+                                )}
+                                <div className='space-y-0.5'>
+                                  <div
+                                    className='font-medium truncate max-w-[180px]'
+                                    title={name}
+                                  >
+                                    {name}
+                                  </div>
+                                  <div className='text-xs text-gray-500 truncate max-w-[180px]'>
+                                    {email || '—'}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className='py-4 px-4 text-gray-700'>
                           {s.product_reference ?? '—'}
@@ -2813,7 +3668,8 @@ export default function DashboardPage() {
                     ))
                   )}
                 </tbody>
-              </table>
+                </table>
+              </div>
             </div>
           )}
 
@@ -2839,14 +3695,42 @@ export default function DashboardPage() {
                               .filter(Boolean)
                           )
                         ) as string[];
-                        const term = (clientIdSearch || '')
+                        const term = (clientsFilterTerm || '')
                           .trim()
                           .toLowerCase();
-                        const filteredIds = term
-                          ? allIds.filter(id =>
-                              (id || '').toLowerCase().includes(term)
-                            )
-                          : allIds;
+                        const filteredIds = allIds.filter(id => {
+                          if (!term) return true;
+                          const idLower = (id || '').toLowerCase();
+                          if (clientsFilterField === 'id') {
+                            return idLower.includes(term);
+                          }
+                          const customer = customersMap[id] || null;
+                          const clerkId =
+                            customer?.clerkUserId || customer?.clerk_user_id;
+                          const user = clerkId
+                            ? socialsMap[clerkId] || null
+                            : null;
+                          if (clientsFilterField === 'name') {
+                            const name1 = (customer?.name || '').toLowerCase();
+                            const name2 = [
+                              user?.firstName || '',
+                              user?.lastName || '',
+                            ]
+                              .filter(Boolean)
+                              .join(' ')
+                              .toLowerCase();
+                            return name1.includes(term) || name2.includes(term);
+                          }
+                          const email = (
+                            customer?.email ||
+                            '' ||
+                            user?.emailAddress ||
+                            ''
+                          )
+                            .toLowerCase()
+                            .trim();
+                          return email.includes(term);
+                        });
                         const totalClients = filteredIds.length;
                         const totalPagesClients = Math.max(
                           1,
@@ -2936,6 +3820,32 @@ export default function DashboardPage() {
                       );
                     })()}
                   </div>
+                  <div className='flex items-center space-x-2'>
+                    <span className='text-sm text-gray-700'>Filtrer par</span>
+                    <select
+                      value={clientsFilterField}
+                      onChange={e => {
+                        const v = e.target.value as 'id' | 'name' | 'email';
+                        setClientsFilterField(v);
+                        setClientsPage(1);
+                      }}
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    >
+                      <option value='id'>Client ID</option>
+                      <option value='name'>Nom</option>
+                      <option value='email'>Email</option>
+                    </select>
+                    <input
+                      type='text'
+                      value={clientsFilterTerm}
+                      onChange={e => {
+                        setClientsFilterTerm(e.target.value);
+                        setClientsPage(1);
+                      }}
+                      placeholder='Saisir…'
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    />
+                  </div>
                 </div>
                 <div className='sm:hidden'>
                   <button
@@ -2966,11 +3876,35 @@ export default function DashboardPage() {
                     </p>
                   );
 
-                // Filtre par Client ID
-                const term = (clientIdSearch || '').trim().toLowerCase();
-                const filteredIds = term
-                  ? allIds.filter(id => (id || '').toLowerCase().includes(term))
-                  : allIds;
+                const term = (clientsFilterTerm || '').trim().toLowerCase();
+                const filteredIds = allIds.filter(id => {
+                  if (!term) return true;
+                  const idLower = (id || '').toLowerCase();
+                  if (clientsFilterField === 'id') {
+                    return idLower.includes(term);
+                  }
+                  const customer = customersMap[id] || null;
+                  const clerkId =
+                    customer?.clerkUserId || customer?.clerk_user_id;
+                  const user = clerkId ? socialsMap[clerkId] || null : null;
+                  if (clientsFilterField === 'name') {
+                    const name1 = (customer?.name || '').toLowerCase();
+                    const name2 = [user?.firstName || '', user?.lastName || '']
+                      .filter(Boolean)
+                      .join(' ')
+                      .toLowerCase();
+                    return name1.includes(term) || name2.includes(term);
+                  }
+                  const email = (
+                    customer?.email ||
+                    '' ||
+                    user?.emailAddress ||
+                    ''
+                  )
+                    .toLowerCase()
+                    .trim();
+                  return email.includes(term);
+                });
 
                 const spentMap: Record<string, number> = {};
                 (shipments || []).forEach(s => {
@@ -3003,21 +3937,33 @@ export default function DashboardPage() {
 
                 return (
                   <>
-                    {/* Contrôles mobile: filtre Client ID */}
                     <div className='sm:hidden mb-3'>
-                      <label className='block text-sm text-gray-700 mb-1'>
-                        Filtrer par Client ID
-                      </label>
-                      <input
-                        type='text'
-                        value={clientIdSearch}
-                        onChange={e => {
-                          setClientIdSearch(e.target.value);
-                          setClientsPage(1);
-                        }}
-                        placeholder='Ex: cus_...'
-                        className='w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                      />
+                      <div className='flex items-center space-x-2'>
+                        <span className='text-sm text-gray-700'>Filtrer par</span>
+                        <select
+                          value={clientsFilterField}
+                          onChange={e => {
+                            const v = e.target.value as 'id' | 'name' | 'email';
+                            setClientsFilterField(v);
+                            setClientsPage(1);
+                          }}
+                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                        >
+                          <option value='id'>Client ID</option>
+                          <option value='name'>Nom</option>
+                          <option value='email'>Email</option>
+                        </select>
+                        <input
+                          type='text'
+                          value={clientsFilterTerm}
+                          onChange={e => {
+                            setClientsFilterTerm(e.target.value);
+                            setClientsPage(1);
+                          }}
+                          placeholder='Saisir…'
+                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                        />
+                      </div>
                     </div>
 
                     {/* Vue mobile: cartes dépliables */}
@@ -3313,7 +4259,8 @@ export default function DashboardPage() {
                     </div>
 
                     {/* Vue bureau: tableau */}
-                    <table className='w-full hidden sm:table'>
+                    <div className='hidden sm:block overflow-x-auto'>
+                      <table className='w-full'>
                       <thead>
                         <tr className='border-b border-gray-200'>
                           <th className='text-left py-3 px-4 font-semibold text-gray-700'>
@@ -3350,27 +4297,6 @@ export default function DashboardPage() {
                           <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                             Réseaux Sociaux
                           </th>
-                        </tr>
-                        <tr className='border-b border-gray-100'>
-                          <th className='py-2 px-4'>
-                            <input
-                              type='text'
-                              value={clientIdSearch}
-                              onChange={e => {
-                                setClientIdSearch(e.target.value);
-                                setClientsPage(1);
-                              }}
-                              placeholder='Filtrer…'
-                              className='w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                            />
-                          </th>
-                          <th className='py-2 px-4'></th>
-                          <th className='py-2 px-4'></th>
-                          <th className='py-2 px-4'></th>
-                          <th className='py-2 px-4'></th>
-                          <th className='py-2 px-4'></th>
-                          <th className='py-2 px-4'></th>
-                          <th className='py-2 px-4'></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -3646,7 +4572,8 @@ export default function DashboardPage() {
                           );
                         })}
                       </tbody>
-                    </table>
+                      </table>
+                    </div>
                   </>
                 );
               })()}
