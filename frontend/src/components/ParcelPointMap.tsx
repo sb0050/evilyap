@@ -1022,7 +1022,7 @@ export default function ParcelPointMap({
           {needsRefresh && canShowRefreshMessages && (
             <div className='mb-3 px-3 py-2 rounded bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs'>
               L'adresse a été modifiée. Cliquez sur "Rafraîchir" pour charger
-              les points relais à proximité.
+              les points relais à proximité ainsi que les tarifs de livraison.
             </div>
           )}
 
@@ -1444,8 +1444,9 @@ export default function ParcelPointMap({
                                     Prix livraison ({selectedWeight}):
                                   </strong>
                                   <span className='text-green-600 font-semibold'>
-                                    {getDeliveryPrice(point.network).toFixed(2)}
-                                    €
+                                    {needsRefresh
+                                      ? '- €'
+                                      : `${getDeliveryPrice(point.network).toFixed(2)}€`}
                                   </span>
                                 </div>
                                 <div className='flex items-center space-x-1 mt-1'>
@@ -1544,7 +1545,7 @@ export default function ParcelPointMap({
                         </div>
                         <div className='text-right'>
                           <div className='text-lg font-semibold text-green-600'>
-                            {price.toFixed(2)}€
+                            {needsRefresh ? '- €' : `${price.toFixed(2)}€`}
                           </div>
                           <div className='text-xs text-gray-500'>
                             pour {selectedWeight}
@@ -1614,7 +1615,9 @@ export default function ParcelPointMap({
                       <div className='flex items-center justify-between mt-2'>
                         <div className='text-sm font-semibold text-green-700'>
                           Livraison ({selectedWeight}):{' '}
-                          {getDeliveryPrice(selectedPoint.network).toFixed(2)}€
+                          {needsRefresh
+                            ? '- €'
+                            : `${getDeliveryPrice(selectedPoint.network).toFixed(2)}€`}
                         </div>
                         <div className='text-xs text-blue-600 font-medium'>
                           Délai: {getDeliveryDelay(selectedPoint.network)}
