@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronUp, ChevronDown, Heart } from 'lucide-react';
-import { BE, FR } from 'country-flag-icons/react/3x2';
+import { BE, CH, FR } from 'country-flag-icons/react/3x2';
 
 const HowItWorksPage = () => {
   const navigate = useNavigate();
@@ -87,10 +87,18 @@ const HowItWorksPage = () => {
     v.muted = true;
     v.volume = 0;
     v.autoplay = true;
-    try { v.setAttribute('muted', ''); } catch {}
-    try { v.setAttribute('autoplay', ''); } catch {}
-    try { v.setAttribute('playsinline', ''); } catch {}
-    try { v.setAttribute('webkit-playsinline', 'true'); } catch {}
+    try {
+      v.setAttribute('muted', '');
+    } catch {}
+    try {
+      v.setAttribute('autoplay', '');
+    } catch {}
+    try {
+      v.setAttribute('playsinline', '');
+    } catch {}
+    try {
+      v.setAttribute('webkit-playsinline', 'true');
+    } catch {}
     const attempt = () => {
       const p = v.play();
       if (p && typeof (p as any).catch === 'function') {
@@ -105,7 +113,9 @@ const HowItWorksPage = () => {
         attempt();
       };
       v.addEventListener('canplay', onCanPlay);
-      try { v.load(); } catch {}
+      try {
+        v.load();
+      } catch {}
     } else {
       attempt();
     }
@@ -119,8 +129,14 @@ const HowItWorksPage = () => {
   useEffect(() => {
     if (isDesktop) return;
     const handler = () => ensurePlay(currentSlide);
-    document.addEventListener('touchstart', handler, { once: true, passive: true });
-    document.addEventListener('touchend', handler, { once: true, passive: true });
+    document.addEventListener('touchstart', handler, {
+      once: true,
+      passive: true,
+    });
+    document.addEventListener('touchend', handler, {
+      once: true,
+      passive: true,
+    });
     document.addEventListener('pointerdown', handler, { once: true });
     document.addEventListener('click', handler, { once: true });
     document.addEventListener('scroll', handler, { once: true, capture: true });
@@ -137,12 +153,15 @@ const HowItWorksPage = () => {
     if (isDesktop) return;
     const v = videoRefs.current[currentSlide];
     if (!v) return;
-    const observer = new IntersectionObserver(entries => {
-      const entry = entries[0];
-      if (entry && entry.isIntersecting) {
-        ensurePlay(currentSlide);
-      }
-    }, { threshold: 0.4 });
+    const observer = new IntersectionObserver(
+      entries => {
+        const entry = entries[0];
+        if (entry && entry.isIntersecting) {
+          ensurePlay(currentSlide);
+        }
+      },
+      { threshold: 0.4 }
+    );
     observer.observe(v);
     return () => observer.disconnect();
   }, [currentSlide, isDesktop]);
@@ -644,8 +663,8 @@ const HowItWorksPage = () => {
                     title: '🌍 Dans quels pays PayLive est disponible?',
                     content: (
                       <>
-                        PayLive est actuellement disponible dans les pays
-                        suivants :<br />
+                        PayLive permet aux vendeurs d'expedier leur colis depuis
+                        la France vers les pays suivants :<br />
                         <b className='font-bold flex flex-row items-center gap-2'>
                           <FR title='France' className='w-5 h-4' />
                           France
@@ -653,6 +672,10 @@ const HowItWorksPage = () => {
                         <b className='font-bold flex flex-row items-center gap-2'>
                           <BE title='Belgique' className='w-5 h-4' />
                           Belgique
+                        </b>
+                        <b className='font-bold flex flex-row items-center gap-2'>
+                          <CH title='Suisse' className='w-5 h-4' />
+                          Suisse
                         </b>
                       </>
                     ),
