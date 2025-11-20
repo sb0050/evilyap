@@ -629,8 +629,8 @@ export default function OnboardingPage() {
                   className='block text-sm font-medium text-gray-700 mb-2'
                 >
                   {companyCountry === 'FR'
-                    ? 'SIRET (14 chiffres, facultatif mais nécessaire pour obtenir le badge "boutique vérifiée")'
-                    : 'BCE (10 chiffres, facultatif mais nécessaire pour obtenir le badge "boutique vérifiée")'}
+                    ? 'SIRET (14 chiffres, facultatif mais nécessaire pour obtenir le badge "Boutique Vérifiée")'
+                    : 'BCE (10 chiffres, facultatif mais nécessaire pour obtenir le badge "Boutique Vérifiée")'}
                 </label>
                 <div className='flex items-center gap-2'>
                   <div className='relative flex-1'>

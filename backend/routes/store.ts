@@ -269,12 +269,14 @@ router.post("/", async (req, res) => {
 router.put("/:storeSlug", async (req, res) => {
   try {
     const { storeSlug } = req.params as { storeSlug?: string };
-    const { name, description, website, siret, is_verified } = req.body as {
+    const { name, description, website, siret, is_verified, address, phone } = req.body as {
       name?: string;
       description?: string;
       website?: string;
       siret?: string;
       is_verified?: boolean;
+      address?: any;
+      phone?: string;
     };
 
     if (!storeSlug)
@@ -313,6 +315,35 @@ router.put("/:storeSlug", async (req, res) => {
     // Autoriser uniquement l'upgrade de vérification côté serveur
     if (is_verified === true) {
       payload.is_verified = true;
+    }
+
+    // Mise à jour de l'adresse JSONB si fournie
+    if (address && typeof address === "object") {
+      const addressJson = {
+        city: address.city || null,
+        line1: address.line1 || null,
+        country: address.country || null,
+        postal_code: address.postal_code || null,
+        phone: (typeof phone === "string" ? phone : null) || null,
+      };
+      payload.address = addressJson;
+    } else if (typeof phone === "string") {
+      // Permettre la mise à jour du téléphone seul dans l'adresse existante
+      const { data: existingStore, error: getAddressErr } = await supabase
+        .from("stores")
+        .select("address")
+        .eq("slug", decodedSlug)
+        .maybeSingle();
+      if (!getAddressErr && existingStore && (existingStore as any)?.address) {
+        const current = (existingStore as any).address || {};
+        payload.address = {
+          city: current.city || null,
+          line1: current.line1 || null,
+          country: current.country || null,
+          postal_code: current.postal_code || null,
+          phone: phone || null,
+        };
+      }
     }
 
     // Si le nom change, recalculer le slug côté backend et vérifier l'unicité

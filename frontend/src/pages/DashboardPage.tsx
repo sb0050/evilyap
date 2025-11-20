@@ -43,6 +43,9 @@ import {
 import SuccessConfetti from '../components/SuccessConfetti';
 import { RiDiscountPercentFill } from 'react-icons/ri';
 import { FR, BE } from 'country-flag-icons/react/3x2';
+import { AddressElement } from '@stripe/react-stripe-js';
+import { Address } from '@stripe/stripe-js';
+import StripeWrapper from '../components/StripeWrapper';
 
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
@@ -178,6 +181,9 @@ export default function DashboardPage() {
   >('id');
   const [clientsFilterTerm, setClientsFilterTerm] = useState<string>('');
   const [socialsMap, setSocialsMap] = useState<Record<string, any>>({});
+  const [billingAddress, setBillingAddress] = useState<Address | null>(null);
+  const [isAddressComplete, setIsAddressComplete] = useState(false);
+  const [formPhone, setFormPhone] = useState<string>('');
 
   // Paniers (création par le vendeur)
   const [cartCustomerInput, setCartCustomerInput] = useState<string>('');
@@ -1508,6 +1514,29 @@ export default function DashboardPage() {
         setWebsite(s?.website || '');
         setSiret((s as any)?.siret || '');
         setPayoutMethod(s?.rib?.type === 'link' ? 'link' : 'database');
+        const addr = (s as any)?.address || null;
+        if (addr) {
+          setFormPhone(String(addr?.phone || ''));
+          const preset: Address = {
+            line1: addr?.line1 || '',
+            line2: '',
+            city: addr?.city || '',
+            state: '',
+            postal_code: addr?.postal_code || '',
+            country: addr?.country || 'FR',
+          } as any;
+          setBillingAddress(preset);
+          const complete = Boolean(
+            (preset.line1 || '').trim() &&
+              (preset.city || '').trim() &&
+              (preset.postal_code || '').trim() &&
+              (preset.country || '').trim()
+          );
+          setIsAddressComplete(complete);
+        } else {
+          setBillingAddress(null);
+          setIsAddressComplete(false);
+        }
 
         // 3) Charger les ventes de la boutique
         const token = await getToken();
@@ -1554,6 +1583,10 @@ export default function DashboardPage() {
       setIsSubmittingModifications(false);
       return;
     }
+    if (!isAddressComplete || !formPhone.trim()) {
+      setIsSubmittingModifications(false);
+      return;
+    }
     // Identifiant entreprise facultatif: doit être valide et vérifiable
     if (siret && (siretInvalid || !!siretErrorMessage)) {
       showToast(
@@ -1582,7 +1615,13 @@ export default function DashboardPage() {
           console.warn("Erreur l'upload du logo:", e);
         }
       }
-      const payload: any = { name, description, website };
+      const payload: any = {
+        name,
+        description,
+        website,
+        phone: formPhone,
+        address: billingAddress,
+      };
       const isSiretVerified =
         Boolean(siret) &&
         lastCheckedSiret === normalizeCompanyId(siret) &&
@@ -1970,12 +2009,7 @@ export default function DashboardPage() {
                         <span className='font-medium mr-1'>Description:</span>
                         <span
                           title={store.description || '-'}
-                          style={{
-                            display: '-webkit-box',
-                            WebkitLineClamp: 2,
-                            WebkitBoxOrient: 'vertical',
-                            overflow: 'hidden',
-                          }}
+                          className='truncate inline-block align-bottom max-w-full'
                         >
                           {store.description || '-'}
                         </span>
@@ -1998,6 +2032,30 @@ export default function DashboardPage() {
                         ) : (
                           '-'
                         )}
+                      </p>
+                      <p className='text-sm text-gray-700'>
+                        <span className='font-medium mr-1'>SIRET:</span>
+                        <span>{(store as any)?.siret || '-'}</span>
+                      </p>
+                      <p className='text-sm text-gray-700'>
+                        <span className='font-medium mr-1'>Adresse:</span>
+                        <span>
+                          {(() => {
+                            const addr = (store as any)?.address || null;
+                            if (!addr) return '-';
+                            const seg1 = addr?.line1 || '';
+                            const seg2 = [addr?.postal_code, addr?.city]
+                              .filter(Boolean)
+                              .join(' ');
+                            const seg3 = addr?.country || '';
+                            const parts = [seg1, seg2, seg3].filter(Boolean);
+                            return parts.length ? parts.join(', ') : '-';
+                          })()}
+                        </span>
+                      </p>
+                      <p className='text-sm text-gray-700'>
+                        <span className='font-medium mr-1'>Téléphone:</span>
+                        <span>{(store as any)?.address?.phone || '-'}</span>
                       </p>
                     </div>
                   </div>
@@ -2098,23 +2156,6 @@ export default function DashboardPage() {
                         : 'BCE (10 chiffres, facultatif mais nécessaire pour obtenir le badge "Boutique Vérifiée")'}
                     </label>
                     <div className='flex items-center gap-2'>
-                      <div className='flex items-center gap-2 px-2 py-2 border rounded-lg'>
-                        {companyCountry === 'FR' ? (
-                          <FR title='France' className='w-5 h-4' />
-                        ) : (
-                          <BE title='Belgique' className='w-5 h-4' />
-                        )}
-                        <select
-                          value={companyCountry}
-                          onChange={e =>
-                            setCompanyCountry(e.target.value as 'FR' | 'BE')
-                          }
-                          className='bg-transparent text-sm focus:outline-none'
-                        >
-                          <option value='FR'>France</option>
-                          <option value='BE'>Belgique</option>
-                        </select>
-                      </div>
                       <div className='relative flex-1'>
                         <input
                           id='siret'
@@ -2343,6 +2384,7 @@ export default function DashboardPage() {
                         })()
                       : null}
                   </div>
+
                   <div>
                     <label className='block text-sm font-medium text-gray-700 mb-2'>
                       Logo *
@@ -2395,18 +2437,85 @@ export default function DashboardPage() {
                       )}
                     </div>
                   </div>
+
+                  {/* Adresse avec Stripe AddressElement */}
+                  <div>
+                    <label className='block text-sm font-medium text-gray-700 mb-2'>
+                      Adresse de la boutique *
+                    </label>
+                    <StripeWrapper>
+                      <div
+                        className={`rounded-md border ${!isAddressComplete ? 'border-red-500' : 'border-gray-300'} p-2`}
+                      >
+                        <AddressElement
+                          key={store?.id || 'nostore'}
+                          options={{
+                            mode: 'billing',
+                            allowedCountries: ['FR'],
+                            fields: {
+                              phone: 'always',
+                            },
+                            validation: {
+                              phone: {
+                                required: 'always',
+                              },
+                            },
+                            defaultValues: {
+                              name: name || '',
+                              phone: formPhone || '',
+                              address: {
+                                line1:
+                                  (billingAddress as any)?.line1 ||
+                                  (store as any)?.address?.line1 ||
+                                  '',
+                                city:
+                                  (billingAddress as any)?.city ||
+                                  (store as any)?.address?.city ||
+                                  '',
+                                postal_code:
+                                  (billingAddress as any)?.postal_code ||
+                                  (store as any)?.address?.postal_code ||
+                                  '',
+                                country:
+                                  (billingAddress as any)?.country ||
+                                  (store as any)?.address?.country ||
+                                  'FR',
+                              },
+                            },
+                          }}
+                          onChange={event => {
+                            setIsAddressComplete(event.complete);
+                            if (event.value.address) {
+                              setBillingAddress(event.value.address as any);
+                            }
+                            if (event.value.phone) {
+                              setFormPhone(event.value.phone as string);
+                            }
+                          }}
+                        />
+                      </div>
+                      {!isAddressComplete && (
+                        <p className='mt-2 text-sm text-red-600'>
+                          Veuillez compléter votre adresse
+                        </p>
+                      )}
+                    </StripeWrapper>
+                  </div>
+
                   <div className='flex items-center space-x-2 flex-wrap'>
                     <button
                       onClick={saveStoreInfo}
                       disabled={
                         !name.trim() ||
+                        !isAddressComplete ||
+                        !formPhone.trim() ||
                         (website && websiteInvalid) ||
                         slugExists ||
                         isCheckingSlug ||
                         (siret ? siretInvalid || !!siretErrorMessage : false) ||
                         isCheckingSiret
                       }
-                      className={`inline-flex items-center px-4 py-2 rounded-md text-white ${!name.trim() || (website && websiteInvalid) || slugExists || isCheckingSlug || (siret ? siretInvalid || !!siretErrorMessage : false) || isCheckingSiret ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+                      className={`inline-flex items-center px-4 py-2 rounded-md text-white ${!name.trim() || !isAddressComplete || !formPhone.trim() || (website && websiteInvalid) || slugExists || isCheckingSlug || (siret ? siretInvalid || !!siretErrorMessage : false) || isCheckingSiret ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
                     >
                       {isSubmittingModifications && (
                         <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
