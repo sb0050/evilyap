@@ -380,9 +380,13 @@ export default function OrdersPage() {
     const term = (ordersFilterTerm || '').trim().toLowerCase();
     if (term) {
       if (ordersFilterField === 'store') {
-        arr = arr.filter(s => (s.store?.name || '').toLowerCase().includes(term));
+        arr = arr.filter(s =>
+          (s.store?.name || '').toLowerCase().includes(term)
+        );
       } else {
-        arr = arr.filter(s => (s.product_reference || '').toLowerCase().includes(term));
+        arr = arr.filter(s =>
+          (s.product_reference || '').toLowerCase().includes(term)
+        );
       }
     }
     if (estimatedSortOrder) {
@@ -474,6 +478,13 @@ export default function OrdersPage() {
       'MONR-CPOURTOI': 'Mondial Relay',
       'CHRP-CHRONO2SHOPDIRECT': 'Chronopost',
       'COPR-COPRRELAISRELAISNAT': 'Colis Privé',
+      //BELGIQUE
+      'MONR-DOMICILEEUROPE': 'Mondial Relay - Mondial Domicile Europe',
+      'CHRP-CHRONOINTERNATIONALCLASSIC':
+        'Chronopost - Chrono International Classic',
+      'DLVG-DELIVENGOOEASY': 'Delivengo - Delivengo Easy',
+      'MONR-CPOURTOIEUROPE': 'Mondial Relay',
+      'CHRP-CHRONO2SHOPEUROPE': 'Chronopost',
       STORE_PICKUP: 'Retrait en boutique',
     };
     return map[c] || code || '—';
@@ -700,7 +711,7 @@ export default function OrdersPage() {
               </div>
 
               <div className='sm:hidden mb-3'>
-                <div className='flex items-center space-x-2'>
+                <div className='flex items-center space-x-2 flex-wrap'>
                   <span className='text-sm text-gray-700'>Filtrer par</span>
                   <select
                     value={ordersFilterField}
@@ -709,7 +720,7 @@ export default function OrdersPage() {
                       setOrdersFilterField(v);
                       setPage(1);
                     }}
-                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-36'
                   >
                     <option value='store'>Boutique</option>
                     <option value='reference'>Référence produit</option>
@@ -722,7 +733,7 @@ export default function OrdersPage() {
                       setPage(1);
                     }}
                     placeholder='Saisir…'
-                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 flex-1 min-w-0 w-full'
                   />
                 </div>
               </div>

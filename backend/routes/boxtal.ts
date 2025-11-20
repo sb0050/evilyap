@@ -106,21 +106,30 @@ router.post("/cotation", async (req, res) => {
     { label: "2kg", value: 2 },
   ];
 
-  const offerDimensions: Record<
-    string,
-    { width: number; length: number; height: number }
-  > = {
-    "MONR-CpourToi": { width: 41, length: 64, height: 38 },
-    "MONR-DomicileFrance": { width: 41, length: 64, height: 38 },
-    "SOGP-RelaisColis": { width: 50, length: 80, height: 40 },
-    "CHRP-Chrono2ShopDirect": { width: 30, length: 100, height: 20 },
-    "POFR-ColissimoAccess": { width: 24, length: 34, height: 26 },
-    "COPR-CoprRelaisDomicileNat": {
-      width: 49,
-      length: 69,
-      height: 29,
+  const offerDimensions: any = {
+    FR: {
+      "MONR-CpourToi": { width: 41, length: 64, height: 38 },
+      "MONR-DomicileFrance": { width: 41, length: 64, height: 38 },
+      "SOGP-RelaisColis": { width: 50, length: 80, height: 40 },
+      "CHRP-Chrono2ShopDirect": { width: 30, length: 100, height: 20 },
+      "POFR-ColissimoAccess": { width: 24, length: 34, height: 26 },
+      "COPR-CoprRelaisDomicileNat": {
+        width: 49,
+        length: 69,
+        height: 29,
+      },
+      "COPR-CoprRelaisRelaisNat": { width: 49, length: 69, height: 29 },
     },
-    "COPR-CoprRelaisRelaisNat": { width: 49, length: 69, height: 29 },
+    BE: {
+      "MONR-CpourToiEurope": { width: 41, length: 64, height: 38 },
+      "CHRP-Chrono2ShopEurope": { width: 30, length: 100, height: 20 },
+      "MONR-DomicileEurope": { width: 41, length: 64, height: 38 },
+      "CHRP-ChronoInternationalClassic": { width: 30, length: 100, height: 20 },
+      "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
+    },
+    CH: {
+      "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
+    },
   };
   const { sender, recipient } = req.body || {};
   if (
@@ -137,7 +146,10 @@ router.post("/cotation", async (req, res) => {
   }
 
   try {
-    const networks = Object.keys(offerDimensions);
+    const recipientCountry = String(recipient.country || "FR").toUpperCase();
+    const countryKey = recipientCountry;
+    const countryOffers = offerDimensions[countryKey] || {};
+    const networks = Object.keys(countryOffers);
 
     const credentials = Buffer.from(
       `${BOXTAL_API_V1_CONFIG.client_id}:${BOXTAL_API_V1_CONFIG.client_secret}`
@@ -155,7 +167,7 @@ router.post("/cotation", async (req, res) => {
 
     await Promise.all(
       networks.map(async (net) => {
-        const dimForNet = offerDimensions[net] || {
+        const dimForNet = countryOffers[net] || {
           width: 10,
           length: 10,
           height: 5,

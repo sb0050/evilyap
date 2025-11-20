@@ -223,11 +223,21 @@ class EmailService {
   async sendCustomerConfirmation(data: CustomerEmailData): Promise<boolean> {
     try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
-      const netProductValue = (data.amount ?? 0) - (data.estimatedDeliveryCost ?? 0);
-      const formattedNetProduct = this.formatAmount(netProductValue, data.currency) || String(netProductValue);
-      const formattedOriginalProduct = this.formatAmount(data.productValue, data.currency) || String(data.productValue ?? 0);
-      const discountValue = Math.max(0, (data.productValue ?? 0) - netProductValue);
-      const formattedDiscount = this.formatAmount(discountValue, data.currency) || String(discountValue);
+      const netProductValue =
+        (data.amount ?? 0) - (data.estimatedDeliveryCost ?? 0);
+      const formattedNetProduct =
+        this.formatAmount(netProductValue, data.currency) ||
+        String(netProductValue);
+      const formattedOriginalProduct =
+        this.formatAmount(data.productValue, data.currency) ||
+        String(data.productValue ?? 0);
+      const discountValue = Math.max(
+        0,
+        (data.productValue ?? 0) - netProductValue
+      );
+      const formattedDiscount =
+        this.formatAmount(discountValue, data.currency) ||
+        String(discountValue);
       const promoNote = data.promoCodes
         ? ` <span style="color:#666; font-size:12px;"><span style="text-decoration: line-through;">${formattedOriginalProduct}</span> (${formattedDiscount} de remise avec le code : ${String(
             data.promoCodes || ""
@@ -374,11 +384,21 @@ class EmailService {
   ): Promise<boolean> {
     try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
-      const netProductValue = (data.amount ?? 0) - (data.estimatedDeliveryCost ?? 0);
-      const formattedNetProduct = this.formatAmount(netProductValue, data.currency) || String(netProductValue);
-      const formattedOriginalProduct = this.formatAmount(data.productValue, data.currency) || String(data.productValue ?? 0);
-      const discountValue = Math.max(0, (data.productValue ?? 0) - netProductValue);
-      const formattedDiscount = this.formatAmount(discountValue, data.currency) || String(discountValue);
+      const netProductValue =
+        (data.amount ?? 0) - (data.estimatedDeliveryCost ?? 0);
+      const formattedNetProduct =
+        this.formatAmount(netProductValue, data.currency) ||
+        String(netProductValue);
+      const formattedOriginalProduct =
+        this.formatAmount(data.productValue, data.currency) ||
+        String(data.productValue ?? 0);
+      const discountValue = Math.max(
+        0,
+        (data.productValue ?? 0) - netProductValue
+      );
+      const formattedDiscount =
+        this.formatAmount(discountValue, data.currency) ||
+        String(discountValue);
       const promoNote = data.promoCodes
         ? ` <span style="color:#666; font-size:12px;"><span style="text-decoration: line-through;">${formattedOriginalProduct}</span> (${formattedDiscount} de remise avec le code : ${String(
             data.promoCodes || ""
@@ -438,6 +458,14 @@ class EmailService {
             imageFile: "colis_prive.jpg",
           };
         }
+        if (code.startsWith("DLVG")) {
+          return {
+            name: "Delivengo",
+            link: "https://localiser.laposte.fr/",
+            imageFile: "delivengo.jpg",
+          };
+        }
+
         return null;
       };
 

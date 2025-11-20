@@ -141,162 +141,280 @@ const networkIcons = {
     popupAnchor: [1, -34],
     shadowSize: [41, 41],
   }),
+  DLVG: new L.Icon({
+    iconUrl:
+      'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-yellow.png',
+    shadowUrl:
+      'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+    popupAnchor: [1, -34],
+    shadowSize: [41, 41],
+  }),
 };
 
 // Configuration des réseaux avec tarifs, délais et codes d'offres
 const networkConfig = {
-  SOGP: {
-    name: 'Relais Colis',
-    color: '#3B82F6',
-    delay: '3 à 5 jours',
-    shippingOfferCode: 'SOGP-RelaisColis',
-    prices: {
-      '250g': 3.63,
-      '500g': 3.63,
-      '1kg': 3.71,
-      '2kg': 5.24,
-      '3kg': 5.45,
-      '5kg': 7.67,
-      '7kg': 9.56,
-      '10kg': 10.96,
-      '15kg': 13.92,
-      '20kg': 16.32,
-      '30kg': 16.32,
+  FR: {
+    SOGP: {
+      name: 'Relais Colis',
+      color: '#3B82F6',
+      delay: '3 à 5 jours',
+      shippingOfferCode: 'SOGP-RelaisColis',
+      prices: {
+        '250g': 3.63,
+        '500g': 3.63,
+        '1kg': 3.71,
+        '2kg': 5.24,
+        '3kg': 5.45,
+        '5kg': 7.67,
+        '7kg': 9.56,
+        '10kg': 10.96,
+        '15kg': 13.92,
+        '20kg': 16.32,
+        '30kg': 16.32,
+      },
+    },
+    MONR: {
+      name: 'Mondial Relay',
+      color: '#10B981',
+      delay: '3 à 4 jours',
+      shippingOfferCode: 'MONR-CpourToi',
+      prices: {
+        '250g': 3.18,
+        '500g': 3.26,
+        '1kg': 3.88,
+        '2kg': 5.0,
+        '3kg': 5.61,
+        '5kg': 9.1,
+        '7kg': 10.49,
+        '10kg': 10.92,
+        '15kg': 16.99,
+        '20kg': 16.99,
+        '30kg': 24.57,
+      },
+    },
+    CHRP: {
+      name: 'Chronopost',
+      color: '#F59E0B',
+      delay: '2 à 4 jours',
+      shippingOfferCode: 'CHRP-Chrono2ShopDirect',
+      prices: {
+        '250g': 2.99,
+        '500g': 3.1,
+        '1kg': 3.66,
+        '2kg': 4.63,
+        '3kg': 5.1,
+        '5kg': 7.21,
+        '7kg': 8.49,
+        '10kg': 10.42,
+        '15kg': 13.64,
+        '20kg': 16.86,
+        '30kg': 16.86,
+      },
+    },
+    COPR: {
+      name: 'Colis Privé',
+      color: '#8B5CF6',
+      delay: '6 jours',
+      disabled: false,
+      shippingOfferCode: 'COPR-CoprRelaisRelaisNat',
+      prices: {
+        '250g': 3.54,
+        '500g': 3.54,
+        '1kg': 4.09,
+        '2kg': 5.35,
+        '3kg': 5.58,
+        '5kg': 8.36,
+        '7kg': 10.33,
+        '10kg': 10.33,
+        '15kg': 12.55,
+        '20kg': 16.52,
+        '30kg': 16.52,
+      },
     },
   },
-  MONR: {
-    name: 'Mondial Relay',
-    color: '#10B981',
-    delay: '3 à 4 jours',
-    shippingOfferCode: 'MONR-CpourToi',
-    prices: {
-      '250g': 3.18,
-      '500g': 3.26,
-      '1kg': 3.88,
-      '2kg': 5.0,
-      '3kg': 5.61,
-      '5kg': 9.1,
-      '7kg': 10.49,
-      '10kg': 10.92,
-      '15kg': 16.99,
-      '20kg': 16.99,
-      '30kg': 24.57,
+  BE: {
+    MONR: {
+      name: 'Mondial Relay',
+      color: '#10B981',
+      delay: '3 jours',
+      shippingOfferCode: 'MONR-CpourToiEurope',
+      disabled: false,
+      prices: {
+        '250g': 6.27,
+        '500g': 8.2,
+        '1kg': 7.66,
+        '2kg': 8.91,
+        '3kg': 10.5,
+        '5kg': 12.61,
+        '7kg': 13.67,
+        '10kg': 16.81,
+        '15kg': 21.02,
+        '20kg': 34.7,
+        '30kg': 34.7,
+      },
     },
-  },
-  CHRP: {
-    name: 'Chronopost',
-    color: '#F59E0B',
-    delay: '2 à 4 jours',
-    shippingOfferCode: 'CHRP-Chrono2ShopDirect',
-    prices: {
-      '250g': 2.99,
-      '500g': 3.1,
-      '1kg': 3.66,
-      '2kg': 4.63,
-      '3kg': 5.1,
-      '5kg': 7.21,
-      '7kg': 8.49,
-      '10kg': 10.42,
-      '15kg': 13.64,
-      '20kg': 16.86,
-      '30kg': 16.86,
-    },
-  },
-  COPR: {
-    name: 'Colis Privé',
-    color: '#8B5CF6',
-    delay: '6 jours',
-    disabled: false,
-    shippingOfferCode: 'COPR-CoprRelaisRelaisNat',
-    prices: {
-      '250g': 3.54,
-      '500g': 3.54,
-      '1kg': 4.09,
-      '2kg': 5.35,
-      '3kg': 5.58,
-      '5kg': 8.36,
-      '7kg': 10.33,
-      '10kg': 10.33,
-      '15kg': 12.55,
-      '20kg': 16.52,
-      '30kg': 16.52,
+    CHRP: {
+      name: 'Chronopost',
+      color: '#F59E0B',
+      delay: '2 à 5 jours',
+      shippingOfferCode: 'CHRP-Chrono2ShopEurope',
+      prices: {
+        '250g': 2.99,
+        '500g': 3.1,
+        '1kg': 3.66,
+        '2kg': 4.63,
+        '3kg': 5.1,
+        '5kg': 7.21,
+        '7kg': 8.49,
+        '10kg': 10.42,
+        '15kg': 13.64,
+        '20kg': 16.86,
+        '30kg': 16.86,
+      },
     },
   },
 };
 
 // Configuration des options de livraison à domicile
 const homeDeliveryConfig = {
-  MONR_HOME: {
-    name: 'Mondial Relay - Domicile France',
-    color: '#10B981',
-    delay: '5 jours',
-    shippingOfferCode: 'MONR-DomicileFrance',
-    disabled: false,
-    prices: {
-      '250g': 6.27,
-      '500g': 8.2,
-      '1kg': 7.66,
-      '2kg': 8.91,
-      '3kg': 10.5,
-      '5kg': 12.61,
-      '7kg': 13.67,
-      '10kg': 16.81,
-      '15kg': 21.02,
-      '20kg': 34.7,
-      '30kg': 34.7,
+  FR: {
+    MONR_HOME: {
+      name: 'Mondial Relay - Domicile France',
+      color: '#10B981',
+      delay: '5 jours',
+      shippingOfferCode: 'MONR-DomicileFrance',
+      disabled: false,
+      prices: {
+        '250g': 6.27,
+        '500g': 8.2,
+        '1kg': 7.66,
+        '2kg': 8.91,
+        '3kg': 10.5,
+        '5kg': 12.61,
+        '7kg': 13.67,
+        '10kg': 16.81,
+        '15kg': 21.02,
+        '20kg': 34.7,
+        '30kg': 34.7,
+      },
+    },
+    COPR_HOME: {
+      name: 'Colis Privé - Domicile Sans Signature',
+      color: '#8B5CF6',
+      delay: '6 jours',
+      disabled: false,
+      shippingOfferCode: 'COPR-CoprRelaisDomicileNat',
+      prices: {
+        '250g': 5.3,
+        '500g': 6.8,
+        '1kg': 7.9,
+        '2kg': 8.84,
+        '3kg': 9.83,
+        '5kg': 11.83,
+        '7kg': 13.72,
+        '10kg': 16.61,
+        '15kg': 22.83,
+        '20kg': 29.67,
+        '30kg': 29.67,
+      },
+    },
+    COLI_HOME: {
+      name: 'Colissimo - Domicile Sans Signature',
+      color: '#FF6B35',
+      delay: '48h',
+      shippingOfferCode: 'POFR-ColissimoAccess',
+      disabled: false,
+      prices: {
+        '250g': 7.24,
+        '500g': 8.61,
+        '1kg': 9.87,
+        '2kg': 11.07,
+        '3kg': 12.15,
+        '5kg': 14.3,
+        '7kg': 16.01,
+        '10kg': 19.19,
+        '15kg': 24.0,
+        '20kg': 29.15,
+        '30kg': 39.09,
+      },
+    },
+    CHRP_HOME: {
+      name: 'Chronopost - Chrono 18 (Express)',
+      color: '#F59E0B',
+      delay: '24h',
+      shippingOfferCode: 'CHRP-Chrono18',
+      disabled: true,
+      prices: {
+        '250g': 9.18,
+        '500g': 9.18,
+        '1kg': 9.18,
+        '2kg': 9.18,
+      },
     },
   },
-  COPR_HOME: {
-    name: 'Colis Privé - Domicile Sans Signature',
-    color: '#8B5CF6',
-    delay: '6 jours',
-    disabled: false,
-    shippingOfferCode: 'COPR-CoprRelaisDomicileNat',
-    prices: {
-      '250g': 5.3,
-      '500g': 6.8,
-      '1kg': 7.9,
-      '2kg': 8.84,
-      '3kg': 9.83,
-      '5kg': 11.83,
-      '7kg': 13.72,
-      '10kg': 16.61,
-      '15kg': 22.83,
-      '20kg': 29.67,
-      '30kg': 29.67,
+  BE: {
+    MONR_HOME: {
+      name: 'Mondial Relay - Mondial Domicile Europe',
+      color: '#10B981',
+      delay: '3 à 6 jours',
+      shippingOfferCode: 'MONR-DomicileEurope',
+      disabled: false,
+      prices: {
+        '250g': 6.27,
+        '500g': 8.2,
+        '1kg': 7.66,
+        '2kg': 8.91,
+        '3kg': 10.5,
+        '5kg': 12.61,
+        '7kg': 13.67,
+        '10kg': 16.81,
+        '15kg': 21.02,
+        '20kg': 34.7,
+        '30kg': 34.7,
+      },
+    },
+    CHRP_HOME: {
+      name: 'Chronopost - Chrono Classic',
+      color: '#F59E0B',
+      delay: '48h',
+      shippingOfferCode: 'CHRP-ChronoInternationalClassic',
+      disabled: false,
+      prices: {
+        '250g': 9.18,
+        '500g': 9.18,
+        '1kg': 9.18,
+        '2kg': 9.18,
+      },
+    },
+    DLVG_HOME: {
+      name: 'Delivengo - Delivengo easy',
+      color: '#FFD60A',
+      delay: '3 à 5 jours',
+      shippingOfferCode: 'DLVG-DelivengoEasy',
+      disabled: false,
+      prices: {
+        '250g': 9.18,
+        '500g': 9.18,
+        '1kg': 9.18,
+        '2kg': 9.18,
+      },
     },
   },
-  COLI_HOME: {
-    name: 'Colissimo - Domicile Sans Signature',
-    color: '#FF6B35',
-    delay: '48h',
-    shippingOfferCode: 'POFR-ColissimoAccess',
-    disabled: false,
-    prices: {
-      '250g': 7.24,
-      '500g': 8.61,
-      '1kg': 9.87,
-      '2kg': 11.07,
-      '3kg': 12.15,
-      '5kg': 14.3,
-      '7kg': 16.01,
-      '10kg': 19.19,
-      '15kg': 24.0,
-      '20kg': 29.15,
-      '30kg': 39.09,
-    },
-  },
-  CHRP_HOME: {
-    name: 'Chronopost - Chrono 18 (Express)',
-    color: '#F59E0B',
-    delay: '24h',
-    shippingOfferCode: 'CHRP-Chrono18',
-    disabled: true,
-    prices: {
-      '250g': 9.18,
-      '500g': 9.18,
-      '1kg': 9.18,
-      '2kg': 9.18,
+  CE: {
+    DLVG_HOME: {
+      name: 'Delivengo - Delivengo easy',
+      color: '#FFD60A',
+      delay: '3 à 5 jours',
+      shippingOfferCode: 'DLVG-DelivengoEasy',
+      disabled: false,
+      prices: {
+        '250g': 9.18,
+        '500g': 9.18,
+        '1kg': 9.18,
+        '2kg': 9.18,
+      },
     },
   },
 };
@@ -393,9 +511,11 @@ export default function ParcelPointMap({
       if (deliveryType === 'PICKUP') {
         if (selectedPoint) {
           const cost = getDeliveryPrice(selectedPoint.network);
-          const shippingOfferCode =
-            networkConfig[selectedPoint.network as keyof typeof networkConfig]
-              ?.shippingOfferCode;
+          const countryCodeRaw = address?.country || 'FR';
+          const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
+          const shippingOfferCode = (networkConfig as any)[countryCode]?.[
+            selectedPoint.network
+          ]?.shippingOfferCode;
           onParcelPointSelect(
             selectedPoint,
             'pickup_point',
@@ -410,10 +530,11 @@ export default function ParcelPointMap({
         if (selectedHomeDelivery) {
           const network = selectedHomeDelivery.replace('_HOME', '');
           const cost = getDeliveryPrice(network, true);
-          const shippingOfferCode =
-            homeDeliveryConfig[
-              selectedHomeDelivery as keyof typeof homeDeliveryConfig
-            ]?.shippingOfferCode;
+          const countryCodeRaw = address?.country || 'FR';
+          const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
+          const shippingOfferCode = (homeDeliveryConfig as any)[countryCode]?.[
+            selectedHomeDelivery
+          ]?.shippingOfferCode;
           onParcelPointSelect(
             null,
             'home_delivery',
@@ -501,12 +622,21 @@ export default function ParcelPointMap({
         setAddressCoordinates(coords);
       }
 
+      const countryCodeRaw = searchAddress.country || 'FR';
+      const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
+      const availableNetworks = Object.keys(
+        (networkConfig as any)[countryCode] || {}
+      );
+      if (countryCode === 'CE' || availableNetworks.length === 0) {
+        setParcelPoints([]);
+        return;
+      }
       const requestBody = {
         street: searchAddress.line1,
         city: searchAddress.city,
         postalCode: searchAddress.postal_code,
-        countryIsoCode: searchAddress.country || 'FR',
-        searchNetworks: 'SOGP,MONR,CHRP,COPR,UPSE,DHLE',
+        countryIsoCode: countryCodeRaw,
+        searchNetworks: availableNetworks.join(','),
       };
 
       const response = await fetch(
@@ -568,9 +698,10 @@ export default function ParcelPointMap({
         const weightMap: Record<string, number> = {};
         Object.keys(perWeight).forEach(wLabel => {
           const p = perWeight[wLabel]?.price;
-          const excl = p && typeof p['tax-exclusive'] !== 'undefined'
-            ? Number(p['tax-exclusive'])
-            : undefined;
+          const excl =
+            p && typeof p['tax-exclusive'] !== 'undefined'
+              ? Number(p['tax-exclusive'])
+              : undefined;
           if (typeof excl === 'number' && Number.isFinite(excl)) {
             weightMap[wLabel] = excl;
           }
@@ -669,13 +800,33 @@ export default function ParcelPointMap({
     }
   }, [defaultDeliveryMethod]);
 
+  useEffect(() => {
+    if (
+      (address?.country === 'CE' || address?.country === 'CH') &&
+      deliveryType === 'PICKUP'
+    ) {
+      setDeliveryType('HOME');
+    }
+  }, [address?.country, deliveryType]);
+
+  useEffect(() => {
+    const countryCodeRaw = address?.country || 'FR';
+    const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
+    const keys = Object.keys((networkConfig as any)[countryCode] || {});
+    if (networkFilter !== 'ALL' && !keys.includes(networkFilter)) {
+      setNetworkFilter('ALL');
+    }
+  }, [address?.country]);
+
   // Gestion de la sélection d'un point relais
   const handleMarkerClick = (parcelPoint: ParcelPointData) => {
     setSelectedPoint(parcelPoint);
     const cost = getDeliveryPrice(parcelPoint.network, false);
-    const shippingOfferCode =
-      networkConfig[parcelPoint.network as keyof typeof networkConfig]
-        ?.shippingOfferCode;
+    const countryCodeRaw = address?.country || 'FR';
+    const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
+    const shippingOfferCode = (networkConfig as any)[countryCode]?.[
+      parcelPoint.network
+    ]?.shippingOfferCode;
 
     if (onParcelPointSelect) {
       onParcelPointSelect(
@@ -721,8 +872,11 @@ export default function ParcelPointMap({
 
   // Gestion de la sélection d'une option de livraison à domicile
   const handleHomeDeliverySelect = (deliveryKey: string) => {
-    const config =
-      homeDeliveryConfig[deliveryKey as keyof typeof homeDeliveryConfig];
+    const countryCodeRaw = address?.country || 'FR';
+    const countryKey = (
+      countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw
+    ) as keyof typeof homeDeliveryConfig;
+    const config = (homeDeliveryConfig as any)[countryKey]?.[deliveryKey];
     if (config?.disabled) {
       return;
     }
@@ -762,13 +916,21 @@ export default function ParcelPointMap({
         : undefined;
       return typeof val === 'number' ? val : 0;
     };
+    const countryCodeRaw = address?.country || 'FR';
+    const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
     if (isHomeDelivery) {
-      const homeKey = `${network}_HOME` as keyof typeof homeDeliveryConfig;
-      const cfg = homeDeliveryConfig[homeKey];
-      return getByOffer(cfg?.shippingOfferCode);
+      const homeKey = `${network}_HOME`;
+      const cfg = (homeDeliveryConfig as any)[countryCode]?.[homeKey];
+      const dyn = getByOffer(cfg?.shippingOfferCode);
+      if (dyn && Number.isFinite(dyn) && dyn > 0) return dyn;
+      const fallback = cfg?.prices?.[selectedWeight];
+      return typeof fallback === 'number' ? fallback : 0;
     } else {
-      const cfg = networkConfig[network as keyof typeof networkConfig];
-      return getByOffer(cfg?.shippingOfferCode);
+      const cfg = (networkConfig as any)[countryCode]?.[network];
+      const dyn = getByOffer(cfg?.shippingOfferCode);
+      if (dyn && Number.isFinite(dyn) && dyn > 0) return dyn;
+      const fallback = cfg?.prices?.[selectedWeight];
+      return typeof fallback === 'number' ? fallback : 0;
     }
   };
 
@@ -777,12 +939,14 @@ export default function ParcelPointMap({
     network: string,
     isHomeDelivery: boolean = false
   ): string => {
+    const countryCodeRaw = address?.country || 'FR';
+    const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
     if (isHomeDelivery) {
-      const homeKey = `${network}_HOME` as keyof typeof homeDeliveryConfig;
-      const config = homeDeliveryConfig[homeKey];
+      const homeKey = `${network}_HOME`;
+      const config = (homeDeliveryConfig as any)[countryCode]?.[homeKey];
       return config?.delay || '';
     } else {
-      const config = networkConfig[network as keyof typeof networkConfig];
+      const config = (networkConfig as any)[countryCode]?.[network];
       return config?.delay || '';
     }
   };
@@ -877,6 +1041,9 @@ export default function ParcelPointMap({
                     value='PICKUP'
                     checked={deliveryType === 'PICKUP'}
                     onChange={e => handleDeliveryTypeChange(e.target.value)}
+                    disabled={
+                      address?.country === 'CE' || address?.country === 'CH'
+                    }
                     className='text-blue-600'
                   />
                   <span className='text-xs text-gray-700'>Point relais</span>
@@ -935,74 +1102,32 @@ export default function ParcelPointMap({
                         onChange={e => setNetworkFilter(e.target.value)}
                       />
                     </label>
-                    <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
-                      <div>
-                        <div className='text-sm font-medium text-gray-900'>
-                          Relais Colis
+                    {Object.entries(
+                      (networkConfig as any)[
+                        ((address?.country === 'CH'
+                          ? 'CE'
+                          : address?.country) ||
+                          'FR') as keyof typeof networkConfig
+                      ] || {}
+                    ).map(([key, cfg]: any) => (
+                      <label
+                        key={key}
+                        className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'
+                      >
+                        <div>
+                          <div className='text-sm font-medium text-gray-900'>
+                            {cfg.name}
+                          </div>
                         </div>
-                        <div className='text-xs text-gray-600'>
-                          Réseau SOGP – points relais bleus sur la carte.
-                        </div>
-                      </div>
-                      <input
-                        type='radio'
-                        name='networkFilter'
-                        value='SOGP'
-                        checked={networkFilter === 'SOGP'}
-                        onChange={e => setNetworkFilter(e.target.value)}
-                      />
-                    </label>
-                    <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
-                      <div>
-                        <div className='text-sm font-medium text-gray-900'>
-                          Mondial Relay
-                        </div>
-                        <div className='text-xs text-gray-600'>
-                          Réseau MONR – points relais verts sur la carte.
-                        </div>
-                      </div>
-                      <input
-                        type='radio'
-                        name='networkFilter'
-                        value='MONR'
-                        checked={networkFilter === 'MONR'}
-                        onChange={e => setNetworkFilter(e.target.value)}
-                      />
-                    </label>
-                    <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
-                      <div>
-                        <div className='text-sm font-medium text-gray-900'>
-                          Chronopost
-                        </div>
-                        <div className='text-xs text-gray-600'>
-                          Réseau CHRP – points relais orange sur la carte.
-                        </div>
-                      </div>
-                      <input
-                        type='radio'
-                        name='networkFilter'
-                        value='CHRP'
-                        checked={networkFilter === 'CHRP'}
-                        onChange={e => setNetworkFilter(e.target.value)}
-                      />
-                    </label>
-                    <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
-                      <div>
-                        <div className='text-sm font-medium text-gray-900'>
-                          Colis Privé
-                        </div>
-                        <div className='text-xs text-gray-600'>
-                          Réseau COPR – points relais violet sur la carte.
-                        </div>
-                      </div>
-                      <input
-                        type='radio'
-                        name='networkFilter'
-                        value='COPR'
-                        checked={networkFilter === 'COPR'}
-                        onChange={e => setNetworkFilter(e.target.value)}
-                      />
-                    </label>
+                        <input
+                          type='radio'
+                          name='networkFilter'
+                          value={key}
+                          checked={networkFilter === key}
+                          onChange={e => setNetworkFilter(e.target.value)}
+                        />
+                      </label>
+                    ))}
                   </div>
                 </div>
               )}
@@ -1074,22 +1199,20 @@ export default function ParcelPointMap({
                 <div className='w-3 h-3 bg-red-500 rounded-full'></div>
                 <span className='text-gray-600'>Votre adresse</span>
               </div>
-              <div className='flex items-center space-x-1'>
-                <div className='w-3 h-3 bg-blue-500 rounded-full'></div>
-                <span className='text-gray-600'>Relais Colis</span>
-              </div>
-              <div className='flex items-center space-x-1'>
-                <div className='w-3 h-3 bg-green-500 rounded-full'></div>
-                <span className='text-gray-600'>Mondial Relay</span>
-              </div>
-              <div className='flex items-center space-x-1'>
-                <div className='w-3 h-3 bg-orange-500 rounded-full'></div>
-                <span className='text-gray-600'>Chronopost</span>
-              </div>
-              <div className='flex items-center space-x-1'>
-                <div className='w-3 h-3 bg-purple-500 rounded-full'></div>
-                <span className='text-gray-600'>Colis Privé</span>
-              </div>
+              {Object.entries(
+                (networkConfig as any)[
+                  ((address?.country === 'CH' ? 'CE' : address?.country) ||
+                    'FR') as keyof typeof networkConfig
+                ] || {}
+              ).map(([key, cfg]: any) => (
+                <div key={key} className='flex items-center space-x-1'>
+                  <div
+                    className='w-3 h-3 rounded-full'
+                    style={{ backgroundColor: cfg.color }}
+                  ></div>
+                  <span className='text-gray-600'>{cfg.name}</span>
+                </div>
+              ))}
             </div>
           )}
 
@@ -1300,15 +1423,17 @@ export default function ParcelPointMap({
                                     className='w-3 h-3 rounded-full'
                                     style={{
                                       backgroundColor:
-                                        networkConfig[
-                                          point.network as keyof typeof networkConfig
-                                        ]?.color || '#3B82F6',
+                                        (networkConfig as any)[
+                                          (address?.country ||
+                                            'FR') as keyof typeof networkConfig
+                                        ]?.[point.network]?.color || '#3B82F6',
                                     }}
                                   ></div>
                                   <span>
-                                    {networkConfig[
-                                      point.network as keyof typeof networkConfig
-                                    ]?.name || point.network}
+                                    {(networkConfig as any)[
+                                      (address?.country ||
+                                        'FR') as keyof typeof networkConfig
+                                    ]?.[point.network]?.name || point.network}
                                   </span>
                                 </div>
                                 <strong>Statut:</strong> {point.status}
@@ -1367,9 +1492,14 @@ export default function ParcelPointMap({
               <h3 className='text-lg font-medium text-gray-900 mb-4'>
                 Options de livraison à domicile
               </h3>
-              {Object.entries(homeDeliveryConfig)
-                .filter(i => i[1].disabled !== true)
-                .map(([key, config]) => {
+              {Object.entries(
+                (homeDeliveryConfig as any)[
+                  ((address?.country === 'CH' ? 'CE' : address?.country) ||
+                    'FR') as keyof typeof homeDeliveryConfig
+                ] || {}
+              )
+                .filter(([, cfg]) => (cfg as any)?.disabled !== true)
+                .map(([key, config]: any) => {
                   const network = key.replace('_HOME', '');
                   const price = getDeliveryPrice(network, true);
                   const delay = getDeliveryDelay(network, true);
@@ -1453,9 +1583,10 @@ export default function ParcelPointMap({
                           className='w-4 h-4 rounded-full'
                           style={{
                             backgroundColor:
-                              networkConfig[
-                                selectedPoint.network as keyof typeof networkConfig
-                              ]?.color || '#3B82F6',
+                              (networkConfig as any)[
+                                (address?.country ||
+                                  'FR') as keyof typeof networkConfig
+                              ]?.[selectedPoint.network]?.color || '#3B82F6',
                           }}
                         ></div>
                         <h5 className='text-sm font-medium text-green-800'>
@@ -1473,9 +1604,11 @@ export default function ParcelPointMap({
                         {selectedPoint.location.city}
                       </div>
                       <div className='text-xs text-gray-500 mt-1'>
-                        {networkConfig[
-                          selectedPoint.network as keyof typeof networkConfig
-                        ]?.name || selectedPoint.network}{' '}
+                        {(networkConfig as any)[
+                          (address?.country ||
+                            'FR') as keyof typeof networkConfig
+                        ]?.[selectedPoint.network]?.name ||
+                          selectedPoint.network}{' '}
                         • Code: {selectedPoint.code}
                       </div>
                       <div className='flex items-center justify-between mt-2'>

@@ -1016,7 +1016,7 @@ function CheckoutForm({
                   key={addressKey}
                   options={{
                     mode: 'shipping',
-                    allowedCountries: ['FR', 'BE'],
+                    allowedCountries: ['FR', 'BE', 'CH'],
                     fields: {
                       phone: 'always',
                     },

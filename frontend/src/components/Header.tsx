@@ -14,6 +14,7 @@ import {
   Trash2,
   CreditCard,
   Store,
+  RefreshCw,
 } from 'lucide-react';
 import Spinner from './Spinner';
 import { animate } from 'motion';
@@ -96,6 +97,7 @@ export default function Header() {
   const cartRef = useRef<HTMLDivElement | null>(null);
   const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
   const [now, setNow] = useState<number>(Date.now());
+  const [cartRefreshing, setCartRefreshing] = useState<boolean>(false);
   // Garde pour éviter les appels multiples en mode Strict et re-renders
   const hasEnsuredStripeCustomerRef = useRef<boolean>(false);
   const deletingIdsRef = useRef<Set<number>>(new Set());
@@ -173,27 +175,31 @@ export default function Header() {
   // Ancienne logique de récupération des slugs retirée pour simplification
 
   // Charger le panier lorsqu'on connaît stripeCustomerId
-  useEffect(() => {
-    const fetchCart = async () => {
-      try {
-        if (!stripeCustomerId) return;
-        const cartResp = await fetch(
-          `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(stripeCustomerId)}`
-        );
-        if (!cartResp.ok) return;
+  const refreshCart = async () => {
+    try {
+      if (!stripeCustomerId) return;
+      setCartRefreshing(true);
+      const cartResp = await fetch(
+        `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(stripeCustomerId)}`
+      );
+      if (cartResp.ok) {
         const cartJson = await cartResp.json();
         setCartTotal(Number(cartJson?.grandTotal || 0));
         setCartGroups(
           Array.isArray(cartJson?.itemsByStore) ? cartJson.itemsByStore : []
         );
-      } catch (_e) {
-        // ignore cart errors in header
       }
-    };
-    fetchCart();
+    } catch (_e) {
+    } finally {
+      setCartRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshCart();
 
     const onCartUpdated = () => {
-      fetchCart();
+      refreshCart();
       if (cartIconRef.current) {
         animate(cartIconRef.current as any, { scale: [1, 1.2, 1] }, {
           duration: 0.4,
@@ -553,9 +559,20 @@ export default function Header() {
                   </button>
                   {cartOpen && (
                     <div className='absolute right-0 mt-2 w-80 bg-white border border-gray-200 rounded-md shadow-lg z-50 p-3'>
-                      <h3 className='text-sm font-semibold text-gray-900 mb-2'>
-                        Panier
-                      </h3>
+                      <div className='flex items-center justify-between mb-2'>
+                        <h3 className='text-sm font-semibold text-gray-900'>
+                          Panier
+                        </h3>
+                        <button
+                          onClick={() => refreshCart()}
+                          disabled={!stripeCustomerId || cartRefreshing}
+                          className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                          title='Rafraîchir le panier'
+                        >
+                          <RefreshCw className={`w-4 h-4 mr-1 ${cartRefreshing ? 'animate-spin' : ''}`} />
+                          <span>Rafraîchir</span>
+                        </button>
+                      </div>
                       {cartGroups.length === 0 ? (
                         <p className='text-sm text-gray-500'>
                           Votre panier est vide.

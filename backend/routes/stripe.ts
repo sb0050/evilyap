@@ -465,6 +465,12 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       "POFR-ColissimoAccess": { min: 2, max: 3 },
       "COPR-CoprRelaisDomicileNat": { min: 6, max: 7 },
       "COPR-CoprRelaisRelaisNat": { min: 6, max: 7 },
+      // BELGIQUE
+      "MONR-CpourToiEurope": { min: 1, max: 3 },
+      "CHRP-Chrono2ShopEurope": { min: 2, max: 5 },
+      "MONR-DomicileEurope": { min: 3, max: 6 },
+      "CHRP-ChronoInternationalClassic": { min: 1, max: 2 },
+      "DLVG-DelivengoEasy": { min: 3, max: 5 },
     };
     const deliveryEstimate = offerDelivery[deliveryNetwork];
 

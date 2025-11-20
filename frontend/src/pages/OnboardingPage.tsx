@@ -633,23 +633,6 @@ export default function OnboardingPage() {
                     : 'BCE (10 chiffres, facultatif mais nécessaire pour obtenir le badge "boutique vérifiée")'}
                 </label>
                 <div className='flex items-center gap-2'>
-                  <div className='flex items-center gap-2 px-2 py-2 border rounded-lg'>
-                    {companyCountry === 'FR' ? (
-                      <FR title='France' className='w-5 h-4' />
-                    ) : (
-                      <BE title='Belgique' className='w-5 h-4' />
-                    )}
-                    <select
-                      value={companyCountry}
-                      onChange={e =>
-                        setCompanyCountry(e.target.value as 'FR' | 'BE')
-                      }
-                      className='bg-transparent text-sm focus:outline-none'
-                    >
-                      <option value='FR'>France</option>
-                      <option value='BE'>Belgique</option>
-                    </select>
-                  </div>
                   <div className='relative flex-1'>
                     <input
                       id='siret'
@@ -927,7 +910,7 @@ export default function OnboardingPage() {
                       key={user?.id || 'nouser'}
                       options={{
                         mode: 'billing',
-                        allowedCountries: ['FR', 'BE'],
+                        allowedCountries: ['FR'],
                         fields: {
                           phone: 'always',
                         },
