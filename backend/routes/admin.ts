@@ -253,4 +253,87 @@ router.post("/prospect", async (req, res) => {
   }
 });
 
+router.post("/demo-request", async (req, res) => {
+  try {
+    const { email, name, phone, message } = req.body || {};
+    const fromEmail = process.env.SMTP_GMAIL_USER || "";
+    const savEmail =
+      process.env.SMTP_GMAIL_USER || process.env.SUPPORT_EMAIL || "";
+    const to = (savEmail || "").trim();
+    const sender = (email || "").trim();
+    if (!sender || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sender)) {
+      return res.status(400).json({ error: "Email invalide" });
+    }
+    if (!to) {
+      return res.status(500).json({ error: "SAV_EMAIL non configuré" });
+    }
+    if (!fromEmail) {
+      return res.status(500).json({ error: "SMTP_GMAIL_USER non configuré" });
+    }
+
+    const transporter = createGmailTransporter();
+
+    const subject = "Nouvelle demande de démo";
+    const safeMessage = String(message || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+    const html = `<!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>Demande de démo PayLive</title>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #111827; }
+        .container { max-width: 640px; margin: 0 auto; padding: 20px; }
+        .header { background: linear-gradient(90deg,#7c3aed,#2563eb); color: #fff; padding: 16px; border-radius: 10px 10px 0 0; }
+        .content { background: #f9fafb; padding: 16px; border-radius: 0 0 10px 10px; }
+        .section { background: #ffffff; padding: 14px; border-radius: 8px; margin: 12px 0; border-left: 4px solid #7c3aed; }
+        .kv { margin: 0; }
+        .kv strong { display: inline-block; width: 160px; }
+        .msg { white-space: pre-wrap; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Demande de démo</h1>
+          <p>PayLive</p>
+        </div>
+        <div class="content">
+          <p>Le contact ci-dessous souhaite une démo de PayLive.</p>
+          <div class="section">
+            <p class="kv"><strong>Email :</strong> ${sender}</p>
+            ${name ? `<p class="kv"><strong>Nom :</strong> ${name}</p>` : ""}
+            ${
+              phone
+                ? `<p class="kv"><strong>Téléphone :</strong> ${phone}</p>`
+                : ""
+            }
+          </div>
+          ${
+            safeMessage
+              ? `<div class="section"><h3 style="margin:0 0 8px 0;">Message</h3><div class="msg">${safeMessage}</div></div>`
+              : ""
+          }
+          <p>Merci de le recontacter pour organiser une démonstration.</p>
+        </div>
+      </div>
+    </body>
+    </html>`;
+
+    const info = await transporter.sendMail({
+      from: `PayLive <${fromEmail}>`,
+      to,
+      subject,
+      html,
+    });
+
+    return res.json({ success: true, messageId: info.messageId });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Erreur interne" });
+  }
+});
+
 export default router;

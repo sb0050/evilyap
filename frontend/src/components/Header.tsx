@@ -127,9 +127,13 @@ export default function Header() {
     let hasUnderMinute = false;
     for (const group of cartGroups) {
       for (const it of group.items) {
-        const created = it.created_at ? new Date(it.created_at).getTime() : null;
+        const created = it.created_at
+          ? new Date(it.created_at).getTime()
+          : null;
         const ttlMsDisplay = Number(it.time_to_live ?? 15) * 60 * 1000;
-        const leftMs = created ? Math.max(0, ttlMsDisplay - (now - created)) : ttlMsDisplay;
+        const leftMs = created
+          ? Math.max(0, ttlMsDisplay - (now - created))
+          : ttlMsDisplay;
         if (leftMs > 0 && leftMs <= CART_WARN_THRESHOLD_MS) {
           hasUnderMinute = true;
           break;
@@ -154,7 +158,9 @@ export default function Header() {
   useEffect(() => {
     for (const group of cartGroups) {
       for (const it of group.items) {
-        const created = it.created_at ? new Date(it.created_at).getTime() : null;
+        const created = it.created_at
+          ? new Date(it.created_at).getTime()
+          : null;
         const ttlMs = Number(it.time_to_live ?? 15) * 60 * 1000;
         const leftMs = created ? ttlMs - (now - created) : ttlMs;
         if (leftMs <= 0 && !deletingIdsRef.current.has(it.id)) {
@@ -569,7 +575,9 @@ export default function Header() {
                           className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                           title='Rafraîchir le panier'
                         >
-                          <RefreshCw className={`w-4 h-4 mr-1 ${cartRefreshing ? 'animate-spin' : ''}`} />
+                          <RefreshCw
+                            className={`w-4 h-4 mr-1 ${cartRefreshing ? 'animate-spin' : ''}`}
+                          />
                           <span>Rafraîchir</span>
                         </button>
                       </div>
@@ -598,7 +606,8 @@ export default function Header() {
                                     const created = it.created_at
                                       ? new Date(it.created_at).getTime()
                                       : null;
-                                    const ttlMs = Number(it.time_to_live ?? 15) * 60 * 1000;
+                                    const ttlMs =
+                                      Number(it.time_to_live ?? 15) * 60 * 1000;
                                     const leftMs = created
                                       ? Math.max(0, ttlMs - (now - created))
                                       : ttlMs;

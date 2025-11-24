@@ -7,7 +7,10 @@ const INSEE_API_URL = (
 ).replace(/\/+$/, "");
 const INSEE_API_KEY = process.env.INSEE_API_KEY;
 
-const BCE_API_URL = (process.env.BCE_API_URL || "https://cbeapi.be").replace(/\/+$/, "");
+const BCE_API_URL = (process.env.BCE_API_URL || "https://cbeapi.be").replace(
+  /\/+$/,
+  ""
+);
 const BCE_API_KEY = process.env.BCE_API_KEY;
 
 if (!INSEE_API_KEY) {
@@ -78,7 +81,10 @@ router.get("/siret/:siret", async (req, res) => {
 router.get("/bce/:bce", async (req, res) => {
   try {
     const raw = (req.params.bce || "").trim();
-    const normalized = raw.replace(/\s+/g, "").replace(/^BE/i, "").replace(/\./g, "");
+    const normalized = raw
+      .replace(/\s+/g, "")
+      .replace(/^BE/i, "")
+      .replace(/\./g, "");
     if (!/^\d{10}$/.test(normalized)) {
       return res.status(400).json({
         header: {
@@ -89,10 +95,13 @@ router.get("/bce/:bce", async (req, res) => {
     }
     if (!BCE_API_KEY) {
       return res.status(500).json({
-        error: "Configuration BCE manquante côté serveur (BCE_API_KEY). Contactez l'administrateur.",
+        error:
+          "Configuration BCE manquante côté serveur (BCE_API_KEY). Contactez l'administrateur.",
       });
     }
-    const url = `${BCE_API_URL}/api/v1/company/${encodeURIComponent(normalized)}?lang=fr`;
+    const url = `${BCE_API_URL}/api/v1/company/${encodeURIComponent(
+      normalized
+    )}?lang=fr`;
     const resp = await fetch(url, {
       headers: {
         Authorization: `Bearer ${BCE_API_KEY}`,
@@ -113,10 +122,14 @@ router.get("/bce/:bce", async (req, res) => {
     if (header && typeof header?.statut === "number") {
       return res.status(header.statut).json({ header });
     }
-    return res.status(resp.status).json(json || { error: `BCE error ${resp.status}` });
+    return res
+      .status(resp.status)
+      .json(json || { error: `BCE error ${resp.status}` });
   } catch (error) {
     console.error("Erreur vérification BCE:", error);
-    return res.status(500).json({ error: "Erreur lors de la vérification du BCE" });
+    return res
+      .status(500)
+      .json({ error: "Erreur lors de la vérification du BCE" });
   }
 });
 

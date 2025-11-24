@@ -79,15 +79,18 @@ router.get("/users", async (req, res) => {
         };
       });
       const filtered = search
-        ? users.filter((u: any) =>
-            (u.fullName || "").toLowerCase().includes(search) ||
-            (u.email || "").toLowerCase().includes(search)
+        ? users.filter(
+            (u: any) =>
+              (u.fullName || "").toLowerCase().includes(search) ||
+              (u.email || "").toLowerCase().includes(search)
           )
         : users;
       return res.json({ users: filtered });
     } catch (err) {
       console.error("Erreur liste utilisateurs Clerk:", err);
-      return res.status(500).json({ error: "Erreur récupération utilisateurs" });
+      return res
+        .status(500)
+        .json({ error: "Erreur récupération utilisateurs" });
     }
   } catch (e) {
     console.error("Erreur serveur (users):", e);

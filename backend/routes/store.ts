@@ -269,15 +269,16 @@ router.post("/", async (req, res) => {
 router.put("/:storeSlug", async (req, res) => {
   try {
     const { storeSlug } = req.params as { storeSlug?: string };
-    const { name, description, website, siret, is_verified, address, phone } = req.body as {
-      name?: string;
-      description?: string;
-      website?: string;
-      siret?: string;
-      is_verified?: boolean;
-      address?: any;
-      phone?: string;
-    };
+    const { name, description, website, siret, is_verified, address, phone } =
+      req.body as {
+        name?: string;
+        description?: string;
+        website?: string;
+        siret?: string;
+        is_verified?: boolean;
+        address?: any;
+        phone?: string;
+      };
 
     if (!storeSlug)
       return res.status(400).json({ error: "Slug de boutique requis" });

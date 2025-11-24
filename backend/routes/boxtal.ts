@@ -11,10 +11,11 @@ import {
 const router = express.Router();
 
 // Configuration Boxtal
+const BOXTAL_API = process.env.BOXTAL_API || "";
 const BOXTAL_CONFIG = {
   client_id: process.env.BOXTAL_ACCESS_KEY || "your_client_id",
   client_secret: process.env.BOXTAL_SECRET_KEY || "your_client_secret",
-  auth_url: "https://api.boxtal.com/iam/account-app/token",
+  auth_url: `${BOXTAL_API}/iam/account-app/token`,
 };
 
 const BOXTAL_API_V1_CONFIG = {
@@ -231,7 +232,7 @@ router.post("/cotation", async (req, res) => {
 router.post("/parcel-points", async (req, res) => {
   try {
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `https://api.boxtal.com/shipping/v3.1/parcel-point`;
+    const url = `${BOXTAL_API}/shipping/v3.1/parcel-point`;
 
     // Construire les paramètres URL correctement
     const params = new URLSearchParams();
@@ -271,7 +272,7 @@ router.post("/parcel-points", async (req, res) => {
 router.post("/shipping-orders", async (req, res) => {
   try {
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order`;
+    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order`;
     const options = {
       method: "POST",
       headers: {
@@ -313,7 +314,7 @@ router.get("/shipping-orders/:id", async (req, res) => {
     }
 
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
       id
     )}`;
 
@@ -364,7 +365,7 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
     }
 
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
       id
     )}/shipping-document`;
 
@@ -455,7 +456,7 @@ router.get(
       }
 
       const token = await verifyAndRefreshBoxtalToken();
-      const apiUrl = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+      const apiUrl = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
         id
       )}/shipping-document`;
 
@@ -545,7 +546,7 @@ router.get("/shipping-orders/:id/tracking", async (req, res) => {
     }
 
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
       id
     )}/tracking`;
 
@@ -679,7 +680,7 @@ router.delete("/shipping-orders/:id", async (req, res) => {
     }
 
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
       id
     )}`;
 
