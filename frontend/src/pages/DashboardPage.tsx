@@ -248,7 +248,7 @@ export default function DashboardPage() {
     useState<string>('');
   const [promoCodeName, setPromoCodeName] = useState<string>('');
   const [promoMinAmountEuro, setPromoMinAmountEuro] = useState<string>('');
-  const [promoFirstTime, setPromoFirstTime] = useState<boolean>(false);
+  const [promoFirstTime, setPromoFirstTime] = useState<boolean>(true);
   const [promoExpiresDate, setPromoExpiresDate] = useState<string>('');
   const [promoExpiresTime, setPromoExpiresTime] = useState<string>('');
   const [promoActive, setPromoActive] = useState<boolean>(true);
@@ -4789,6 +4789,7 @@ export default function DashboardPage() {
                       checked={promoFirstTime}
                       onChange={e => setPromoFirstTime(e.target.checked)}
                       className='h-4 w-4'
+                      disabled
                     />
                     <label
                       htmlFor='promo-first-time'
