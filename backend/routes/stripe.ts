@@ -1241,6 +1241,16 @@ router.post(
                 height: 29,
               },
               "COPR-CoprRelaisRelaisNat": { width: 49, length: 69, height: 29 },
+              //BELGIQUE-SUISSE
+              "MONR-CpourToiEurope": { width: 41, length: 64, height: 38 },
+              "CHRP-Chrono2ShopEurope": { width: 30, length: 100, height: 20 },
+              "MONR-DomicileEurope": { width: 41, length: 64, height: 38 },
+              "CHRP-ChronoInternationalClassic": {
+                width: 30,
+                length: 100,
+                height: 20,
+              },
+              "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
             };
             const dims = offerDimensions[deliveryNetwork] || {
               width: 10,
@@ -1279,7 +1289,10 @@ router.post(
               labelType: "PDF_A4",
               shippingOfferCode: deliveryNetwork,
             };
-            console.log("createOrderPayload:", createOrderPayload);
+            console.log(
+              "createOrderPayload:",
+              JSON.stringify(createOrderPayload)
+            );
 
             let dataBoxtal: any = {};
             let attachments: Array<{
@@ -1447,7 +1460,8 @@ router.post(
                     payment_id: paymentIntent?.id || null,
                     paid_value: (amount || 0) / 100,
                     delivery_cost:
-                      dataBoxtal?.content?.deliveryPriceExclTax?.value || 0,
+                      (dataBoxtal?.content?.deliveryPriceExclTax?.value || 0) *
+                      1.2, //ajout de la TVA de 20%
                     promo_codes:
                       promoCodeDetails
                         .map((d: any) => d?.code || d?.id || "")
