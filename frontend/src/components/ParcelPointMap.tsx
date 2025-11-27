@@ -698,12 +698,12 @@ export default function ParcelPointMap({
         const weightMap: Record<string, number> = {};
         Object.keys(perWeight).forEach(wLabel => {
           const p = perWeight[wLabel]?.price;
-          const excl =
-            p && typeof p['tax-exclusive'] !== 'undefined'
-              ? Number(p['tax-exclusive'])
+          const incl =
+            p && typeof p['tax-inclusive'] !== 'undefined'
+              ? Number(p['tax-inclusive'])
               : undefined;
-          if (typeof excl === 'number' && Number.isFinite(excl)) {
-            weightMap[wLabel] = excl;
+          if (typeof incl === 'number' && Number.isFinite(incl)) {
+            weightMap[wLabel] = incl;
           }
         });
         if (Object.keys(weightMap).length > 0) {
