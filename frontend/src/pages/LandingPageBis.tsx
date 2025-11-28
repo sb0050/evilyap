@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FaTiktok } from 'react-icons/fa';
+import { FaFacebook, FaTiktok } from 'react-icons/fa';
 import { useNavigate } from 'react-router-dom';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 
@@ -401,7 +401,7 @@ const LandingPageBis = () => {
           </div>
         </div>
 
-        <div className='mt-12'>
+        <div className='hidden mt-12'>
           <h3 className='text-4xl font-bold text-gray-800 mb-4'>
             Et le prix dans tout ça?
           </h3>
@@ -501,15 +501,26 @@ const LandingPageBis = () => {
         <footer className='mt-40 border-t pt-6 text-sm text-gray-600'>
           <div className='flex items-center justify-between'>
             <div>Fait avec ❤️ par © 2025 Paylive — Tous droits réservés.</div>
-            <a
-              href='https://www.tiktok.com/@paylive.cc'
-              target='_blank'
-              rel='noreferrer'
-              className='inline-flex items-center gap-2'
-            >
-              <FaTiktok className='w-5 h-5' />
-              <span className='hover:underline'>TikTok</span>
-            </a>
+            <div className='flex gap-4'>
+              <a
+                href='https://www.tiktok.com/@paylive.cc'
+                target='_blank'
+                rel='noreferrer'
+                className='inline-flex items-center gap-1'
+              >
+                <FaTiktok className='w-5 h-5' />
+                <span className='hover:underline'>TikTok</span>
+              </a>
+              <a
+                href='https://facebook.com/paylive.cc'
+                target='_blank'
+                rel='noreferrer'
+                className='inline-flex items-center gap-1'
+              >
+                <FaFacebook className='w-5 h-5' />
+                <span className='hover:underline'>Facebook</span>
+              </a>
+            </div>
           </div>
         </footer>
         {showFaqModal && (
