@@ -207,6 +207,176 @@ const LandingPageBis = () => {
             </div>
           </div>
           <div className='mt-8 space-y-2'>
+            <div className='mb-8'>
+              <div className='text-2xl font-semibold text-gray-800'>
+                💰 On a négocié les meilleurs tarifs pour toi
+              </div>
+              <div className='text-base text-gray-700'>
+                Livraison en point relais depuis la France vers la France
+              </div>
+              {(() => {
+                const carriers = [
+                  {
+                    key: 'Mondial relay',
+                    label: 'Mondial Relay',
+                    logo: 'https://upload.wikimedia.org/wikipedia/fr/1/19/Mondial_Relay.svg',
+                    weights: {
+                      '500g': { paylive: 4.25, website: 4.49 },
+                      '1kg': { paylive: 4.63, website: 5.69 },
+                      '2kg': { paylive: 6.14, website: 6.99 },
+                      '3kg': { paylive: 6.34, website: 7.69 },
+                      '4kg': { paylive: 6.53, website: 9.29 },
+                    },
+                  },
+                  {
+                    key: 'colis privé',
+                    label: 'Colis Privé',
+                    logo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/2c/Colis_Priv%C3%A9.svg/926px-Colis_Priv%C3%A9.svg.png',
+                    weights: {
+                      '500g': { paylive: 3.88, website: 4.4 },
+                      '1kg': { paylive: 4.32, website: 6.5 },
+                      '2kg': { paylive: 5.7, website: 6.5 },
+                      '3kg': { paylive: 5.92, website: 6.5 },
+                      '4kg': { paylive: 6.26, website: 6.5 },
+                    },
+                  },
+                  {
+                    key: 'relais colis',
+                    label: 'Relais Colis',
+                    logo: 'https://logovectorseek.com/wp-content/uploads/2021/05/relais-colis-logo-vector.png',
+                    weights: {
+                      '500g': { paylive: 4.11, website: 4.2 },
+                      '1kg': { paylive: 4.2, website: 4.5 },
+                      '2kg': { paylive: 5.81, website: 6.4 },
+                      '3kg': { paylive: 6.04, website: 6.6 },
+                      '4kg': { paylive: 6.35, website: 6.95 },
+                    },
+                  },
+                  {
+                    key: 'Chronopost',
+                    label: 'Chronopost',
+                    logo: 'https://www.soflock.com/2675-large_default/complement-livraison-express-par-chronopost.jpg',
+                    weights: {
+                      '500g': { paylive: 3.74, website: 4.2 },
+                      '1kg': { paylive: 4.18, website: 6.5 },
+                      '2kg': { paylive: 5.18, website: 6.5 },
+                      '3kg': { paylive: 5.78, website: 6.5 },
+                      '4kg': { paylive: 7.2, website: 13.9 },
+                    },
+                  },
+                ];
+                const order = ['500g', '1kg', '2kg', '3kg', '4kg'];
+                return (
+                  <div className='mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4'>
+                    {carriers.map(c => (
+                      <div
+                        key={c.key}
+                        className='rounded-lg border border-gray-200 bg-white p-4 shadow-sm'
+                      >
+                        <div className='flex items-center gap-3 mb-3'>
+                          <img
+                            src={c.logo}
+                            alt={c.label}
+                            className='h-8 w-auto object-contain'
+                          />
+                          <div className='text-base font-semibold text-gray-800'>
+                            {c.label}
+                          </div>
+                          {(() => {
+                            const entries = Object.values(
+                              c.weights || {}
+                            ) as any[];
+                            const percents = entries
+                              .filter(
+                                (w: any) =>
+                                  typeof w?.paylive === 'number' &&
+                                  typeof w?.website === 'number' &&
+                                  w.website > 0
+                              )
+                              .map(
+                                (w: any) =>
+                                  ((w.website - w.paylive) / w.website) * 100
+                              );
+                            const avg =
+                              percents.length > 0
+                                ? percents.reduce(
+                                    (a: number, b: number) => a + b,
+                                    0
+                                  ) / percents.length
+                                : null;
+                            return avg != null ? (
+                              <span className='ml-auto inline-block rounded-full bg-green-100 text-green-700 text-xs px-2 py-0.5'>
+                                - {Math.round(avg)}% en moyenne
+                              </span>
+                            ) : null;
+                          })()}
+                        </div>
+                        <table className='w-full text-sm'>
+                          <thead>
+                            <tr className='text-gray-700'>
+                              <th className='text-left py-2'>Poids</th>
+                              <th className='text-left py-2'>PayLive</th>
+                              <th className='text-left py-2'>Site</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {order
+                              .filter(w => (c.weights as any)[w])
+                              .map(w => {
+                                const info = (c.weights as any)[w] || {};
+                                const pay =
+                                  typeof info?.paylive === 'number'
+                                    ? info.paylive
+                                    : null;
+                                const site =
+                                  typeof info?.website === 'number'
+                                    ? info.website
+                                    : null;
+                                const econ =
+                                  pay != null && site != null
+                                    ? site - pay
+                                    : null;
+                                const label = `${w}`;
+                                return (
+                                  <tr
+                                    key={w}
+                                    className='border-t border-gray-100'
+                                  >
+                                    <td className='py-2 text-gray-700'>
+                                      {label}
+                                    </td>
+                                    <td className='py-2'>
+                                      {pay != null ? (
+                                        <span className='inline-block bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent font-bold'>
+                                          {pay.toFixed(2)} €
+                                        </span>
+                                      ) : (
+                                        <span className='text-gray-400'>—</span>
+                                      )}
+                                      {econ != null ? (
+                                        <span className='ml-2 inline-block rounded-full bg-green-100 text-green-700 text-xs px-2 py-0.5'>
+                                          - {econ.toFixed(2)} €
+                                        </span>
+                                      ) : null}
+                                    </td>
+                                    <td className='py-2 text-gray-700'>
+                                      {site != null ? (
+                                        <span>{site.toFixed(2)} €</span>
+                                      ) : (
+                                        <span className='text-gray-400'>—</span>
+                                      )}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
             <div className='text-2xl font-semibold text-gray-800'>
               🎁 En bonus
             </div>
