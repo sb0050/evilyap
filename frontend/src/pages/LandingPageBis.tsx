@@ -105,7 +105,7 @@ const LandingPageBis = () => {
             Comment ça marche?
           </h3>
           <h2 className='mb-4 text-xl text-gray-800'>
-            Le principe est débilement simple
+            Le principe est super simple
           </h2>
           <div className='grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6'>
             {[
