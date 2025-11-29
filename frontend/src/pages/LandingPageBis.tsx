@@ -546,251 +546,226 @@ const LandingPageBis = () => {
               <div className='p-6 overflow-y-auto max-h-[calc(100vh-8rem)]'>
                 <div className='text-center mb-6'>
                   <p className='text-3xl md:text-3xl font-bold text-gray-900'>
-                    Seulement{' '}
-                    <span className='inline-block align-middle bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text mb-2 text-transparent text-4xl md:text-5xl font-extrabold'>
-                      4%
-                    </span>{' '}
-                    de commission
+                    <span
+                      className='inline-block align-middle 
+                    bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text mb-2 text-transparent 
+                    text-4xl md:text-6xl font-extrabold'
+                    >
+                      0 €
+                    </span>
+                    {'   '}/ mois
                   </p>
                   <p className='text-xl md:text-xl font-bold text-gray-900'>
-                    <br />
-                    Aucun frais caché
+                    + seulement 3% de frais sur les commandes payées
+                  </p>
+                  <p className='text-xl md:text-xl font-bold text-gray-900'>
+                    Et parceque on t'aime déjà 😇, tes 10 premiers live à
+                    seulement 1%
                   </p>
                 </div>
                 <div className='divide-y'>
                   {[
                     {
-                      title: '💸 Paiements instantanés et sans effort',
+                      title: '💸 Comment PayLive simplifie mes paiements ?',
                       content: (
                         <>
-                          Avec PayLive, finis les messages, récapitulatifs ou
-                          liens manuels à envoyer pour être payé.
+                          Fini les DM interminables, les récapitulatifs écrits à
+                          la main et les clients qui « disparaissent » avant de
+                          payer.
                           <br />
-                          Crée ton <b className='font-bold'>
-                            lien de paiement
-                          </b>{' '}
-                          en <b className='font-bold'>2 clics</b>, ajoute-le
-                          dans ta bio et commence à encaisser tes{' '}
-                          <b className='font-bold'>articles instantanément</b>.
-                        </>
-                      ),
-                    },
-                    {
-                      title: '🚚 Un seul paiement pour les frais de livraison',
-                      content: (
-                        <>
-                          Sur PayLive, tes <b className='font-bold'>clients</b>{' '}
-                          peuvent acheter{' '}
-                          <b className='font-bold'>plusieurs articles</b> au
-                          cours d’une même session live et ne paient qu’une
-                          seule fois les{' '}
-                          <b className='font-bold'>frais d’expédition</b>.
+                          Avec PayLive, tu génères un{' '}
+                          <b className='font-bold'>lien de paiement</b> en{' '}
+                          <b className='font-bold'>2 clics</b> — depuis ton
+                          live, ta bio ou tes stories — et ton client règle
+                          instantanément.
                           <br />
-                          Une expérience <b className='font-bold'>
-                            fluide
-                          </b> et <b className='font-bold'>sans friction</b> ={' '}
-                          <b className='font-bold'>plus de conversions</b> et{' '}
-                          <b className='font-bold'>plus de ventes</b> !
-                        </>
-                      ),
-                    },
-                    {
-                      title: '🧾 Fusion et génération automatique des factures',
-                      content: (
-                        <>
-                          Plus besoin de passer des heures à éditer tes{' '}
-                          <b className='font-bold'>factures</b>.<br />
-                          PayLive regroupe automatiquement les{' '}
-                          <b className='font-bold'>commandes</b> d’un même
-                          client et génère une{' '}
-                          <b className='font-bold'>facture unique</b> en un
-                          clic.
-                          <br />
-                          Tu gagnes du <b className='font-bold'>temps</b> et ton
-                          client reçoit des{' '}
-                          <b className='font-bold'>documents clairs</b> et{' '}
-                          <b className='font-bold'>professionnels</b>.
-                        </>
-                      ),
-                    },
-                    {
-                      title: '🖨 Imprime tes étiquettes en un seul clic',
-                      content: (
-                        <>
-                          PayLive est connecté aux{' '}
-                          <b className='font-bold'>principaux transporteurs</b>.
-                          <br />
-                          En un clic, tu peux imprimer tous tes{' '}
-                          <b className='font-bold'>bons de livraison</b> et
-                          préparer tes <b className='font-bold'>colis</b> sans
-                          saisie manuelle.
-                          <br />
-                          Le tout depuis ton{' '}
-                          <b className='font-bold'>tableau de bord</b> —{' '}
-                          <b className='font-bold'>simple</b>,{' '}
-                          <b className='font-bold'>rapide</b> et{' '}
-                          <b className='font-bold'>automatisé</b>.
-                        </>
-                      ),
-                    },
-                    {
-                      title: '📦 Connecté à tous les transporteurs majeurs',
-                      content: (
-                        <>
-                          PayLive est compatible avec{' '}
-                          <b className='font-bold'>Colissimo</b>,{' '}
-                          <b className='font-bold'>Mondial Relay</b>,{' '}
-                          <b className='font-bold'>Chronopost</b>,{' '}
-                          <b className='font-bold'>UPS</b>,{' '}
-                          <b className='font-bold'>DHL</b>, etc.
-                          <br />
-                          Ton client peut choisir son{' '}
-                          <b className='font-bold'>transporteur préféré</b> ou
-                          laisser PayLive sélectionner automatiquement le{' '}
-                          <b className='font-bold'>plus rapide</b> et le{' '}
-                          <b className='font-bold'>plus économique</b>.<br />
-                          Grâce à nos{' '}
-                          <b className='font-bold'>partenariats logistiques</b>,
-                          tu profites de{' '}
-                          <b className='font-bold'>tarifs négociés</b> jusqu’à{' '}
-                          <b className='font-bold'>50 % moins chers</b>.
-                        </>
-                      ),
-                    },
-                    {
-                      title: '⚖ Litiges & remboursements',
-                      content: (
-                        <>
-                          En cas de <b className='font-bold'>litige</b> ou de{' '}
-                          <b className='font-bold'>demande de remboursement</b>,
-                          PayLive agit comme{' '}
-                          <b className='font-bold'>tiers de confiance</b>.<br />
-                          Notre équipe prend en charge la{' '}
-                          <b className='font-bold'>gestion complète</b> du
-                          dossier, la{' '}
-                          <b className='font-bold'>vérification des preuves</b>{' '}
-                          et le <b className='font-bold'>remboursement</b> si
-                          nécessaire, pour protéger à la fois le{' '}
-                          <b className='font-bold'>vendeur</b> et le{' '}
-                          <b className='font-bold'>client</b>.
+                          Moins d’effort, zéro friction, plus de{' '}
+                          <b className='font-bold'>ventes sécurisées</b>.
                         </>
                       ),
                     },
                     {
                       title:
-                        '💳 Connecté à toutes les principales solutions de paiement',
+                        '🚚 Mes clients doivent-ils payer plusieurs fois les frais d’expédition ?',
                       content: (
                         <>
-                          En un clic, PayLive se connecte à{' '}
-                          <b className='font-bold'>PayPal</b>,{' '}
-                          <b className='font-bold'>Revolut Pay</b>,{' '}
-                          <b className='font-bold'>Klarna</b>,{' '}
-                          <b className='font-bold'>Amazon Pay</b>,{' '}
-                          <b className='font-bold'>Google Pay</b>,{' '}
-                          <b className='font-bold'>Bancontact</b> et bien
-                          d’autres.
+                          Non.
                           <br />
-                          PayLive s’appuie sur l’infrastructure{' '}
-                          <b className='font-bold'>Stripe</b> pour garantir des{' '}
-                          <b className='font-bold'>paiements 100 % sécurisés</b>
-                          , <b className='font-bold'>rapides</b> et{' '}
-                          <b className='font-bold'>traçables</b>.<br />
-                          Dès qu’un{' '}
-                          <b className='font-bold'>paiement réussit</b>, tu
-                          reçois une{' '}
-                          <b className='font-bold'>notification instantanée</b>.
-                          <br />
-                          Les <b className='font-bold'>fonds</b> sont stockés
-                          dans ton{' '}
-                          <b className='font-bold'>porte-monnaie PayLive</b> et
-                          peuvent être{' '}
-                          <b className='font-bold'>retirés à tout moment</b>{' '}
-                          vers ton <b className='font-bold'>compte bancaire</b>.
-                        </>
-                      ),
-                    },
-                    {
-                      title: '🧠 Aucune compétence technique requise',
-                      content: (
-                        <>
-                          Pas besoin de créer une{' '}
-                          <b className='font-bold'>boutique</b> ou de gérer un{' '}
-                          <b className='font-bold'>catalogue complexe</b>.<br />
-                          Avec PayLive, tu choisis{' '}
-                          <b className='font-bold'>quoi vendre</b>,{' '}
-                          <b className='font-bold'>quand</b> et{' '}
-                          <b className='font-bold'>à quel prix</b>, puis tu
-                          partages simplement un{' '}
-                          <b className='font-bold'>lien sécurisé</b>.<br />
-                          Tout est géré pour toi —{' '}
-                          <b className='font-bold'>paiement</b>,{' '}
-                          <b className='font-bold'>facture</b>,{' '}
-                          <b className='font-bold'>expédition</b> et{' '}
-                          <b className='font-bold'>suivi</b>.
-                        </>
-                      ),
-                    },
-                    {
-                      title: '🌍 Dans quels pays PayLive est disponible?',
-                      content: (
-                        <>
-                          PayLive permet aux vendeurs d'expedier leur colis
-                          depuis la France vers les pays suivants :
-                          <br />
-                          <b className='font-bold flex flex-row items-center gap-2'>
-                            France
-                          </b>
-                          <b className='font-bold flex flex-row items-center gap-2'>
-                            Belgique
-                          </b>
-                          <b className='font-bold flex flex-row items-center gap-2'>
-                            Suisse
-                          </b>
-                        </>
-                      ),
-                    },
-                    {
-                      title: '🧰 Support & assistance',
-                      content: (
-                        <>
-                          Notre <b className='font-bold'>équipe support</b> est
-                          disponible et <b className='font-bold'>réactive</b>,
-                          joignable à tout moment pour t’accompagner, que ce
-                          soit par <b className='font-bold'>chat</b>,{' '}
-                          <b className='font-bold'>e-mail</b> ou{' '}
-                          <b className='font-bold'>téléphone</b>.
-                          <br />
-                          Que ce soit pour une{' '}
-                          <b className='font-bold'>question technique</b>, un{' '}
-                          <b className='font-bold'>suivi de paiement</b> ou une{' '}
-                          <b className='font-bold'>aide sur ton compte</b>, tu
-                          auras toujours une{' '}
-                          <b className='font-bold'>réponse rapide</b> et{' '}
-                          <b className='font-bold'>personnalisée</b>.
-                        </>
-                      ),
-                    },
-                    {
-                      title: '🎯 Et enfin, le meilleur pour la fin',
-                      content: (
-                        <>
-                          Avec PayLive, tu ne payes que lorsque tu{' '}
-                          <b className='font-bold'>vends</b>.
-                          <br />
-                          Aucun <b className='font-bold'>abonnement</b>, aucun{' '}
+                          S’ils achètent plusieurs articles pendant un même
+                          live, PayLive{' '}
                           <b className='font-bold'>
-                            frais d’ouverture de compte
+                            fusionne automatiquement les achats
+                          </b>
+                          .
+                          <br />
+                          👉 Un seul paiement, une seule expédition, une
+                          expérience beaucoup plus fluide.
+                          <br />
+                          Résultat : plus de panier moyen et moins d’abandons.
+                        </>
+                      ),
+                    },
+                    {
+                      title:
+                        '🧾 Est-ce que PayLive génère automatiquement mes factures ?',
+                      content: (
+                        <>
+                          Oui.
+                          <br />
+                          PayLive regroupe toutes les{' '}
+                          <b className='font-bold'>commandes</b> d’un même
+                          client et crée une{' '}
+                          <b className='font-bold'>facture unique</b>, propre et
+                          professionnelle, prête à être envoyée ou téléchargée.
+                          <br />
+                          Plus de fichiers Excel, plus de copier-coller, plus de
+                          nuits passées à facturer.
+                        </>
+                      ),
+                    },
+                    {
+                      title:
+                        '🖨 Puis-je imprimer mes étiquettes d’expédition facilement ?',
+                      content: (
+                        <>
+                          Absolument.
+                          <br />
+                          Depuis ton tableau de bord, tu peux imprimer toutes
+                          tes <b className='font-bold'>étiquettes</b> en un{' '}
+                          <b className='font-bold'>clic</b>, sans aucune saisie
+                          manuelle.
+                          <br />
+                          PayLive prépare automatiquement les informations de
+                          livraison pour toi.
+                        </>
+                      ),
+                    },
+                    {
+                      title: '📦 Quels transporteurs sont disponibles ?',
+                      content: (
+                        <>
+                          PayLive est connecté à :
+                          <br />
+                          Colissimo, Mondial Relay, Chronopost, Colis Privé,
+                          Relais Colis, Colissimo et Delivengo
+                          <br />
+                          Ton client choisit ce qu’il préfère, ou PayLive
+                          sélectionne automatiquement l’option la{' '}
+                          <b className='font-bold'>plus économique</b> et la{' '}
+                          <b className='font-bold'>plus rapide</b>.
+                          <br />
+                          Grâce à nos partenaires logistiques, tu profiteras de{' '}
+                          <b className='font-bold'>tarifs</b> jusqu’à{' '}
+                          <b className='font-bold'>25 % moins chers</b>.
+                        </>
+                      ),
+                    },
+                    {
+                      title:
+                        '⚖ Que se passe-t-il en cas de litige ou demande de remboursement ?',
+                      content: (
+                        <>
+                          PayLive joue le rôle de{' '}
+                          <b className='font-bold'>tiers de confiance</b>.
+                          <br />
+                          Nous gérons :
+                          <ul className='list-disc pl-6'>
+                            <li>la vérification des preuves</li>
+                            <li>la communication avec l’acheteur</li>
+                            <li>le remboursement si nécessaire</li>
+                          </ul>
+                          Tu n’es jamais seul. Nous protégeons le vendeur autant
+                          que le client, dans un cadre clair et pro.
+                        </>
+                      ),
+                    },
+                    {
+                      title:
+                        '💳 Quelles solutions de paiement sont compatibles ?',
+                      content: (
+                        <>
+                          PayLive accepte tous les moyens modernes :
+                          <br />
+                          PayPal, Google Pay, Apple Pay et Carte bancaire
+                          <br />
+                          Le tout reposant sur{' '}
+                          <b className='font-bold'>Stripe</b> : sécurisé, ultra
+                          rapide et traçable.
+                          <br />
+                          Tu reçois une{' '}
+                          <b className='font-bold'>
+                            notification instantanée
                           </b>{' '}
-                          :
+                          dès qu’un paiement réussit et tu peux retirer tes
+                          fonds à tout moment.
+                        </>
+                      ),
+                    },
+                    {
+                      title:
+                        '🧠 Je n’ai pas de boutique ni de compétences techniques, c’est un problème ?',
+                      content: (
+                        <>
+                          Pas du tout.
                           <br />
-                          <b className='font-bold'>
-                            🟢 Si tu ne vends pas, tu ne payes rien.
-                          </b>
+                          PayLive est conçu pour les vendeurs qui veulent
+                          vendre, pas gérer du technique.
                           <br />
-                          <b className='font-bold'>
-                            🟢 Si tu vends, tu ne payes que 4 % du montant (hors
-                            TVA et hors frais d’envoi).
-                          </b>
+                          Tu choisis quoi vendre, tu fixes un prix, tu envoies
+                          ton lien — et PayLive s’occupe du reste :
+                          <br />
+                          paiement • facture • expédition • suivi.
+                        </>
+                      ),
+                    },
+                    {
+                      title: '🌍 Dans quels pays PayLive fonctionne ?',
+                      content: (
+                        <>
+                          Tu peux actuellement expédier depuis la France vers :
+                          <br />
+                          🇫🇷 France
+                          <br />
+                          🇧🇪 Belgique
+                          <br />
+                          🇨🇭 Suisse
+                        </>
+                      ),
+                    },
+                    {
+                      title:
+                        '🧰 J’ai un problème : comment contacter PayLive ?',
+                      content: (
+                        <>
+                          Notre équipe support est{' '}
+                          <b className='font-bold'>réactive</b> et{' '}
+                          <b className='font-bold'>disponible</b>, par :
+                          <br />
+                          Chat
+                          <br />
+                          Email
+                          <br />
+                          Téléphone
+                          <br />
+                          Que ce soit pour une question technique, un souci
+                          d’envoi ou une vérification de paiement, nous te
+                          répondons rapide et efficacement.
+                        </>
+                      ),
+                    },
+                    {
+                      title: '🎯 Combien coûte PayLive ?',
+                      content: (
+                        <>
+                          Tu ne payes que si tu vends.
+                          <br />
+                          Aucun abonnement, aucun engagement.
+                          <br />
+                          🟢 0 € si tu ne vends pas
+                          <br />
+                          🟢 3 % du montant si tu vends
+                          <br />
+                          Pas de surprise, pas de frais cachés.
                         </>
                       ),
                     },

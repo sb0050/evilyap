@@ -172,7 +172,6 @@ export default function DashboardPage() {
   const [clientsPage, setClientsPage] = useState<number>(1);
   const [customersMap, setCustomersMap] = useState<Record<string, any>>({});
   const [customersLoading, setCustomersLoading] = useState<boolean>(false);
-  const [clientIdSearch, setClientIdSearch] = useState<string>('');
   const [clientsSortOrder, setClientsSortOrder] = useState<'asc' | 'desc'>(
     'desc'
   );
