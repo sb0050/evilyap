@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { FaFacebook, FaTiktok } from 'react-icons/fa';
 import { useNavigate } from 'react-router-dom';
 import { ChevronUp, ChevronDown } from 'lucide-react';
+import { BE, CH, FR } from 'country-flag-icons/react/3x2';
 
 const LandingPageBis = () => {
   const navigate = useNavigate();
@@ -724,11 +725,23 @@ const LandingPageBis = () => {
                         <>
                           Tu peux actuellement expédier depuis la France vers :
                           <br />
-                          🇫🇷 France
+                          <FR
+                            title='France'
+                            className='inline-block w-6 h-4 mr-2 align-middle rounded-sm shadow-sm'
+                          ></FR>{' '}
+                          France
                           <br />
-                          🇧🇪 Belgique
+                          <BE
+                            title='Belgique'
+                            className='inline-block w-6 h-4 mr-2 align-middle rounded-sm shadow-sm'
+                          ></BE>{' '}
+                          Belgique
                           <br />
-                          🇨🇭 Suisse
+                          <CH
+                            title='Suisse'
+                            className='inline-block w-6 h-4 mr-2 align-middle rounded-sm shadow-sm'
+                          ></CH>{' '}
+                          Suisse
                         </>
                       ),
                     },
