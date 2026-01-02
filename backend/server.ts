@@ -28,10 +28,10 @@ console.warn("CORS is enabled for:", allowedOrigins);
 app.use(
   cors({
     origin: "*",
-    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-
 // Pour les webhooks Stripe, nous devons traiter le raw body
 app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
 
