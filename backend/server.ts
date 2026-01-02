@@ -35,14 +35,7 @@ const normalizeOrigin = (raw?: string) => {
   return `${scheme}://${val}`;
 };
 
-const allowedOrigins = (
-  process.env.CLIENT_URL ||
-  process.env.CLIENT_URLS ||
-  "http://localhost:3000"
-)
-  .split(",")
-  .map((o) => normalizeOrigin(o))
-  .filter((o) => !!o);
+const allowedOrigins = process.env.CLIENT_URL || "http://localhost:3000";
 
 console.warn("CORS is enabled for:", allowedOrigins);
 app.use(
