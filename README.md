@@ -1,4 +1,4 @@
-# LM OUTLET - Live Shopping Application
+# PayLive - You Live Shopping Payment Gateway
 
 Application de live shopping avec paiements Stripe et sélection de points relais Boxtal.
 
@@ -128,19 +128,26 @@ PORT=5000
 
 ```
 app-live/
-├── public/                 # Fichiers publics React
-├── src/                   # Code source frontend
-│   ├── components/        # Composants React
-│   ├── pages/            # Pages de l'application
-│   ├── services/         # Services (Boxtal, etc.)
-│   └── App.jsx           # Composant principal
-├── server/               # Backend Node.js
+├── backend/               # Backend Node.js
 │   ├── routes/          # Routes API
-│   ├── middleware/      # Middlewares
-│   └── server.js        # Serveur principal
+│   ├── services/        # Services (email, etc.)
+│   ├── server.ts        # Serveur principal
+├── frontend/             # Application frontend React
+│   ├── public/          # Fichiers publics React
+│   ├── src/             # Code source frontend
+│   │   ├── components/  # Composants React
+│   │   ├── pages/       # Pages de l'application
+│   │   ├── services/    # Services (Boxtal, etc.)
+│   │   ├── utils/       # Utilitaires
+│   │   ├── index.tsx    # Point d'entrée React
+│   │   └── App.tsx      # Composant principal
+│   ├── package.json     # Dépendances frontend
+│   ├── tailwind.config.js # Configuration Tailwind CSS
+│   ├── vite.config.ts   # Configuration Vite
+│   └── postcss.config.js # Configuration PostCSS
 ├── .env                 # Variables d'environnement frontend
-├── package.json         # Dépendances frontend
-└── README.md           # Ce fichier
+├── package.json         # Dépendances racine
+└── README.md            # Ce fichier
 ```
 
 ## 🔄 Processus de checkout

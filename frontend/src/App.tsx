@@ -13,7 +13,7 @@ import {
 } from 'react-router-dom';
 import { dark, neobrutalism } from '@clerk/themes';
 
-import LandingPage from './pages/LandingPage';
+import LandingPageBis from './pages/LandingPageBis';
 import CheckoutPage from './pages/CheckoutPage';
 import AccountPage from './pages/AccountPage';
 import OrdersPage from './pages/OrdersPage';
@@ -22,7 +22,11 @@ import AuthRedirect from './components/AuthRedirect';
 import PaymentReturnPage from './pages/PaymentReturnPage';
 import { frFR } from '@clerk/localizations';
 import DashboardPage from './pages/DashboardPage';
-import HowItWorksPage from './pages/HowItWorksPage';
+
+import PrivacyPolicy from './pages/PrivacyPolicy';
+import TermsAndConditions from './pages/TermsAndConditions';
+import FormPage from './pages/FormPage';
+import AdminPage from './pages/AdminPage';
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -36,7 +40,21 @@ function App() {
       <Router>
         <div className='min-h-screen bg-gray-50'>
           <Routes>
-            <Route path='/' element={<LandingPage />} />
+            <Route path='/' element={<LandingPageBis />} />
+            {/* Pages publiques: PDF */}
+            <Route path='/privacy_policy' element={<PrivacyPolicy />} />
+            <Route
+              path='/terms_and_conditions'
+              element={<TermsAndConditions />}
+            />
+            <Route
+              path='/form'
+              element={
+                <>
+                  <FormPage />
+                </>
+              }
+            />
             <Route
               path='/checkout/:storeName'
               element={
@@ -77,14 +95,7 @@ function App() {
                 </>
               }
             />
-            <Route
-              path='/howitworks'
-              element={
-                <>
-                  <HowItWorksPage />
-                </>
-              }
-            />
+
             <Route
               path='/orders'
               element={
@@ -112,6 +123,19 @@ function App() {
               }
             />
             <Route
+              path='/admin'
+              element={
+                <>
+                  <SignedIn>
+                    <AdminPage />
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
               path='/payment/return'
               element={
                 <>
@@ -119,8 +143,16 @@ function App() {
                     <PaymentReturnPage />
                   </SignedIn>
                   <SignedOut>
-                    <LandingPage />
+                    <LandingPageBis />
                   </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path='/*'
+              element={
+                <>
+                  <LandingPageBis />
                 </>
               }
             />

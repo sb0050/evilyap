@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronUp, ChevronDown, Heart } from 'lucide-react';
+import { BE, CH, FR } from 'country-flag-icons/react/3x2';
 
 const HowItWorksPage = () => {
   const navigate = useNavigate();
@@ -50,8 +51,8 @@ const HowItWorksPage = () => {
   const videos = [
     {
       id: 1,
-      url: 'https://app.videas.fr/embed/media/f4a7bfde-3f77-4fe7-bffa-20447c90f877/?title=false&logo=false&thumbnail_duration=false&controls=false&autoplay=true&loop=true',
-      title: 'PayLive Demo 1',
+      url: 'https://app.videas.fr/embed/media/e98e050e-ed46-455b-a9b4-9dc5c872ce8f/?title=false&logo=false&thumbnail_duration=false&controls=false&autoplay=true&loop=true',
+      title: 'PayLive Comment ça marche',
       description:
         'Découvrez comment PayLive révolutionne vos paiements en ligne',
       likes: '2.3K',
@@ -59,17 +60,134 @@ const HowItWorksPage = () => {
       shares: '89',
     },
   ];
+  const mobileVideos = [
+    {
+      id: 1,
+      url: `${import.meta.env.VITE_CLOUDFRONT_URL}/videos/howitworks.mp4`,
+      title: 'PayLive Comment ça marche',
+      description:
+        'Découvrez comment PayLive révolutionne vos paiements en ligne',
+    },
+  ];
+
+  const activeVideos = isDesktop ? videos : mobileVideos;
+  const videoRefs = useRef<HTMLVideoElement[]>([]);
+  const tryPlay = (index: number) => {
+    if (isDesktop) return;
+    const v = videoRefs.current[index];
+    if (v) {
+      v.muted = true;
+      v.play().catch(() => {});
+    }
+  };
+  const ensurePlay = (index: number) => {
+    if (isDesktop) return;
+    const v = videoRefs.current[index];
+    if (!v) return;
+    v.muted = true;
+    v.volume = 0;
+    v.autoplay = true;
+    try {
+      v.setAttribute('muted', '');
+    } catch {}
+    try {
+      v.setAttribute('autoplay', '');
+    } catch {}
+    try {
+      v.setAttribute('playsinline', '');
+    } catch {}
+    try {
+      v.setAttribute('webkit-playsinline', 'true');
+    } catch {}
+    const attempt = () => {
+      const p = v.play();
+      if (p && typeof (p as any).catch === 'function') {
+        (p as Promise<void>).catch(() => {
+          setTimeout(attempt, 250);
+        });
+      }
+    };
+    if (v.readyState < 2) {
+      const onCanPlay = () => {
+        v.removeEventListener('canplay', onCanPlay);
+        attempt();
+      };
+      v.addEventListener('canplay', onCanPlay);
+      try {
+        v.load();
+      } catch {}
+    } else {
+      attempt();
+    }
+  };
+
+  useLayoutEffect(() => {
+    if (isDesktop) return;
+    ensurePlay(currentSlide);
+  }, [currentSlide, isDesktop]);
+
+  useEffect(() => {
+    if (isDesktop) return;
+    const handler = () => ensurePlay(currentSlide);
+    document.addEventListener('touchstart', handler, {
+      once: true,
+      passive: true,
+    });
+    document.addEventListener('touchend', handler, {
+      once: true,
+      passive: true,
+    });
+    document.addEventListener('pointerdown', handler, { once: true });
+    document.addEventListener('click', handler, { once: true });
+    document.addEventListener('scroll', handler, { once: true, capture: true });
+    return () => {
+      document.removeEventListener('touchstart', handler as any);
+      document.removeEventListener('touchend', handler as any);
+      document.removeEventListener('pointerdown', handler as any);
+      document.removeEventListener('click', handler as any);
+      document.removeEventListener('scroll', handler as any);
+    };
+  }, [currentSlide, isDesktop]);
+
+  useEffect(() => {
+    if (isDesktop) return;
+    const v = videoRefs.current[currentSlide];
+    if (!v) return;
+    const observer = new IntersectionObserver(
+      entries => {
+        const entry = entries[0];
+        if (entry && entry.isIntersecting) {
+          ensurePlay(currentSlide);
+        }
+      },
+      { threshold: 0.4 }
+    );
+    observer.observe(v);
+    return () => observer.disconnect();
+  }, [currentSlide, isDesktop]);
+
+  useEffect(() => {
+    if (isDesktop) return;
+    const v = videoRefs.current[currentSlide];
+    if (!v) return;
+    const playNow = () => tryPlay(currentSlide);
+    playNow();
+    v.addEventListener('loadedmetadata', playNow);
+    v.addEventListener('canplay', playNow);
+    return () => {
+      v.removeEventListener('loadedmetadata', playNow);
+      v.removeEventListener('canplay', playNow);
+    };
+  }, [currentSlide, isDesktop]);
 
   // Auto-play functionality
   useEffect(() => {
     if (!isAutoPlaying) return;
-
     const interval = setInterval(() => {
-      setCurrentSlide(prev => (prev + 1) % videos.length);
-    }, 8000); // Change slide every 8 seconds
-
+      setCurrentSlide(prev => (prev + 1) % activeVideos.length);
+    }, 8000);
     return () => clearInterval(interval);
-  }, [isAutoPlaying, videos.length]);
+  }, [isAutoPlaying, activeVideos.length]);
 
   // Preload current and next video for better mobile performance
   useEffect(() => {
@@ -77,37 +195,35 @@ const HowItWorksPage = () => {
       const link = document.createElement('link');
       link.rel = 'prefetch';
       link.href = url;
-      link.as = 'document';
+      const isMp4 = /\.mp4(\?|$)/i.test(url);
+      link.as = isMp4 ? 'video' : 'document';
       document.head.appendChild(link);
-
-      // Remove after 10 seconds to avoid the warning
       setTimeout(() => {
         if (document.head.contains(link)) {
           document.head.removeChild(link);
         }
       }, 10000);
     };
-
-    // Preload current video
-    if (videos[currentSlide]) {
-      preloadVideo(videos[currentSlide].url);
+    if (activeVideos[currentSlide]) {
+      preloadVideo(activeVideos[currentSlide].url);
     }
-
-    // Preload next video
-    const nextIndex = (currentSlide + 1) % videos.length;
-    if (videos[nextIndex]) {
-      preloadVideo(videos[nextIndex].url);
+    const nextIndex = (currentSlide + 1) % activeVideos.length;
+    if (activeVideos[nextIndex]) {
+      preloadVideo(activeVideos[nextIndex].url);
     }
-  }, [currentSlide, videos]);
+    tryPlay(currentSlide);
+  }, [currentSlide, activeVideos]);
 
   const nextSlide = () => {
-    setCurrentSlide(prev => (prev + 1) % videos.length);
+    setCurrentSlide(prev => (prev + 1) % activeVideos.length);
     setIsAutoPlaying(false);
     setTimeout(() => setIsAutoPlaying(true), 3000);
   };
 
   const prevSlide = () => {
-    setCurrentSlide(prev => (prev - 1 + videos.length) % videos.length);
+    setCurrentSlide(
+      prev => (prev - 1 + activeVideos.length) % activeVideos.length
+    );
     setIsAutoPlaying(false);
     setTimeout(() => setIsAutoPlaying(true), 3000);
   };
@@ -134,11 +250,11 @@ const HowItWorksPage = () => {
     <div className='h-screen w-full bg-white relative overflow-hidden flex flex-col'>
       {/* Header overlay - Mobile */}
       {!isDesktop && (
-        <div className='absolute top-0 left-0 right-0 z-30 bg-black/50 backdrop-blur-sm p-4'>
+        <div className='absolute top-0 left-0 right-0 z-30 bg-black/50 backdrop-blur-sm p-1'>
           <div className='text-center'>
-            <h1 className='text-white text-lg font-bold mb-1'>PayLive</h1>
+            <h1 className='text-white text-2xl font-bold'>PayLive</h1>
             <p className='text-white text-sm font-bold opacity-90'>
-              Gérez efficacement vos ventes en Live Shopping
+              Boostez vos ventes lors de vos Live Shopping
             </p>
           </div>
         </div>
@@ -160,8 +276,9 @@ const HowItWorksPage = () => {
       <div
         className='relative flex-1 w-full bg-black'
         onContextMenu={e => e.preventDefault()}
+        onTouchStart={() => tryPlay(currentSlide)}
       >
-        {videos.map((video, index) => (
+        {activeVideos.map((video, index) => (
           <div
             key={video.id}
             className={`absolute inset-0 transition-transform duration-500 ease-in-out ${
@@ -172,87 +289,52 @@ const HowItWorksPage = () => {
                   : 'translate-y-full'
             }`}
           >
-            <iframe
-              src={video.url}
-              className='w-full h-full object-cover'
-              frameBorder='0'
-              allow='autoplay; fullscreen; accelerometer; gyroscope; picture-in-picture'
-              allowFullScreen
-              loading={index === currentSlide ? 'eager' : 'lazy'}
-              sandbox='allow-scripts allow-same-origin allow-presentation'
-              onContextMenu={e => e.preventDefault()}
-              style={{
-                border: 'none',
-                outline: 'none',
-                WebkitTransform: 'translateZ(0)',
-                transform: 'translateZ(0)',
-              }}
-            />
+            {isDesktop ? (
+              <iframe
+                src={video.url}
+                className='w-full h-full object-cover'
+                frameBorder='0'
+                allow='autoplay; fullscreen; accelerometer; gyroscope; picture-in-picture'
+                allowFullScreen
+                loading={index === currentSlide ? 'eager' : 'lazy'}
+                sandbox='allow-scripts allow-same-origin allow-presentation'
+                onContextMenu={e => e.preventDefault()}
+                style={{
+                  border: 'none',
+                  outline: 'none',
+                  WebkitTransform: 'translateZ(0)',
+                  transform: 'translateZ(0)',
+                }}
+              />
+            ) : (
+              <video
+                src={video.url}
+                className='w-full h-full object-contain'
+                muted
+                autoPlay
+                loop
+                playsInline
+                webkit-playsinline='true'
+                preload='auto'
+                controls={false}
+                controlsList='nodownload nofullscreen noplaybackrate'
+                disablePictureInPicture
+                onContextMenu={e => e.preventDefault()}
+                onLoadedData={() => tryPlay(index)}
+                ref={el => {
+                  if (el) videoRefs.current[index] = el;
+                }}
+                style={{
+                  border: 'none',
+                  outline: 'none',
+                  WebkitTransform: 'translateZ(0)',
+                  transform: 'translateZ(0)',
+                }}
+              />
+            )}
           </div>
         ))}
       </div>
-
-      {/* Right Side Actions - Mobile */}
-      {!isDesktop && (
-        <div className='absolute right-4 bottom-20 z-20 flex flex-col space-y-6'>
-          {/* Navigation Controls */}
-          <div className='space-y-4'>
-            <button
-              onClick={prevSlide}
-              className='w-12 h-12 bg-white/20 rounded-full flex items-center justify-center text-white hover:bg-white/30 transition-all duration-300 hover:scale-110 backdrop-blur-sm'
-            >
-              <ChevronUp className='w-6 h-6' />
-            </button>
-
-            <button
-              onClick={nextSlide}
-              className='w-12 h-12 bg-white/20 rounded-full flex items-center justify-center text-white hover:bg-white/30 transition-all duration-300 hover:scale-110 backdrop-blur-sm'
-            >
-              <ChevronDown className='w-6 h-6' />
-            </button>
-          </div>
-
-          <button
-            onClick={() => toggleLike(videos[currentSlide].id)}
-            className='flex flex-col items-center text-white hover:scale-110 transition-all duration-300'
-          >
-            <div className='w-12 h-12 bg-white/20 rounded-full flex items-center justify-center mb-1 backdrop-blur-sm'>
-              <Heart
-                className={`w-6 h-6 transition-all duration-300 ${
-                  likedVideos.has(videos[currentSlide].id)
-                    ? 'fill-red-500 text-red-500 scale-110'
-                    : 'text-white'
-                }`}
-              />
-            </div>
-            <span className='text-xs font-semibold'>
-              {videos[currentSlide].likes}
-            </span>
-          </button>
-
-          <button className='flex flex-col items-center text-white hover:scale-110 transition-transform'>
-            <div className='w-12 h-12 bg-white/20 rounded-full flex items-center justify-center mb-1 backdrop-blur-sm'>
-              {/* Comment icon from attachment */}
-              <svg
-                className='w-6 h-6'
-                fill='none'
-                stroke='currentColor'
-                viewBox='0 0 24 24'
-              >
-                <path
-                  strokeLinecap='round'
-                  strokeLinejoin='round'
-                  strokeWidth={2}
-                  d='M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z'
-                />
-              </svg>
-            </div>
-            <span className='text-xs font-semibold mb-5'>
-              {videos[currentSlide].comments}
-            </span>
-          </button>
-        </div>
-      )}
 
       {/* Right Side Actions - Desktop */}
       {isDesktop && (
@@ -275,21 +357,18 @@ const HowItWorksPage = () => {
           </div>
 
           <button
-            onClick={() => toggleLike(videos[currentSlide].id)}
+            onClick={() => toggleLike(activeVideos[currentSlide].id)}
             className='flex flex-col items-center text-white hover:scale-110 transition-all duration-300'
           >
             <div className='w-12 h-12 bg-white/20 rounded-full flex items-center justify-center mb-1 backdrop-blur-sm'>
               <Heart
                 className={`w-6 h-6 transition-all duration-300 ${
-                  likedVideos.has(videos[currentSlide].id)
+                  likedVideos.has(activeVideos[currentSlide].id)
                     ? 'fill-red-500 text-red-500 scale-110'
                     : 'text-white'
                 }`}
               />
             </div>
-            <span className='text-xs font-semibold'>
-              {videos[currentSlide].likes}
-            </span>
           </button>
 
           <button className='flex flex-col items-center text-white hover:scale-110 transition-transform'>
@@ -309,9 +388,6 @@ const HowItWorksPage = () => {
                 />
               </svg>
             </div>
-            <span className='text-xs font-semibold'>
-              {videos[currentSlide].comments}
-            </span>
           </button>
         </div>
       )}
@@ -319,22 +395,25 @@ const HowItWorksPage = () => {
       {/* Bottom CTA - Mobile */}
       {!isDesktop && (
         <div className='absolute bottom-0 left-0 right-0 bg-black/70 backdrop-blur-sm p-4 z-30'>
-          <div className='space-y-2'>
+          <div className='flex items-center gap-2 mb-5'>
             <button
               onClick={() => handleCTAClick()}
-              className='block w-full bg-gradient-to-r from-purple-600 to-blue-600 text-white py-2 px-4 rounded-lg font-bold text-sm text-center hover:from-purple-700 hover:to-blue-700 transition-all duration-300 transform hover:scale-105 shadow-lg animate-pulse hover:animate-none'
+              className='flex-1 bg-gradient-to-r from-purple-600 to-blue-600 text-white 
+              py-2 px-3 rounded-lg font-bold text-lg text-center hover:from-purple-700 hover:to-blue-700 
+              transition-all duration-300 transform hover:scale-105 shadow-lg'
             >
-              Essayez PayLive Gratuitement !
+              Essayez PayLive !
             </button>
+
             <a
               href='#'
-              className='block text-center text-blue-400 text-sm underline hover:text-blue-300 transition-colors'
+              className='px-3 py-2 rounded-lg text-white text-sm font-medium bg-white/10 border border-white/30 hover:bg-white/20 transition-colors'
               onClick={e => {
                 e.preventDefault();
                 setShowFaqModal(true);
               }}
             >
-              F.A.Q.
+              FAQ
             </a>
           </div>
         </div>
@@ -581,19 +660,23 @@ const HowItWorksPage = () => {
                     ),
                   },
                   {
-                    title: '🌍 Dans quels pays PayLive est disponible ?',
+                    title: '🌍 Dans quels pays PayLive est disponible?',
                     content: (
                       <>
-                        PayLive est actuellement disponible dans les pays
-                        suivants :<br />
-                        <b className='font-bold'>🇫🇷 France</b>,{' '}
-                        <b className='font-bold'>🇧🇪 Belgique</b>,{' '}
-                        <b className='font-bold'>🇨🇭 Suisse</b>,{' '}
-                        <b className='font-bold'>🇱🇺 Luxembourg</b>,{' '}
-                        <b className='font-bold'>🇮🇹 Italie</b>,{' '}
-                        <b className='font-bold'>🇩🇪 Allemagne</b>,{' '}
-                        <b className='font-bold'>🇪🇸 Espagne</b> et{' '}
-                        <b className='font-bold'>🇵🇹 Portugal</b>.
+                        PayLive permet aux vendeurs d'expedier leur colis depuis
+                        la France vers les pays suivants :<br />
+                        <b className='font-bold flex flex-row items-center gap-2'>
+                          <FR title='France' className='w-5 h-4' />
+                          France
+                        </b>
+                        <b className='font-bold flex flex-row items-center gap-2'>
+                          <BE title='Belgique' className='w-5 h-4' />
+                          Belgique
+                        </b>
+                        <b className='font-bold flex flex-row items-center gap-2'>
+                          <CH title='Suisse' className='w-5 h-4' />
+                          Suisse
+                        </b>
                       </>
                     ),
                   },

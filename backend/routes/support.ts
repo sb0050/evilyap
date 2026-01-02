@@ -25,7 +25,11 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 // POST /api/support/contact - Store owner sends a support message to admin
 router.post("/contact", upload.single("attachment"), async (req, res) => {
   try {
-    const { storeSlug, message, context: rawContext } = req.body as {
+    const {
+      storeSlug,
+      message,
+      context: rawContext,
+    } = req.body as {
       storeSlug?: string;
       message?: string;
       context?: string;
@@ -60,18 +64,16 @@ router.post("/contact", upload.single("attachment"), async (req, res) => {
       return res.status(404).json({ error: "Boutique non trouvée" });
     }
 
-    let isAdmin = false;
     try {
       const user = await clerkClient.users.getUser(requesterId);
       const role = (user?.publicMetadata as any)?.role;
-      isAdmin = role === "admin";
     } catch (_e) {
       // default false
     }
 
     const isOwner =
       (store as any)?.clerk_id && (store as any).clerk_id === requesterId;
-    if (!isOwner && !isAdmin) {
+    if (!isOwner) {
       return res.status(403).json({ error: "Accès refusé !" });
     }
 
@@ -148,7 +150,7 @@ router.post(
       const { data: shipment, error: shipErr } = await supabase
         .from("shipments")
         .select(
-          "id, store_id, shipment_id, tracking_url, product_reference, value, delivery_method, delivery_network"
+          "id, store_id, shipment_id, tracking_url, product_reference, product_value, delivery_method, delivery_network"
         )
         .eq("shipment_id", shipmentId)
         .maybeSingle();
@@ -225,10 +227,11 @@ router.post(
           shipmentId: (shipment as any).shipment_id || undefined,
           trackingUrl: (shipment as any).tracking_url || undefined,
           productReference: (shipment as any).product_reference || undefined,
-          value: (shipment as any).value || undefined,
+          value: (shipment as any).product_value || undefined,
           deliveryMethod: (shipment as any).delivery_method || undefined,
           deliveryNetwork: (shipment as any).delivery_network || undefined,
           message: msg,
+          promoCodes: (shipment as any).promo_code || "",
           attachments,
         });
       } catch (emailErr) {

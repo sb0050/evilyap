@@ -8,6 +8,7 @@ import {
   SendHorizontal,
   RefreshCw,
   ExternalLink,
+  ShoppingCart,
 } from 'lucide-react';
 import { Popover, Transition } from '@headlessui/react';
 import { apiPostForm, API_BASE_URL } from '../utils/api';
@@ -43,7 +44,7 @@ type Shipment = {
   pickup_point: any | null;
   weight: string | null;
   product_reference: string | null;
-  value: number | null;
+  paid_value: number | null;
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
@@ -53,6 +54,9 @@ type Shipment = {
   tracking_url?: string | null;
   store?: StoreInfo | null;
   is_final_destination?: boolean | null;
+  promo_codes?: string | null;
+  product_value?: number | null;
+  estimated_delivery_cost?: number | null;
 };
 
 export default function OrdersPage() {
@@ -73,6 +77,10 @@ export default function OrdersPage() {
   const [expandedCardIds, setExpandedCardIds] = useState<
     Record<number, boolean>
   >({});
+  const [ordersFilterField, setOrdersFilterField] = useState<
+    'store' | 'reference'
+  >('store');
+  const [ordersFilterTerm, setOrdersFilterTerm] = useState<string>('');
   const [toast, setToast] = useState<{
     message: string;
     type: 'error' | 'info' | 'success';
@@ -177,7 +185,7 @@ export default function OrdersPage() {
                 );
               })()}
               <div className='flex-1'>
-                <div className='font-semibold text-gray-900'>
+                <div className='font-semibold text-gray-900 truncate'>
                   {s.store?.name || '—'}
                 </div>
                 <div className='text-xs text-gray-600 mt-1'>
@@ -357,7 +365,6 @@ export default function OrdersPage() {
 
   // Tri par date estimée (prochain colis)
   const sortedShipments = (() => {
-    if (!estimatedSortOrder) return shipments || [];
     const toTime = (d?: string | null) => {
       if (!d) return Number.POSITIVE_INFINITY;
       try {
@@ -369,12 +376,26 @@ export default function OrdersPage() {
         return Number.POSITIVE_INFINITY;
       }
     };
-    const arr = [...(shipments || [])];
-    arr.sort((a, b) => {
-      const ta = toTime(a.estimated_delivery_date);
-      const tb = toTime(b.estimated_delivery_date);
-      return estimatedSortOrder === 'asc' ? ta - tb : tb - ta;
-    });
+    let arr = [...(shipments || [])];
+    const term = (ordersFilterTerm || '').trim().toLowerCase();
+    if (term) {
+      if (ordersFilterField === 'store') {
+        arr = arr.filter(s =>
+          (s.store?.name || '').toLowerCase().includes(term)
+        );
+      } else {
+        arr = arr.filter(s =>
+          (s.product_reference || '').toLowerCase().includes(term)
+        );
+      }
+    }
+    if (estimatedSortOrder) {
+      arr.sort((a, b) => {
+        const ta = toTime(a.estimated_delivery_date);
+        const tb = toTime(b.estimated_delivery_date);
+        return estimatedSortOrder === 'asc' ? ta - tb : tb - ta;
+      });
+    }
     return arr;
   })();
 
@@ -387,14 +408,20 @@ export default function OrdersPage() {
   );
 
   useEffect(() => {
-    // Clamp page if shipments length or pageSize changes
-    const newTotal = Math.max(
-      1,
-      Math.ceil((shipments || []).length / pageSize)
-    );
+    const filteredLength = (() => {
+      const term = (ordersFilterTerm || '').trim().toLowerCase();
+      if (!term) return (shipments || []).length;
+      return (shipments || []).filter(s => {
+        if (ordersFilterField === 'store') {
+          return (s.store?.name || '').toLowerCase().includes(term);
+        }
+        return (s.product_reference || '').toLowerCase().includes(term);
+      }).length;
+    })();
+    const newTotal = Math.max(1, Math.ceil(filteredLength / pageSize));
     if (page > newTotal) setPage(newTotal);
     if (page < 1) setPage(1);
-  }, [shipments, pageSize]);
+  }, [shipments, pageSize, ordersFilterField, ordersFilterTerm]);
 
   const showToast = (
     message: string,
@@ -451,6 +478,13 @@ export default function OrdersPage() {
       'MONR-CPOURTOI': 'Mondial Relay',
       'CHRP-CHRONO2SHOPDIRECT': 'Chronopost',
       'COPR-COPRRELAISRELAISNAT': 'Colis Privé',
+      //BELGIQUE
+      'MONR-DOMICILEEUROPE': 'Mondial Relay - Mondial Domicile Europe',
+      'CHRP-CHRONOINTERNATIONALCLASSIC':
+        'Chronopost - Chrono International Classic',
+      'DLVG-DELIVENGOOEASY': 'Delivengo - Delivengo Easy',
+      'MONR-CPOURTOIEUROPE': 'Mondial Relay',
+      'CHRP-CHRONO2SHOPEUROPE': 'Chronopost',
       STORE_PICKUP: 'Retrait en boutique',
     };
     return map[c] || code || '—';
@@ -549,10 +583,10 @@ export default function OrdersPage() {
           visible={toast.visible !== false}
         />
       )}
-      <div className='max-w-fit mx-auto px-4 py-8'>
+      <div className='max-w-fit mx-auto px-4 py-1'>
         <div className='text-center mb-6 sm:m'>
           <Package className='hidden sm:block h-12 w-12 text-amber-600 mx-auto mb-4' />
-          <h1 className='text-xl sm:text-3xl font-bold text-gray-900 mb-2'>
+          <h1 className='hidden sm:block text-xl sm:text-3xl font-bold text-gray-900 mb-2'>
             Suivi de mes commandes
           </h1>
         </div>
@@ -628,10 +662,41 @@ export default function OrdersPage() {
                       Suivant
                     </button>
                   </div>
+                  <div className='flex items-center space-x-2'>
+                    <span className='text-sm text-gray-700'>Filtrer par</span>
+                    <select
+                      value={ordersFilterField}
+                      onChange={e => {
+                        const v = e.target.value as 'store' | 'reference';
+                        setOrdersFilterField(v);
+                        setPage(1);
+                      }}
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    >
+                      <option value='store'>Boutique</option>
+                      <option value='reference'>Référence produit</option>
+                    </select>
+                    <input
+                      type='text'
+                      value={ordersFilterTerm}
+                      onChange={e => {
+                        setOrdersFilterTerm(e.target.value);
+                        setPage(1);
+                      }}
+                      placeholder='Saisir…'
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    />
+                  </div>
                 </div>
               </div>
-              {/* Contrôles mobile: bouton Recharger seul */}
-              <div className='flex sm:hidden items-center justify-end mb-3 mt-1'>
+              {/* Entête mobile: titre + logo à gauche, bouton Recharger à droite */}
+              <div className='flex sm:hidden items-center justify-between mb-3 mt-1'>
+                <div className='flex items-center'>
+                  <Package className='w-5 h-5 text-indigo-600 mr-2' />
+                  <h2 className='text-lg font-semibold text-gray-900'>
+                    Mes commandes
+                  </h2>
+                </div>
                 <button
                   onClick={handleRefreshOrders}
                   disabled={reloadingOrders}
@@ -644,6 +709,35 @@ export default function OrdersPage() {
                   <span>Recharger</span>
                 </button>
               </div>
+
+              <div className='sm:hidden mb-3'>
+                <div className='flex items-center space-x-2 flex-wrap'>
+                  <span className='text-sm text-gray-700'>Filtrer par</span>
+                  <select
+                    value={ordersFilterField}
+                    onChange={e => {
+                      const v = e.target.value as 'store' | 'reference';
+                      setOrdersFilterField(v);
+                      setPage(1);
+                    }}
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-36'
+                  >
+                    <option value='store'>Boutique</option>
+                    <option value='reference'>Référence produit</option>
+                  </select>
+                  <input
+                    type='text'
+                    value={ordersFilterTerm}
+                    onChange={e => {
+                      setOrdersFilterTerm(e.target.value);
+                      setPage(1);
+                    }}
+                    placeholder='Saisir…'
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 flex-1 min-w-0 w-full'
+                  />
+                </div>
+              </div>
+
               {/* Vue mobile: cartes accordéon */}
               <div className='block sm:hidden space-y-3'>
                 {sortedShipments.map((s, idx) => (
@@ -672,7 +766,7 @@ export default function OrdersPage() {
                           );
                         })()}
                         <div>
-                          <div className='text-sm font-semibold text-gray-900'>
+                          <div className='text-sm font-semibold text-gray-900 truncate'>
                             {s.store?.name || '—'}
                           </div>
                           <div className='text-xs text-gray-600'>
@@ -685,9 +779,10 @@ export default function OrdersPage() {
                         </div>
                       </div>
                       <div className='text-sm font-semibold text-gray-900'>
-                        {formatValue(s.value)}
+                        {formatValue(s.paid_value)}
                       </div>
                     </div>
+
                     <div className='mt-3 text-sm text-gray-700'>
                       <div>
                         <span className='font-medium'>Référence:</span>{' '}
@@ -701,7 +796,39 @@ export default function OrdersPage() {
                         <span className='font-medium'>Méthode:</span>{' '}
                         {formatMethod(s.delivery_method)}
                       </div>
+                      <div>
+                        <span className='font-medium'>Valeur produit:</span>{' '}
+                        {(() => {
+                          const hasPromo = !!s.promo_codes;
+                          const finalValue = hasPromo
+                            ? (s.paid_value ?? 0) -
+                              (s.estimated_delivery_cost ?? 0)
+                            : s.product_value;
+                          return (
+                            <>
+                              {formatValue(finalValue)}
+                              {hasPromo && (
+                                <div className='text-xs text-gray-500'>
+                                  <span className='line-through'>
+                                    {formatValue(s.product_value)}
+                                  </span>{' '}
+                                  (
+                                  {formatValue(
+                                    Math.max(
+                                      0,
+                                      (s.product_value ?? 0) - (finalValue ?? 0)
+                                    )
+                                  )}{' '}
+                                  de remise avec le code:{' '}
+                                  {s.promo_codes!.replace(';', ', ')})
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </div>
                     </div>
+
                     <div className='mt-3 flex items-center justify-between'>
                       <div className='text-xs text-gray-600'>
                         Estimée: {formatDate(s.estimated_delivery_date)}
@@ -719,90 +846,100 @@ export default function OrdersPage() {
                         {expandedCardIds[s.id] ? 'Voir moins' : 'Voir plus'}
                       </button>
                     </div>
-                    {expandedCardIds[s.id] && (
-                      <div className='mt-3 space-y-2 text-sm'>
-                        <div>
-                          <span className='font-medium'>
-                            Explication du statut:
-                          </span>{' '}
-                          <span className='text-gray-600'>
-                            {getStatusDescription(s.status)}
-                          </span>
-                        </div>
-                        <div>
-                          <span className='font-medium'>Réseau:</span>{' '}
-                          {getNetworkDescription(s.delivery_network)}
-                        </div>
-                        <div>
-                          <span className='font-medium'>Point retrait:</span>{' '}
-                          {s.pickup_point?.code ? (
-                            <span>
-                              <strong>{s.pickup_point?.name}</strong>{' '}
-                              {s.pickup_point?.street}, {s.pickup_point?.city}{' '}
-                              {s.pickup_point?.postal_code}{' '}
-                              {s.pickup_point?.country}
-                            </span>
-                          ) : (
-                            '—'
-                          )}
-                        </div>
-                        <div className='flex items-center gap-2'>
-                          {s.tracking_url ? (
-                            <a
-                              href={s.tracking_url}
-                              target='_blank'
-                              rel='noopener noreferrer'
-                              className='text-blue-600 hover:underline text-xs'
-                            >
-                              Suivre la commande
-                            </a>
-                          ) : (
-                            <span />
-                          )}
-                        </div>
-                        <div className='flex items-center gap-2 pt-1'>
-                          <button
-                            onClick={() => handleReturn(s)}
-                            disabled={
-                              !s.shipment_id ||
-                              returnStatus[s.id] === 'loading' ||
-                              !!s.return_requested ||
-                              !s.is_final_destination
-                            }
-                            className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
-                              s.return_requested ||
-                              returnStatus[s.id] === 'success'
-                                ? 'bg-green-50 text-green-700 border-green-200'
-                                : returnStatus[s.id] === 'error'
-                                  ? 'bg-red-50 text-red-700 border-red-200'
-                                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                            }`}
-                            title={
-                              !s.shipment_id
-                                ? 'Retour indisponible'
-                                : s.return_requested
-                                  ? 'Demande déjà envoyée'
-                                  : 'Envoyer une demande de retour'
-                            }
-                          >
-                            {returnStatus[s.id] === 'loading'
-                              ? 'Envoi...'
-                              : s.return_requested
-                                ? 'Demande envoyée'
-                                : returnStatus[s.id] === 'error'
-                                  ? 'Erreur'
-                                  : 'Demander le retour'}
-                          </button>
-                          <button
-                            onClick={() => handleOpenContact(s)}
-                            className={`px-2 py-1 rounded-md text-xs font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50`}
-                            title='Contacter la boutique'
-                          >
-                            Contacter la boutique
-                          </button>
-                        </div>
+
+                    {/* Bloc extensible — toujours présent dans le DOM */}
+                    <div
+                      className={`mt-3 space-y-2 text-sm transition-all duration-300 overflow-hidden ${
+                        expandedCardIds[s.id]
+                          ? 'max-h-[1000px] opacity-100'
+                          : 'max-h-0 opacity-0'
+                      }`}
+                    >
+                      <div>
+                        <span className='font-medium'>
+                          Explication du statut:
+                        </span>{' '}
+                        <span className='text-gray-600'>
+                          {getStatusDescription(s.status)}
+                        </span>
                       </div>
-                    )}
+
+                      <div>
+                        <span className='font-medium'>Réseau:</span>{' '}
+                        {getNetworkDescription(s.delivery_network)}
+                      </div>
+
+                      <div>
+                        <span className='font-medium'>Point Retrait:</span>{' '}
+                        {s.pickup_point?.code ? (
+                          <span>
+                            <strong>{s.pickup_point?.name}</strong>{' '}
+                            {s.pickup_point?.street}, {s.pickup_point?.city}{' '}
+                            {s.pickup_point?.postal_code}{' '}
+                            {s.pickup_point?.country}
+                          </span>
+                        ) : (
+                          '—'
+                        )}
+                      </div>
+
+                      <div className='flex items-center gap-2'>
+                        {s.tracking_url ? (
+                          <a
+                            href={s.tracking_url}
+                            target='_blank'
+                            rel='noopener noreferrer'
+                            className='text-blue-600 hover:underline text-xs'
+                          >
+                            Suivre la commande
+                          </a>
+                        ) : (
+                          <span />
+                        )}
+                      </div>
+
+                      <div className='flex items-center gap-2 pt-1'>
+                        <button
+                          onClick={() => handleReturn(s)}
+                          disabled={
+                            !s.shipment_id ||
+                            returnStatus[s.id] === 'loading' ||
+                            !!s.return_requested ||
+                            !s.is_final_destination
+                          }
+                          className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
+                            s.return_requested ||
+                            returnStatus[s.id] === 'success'
+                              ? 'bg-green-50 text-green-700 border-green-200'
+                              : returnStatus[s.id] === 'error'
+                                ? 'bg-red-50 text-red-700 border-red-200'
+                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                          }`}
+                          title={
+                            !s.shipment_id
+                              ? 'Retour indisponible'
+                              : s.return_requested
+                                ? 'Demande déjà envoyée'
+                                : 'Envoyer une demande de retour'
+                          }
+                        >
+                          {returnStatus[s.id] === 'loading'
+                            ? 'Envoi...'
+                            : s.return_requested
+                              ? 'Demande envoyée'
+                              : returnStatus[s.id] === 'error'
+                                ? 'Erreur'
+                                : 'Demander le retour'}
+                        </button>
+
+                        <button
+                          onClick={() => handleOpenContact(s)}
+                          className='px-2 py-1 rounded-md text-xs font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        >
+                          Contacter la boutique
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -818,7 +955,10 @@ export default function OrdersPage() {
                       Boutique
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Référence produit
+                      Référence Produit
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Valeur Produit
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Payé
@@ -846,11 +986,15 @@ export default function OrdersPage() {
                       </div>
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Écart Livraison
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Réseau
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Point retrait
+                      Point Retrait
                     </th>
+
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Retour
                     </th>
@@ -899,7 +1043,37 @@ export default function OrdersPage() {
                         {s.product_reference ?? '—'}
                       </td>
                       <td className='py-4 px-4 text-gray-900 font-semibold'>
-                        {formatValue(s.value)}
+                        {(() => {
+                          const hasPromo = !!s.promo_codes;
+                          const finalValue = hasPromo
+                            ? (s.paid_value ?? 0) -
+                              (s.estimated_delivery_cost ?? 0)
+                            : s.product_value;
+                          return (
+                            <>
+                              {formatValue(finalValue)}
+                              {hasPromo && (
+                                <div className='text-xs text-gray-500 mt-1'>
+                                  <span className='line-through'>
+                                    {formatValue(s.product_value)}
+                                  </span>{' '}
+                                  (
+                                  {formatValue(
+                                    Math.max(
+                                      0,
+                                      (s.product_value ?? 0) - (finalValue ?? 0)
+                                    )
+                                  )}{' '}
+                                  de remise avec le code:{' '}
+                                  {s.promo_codes!.replace(';', ', ')})
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </td>
+                      <td className='py-4 px-4 text-gray-900 font-semibold'>
+                        {formatValue(s.paid_value)}
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
                         <div className='flex items-center space-x-2'>
@@ -929,6 +1103,22 @@ export default function OrdersPage() {
                       <td className='py-4 px-4 text-gray-700'>
                         {formatDate(s.estimated_delivery_date)}
                       </td>
+                      <td className='py-4 px-4 text-gray-900 font-semibold'>
+                        {(() => {
+                          const diff =
+                            (s.estimated_delivery_cost ?? 0) -
+                            (s.delivery_cost ?? 0);
+                          const color =
+                            diff > 0
+                              ? 'text-green-600'
+                              : diff < 0
+                                ? 'text-red-600'
+                                : 'text-gray-900';
+                          return (
+                            <span className={color}>{formatValue(diff)}</span>
+                          );
+                        })()}
+                      </td>
                       <td className='py-4 px-4 text-gray-700'>
                         {getNetworkDescription(s.delivery_network)}
                       </td>
@@ -946,6 +1136,7 @@ export default function OrdersPage() {
                           '—'
                         )}
                       </td>
+
                       <td className='py-4 px-4'>
                         <button
                           onClick={() => handleReturn(s)}

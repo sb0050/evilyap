@@ -28,9 +28,7 @@ router.get("/customer", async (req, res) => {
 
     const { data, error } = await supabase
       .from("shipments")
-      .select(
-        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, dropoff_point, pickup_point, weight, product_reference, value, reference_value, created_at, status, estimated_delivery_date, cancel_requested, return_requested, is_final_destination, delivery_cost, tracking_url"
-      )
+      .select("*")
       .eq("customer_stripe_id", stripeId)
       .order("id", { ascending: false });
 
@@ -181,25 +179,21 @@ router.get("/store/:storeSlug", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    let isAdmin = false;
     try {
       const user = await clerkClient.users.getUser(requesterId);
       const role = (user?.publicMetadata as any)?.role;
-      isAdmin = role === "admin";
     } catch (_e) {
       // default is not admin
     }
 
     const isOwner = store?.clerk_id && store.clerk_id === requesterId;
-    if (!isOwner && !isAdmin) {
+    if (!isOwner) {
       return res.status(403).json({ error: "Accès refusé !" });
     }
 
     const { data: shipments, error: shipErr } = await supabase
       .from("shipments")
-      .select(
-        "id, store_id, customer_stripe_id, shipment_id, document_created, delivery_method, delivery_network, dropoff_point, pickup_point, weight, product_reference, value, reference_value, created_at, status, estimated_delivery_date, cancel_requested, return_requested, is_final_destination, delivery_cost, tracking_url"
-      )
+      .select("*")
       .eq("store_id", store.id)
       .order("id", { ascending: false });
 

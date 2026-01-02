@@ -17,6 +17,10 @@ import {
   HandCoins,
   Pencil,
   SendHorizontal,
+  BadgeCheck,
+  Tag,
+  Trash2,
+  Coins,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -24,11 +28,24 @@ import {
   FaTiktok,
   FaApple,
   FaShareAlt,
+  FaArchive,
 } from 'react-icons/fa';
 import { Toast } from '../components/Toast';
 import { useToast } from '../utils/toast';
-import { apiPut, apiPost, apiPostForm, apiGet, API_BASE_URL } from '../utils/api';
+import {
+  apiPut,
+  apiPost,
+  apiPostForm,
+  apiGet,
+  apiDelete,
+  API_BASE_URL,
+} from '../utils/api';
 import SuccessConfetti from '../components/SuccessConfetti';
+import { RiDiscountPercentFill } from 'react-icons/ri';
+import { FR, BE } from 'country-flag-icons/react/3x2';
+import { AddressElement } from '@stripe/react-stripe-js';
+import { Address } from '@stripe/stripe-js';
+import StripeWrapper from '../components/StripeWrapper';
 
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
@@ -48,8 +65,10 @@ type Store = {
   clerk_id?: string | null;
   description?: string | null;
   website?: string | null;
+  siret?: string | null;
   rib?: RIBInfo | null;
-  reference_value?: number | null;
+  product_value?: number | null;
+  is_verified?: boolean;
 };
 
 type Shipment = {
@@ -64,9 +83,8 @@ type Shipment = {
   dropoff_point: any | null;
   pickup_point: object | null;
   weight: string | null;
-  product_reference: string | number | null;
-  value: number | null;
-  reference_value?: number | null;
+  product_reference: string | null;
+  paid_value: number | null;
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
@@ -74,6 +92,9 @@ type Shipment = {
   is_final_destination?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
+  promo_codes?: string | null;
+  product_value?: number | null;
+  estimated_delivery_cost?: number | null;
 };
 
 export default function DashboardPage() {
@@ -92,6 +113,7 @@ export default function DashboardPage() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [website, setWebsite] = useState('');
+  const [siret, setSiret] = useState('');
   // Validation du nom (aligné sur Onboarding)
   const [isCheckingSlug, setIsCheckingSlug] = useState(false);
   const [slugExists, setSlugExists] = useState(false);
@@ -122,7 +144,7 @@ export default function DashboardPage() {
   const [showPayout, setShowPayout] = useState(false);
   // Navigation des sections du dashboard
   const [section, setSection] = useState<
-    'infos' | 'wallet' | 'sales' | 'clients' | 'support'
+    'infos' | 'wallet' | 'sales' | 'clients' | 'promo' | 'support' | 'carts'
   >('infos');
   // Support: message de contact
   const [supportMessage, setSupportMessage] = useState<string>('');
@@ -139,6 +161,10 @@ export default function DashboardPage() {
   const [page, setPage] = useState<number>(1);
   // Barre de recherche sur l'ID (contains)
   const [idSearch, setIdSearch] = useState<string>('');
+  const [salesFilterField, setSalesFilterField] = useState<
+    'id' | 'client' | 'reference'
+  >('id');
+  const [salesFilterTerm, setSalesFilterTerm] = useState<string>('');
   const [reloadingSales, setReloadingSales] = useState<boolean>(false);
   const [reloadingBalance, setReloadingBalance] = useState<boolean>(false);
   // États Clients (onglet dédié)
@@ -146,11 +172,292 @@ export default function DashboardPage() {
   const [clientsPage, setClientsPage] = useState<number>(1);
   const [customersMap, setCustomersMap] = useState<Record<string, any>>({});
   const [customersLoading, setCustomersLoading] = useState<boolean>(false);
-  const [clientIdSearch, setClientIdSearch] = useState<string>('');
   const [clientsSortOrder, setClientsSortOrder] = useState<'asc' | 'desc'>(
     'desc'
   );
+  const [clientsFilterField, setClientsFilterField] = useState<
+    'id' | 'name' | 'email'
+  >('id');
+  const [clientsFilterTerm, setClientsFilterTerm] = useState<string>('');
   const [socialsMap, setSocialsMap] = useState<Record<string, any>>({});
+  const [billingAddress, setBillingAddress] = useState<Address | null>(null);
+  const [isAddressComplete, setIsAddressComplete] = useState(false);
+  const [formPhone, setFormPhone] = useState<string>('');
+
+  // Paniers (création par le vendeur)
+  const [cartCustomerInput, setCartCustomerInput] = useState<string>('');
+  const [cartCustomerResults, setCartCustomerResults] = useState<
+    Array<{
+      id: string;
+      fullName: string;
+      email?: string | null;
+      stripeId?: string | null;
+    }>
+  >([]);
+  const [cartUsersLoading, setCartUsersLoading] = useState<boolean>(false);
+  const [cartSelectedUser, setCartSelectedUser] = useState<{
+    id: string;
+    fullName: string;
+    email?: string | null;
+    stripeId?: string | null;
+  } | null>(null);
+  const [cartReference, setCartReference] = useState<string>('');
+  const [cartDescription, setCartDescription] = useState<string>('');
+  const [cartAmountEuro, setCartAmountEuro] = useState<string>('');
+  const [cartTTLMinutes, setCartTTLMinutes] = useState<string>('15');
+  const [cartCreating, setCartCreating] = useState<boolean>(false);
+  const [storeCarts, setStoreCarts] = useState<any[]>([]);
+  const [cartDeletingIds, setCartDeletingIds] = useState<
+    Record<number, boolean>
+  >({});
+  const [cartReloading, setCartReloading] = useState<boolean>(false);
+  const [cartSearchTerm, setCartSearchTerm] = useState<string>('');
+  const [cartPageSize, setCartPageSize] = useState<number>(10);
+  const [cartPage, setCartPage] = useState<number>(1);
+  const [clerkUsersByStripeId, setClerkUsersByStripeId] = useState<
+    Record<
+      string,
+      {
+        id: string;
+        fullName: string;
+        email?: string | null;
+        imageUrl?: string | null;
+        hasImage?: boolean;
+      }
+    >
+  >({});
+  const [cartGroupPageSize, setCartGroupPageSize] = useState<
+    Record<string, number>
+  >({});
+  const [cartGroupPage, setCartGroupPage] = useState<Record<string, number>>(
+    {}
+  );
+
+  const [promoLoadedOnce, setPromoLoadedOnce] = useState<boolean>(false);
+  useEffect(() => {
+    if (section === 'promo' && !promoLoadedOnce) {
+      Promise.all([
+        fetchPromotionCodes().catch(() => {}),
+        fetchCoupons().catch(() => {}),
+      ]).finally(() => setPromoLoadedOnce(true));
+    }
+  }, [section, promoLoadedOnce]);
+
+  const [promoSelectedCouponId, setPromoSelectedCouponId] =
+    useState<string>('');
+  const [promoCodeName, setPromoCodeName] = useState<string>('');
+  const [promoMinAmountEuro, setPromoMinAmountEuro] = useState<string>('');
+  const [promoFirstTime, setPromoFirstTime] = useState<boolean>(true);
+  const [promoExpiresDate, setPromoExpiresDate] = useState<string>('');
+  const [promoExpiresTime, setPromoExpiresTime] = useState<string>('');
+  const [promoActive, setPromoActive] = useState<boolean>(true);
+  const [promoMaxRedemptions, setPromoMaxRedemptions] = useState<string>('');
+  const [promoCreating, setPromoCreating] = useState<boolean>(false);
+  const [promoCodes, setPromoCodes] = useState<any[]>([]);
+  const [promoListLoading, setPromoListLoading] = useState<boolean>(false);
+  const [promoSearchTerm, setPromoSearchTerm] = useState<string>('');
+  const [promoDeletingIds, setPromoDeletingIds] = useState<
+    Record<string, boolean>
+  >({});
+
+  const [couponOptions, setCouponOptions] = useState<
+    { id: string; name?: string | null }[]
+  >([]);
+  const [promoCouponsLoading, setPromoCouponsLoading] =
+    useState<boolean>(false);
+
+  const fetchCoupons = async () => {
+    try {
+      setPromoCouponsLoading(true);
+      const token = await getToken();
+      const resp = await apiGet(`/api/stripe/coupons`, {
+        headers: { Authorization: token ? `Bearer ${token}` : '' },
+      });
+      const json = await resp.json().catch(() => ({}));
+      const list = Array.isArray(json?.data) ? json.data : [];
+      setCouponOptions(list);
+      if (!promoSelectedCouponId && list.length > 0) {
+        setPromoSelectedCouponId(list[0].id);
+      }
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur lors du chargement des coupons';
+      const trimmed = (raw || '').replace(/^Error:\s*/, '');
+      showToast(trimmed, 'error');
+    } finally {
+      setPromoCouponsLoading(false);
+    }
+  };
+
+  const fetchPromotionCodes = async () => {
+    try {
+      setPromoListLoading(true);
+      const token = await getToken();
+      const params = new URLSearchParams();
+      params.set('limit', '50');
+      if (store?.slug) params.set('storeSlug', store.slug);
+      const resp = await apiGet(
+        `/api/stripe/promotion-codes?${params.toString()}`,
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      setPromoCodes(Array.isArray(json?.data) ? json.data : []);
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur lors du chargement des codes promo';
+      const trimmed = (raw || '').replace(/^Error:\s*/, '');
+      showToast(trimmed, 'error');
+    } finally {
+      setPromoListLoading(false);
+    }
+  };
+
+  const handleDeletePromotionCode = async (id: string) => {
+    try {
+      if (!id) return;
+      setPromoDeletingIds(prev => ({ ...prev, [id]: true }));
+      const token = await getToken();
+      const resp = await apiDelete(
+        `/api/stripe/promotion-codes/${encodeURIComponent(id)}`,
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || 'Suppression du code promo échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Erreur');
+      }
+      showToast('Code promo archivé', 'success');
+      await fetchPromotionCodes();
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur inconnue';
+      showToast(raw, 'error');
+    } finally {
+      setPromoDeletingIds(prev => ({ ...prev, [id]: false }));
+    }
+  };
+
+  const handleCreatePromotionCode = async () => {
+    try {
+      const code = (promoCodeName || '').trim();
+      if (!promoSelectedCouponId || !code) {
+        showToast('Veuillez choisir un coupon et saisir un code', 'error');
+        return;
+      }
+      // Validation date d'expiration
+      const todayStr = new Date().toISOString().slice(0, 10);
+      // Empêcher heure seule sans date
+      if (!(promoExpiresDate || '').trim() && (promoExpiresTime || '').trim()) {
+        showToast('Veuillez renseigner la date d’expiration', 'error');
+        return;
+      }
+      if ((promoExpiresDate || '').trim()) {
+        const d = (promoExpiresDate || '').trim();
+        if (d < todayStr) {
+          showToast(
+            'La date d’expiration doit être aujourd’hui ou plus tard',
+            'error'
+          );
+          return;
+        }
+        // Heure obligatoire si une date est saisie
+        if (!(promoExpiresTime || '').trim()) {
+          showToast('Veuillez renseigner l’heure d’expiration', 'error');
+          return;
+        }
+        // Si la date est aujourd'hui et qu'une heure est fournie, vérifier qu'elle n'est pas passée
+        const timeStr = (promoExpiresTime || '').trim();
+        if (d === todayStr && timeStr) {
+          const now = new Date();
+          const hh = String(now.getHours()).padStart(2, '0');
+          const mm = String(now.getMinutes()).padStart(2, '0');
+          const nowHM = `${hh}:${mm}`;
+          if (timeStr < nowHM) {
+            showToast(
+              'L’heure d’expiration pour aujourd’hui doit être ultérieure à maintenant',
+              'error'
+            );
+            return;
+          }
+        }
+      }
+      setPromoCreating(true);
+      const token = await getToken();
+      const minimum_amount = (() => {
+        const val = parseFloat((promoMinAmountEuro || '').replace(',', '.'));
+        if (Number.isFinite(val) && val > 0) return Math.round(val * 100);
+        return undefined;
+      })();
+      const expires_at = (() => {
+        const dateStr = (promoExpiresDate || '').trim();
+        if (!dateStr) return undefined;
+        const timeStr = (promoExpiresTime || '').trim();
+        if (!timeStr) return undefined; // heure obligatoire si date renseignée
+        const isoLocal = `${dateStr}T${timeStr}`;
+        const ms = Date.parse(isoLocal);
+        if (Number.isFinite(ms)) return Math.floor(ms / 1000);
+        return undefined;
+      })();
+      const max_redemptions = (() => {
+        const val = parseInt((promoMaxRedemptions || '').trim(), 10);
+        if (Number.isFinite(val) && val > 0) return val;
+        return undefined;
+      })();
+
+      const body: any = {
+        couponId: promoSelectedCouponId,
+        code,
+        active: !!promoActive,
+        storeSlug: store?.slug,
+      };
+      if (
+        typeof minimum_amount === 'number' ||
+        typeof promoFirstTime === 'boolean'
+      ) {
+        body.minimum_amount = minimum_amount;
+        body.first_time_transaction = !!promoFirstTime;
+      }
+      if (typeof expires_at === 'number') body.expires_at = expires_at;
+      if (typeof max_redemptions === 'number')
+        body.max_redemptions = max_redemptions;
+
+      const resp = await apiPost('/api/stripe/promotion-codes', body, {
+        headers: { Authorization: token ? `Bearer ${token}` : '' },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || 'Création du code promo échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Erreur');
+      }
+      showToast('Code promo créé', 'success');
+      // Rafraîchir la liste
+      await fetchPromotionCodes();
+      // Reset partiel
+      setPromoCodeName('');
+      setPromoMinAmountEuro('');
+      setPromoFirstTime(false);
+      setPromoExpiresDate('');
+      setPromoActive(true);
+      setPromoMaxRedemptions('');
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur inconnue';
+      showToast(raw, 'error');
+    } finally {
+      setPromoCreating(false);
+    }
+  };
+
+  // Pas de reload automatique à l’ouverture de l’onglet 'promo'
+  // Le rechargement est désormais manuel via le bouton
+
+  // États d’expansion pour les cartes mobiles
+  const [expandedSalesCardIds, setExpandedSalesCardIds] = useState<
+    Record<number, boolean>
+  >({});
+  const [expandedClientCardIds, setExpandedClientCardIds] = useState<
+    Record<string, boolean>
+  >({});
 
   // Popup de bienvenue après création de boutique
   const [showWelcome, setShowWelcome] = useState<boolean>(false);
@@ -208,6 +515,138 @@ export default function DashboardPage() {
     }
   };
   const websiteInvalid = !!(website && !isValidWebsite(website));
+  // États et logique de vérification SIRET (alignés sur Onboarding)
+  const [isCheckingSiret, setIsCheckingSiret] = useState(false);
+  const [siretErrorMessage, setSiretErrorMessage] = useState('');
+  const [wasSiretFocused, setWasSiretFocused] = useState(false);
+  const [isSiretDirty, setIsSiretDirty] = useState(false);
+  const [lastCheckedSiret, setLastCheckedSiret] = useState('');
+  const [siretDetails, setSiretDetails] = useState<any | null>(null);
+  const [companyCountry, setCompanyCountry] = useState<'FR' | 'BE'>('FR');
+  const isValidSiret = (value: string) => {
+    const digits = (value || '').replace(/\s+/g, '');
+    return /^\d{14}$/.test(digits);
+  };
+  const isValidBce = (value: string) => {
+    const digits = (value || '')
+      .replace(/\s+/g, '')
+      .replace(/^BE/i, '')
+      .replace(/\./g, '');
+    return /^\d{10}$/.test(digits);
+  };
+  const normalizeCompanyId = (value: string) => {
+    const v = (value || '').trim();
+    if (companyCountry === 'FR') return v.replace(/\s+/g, '');
+    return v.replace(/\s+/g, '').replace(/^BE/i, '').replace(/\./g, '');
+  };
+  const siretInvalid = siret
+    ? companyCountry === 'FR'
+      ? !isValidSiret(siret)
+      : !isValidBce(siret)
+    : false;
+
+  const handleSiretFocus = () => {
+    setWasSiretFocused(true);
+  };
+  const handleSiretChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = (e.target.value || '').replace(/\s+/g, '');
+    setSiret(value);
+    setIsSiretDirty(true);
+    setSiretDetails(null);
+    if (!value) {
+      setSiretErrorMessage('');
+      setLastCheckedSiret('');
+      setSiretDetails(null);
+    } else if (siretErrorMessage) {
+      setSiretErrorMessage('');
+    }
+  };
+  const checkSiretValidity = async () => {
+    const normalized = normalizeCompanyId(siret || '');
+    if (!normalized) return;
+    if (companyCountry === 'FR' && !/^\d{14}$/.test(normalized)) return;
+    if (companyCountry === 'BE' && !/^\d{10}$/.test(normalized)) return;
+    setIsCheckingSiret(true);
+    try {
+      const endpoint = companyCountry === 'FR' ? 'siret' : 'bce';
+      const resp = await apiGet(
+        `/api/insee-bce/${endpoint}/${encodeURIComponent(normalized)}`
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok && json?.success) {
+        setSiretErrorMessage('');
+        setLastCheckedSiret(normalized);
+        setSiretDetails(json?.data || null);
+      } else {
+        const message =
+          json?.header?.message ||
+          json?.error ||
+          (companyCountry === 'FR'
+            ? 'SIRET invalide ou introuvable'
+            : 'BCE invalide ou introuvable');
+        setSiretErrorMessage(message);
+        setLastCheckedSiret(normalized);
+        setSiretDetails(null);
+      }
+    } catch (err) {
+      console.error('Vérification SIRET/BCE échouée:', err);
+      setSiretErrorMessage(
+        companyCountry === 'FR'
+          ? 'Erreur lors de la vérification du SIRET'
+          : 'Erreur lors de la vérification du BCE'
+      );
+      setSiretDetails(null);
+    } finally {
+      setIsCheckingSiret(false);
+    }
+  };
+  const handleSiretBlur = async () => {
+    const raw = (siret || '').trim();
+    if (!wasSiretFocused) {
+      setWasSiretFocused(false);
+      return;
+    }
+    if (!isSiretDirty) {
+      setWasSiretFocused(false);
+      return;
+    }
+    if (!raw) {
+      setSiretErrorMessage('');
+      setSiretDetails(null);
+      setWasSiretFocused(false);
+      setIsSiretDirty(false);
+      return;
+    }
+    if (companyCountry === 'FR') {
+      const s = raw.replace(/\s+/g, '');
+      if (!/^\d{14}$/.test(s)) {
+        setSiretErrorMessage(
+          'Erreur de format de siret (Format attendu : 14 chiffres)'
+        );
+        setSiretDetails(null);
+        setWasSiretFocused(false);
+        setIsSiretDirty(false);
+        return;
+      }
+    } else {
+      const bce = raw
+        .replace(/\s+/g, '')
+        .replace(/^BE/i, '')
+        .replace(/\./g, '');
+      if (!/^\d{10}$/.test(bce)) {
+        setSiretErrorMessage(
+          'Erreur de format de BCE (Format attendu : 10 chiffres)'
+        );
+        setSiretDetails(null);
+        setWasSiretFocused(false);
+        setIsSiretDirty(false);
+        return;
+      }
+    }
+    await checkSiretValidity();
+    setWasSiretFocused(false);
+    setIsSiretDirty(false);
+  };
   // Upload logo (mêmes vérifications que onboarding)
   const handleLogoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -304,7 +743,7 @@ export default function DashboardPage() {
           saleId: selectedSale?.id ?? null,
           shipmentId: selectedSale?.shipment_id ?? null,
           productReference: selectedSale?.product_reference ?? null,
-          value: selectedSale?.value ?? null,
+          value: selectedSale?.paid_value ?? null,
           customerStripeId: selectedSale?.customer_stripe_id ?? null,
           status: selectedSale?.status ?? null,
           createdAt: selectedSale?.created_at ?? null,
@@ -366,6 +805,14 @@ export default function DashboardPage() {
       'MONR-CPOURTOI': 'Mondial Relay',
       'CHRP-CHRONO2SHOPDIRECT': 'Chronopost',
       'COPR-COPRRELAISRELAISNAT': 'Colis Privé',
+      //BELGIQUE
+      'MONR-DOMICILEEUROPE': 'Mondial Relay - Mondial Domicile Europe',
+      'CHRP-CHRONOINTERNATIONALCLASSIC':
+        'Chronopost - Chrono International Classic',
+      'DLVG-DELIVENGOOEASY': 'Delivengo - Delivengo Easy',
+      'MONR-CPOURTOIEUROPE': 'Mondial Relay',
+      'CHRP-CHRONO2SHOPEUROPE': 'Chronopost',
+
       STORE_PICKUP: 'Retrait en boutique',
     };
     return map[c] || code || '—';
@@ -525,13 +972,14 @@ export default function DashboardPage() {
       );
       const shipJson = await shipResp.json().catch(() => ({}));
       if (!shipResp.ok) {
-        const msg = shipJson?.error || 'Erreur lors du rechargement des ventes';
+        const msg =
+          shipJson?.error || 'Erreur lors du rechargement des ventes/clients';
         throw new Error(typeof msg === 'string' ? msg : 'Rechargement échoué');
       }
       setShipments(
         Array.isArray(shipJson?.shipments) ? shipJson.shipments : []
       );
-      showToast('Ventes rechargées', 'success');
+      showToast('Ventes et Clients rechargés', 'success');
       // Réinitialiser la pagination si la page dépasse le total
       setPage(1);
     } catch (e: any) {
@@ -570,12 +1018,39 @@ export default function DashboardPage() {
     }
   };
 
-  // Filtre ID (contains) et pagination dérivée
+  // Filtre Mes ventes: champ sélectionné + terme de recherche
   const filteredShipments = (shipments || []).filter(s => {
-    const term = (idSearch || '').trim().toLowerCase();
+    const term = (salesFilterTerm || idSearch || '').trim().toLowerCase();
     if (!term) return true;
-    const idStr = (s.shipment_id || '').toLowerCase();
-    return idStr.includes(term);
+    const field = salesFilterField;
+    if (field === 'id') {
+      const idStr = (s.shipment_id || '').toLowerCase();
+      return idStr.includes(term);
+    }
+    if (field === 'client') {
+      const stripeId = (s.customer_stripe_id || '').toLowerCase();
+      const customer = s.customer_stripe_id
+        ? customersMap[s.customer_stripe_id] || null
+        : null;
+      const clerkId = customer?.clerkUserId || customer?.clerk_user_id;
+      const user = clerkId ? socialsMap[clerkId] || null : null;
+      const nameParts = [user?.firstName || '', user?.lastName || '']
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      const customerName = (customer?.name || '').toLowerCase();
+      const email = (customer?.email || '' || user?.emailAddress || '')
+        .toLowerCase()
+        .trim();
+      return (
+        stripeId.includes(term) ||
+        customerName.includes(term) ||
+        nameParts.includes(term) ||
+        email.includes(term)
+      );
+    }
+    const refStr = (s.product_reference || '').toLowerCase();
+    return refStr.includes(term);
   });
   const totalPages = Math.max(
     1,
@@ -588,21 +1063,47 @@ export default function DashboardPage() {
   );
 
   useEffect(() => {
-    // Clamp page si longueur filtrée change
     const filteredLength = (shipments || []).filter(s => {
-      const term = (idSearch || '').trim().toLowerCase();
+      const term = (salesFilterTerm || idSearch || '').trim().toLowerCase();
       if (!term) return true;
-      const idStr = (s.shipment_id || '').toLowerCase();
-      return idStr.includes(term);
+      const field = salesFilterField;
+      if (field === 'id') {
+        const idStr = (s.shipment_id || '').toLowerCase();
+        return idStr.includes(term);
+      }
+      if (field === 'client') {
+        const stripeId = (s.customer_stripe_id || '').toLowerCase();
+        const customer = s.customer_stripe_id
+          ? customersMap[s.customer_stripe_id] || null
+          : null;
+        const clerkId = customer?.clerkUserId || customer?.clerk_user_id;
+        const user = clerkId ? socialsMap[clerkId] || null : null;
+        const nameParts = [user?.firstName || '', user?.lastName || '']
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        const customerName = (customer?.name || '').toLowerCase();
+        const email = (customer?.email || '' || user?.emailAddress || '')
+          .toLowerCase()
+          .trim();
+        return (
+          stripeId.includes(term) ||
+          customerName.includes(term) ||
+          nameParts.includes(term) ||
+          email.includes(term)
+        );
+      }
+      const refStr = (s.product_reference || '').toLowerCase();
+      return refStr.includes(term);
     }).length;
     const newTotal = Math.max(1, Math.ceil(filteredLength / pageSize));
     if (page > newTotal) setPage(newTotal);
     if (page < 1) setPage(1);
-  }, [shipments, pageSize, idSearch]);
+  }, [shipments, pageSize, salesFilterTerm, salesFilterField, idSearch]);
 
   // Chargement des clients Stripe basés sur les customer_stripe_id des shipments
   useEffect(() => {
-    if (section !== 'clients') return;
+    if (section !== 'clients' && section !== 'sales') return;
     const ids = Array.from(
       new Set((shipments || []).map(s => s.customer_stripe_id).filter(Boolean))
     ) as string[];
@@ -711,6 +1212,195 @@ export default function DashboardPage() {
     };
     run();
   }, [customersMap]);
+
+  // Charger les paniers du store quand on ouvre l’onglet Panier
+  useEffect(() => {
+    if (section !== 'carts') return;
+    if (!store?.slug) return;
+    const run = async () => {
+      try {
+        const resp = await apiGet(
+          `/api/carts/store/${encodeURIComponent(store.slug)}`
+        );
+        const json = await resp.json().catch(() => ({}));
+        setStoreCarts(Array.isArray(json?.carts) ? json.carts : []);
+      } catch (e: any) {
+        const raw =
+          e?.message || 'Erreur lors du chargement des paniers du store';
+        showToast(raw, 'error');
+      }
+    };
+    run();
+  }, [section, store?.slug]);
+
+  useEffect(() => {
+    const loadUsers = async () => {
+      try {
+        if (section !== 'carts') return;
+        const token = await getToken();
+        const resp = await apiGet(`/api/clerk/users`, {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        });
+        const json = await resp.json().catch(() => ({}));
+        const arr = Array.isArray(json?.users) ? json.users : [];
+        const map: Record<string, any> = {};
+        arr.forEach((u: any) => {
+          if (u?.stripeId) {
+            map[String(u.stripeId)] = u;
+          }
+        });
+        setClerkUsersByStripeId(map);
+      } catch (e) {}
+    };
+    loadUsers();
+  }, [section]);
+
+  const searchClerkUsers = async (query: string) => {
+    try {
+      if (!query.trim()) {
+        setCartCustomerResults([]);
+        return;
+      }
+      setCartUsersLoading(true);
+      const token = await getToken();
+      const resp = await apiGet(
+        `/api/clerk/users?search=${encodeURIComponent(query)}`,
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      setCartCustomerResults(Array.isArray(json?.users) ? json.users : []);
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur recherche utilisateurs';
+      showToast(raw, 'error');
+    } finally {
+      setCartUsersLoading(false);
+    }
+  };
+
+  const handleCreateCart = async () => {
+    try {
+      const ref = (cartReference || '').trim();
+      const ttlRaw = (cartTTLMinutes || '').trim();
+      const ttl = parseInt(ttlRaw, 10);
+      const amt = parseFloat((cartAmountEuro || '').trim().replace(',', '.'));
+      if (!(amt > 0)) {
+        showToast('Veuillez saisir un montant supérieur à 0', 'error');
+        return;
+      }
+      if (!store?.id) {
+        showToast('Boutique introuvable', 'error');
+        return;
+      }
+      if (!cartSelectedUser) {
+        showToast('Veuillez sélectionner un client', 'error');
+        return;
+      }
+      if (!ref) {
+        showToast('Veuillez saisir la référence', 'error');
+        return;
+      }
+      if (!Number.isInteger(ttl) || ttl < 1) {
+        showToast('La durée du panier doit être un entier positif', 'error');
+        return;
+      }
+      setCartCreating(true);
+      let stripeId = cartSelectedUser.stripeId || '';
+      if (!stripeId) {
+        try {
+          const body: any = {
+            name: cartSelectedUser.fullName || '',
+            email: cartSelectedUser.email || '',
+            clerkUserId: cartSelectedUser.id,
+          };
+          const token = await getToken();
+          const resp = await apiPost('/api/stripe/create-customer', body, {
+            headers: { Authorization: token ? `Bearer ${token}` : '' },
+          });
+          const json = await resp.json().catch(() => ({}));
+          stripeId = json?.stripeId || json?.customer?.id || '';
+        } catch (e) {}
+      }
+      if (!stripeId) {
+        showToast(
+          "Impossible de déterminer l'identifiant Stripe du client",
+          'error'
+        );
+        return;
+      }
+      const payload: any = {
+        store_id: store.id,
+        product_reference: ref,
+        value: amt,
+        customer_stripe_id: stripeId,
+        time_to_live: Number.isFinite(ttl) ? ttl : 15,
+        description: (cartDescription || '').trim() || null,
+      };
+      const resp = await apiPost('/api/carts', payload);
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || 'Création du panier échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Erreur');
+      }
+      showToast('Panier créé', 'success');
+      setCartReference('');
+      setCartDescription('');
+      setCartTTLMinutes('15');
+      setCartAmountEuro('');
+      if (store?.slug) {
+        const r = await apiGet(
+          `/api/carts/store/${encodeURIComponent(store.slug)}`
+        );
+        const j = await r.json().catch(() => ({}));
+        setStoreCarts(Array.isArray(j?.carts) ? j.carts : []);
+      }
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur inconnue';
+      showToast(raw, 'error');
+    } finally {
+      setCartCreating(false);
+    }
+  };
+
+  const handleDeleteCart = async (id: number) => {
+    try {
+      if (!id) return;
+      setCartDeletingIds(prev => ({ ...prev, [id]: true }));
+      const resp = await apiDelete('/api/carts', {
+        body: JSON.stringify({ id }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || 'Suppression du panier échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Erreur');
+      }
+      showToast('Panier supprimé', 'success');
+      setStoreCarts(prev => (prev || []).filter((c: any) => c.id !== id));
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur inconnue';
+      showToast(raw, 'error');
+    } finally {
+      setCartDeletingIds(prev => ({ ...prev, [id]: false }));
+    }
+  };
+
+  const handleReloadCarts = async () => {
+    try {
+      if (!store?.slug) return;
+      setCartReloading(true);
+      const resp = await apiGet(
+        `/api/carts/store/${encodeURIComponent(store.slug)}`
+      );
+      const json = await resp.json().catch(() => ({}));
+      setStoreCarts(Array.isArray(json?.carts) ? json.carts : []);
+    } catch (e: any) {
+      showToast(e?.message || 'Erreur inconnue', 'error');
+    } finally {
+      setCartReloading(false);
+    }
+  };
 
   // Handlers de validation du nom (adaptés depuis Onboarding)
   const handleStoreNameFocus = () => {
@@ -821,7 +1511,31 @@ export default function DashboardPage() {
         setName(s?.name || '');
         setDescription(s?.description || '');
         setWebsite(s?.website || '');
+        setSiret((s as any)?.siret || '');
         setPayoutMethod(s?.rib?.type === 'link' ? 'link' : 'database');
+        const addr = (s as any)?.address || null;
+        if (addr) {
+          setFormPhone(String(addr?.phone || ''));
+          const preset: Address = {
+            line1: addr?.line1 || '',
+            line2: '',
+            city: addr?.city || '',
+            state: '',
+            postal_code: addr?.postal_code || '',
+            country: addr?.country || 'FR',
+          } as any;
+          setBillingAddress(preset);
+          const complete = Boolean(
+            (preset.line1 || '').trim() &&
+              (preset.city || '').trim() &&
+              (preset.postal_code || '').trim() &&
+              (preset.country || '').trim()
+          );
+          setIsAddressComplete(complete);
+        } else {
+          setBillingAddress(null);
+          setIsAddressComplete(false);
+        }
 
         // 3) Charger les ventes de la boutique
         const token = await getToken();
@@ -868,6 +1582,21 @@ export default function DashboardPage() {
       setIsSubmittingModifications(false);
       return;
     }
+    if (!isAddressComplete || !formPhone.trim()) {
+      setIsSubmittingModifications(false);
+      return;
+    }
+    // Identifiant entreprise facultatif: doit être valide et vérifiable
+    if (siret && (siretInvalid || !!siretErrorMessage)) {
+      showToast(
+        companyCountry === 'FR'
+          ? 'Veuillez saisir un SIRET valide (14 chiffres)'
+          : 'Veuillez saisir un BCE valide (10 chiffres)',
+        'error'
+      );
+      setIsSubmittingModifications(false);
+      return;
+    }
     // La vérification d'unicité est effectuée côté backend; ne bloque pas côté frontend
     try {
       // Uploader le logo si un nouveau fichier est sélectionné
@@ -885,7 +1614,26 @@ export default function DashboardPage() {
           console.warn("Erreur l'upload du logo:", e);
         }
       }
-      const payload: any = { name, description, website };
+      const payload: any = {
+        name,
+        description,
+        website,
+        phone: formPhone,
+        address: billingAddress,
+      };
+      const isSiretVerified =
+        Boolean(siret) &&
+        lastCheckedSiret === normalizeCompanyId(siret) &&
+        !siretInvalid &&
+        !siretErrorMessage &&
+        !!siretDetails;
+      // Inclure SIRET si fourni et le flag is_verified si vérifié
+      if (siret) {
+        payload.siret = siret;
+      }
+      if (isSiretVerified) {
+        payload.is_verified = true;
+      }
       const resp = await apiPut(
         `/api/stores/${encodeURIComponent(store.slug)}`,
         payload
@@ -1070,7 +1818,21 @@ export default function DashboardPage() {
             <h1 className='text-2xl font-bold text-gray-900'>
               Tableau de bord
             </h1>
-            {store && <p className='text-gray-600'>{store.name}</p>}
+            {store && (
+              <div className='flex flex-col sm:flex-row sm:items-center gap-2  min-w-0'>
+                <p
+                  className='text-gray-600 truncate flex-1 min-w-0'
+                  title={store.name}
+                >
+                  {store.name}
+                </p>
+                {store.is_verified ? (
+                  <div className='inline-flex items-center gap-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit shrink-0'>
+                    <BadgeCheck className='w-3 h-3' /> Boutique Vérifiée
+                  </div>
+                ) : null}
+              </div>
+            )}
           </div>
           {store && (
             <button
@@ -1117,7 +1879,7 @@ export default function DashboardPage() {
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
-              <ShoppingCart className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <Coins className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
               <span className='truncate'>Ventes</span>
             </button>
 
@@ -1131,6 +1893,28 @@ export default function DashboardPage() {
             >
               <Users className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
               <span className='truncate'>Clients</span>
+            </button>
+            <button
+              onClick={() => setSection('carts')}
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+                section === 'carts'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <ShoppingCart className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <span className='truncate'>Panier</span>
+            </button>
+            <button
+              onClick={() => setSection('promo')}
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+                section === 'promo'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <Tag className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <span className='truncate'>Code Promo</span>
             </button>
             <button
               onClick={() => setSection('support')}
@@ -1168,7 +1952,7 @@ export default function DashboardPage() {
                       type='text'
                       value={shareLink}
                       readOnly
-                      className='mr-5 bg-transparent text-xs sm:text-sm text-gray-700 outline-none min-w-0 truncate text-left sm:text-left'
+                      className='mr-5 bg-transparent text-xs sm:text-sm text-gray-700 outline-none min-w-0 text-left truncate sm:text-left'
                     />
                     <button
                       onClick={handleCopyAlias}
@@ -1210,13 +1994,24 @@ export default function DashboardPage() {
                         </div>
                       );
                     })()}
-                    <div>
-                      <p className='text-sm text-gray-700'>
-                        <span className='font-medium'>Nom:</span> {store.name}
+                    <div className='min-w-0'>
+                      <p className='text-sm text-gray-700 min-w-0'>
+                        <span className='font-medium mr-1'>Nom:</span>
+                        <span
+                          className='truncate inline-block align-bottom max-w-full'
+                          title={store.name}
+                        >
+                          {store.name}
+                        </span>
                       </p>
                       <p className='text-sm text-gray-700'>
-                        <span className='font-medium'>Description:</span>{' '}
-                        {store.description || '-'}
+                        <span className='font-medium mr-1'>Description:</span>
+                        <span
+                          title={store.description || '-'}
+                          className='truncate inline-block align-bottom max-w-full'
+                        >
+                          {store.description || '-'}
+                        </span>
                       </p>
                       <p className='text-sm text-gray-700'>
                         <span className='font-medium'>Site web:</span>{' '}
@@ -1236,6 +2031,30 @@ export default function DashboardPage() {
                         ) : (
                           '-'
                         )}
+                      </p>
+                      <p className='text-sm text-gray-700'>
+                        <span className='font-medium mr-1'>SIRET:</span>
+                        <span>{(store as any)?.siret || '-'}</span>
+                      </p>
+                      <p className='text-sm text-gray-700'>
+                        <span className='font-medium mr-1'>Adresse:</span>
+                        <span>
+                          {(() => {
+                            const addr = (store as any)?.address || null;
+                            if (!addr) return '-';
+                            const seg1 = addr?.line1 || '';
+                            const seg2 = [addr?.postal_code, addr?.city]
+                              .filter(Boolean)
+                              .join(' ');
+                            const seg3 = addr?.country || '';
+                            const parts = [seg1, seg2, seg3].filter(Boolean);
+                            return parts.length ? parts.join(', ') : '-';
+                          })()}
+                        </span>
+                      </p>
+                      <p className='text-sm text-gray-700'>
+                        <span className='font-medium mr-1'>Téléphone:</span>
+                        <span>{(store as any)?.address?.phone || '-'}</span>
                       </p>
                     </div>
                   </div>
@@ -1316,7 +2135,6 @@ export default function DashboardPage() {
                         className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${website && websiteInvalid ? 'border-red-500' : 'border-gray-300'}`}
                         value={website}
                         onChange={e => setWebsite(e.target.value)}
-                        placeholder='ex: exemple.com ou https://exemple.com'
                       />
                       {website && websiteInvalid && (
                         <p className='mt-1 text-xs text-red-600'>
@@ -1326,6 +2144,246 @@ export default function DashboardPage() {
                       )}
                     </div>
                   </div>
+                  {/* SIRET/BCE */}
+                  <div>
+                    <label
+                      htmlFor='siret'
+                      className='block text-sm font-medium text-gray-700 mb-2'
+                    >
+                      {companyCountry === 'FR'
+                        ? 'SIRET (14 chiffres, facultatif mais nécessaire pour obtenir le badge "Boutique Vérifiée")'
+                        : 'BCE (10 chiffres, facultatif mais nécessaire pour obtenir le badge "Boutique Vérifiée")'}
+                    </label>
+                    <div className='flex items-center gap-2'>
+                      <div className='relative flex-1'>
+                        <input
+                          id='siret'
+                          inputMode='numeric'
+                          value={siret}
+                          onChange={handleSiretChange}
+                          onFocus={handleSiretFocus}
+                          onBlur={handleSiretBlur}
+                          className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${showValidationErrors && siret && (siretInvalid || !!siretErrorMessage) ? 'border-red-500' : 'border-gray-300'}`}
+                          placeholder={
+                            companyCountry === 'FR'
+                              ? '12345678901234'
+                              : '0123.456.789 ou BE0123456789'
+                          }
+                        />
+                        {isCheckingSiret && (
+                          <div className='absolute right-3 inset-y-0 flex items-center'>
+                            <div className='animate-spin rounded-full h-5 w-5 border-2 border-gray-300 border-t-blue-500'></div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    {(siret && showValidationErrors && siretInvalid) ||
+                    (siret && !!siretErrorMessage) ? (
+                      <p className='mt-2 text-sm text-red-600'>
+                        {siretErrorMessage ||
+                          (companyCountry === 'FR'
+                            ? 'SIRET invalide. Entrez exactement 14 chiffres.'
+                            : 'BCE invalide. Entrez exactement 10 chiffres.')}
+                      </p>
+                    ) : null}
+
+                    {siret &&
+                    normalizeCompanyId(siret) === lastCheckedSiret &&
+                    !siretInvalid &&
+                    !siretErrorMessage &&
+                    siretDetails
+                      ? (() => {
+                          if (companyCountry === 'FR') {
+                            const pick = (v: any) => {
+                              if (v === null || v === undefined) return null;
+                              const s = String(v).trim();
+                              if (!s || s === '[ND]') return null;
+                              return s;
+                            };
+                            const formatInseeDate = (iso: any) => {
+                              const s = pick(iso);
+                              if (!s) return null;
+                              const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+                              if (!m) return null;
+                              const months = [
+                                'Janvier',
+                                'Février',
+                                'Mars',
+                                'Avril',
+                                'Mai',
+                                'Juin',
+                                'Juillet',
+                                'Août',
+                                'Septembre',
+                                'Octobre',
+                                'Novembre',
+                                'Décembre',
+                              ];
+                              const year = m[1];
+                              const monthIndex = parseInt(m[2], 10) - 1;
+                              const day = m[3];
+                              const monthName = months[monthIndex] || '';
+                              if (!monthName) return null;
+                              return `${day} ${monthName} ${year}`;
+                            };
+                            const d = siretDetails;
+                            const e =
+                              d?.etablissement || d?.etablissements?.[0] || d;
+                            const ul = d?.uniteLegale || e?.uniteLegale || null;
+                            const denomination =
+                              pick(ul?.denominationUniteLegale) ||
+                              pick(ul?.denominationUsuelle1UniteLegale) ||
+                              pick(ul?.denominationUsuelle2UniteLegale) ||
+                              pick(ul?.denominationUsuelle3UniteLegale) ||
+                              pick(e?.enseigne1Etablissement) ||
+                              (pick(ul?.prenomUsuelUniteLegale) &&
+                              pick(ul?.nomUniteLegale)
+                                ? `${pick(ul?.prenomUsuelUniteLegale)} ${pick(ul?.nomUniteLegale)}`
+                                : null);
+                            const adr =
+                              e?.adresseEtablissement ||
+                              e?.adressePrincipaleEtablissement ||
+                              null;
+                            const line1 = [
+                              pick(adr?.numeroVoieEtablissement),
+                              pick(adr?.typeVoieEtablissement),
+                              pick(adr?.libelleVoieEtablissement),
+                              pick(adr?.complementAdresseEtablissement),
+                            ]
+                              .filter(Boolean)
+                              .join(' ');
+                            const city = [
+                              pick(adr?.codePostalEtablissement),
+                              pick(adr?.libelleCommuneEtablissement),
+                            ]
+                              .filter(Boolean)
+                              .join(' ');
+                            const hasName = !!denomination;
+                            const hasAddress = !!line1 || !!city;
+                            const hasSiren = !!pick(e?.siren);
+                            const creationDateDisplay =
+                              formatInseeDate(e?.dateCreationEtablissement) ||
+                              formatInseeDate(ul?.dateCreationUniteLegale);
+                            const hasDate = !!creationDateDisplay;
+                            if (!hasName && !hasAddress) return null;
+                            return (
+                              <div className='mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700'>
+                                <div className='flex items-center gap-2 mb-1 text-gray-800 font-medium'>
+                                  <BadgeCheck className='w-4 h-4 text-green-600' />
+                                  Données INSEE vérifiées
+                                </div>
+                                {hasName && (
+                                  <div>
+                                    <span className='text-gray-600'>
+                                      Raison sociale:{' '}
+                                    </span>
+                                    <span className='font-medium'>
+                                      {denomination}
+                                    </span>
+                                  </div>
+                                )}
+                                {hasSiren && (
+                                  <div className='mt-1'>
+                                    <span className='text-gray-600'>
+                                      SIREN:{' '}
+                                    </span>
+                                    <span className='font-medium'>
+                                      {e?.siren}
+                                    </span>
+                                  </div>
+                                )}
+                                {hasDate && (
+                                  <div className='mt-1'>
+                                    <span className='text-gray-600'>
+                                      Date de création:{' '}
+                                    </span>
+                                    <span className='font-medium'>
+                                      {creationDateDisplay}
+                                    </span>
+                                  </div>
+                                )}
+                                {hasAddress && (
+                                  <div className='mt-1'>
+                                    <span className='text-gray-600'>
+                                      Adresse:{' '}
+                                    </span>
+                                    <span className='font-medium'>
+                                      {[line1, city]
+                                        .filter(Boolean)
+                                        .join(' — ')}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          } else {
+                            const data =
+                              (siretDetails as any)?.data || siretDetails;
+                            const name =
+                              (data?.denomination as any) ||
+                              (data?.abbreviation as any) ||
+                              (data?.commercial_name as any) ||
+                              (data?.branch_name as any) ||
+                              '';
+                            const address =
+                              (data?.address?.full_address as any) || '';
+                            const cbe =
+                              (data?.cbe_number_formatted as any) ||
+                              (data?.cbe_number as any) ||
+                              '';
+                            const start = (data?.start_date as any) || '';
+                            const hasName = !!String(name).trim();
+                            const hasAddress = !!String(address).trim();
+                            const hasCbe = !!String(cbe).trim();
+                            const hasStart = !!String(start).trim();
+                            if (!hasName && !hasAddress) return null;
+                            return (
+                              <div className='mt-3 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700'>
+                                <div className='flex items-center gap-2 mb-1 text-gray-800 font-medium'>
+                                  <BadgeCheck className='w-4 h-4 text-green-600' />
+                                  Données BCE vérifiées
+                                </div>
+                                {hasName && (
+                                  <div>
+                                    <span className='text-gray-600'>
+                                      Raison sociale:{' '}
+                                    </span>
+                                    <span className='font-medium'>{name}</span>
+                                  </div>
+                                )}
+                                {hasCbe && (
+                                  <div className='mt-1'>
+                                    <span className='text-gray-600'>
+                                      Numéro BCE:{' '}
+                                    </span>
+                                    <span className='font-medium'>{cbe}</span>
+                                  </div>
+                                )}
+                                {hasStart && (
+                                  <div className='mt-1'>
+                                    <span className='text-gray-600'>
+                                      Date de début:{' '}
+                                    </span>
+                                    <span className='font-medium'>{start}</span>
+                                  </div>
+                                )}
+                                {hasAddress && (
+                                  <div className='mt-1'>
+                                    <span className='text-gray-600'>
+                                      Adresse:{' '}
+                                    </span>
+                                    <span className='font-medium'>
+                                      {address}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+                        })()
+                      : null}
+                  </div>
+
                   <div>
                     <label className='block text-sm font-medium text-gray-700 mb-2'>
                       Logo *
@@ -1378,16 +2436,85 @@ export default function DashboardPage() {
                       )}
                     </div>
                   </div>
-                  <div className='flex items-center space-x-2'>
+
+                  {/* Adresse avec Stripe AddressElement */}
+                  <div>
+                    <label className='block text-sm font-medium text-gray-700 mb-2'>
+                      Adresse de la boutique *
+                    </label>
+                    <StripeWrapper>
+                      <div
+                        className={`rounded-md border ${!isAddressComplete ? 'border-red-500' : 'border-gray-300'} p-2`}
+                      >
+                        <AddressElement
+                          key={store?.id || 'nostore'}
+                          options={{
+                            mode: 'billing',
+                            allowedCountries: ['FR'],
+                            fields: {
+                              phone: 'always',
+                            },
+                            validation: {
+                              phone: {
+                                required: 'always',
+                              },
+                            },
+                            defaultValues: {
+                              name: name || '',
+                              phone: formPhone || '',
+                              address: {
+                                line1:
+                                  (billingAddress as any)?.line1 ||
+                                  (store as any)?.address?.line1 ||
+                                  '',
+                                city:
+                                  (billingAddress as any)?.city ||
+                                  (store as any)?.address?.city ||
+                                  '',
+                                postal_code:
+                                  (billingAddress as any)?.postal_code ||
+                                  (store as any)?.address?.postal_code ||
+                                  '',
+                                country:
+                                  (billingAddress as any)?.country ||
+                                  (store as any)?.address?.country ||
+                                  'FR',
+                              },
+                            },
+                          }}
+                          onChange={event => {
+                            setIsAddressComplete(event.complete);
+                            if (event.value.address) {
+                              setBillingAddress(event.value.address as any);
+                            }
+                            if (event.value.phone) {
+                              setFormPhone(event.value.phone as string);
+                            }
+                          }}
+                        />
+                      </div>
+                      {!isAddressComplete && (
+                        <p className='mt-2 text-sm text-red-600'>
+                          Veuillez compléter votre adresse
+                        </p>
+                      )}
+                    </StripeWrapper>
+                  </div>
+
+                  <div className='flex items-center space-x-2 flex-wrap'>
                     <button
                       onClick={saveStoreInfo}
                       disabled={
                         !name.trim() ||
+                        !isAddressComplete ||
+                        !formPhone.trim() ||
                         (website && websiteInvalid) ||
                         slugExists ||
-                        isCheckingSlug
+                        isCheckingSlug ||
+                        (siret ? siretInvalid || !!siretErrorMessage : false) ||
+                        isCheckingSiret
                       }
-                      className={`inline-flex items-center px-4 py-2 rounded-md text-white ${!name.trim() || (website && websiteInvalid) || slugExists || isCheckingSlug ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+                      className={`inline-flex items-center px-4 py-2 rounded-md text-white ${!name.trim() || !isAddressComplete || !formPhone.trim() || (website && websiteInvalid) || slugExists || isCheckingSlug || (siret ? siretInvalid || !!siretErrorMessage : false) || isCheckingSiret ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'}`}
                     >
                       {isSubmittingModifications && (
                         <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
@@ -1410,6 +2537,407 @@ export default function DashboardPage() {
             </div>
           )}
 
+          {section === 'carts' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center justify-between mb-4'>
+                <div className='flex items-center'>
+                  <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
+                  <h2 className='text-lg font-semibold text-gray-900'>
+                    Panier
+                  </h2>
+                </div>
+
+                <div className='sm:hidden'></div>
+              </div>
+
+              <p className='text-sm text-gray-600 mb-4'>
+                Créez des paniers prêts à payer pour vos clients. Ils n'ont plus
+                qu'à régler en un clic, sans saisir la référence ni le montant.
+              </p>
+              <div className='grid grid-cols-1 md:grid-cols-2 gap-4 mb-6'>
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Client
+                  </label>
+                  <input
+                    type='text'
+                    value={cartCustomerInput}
+                    onChange={e => {
+                      const v = e.target.value;
+                      setCartCustomerInput(v);
+                      searchClerkUsers(v);
+                    }}
+                    placeholder='Nom du client (contains)'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                  {cartUsersLoading ? (
+                    <div className='text-xs text-gray-600 mt-2'>Recherche…</div>
+                  ) : cartCustomerResults.length > 0 ? (
+                    <div className='mt-2 border border-gray-200 rounded-md max-h-48 overflow-auto bg-white'>
+                      {cartCustomerResults.map(u => (
+                        <button
+                          key={u.id}
+                          type='button'
+                          onClick={() => {
+                            setCartSelectedUser(u);
+                            setCartCustomerInput(u.fullName);
+                            setCartCustomerResults([]);
+                          }}
+                          className='w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center justify-between'
+                        >
+                          <span className='text-sm text-gray-800'>
+                            {u.fullName}
+                          </span>
+                          <span className='text-xs text-gray-600'>
+                            {u.email || ''}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {cartSelectedUser ? (
+                    <div className='mt-2 text-xs text-gray-600'>
+                      Sélectionné: {cartSelectedUser.fullName}{' '}
+                      {cartSelectedUser.email
+                        ? `(${cartSelectedUser.email})`
+                        : ''}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Référence
+                  </label>
+                  <input
+                    type='text'
+                    value={cartReference}
+                    onChange={e => setCartReference(e.target.value)}
+                    placeholder='Ex: REF-001'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Description
+                  </label>
+                  <input
+                    type='text'
+                    value={cartDescription}
+                    onChange={e => setCartDescription(e.target.value)}
+                    placeholder='Ex: Robe Noire'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Montant (€)
+                  </label>
+                  <input
+                    type='number'
+                    min='0.01'
+                    step='0.01'
+                    value={cartAmountEuro}
+                    onChange={e => setCartAmountEuro(e.target.value)}
+                    placeholder='Ex: 49.90'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Durée du panier (minutes)
+                  </label>
+                  <input
+                    type='number'
+                    min='1'
+                    step='1'
+                    value={cartTTLMinutes}
+                    onChange={e => {
+                      const v = e.target.value;
+                      // autoriser uniquement des entiers positifs
+                      const normalized = v.replace(/[^0-9]/g, '');
+                      setCartTTLMinutes(normalized);
+                    }}
+                    placeholder='15'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+              </div>
+
+              <div className='flex items-center gap-3 mb-6'>
+                <button
+                  onClick={handleCreateCart}
+                  disabled={
+                    cartCreating ||
+                    !cartSelectedUser ||
+                    !(cartReference || '').trim() ||
+                    !(parseFloat((cartAmountEuro || '').replace(',', '.')) > 0)
+                  }
+                  className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                >
+                  {cartCreating && (
+                    <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                  )}
+                  <span>Ajouter au panier</span>
+                </button>
+              </div>
+
+              <div className='mb-3 flex items-center justify-between'>
+                <input
+                  type='text'
+                  value={cartSearchTerm}
+                  onChange={e => {
+                    setCartSearchTerm(e.target.value);
+                    setCartPage(1);
+                  }}
+                  placeholder='Nom du client…'
+                  className='w-full md:w-64 border border-gray-300 rounded-md px-3 py-2 text-sm'
+                />
+                <button
+                  onClick={handleReloadCarts}
+                  disabled={cartReloading}
+                  className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                  title='Recharger'
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 mr-1 ${cartReloading ? 'animate-spin' : ''}`}
+                  />
+                  Recharger
+                </button>
+              </div>
+
+              {(() => {
+                const groupsMap: Record<string, any[]> = {};
+                (storeCarts || []).forEach((c: any) => {
+                  const key = String(c.customer_stripe_id || '');
+                  if (!groupsMap[key]) groupsMap[key] = [];
+                  groupsMap[key].push(c);
+                });
+                const groups = Object.entries(groupsMap).map(
+                  ([stripeId, items]) => {
+                    const user = clerkUsersByStripeId[stripeId] || null;
+                    return { stripeId, user, items };
+                  }
+                );
+                const filtered = groups.filter(g => {
+                  const term = (cartSearchTerm || '').trim().toLowerCase();
+                  if (!term) return true;
+                  const name = (g.user?.fullName || '').toLowerCase();
+                  return name.includes(term);
+                });
+                const totalGroups = filtered.length;
+                const totalPages = Math.max(
+                  1,
+                  Math.ceil(totalGroups / cartPageSize)
+                );
+                const page = Math.min(cartPage, totalPages);
+                const start = (page - 1) * cartPageSize;
+                const pageGroups = filtered.slice(start, start + cartPageSize);
+
+                return (
+                  <div className='space-y-6'>
+                    {pageGroups.length === 0 ? (
+                      <div className='text-sm text-gray-600'>Aucun panier</div>
+                    ) : (
+                      pageGroups.map(g => (
+                        <div
+                          key={g.stripeId}
+                          className='border border-gray-200 rounded-md'
+                        >
+                          <div className='flex items-center gap-3 p-3 bg-gray-50 border-b border-gray-200'>
+                            {g.user?.hasImage && g.user?.imageUrl ? (
+                              <img
+                                src={g.user.imageUrl}
+                                alt={g.user.fullName || 'Client'}
+                                className='w-8 h-8 rounded-full object-cover'
+                              />
+                            ) : (
+                              <div className='w-8 h-8 rounded-full bg-gray-300'></div>
+                            )}
+                            <div>
+                              <div className='text-gray-900 font-semibold text-sm'>
+                                {g.user?.fullName || g.stripeId || 'Client'}
+                              </div>
+                              <div className='text-xs text-gray-600'>
+                                {g.user?.email || ''}
+                              </div>
+                            </div>
+                          </div>
+                          <div className='overflow-x-auto'>
+                            <table className='min-w-full divide-y divide-gray-200 text-sm'>
+                              <thead className='bg-white'>
+                                <tr>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Référence
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Description
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Durée (min)
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Montant (€)
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Créé
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Actions
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody className='bg-white divide-y divide-gray-200'>
+                                {(() => {
+                                  const gid = g.stripeId;
+                                  const size = cartGroupPageSize[gid] ?? 10;
+                                  const page = cartGroupPage[gid] ?? 1;
+                                  const start = (page - 1) * size;
+                                  const items = g.items.slice(
+                                    start,
+                                    start + size
+                                  );
+                                  return items.map((c: any) => (
+                                    <tr key={c.id}>
+                                      <td className='px-4 py-3 text-gray-900 font-medium'>
+                                        {c.product_reference || '—'}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {c.description || '—'}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {typeof c.time_to_live === 'number'
+                                          ? c.time_to_live
+                                          : '—'}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {typeof c.value === 'number'
+                                          ? c.value.toLocaleString('fr-FR', {
+                                              minimumFractionDigits: 2,
+                                              maximumFractionDigits: 2,
+                                            })
+                                          : '—'}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {c.created_at
+                                          ? new Date(
+                                              c.created_at
+                                            ).toLocaleString('fr-FR', {
+                                              dateStyle: 'short',
+                                              timeStyle: 'short',
+                                            })
+                                          : '—'}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        <button
+                                          onClick={() => handleDeleteCart(c.id)}
+                                          disabled={!!cartDeletingIds[c.id]}
+                                          className={`inline-flex items-center p-2 rounded-md border ${cartDeletingIds[c.id] ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-700 border-gray-300'}`}
+                                          title={'Supprimer'}
+                                        >
+                                          <Trash2
+                                            className={`w-4 h-4 ${cartDeletingIds[c.id] ? 'opacity-60' : ''}`}
+                                          />
+                                          <span className='ml-1'>
+                                            Supprimer
+                                          </span>
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  ));
+                                })()}
+                              </tbody>
+                            </table>
+                            {(() => {
+                              const gid = g.stripeId;
+                              const size = cartGroupPageSize[gid] ?? 10;
+                              const page = cartGroupPage[gid] ?? 1;
+                              const totalPages = Math.max(
+                                1,
+                                Math.ceil(g.items.length / size)
+                              );
+                              return (
+                                <div className='flex items-center justify-end gap-2 p-3'>
+                                  <div className='hidden sm:flex items-center space-x-3'>
+                                    <div className='text-sm text-gray-600'>
+                                      Page {page} / {totalPages} —{' '}
+                                      {g.items.length}
+                                    </div>
+                                    <label className='text-sm text-gray-700'>
+                                      Lignes
+                                    </label>
+                                    <select
+                                      value={size}
+                                      onChange={e => {
+                                        const v = parseInt(e.target.value, 10);
+                                        setCartGroupPageSize(prev => ({
+                                          ...prev,
+                                          [gid]: isNaN(v) ? 10 : v,
+                                        }));
+                                        setCartGroupPage(prev => ({
+                                          ...prev,
+                                          [gid]: 1,
+                                        }));
+                                      }}
+                                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                                    >
+                                      <option value={5}>5</option>
+                                      <option value={10}>10</option>
+                                      <option value={20}>20</option>
+                                    </select>
+                                    <div className='flex items-center space-x-2'>
+                                      <button
+                                        onClick={() =>
+                                          setCartGroupPage(prev => ({
+                                            ...prev,
+                                            [gid]: Math.max(1, page - 1),
+                                          }))
+                                        }
+                                        disabled={page <= 1}
+                                        className={`px-3 py-1 text-sm rounded-md border ${
+                                          page <= 1
+                                            ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                        }`}
+                                      >
+                                        Précédent
+                                      </button>
+                                      <button
+                                        onClick={() =>
+                                          setCartGroupPage(prev => ({
+                                            ...prev,
+                                            [gid]: Math.min(
+                                              totalPages,
+                                              page + 1
+                                            ),
+                                          }))
+                                        }
+                                        disabled={page >= totalPages}
+                                        className={`px-3 py-1 text-sm rounded-md border ${
+                                          page >= totalPages
+                                            ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                        }`}
+                                      >
+                                        Suivant
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
           {/* Section Porte-monnaie */}
           {section === 'wallet' && (
             <div className='bg-white rounded-lg shadow p-6'>
@@ -1621,12 +3149,12 @@ export default function DashboardPage() {
             <div className='bg-white rounded-lg shadow p-6'>
               <div className='flex items-center justify-between mb-4'>
                 <div className='flex items-center'>
-                  <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
+                  <Coins className='w-5 h-5 text-indigo-600 mr-2' />
                   <h2 className='text-lg font-semibold text-gray-900'>
-                    Mes ventes
+                    Ventes
                   </h2>
                 </div>
-                <div className='flex items-center space-x-3'>
+                <div className='hidden sm:flex items-center space-x-3'>
                   <div className='text-sm text-gray-600'>
                     Page {page} / {totalPages} — {filteredShipments.length}{' '}
                     ventes
@@ -1651,7 +3179,7 @@ export default function DashboardPage() {
                       setPageSize(isNaN(v) ? 10 : v);
                       setPage(1);
                     }}
-                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-36'
                   >
                     <option value={5}>5</option>
                     <option value={10}>10</option>
@@ -1682,163 +3210,261 @@ export default function DashboardPage() {
                       Suivant
                     </button>
                   </div>
+                  <div className='flex items-center space-x-2'>
+                    <span className='text-sm text-gray-700'>Filtrer par</span>
+                    <select
+                      value={salesFilterField}
+                      onChange={e => {
+                        const v = e.target.value as
+                          | 'id'
+                          | 'client'
+                          | 'reference';
+                        setSalesFilterField(v);
+                        setPage(1);
+                      }}
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    >
+                      <option value='id'>ID</option>
+                      <option value='client'>Client</option>
+                      <option value='reference'>Référence produit</option>
+                    </select>
+                    <input
+                      type='text'
+                      value={salesFilterTerm}
+                      onChange={e => {
+                        setSalesFilterTerm(e.target.value);
+                        setPage(1);
+                      }}
+                      placeholder='Saisir…'
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    />
+                  </div>
+                </div>
+                <div className='sm:hidden'>
+                  <button
+                    onClick={handleReloadSales}
+                    disabled={reloadingSales}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                    title='Recharger les ventes'
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
+                    />
+                    <span>Recharger</span>
+                  </button>
                 </div>
               </div>
 
-              <table className='w-full'>
-                <thead>
-                  <tr className='border-b border-gray-200'>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Date
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      ID
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Client
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Référence produit
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Payé
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Reçu
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Méthode
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Statut
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Réseau
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Poids
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Bordereau
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Annulation
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Aide
-                    </th>
-                  </tr>
-                  <tr className='border-b border-gray-100'>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'>
-                      <input
-                        type='text'
-                        value={idSearch}
-                        onChange={e => {
-                          setIdSearch(e.target.value);
-                          setPage(1);
-                        }}
-                        placeholder='Filtrer…'
-                        className='w-full  max-w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                      />
-                    </th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                    <th className='py-2 px-4'></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleShipments.length === 0 ? (
-                    <tr>
-                      <td
-                        className='py-4 px-4 text-gray-600 text-center'
-                        colSpan={13}
-                      >
-                        Aucune vente pour le filtre courant.
-                      </td>
-                    </tr>
-                  ) : (
-                    visibleShipments.map(s => (
-                      <tr
-                        key={s.id}
-                        className='border-b border-gray-100 hover:bg-gray-50'
-                      >
-                        <td className='py-4 px-4 text-gray-700'>
-                          {formatDate(s.created_at)}
-                        </td>
-                        <td className='py-4 px-4 text-gray-700'>
-                          <div className='space-y-1'>
-                            <div className='font-medium'>
-                              {s.shipment_id || '—'}
-                            </div>
-                            {s.tracking_url ? (
-                              <a
-                                href={s.tracking_url}
-                                target='_blank'
-                                rel='noopener noreferrer'
-                                className='text-blue-600 hover:underline'
-                              >
-                                Suivre
-                              </a>
-                            ) : (
-                              <span />
+              <div className='sm:hidden mb-3'>
+                <div className='flex items-center space-x-2 flex-wrap'>
+                  <span className='text-sm text-gray-700'>Filtrer par</span>
+                  <select
+                    value={salesFilterField}
+                    onChange={e => {
+                      const v = e.target.value as 'id' | 'client' | 'reference';
+                      setSalesFilterField(v);
+                      setPage(1);
+                    }}
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-36'
+                  >
+                    <option value='id'>ID</option>
+                    <option value='client'>Client</option>
+                    <option value='reference'>Référence produit</option>
+                  </select>
+                  <input
+                    type='text'
+                    value={salesFilterTerm}
+                    onChange={e => {
+                      setSalesFilterTerm(e.target.value);
+                      setPage(1);
+                    }}
+                    placeholder='Saisir…'
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 flex-1 min-w-0 w-full'
+                  />
+                </div>
+              </div>
+
+              {/* Vue mobile: cartes dépliables */}
+              <div className='block sm:hidden space-y-3'>
+                {visibleShipments.length === 0 ? (
+                  <div className='text-gray-600 text-center py-4'>
+                    Aucune vente pour le filtre courant.
+                  </div>
+                ) : (
+                  visibleShipments.map(s => (
+                    <div
+                      key={s.id}
+                      className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
+                    >
+                      <div className='flex items-start justify-between'>
+                        <div>
+                          <div className='text-sm font-semibold text-gray-900'>
+                            ID: {s.shipment_id || '—'}
+                          </div>
+                          <div className='text-xs text-gray-600'>
+                            {formatDate(s.created_at)}
+                          </div>
+                        </div>
+                        <div className='text-right'>
+                          <div className='text-sm font-semibold text-gray-900'>
+                            Payé: {formatValue(s.paid_value)}
+                          </div>
+                          <div className='text-xs text-gray-600'>
+                            Reçu:{' '}
+                            {formatValue(
+                              (s.paid_value ?? 0) -
+                                (s.estimated_delivery_cost ?? 0)
                             )}
                           </div>
-                        </td>
-                        <td className='py-4 px-4 text-gray-700'>
-                          <span
-                            className='truncate block max-w-[200px]'
-                            title={s.customer_stripe_id || ''}
-                          >
-                            {s.customer_stripe_id || '—'}
-                          </span>
-                        </td>
-                        <td className='py-4 px-4 text-gray-700'>
-                          {s.product_reference ?? '—'}
-                        </td>
-                        <td className='py-4 px-4 text-gray-900 font-semibold'>
-                          {formatValue(s.value)}
-                        </td>
-                        <td className='py-4 px-4 text-gray-900 font-semibold'>
-                          {formatValue(
-                            s?.reference_value ?? store?.reference_value ?? null
-                          )}
-                        </td>
-                        <td className='py-4 px-4 text-gray-700'>
-                          {formatMethod(s.delivery_method)}
-                        </td>
-                        <td className='py-4 px-4 text-gray-700'>
-                          <div className='space-y-1'>
-                            <div className='font-medium'>{s.status || '—'}</div>
+                          {s.promo_codes && (
                             <div className='text-xs text-gray-500'>
-                              {getStatusDescription(s.status)}
+                              <span className='line-through'>
+                                {formatValue(s.product_value)}
+                              </span>{' '}
+                              (
+                              {formatValue(
+                                Math.max(
+                                  0,
+                                  (s.product_value ?? 0) -
+                                    ((s.paid_value ?? 0) -
+                                      (s.estimated_delivery_cost ?? 0))
+                                )
+                              )}{' '}
+                              de remise avec le code :
+                              {s.promo_codes?.replace(/;/g, ', ')})
                             </div>
-                          </div>
-                        </td>
-                        <td className='py-4 px-4 text-gray-700'>
-                          {getNetworkDescription(s.delivery_network)}
-                        </td>
-                        <td className='py-4 px-4 text-gray-700'>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className='mt-3 text-sm text-gray-700'>
+                        <div>
+                          <span className='font-medium'>Référence:</span>{' '}
+                          {s.product_reference ?? '—'}
+                        </div>
+                        <div>
+                          {(() => {
+                            const stripeId = s.customer_stripe_id || '';
+                            const customer = stripeId
+                              ? customersMap[stripeId] || null
+                              : null;
+                            const clerkId =
+                              customer?.clerkUserId || customer?.clerk_user_id;
+                            const u = clerkId
+                              ? socialsMap[clerkId] || null
+                              : null;
+                            const name =
+                              customer?.name ||
+                              [u?.firstName, u?.lastName]
+                                .filter(Boolean)
+                                .join(' ') ||
+                              stripeId ||
+                              '—';
+                            const email = (
+                              u?.emailAddress ||
+                              customer?.email ||
+                              ''
+                            ).trim();
+                            return (
+                              <div className='flex items-center space-x-2'>
+                                {u?.hasImage && u?.imageUrl ? (
+                                  <img
+                                    src={u.imageUrl}
+                                    alt='avatar'
+                                    className='w-5 h-5 rounded-full object-cover'
+                                  />
+                                ) : (
+                                  <span className='inline-block w-5 h-5 rounded-full bg-gray-200' />
+                                )}
+                                <div>
+                                  <span className='font-medium'>Client:</span>{' '}
+                                  <span className='truncate inline-block max-w-[160px]'>
+                                    {name}
+                                  </span>
+                                  <div className='text-xs text-gray-600'>
+                                    <span className='font-medium'>Email:</span>{' '}
+                                    {email || '—'}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                        <div>
+                          <span className='font-medium'>Méthode:</span>{' '}
+                          {formatMethod(s.delivery_method)}
+                        </div>
+                        <div>
+                          <span className='font-medium'>Statut:</span>{' '}
+                          {s.status || '—'}
+                        </div>
+                      </div>
+
+                      <div className='mt-3 flex items-center justify-between'>
+                        <div className='text-xs text-gray-600'>
+                          Réseau: {getNetworkDescription(s.delivery_network)}
+                        </div>
+                        <button
+                          onClick={() =>
+                            setExpandedSalesCardIds(prev => ({
+                              ...prev,
+                              [s.id]: !prev[s.id],
+                            }))
+                          }
+                          className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                          aria-expanded={Boolean(expandedSalesCardIds[s.id])}
+                        >
+                          {expandedSalesCardIds[s.id]
+                            ? 'Voir moins'
+                            : 'Voir plus'}
+                        </button>
+                      </div>
+
+                      {/* Bloc extensible */}
+                      <div
+                        className={`mt-3 space-y-2 text-sm transition-all duration-300 overflow-hidden ${
+                          expandedSalesCardIds[s.id]
+                            ? 'max-h-[1000px] opacity-100'
+                            : 'max-h-0 opacity-0'
+                        }`}
+                      >
+                        <div>
+                          <span className='font-medium'>
+                            Explication du statut:
+                          </span>{' '}
+                          <span className='text-gray-600'>
+                            {getStatusDescription(s.status)}
+                          </span>
+                        </div>
+                        <div>
+                          <span className='font-medium'>Poids:</span>{' '}
                           {s.weight || '—'}
-                        </td>
-                        <td className='py-4 px-4'>
+                        </div>
+
+                        <div>
+                          <span className='font-medium'>Suivi:</span>{' '}
+                          {s.tracking_url ? (
+                            <a
+                              href={s.tracking_url}
+                              target='_blank'
+                              rel='noopener noreferrer'
+                              className='text-blue-600 hover:underline'
+                            >
+                              Suivre
+                            </a>
+                          ) : (
+                            '—'
+                          )}
+                        </div>
+
+                        <div className='flex flex-wrap items-center gap-2 pt-2'>
                           <button
                             onClick={() => handleShippingDocument(s)}
                             disabled={
                               !s.document_created ||
                               docStatus[s.id] === 'loading'
                             }
-                            className={
-                              'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                            }
+                            className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                             title={
                               s.document_created
                                 ? 'Créer le bordereau'
@@ -1849,8 +3475,7 @@ export default function DashboardPage() {
                               ? 'Création...'
                               : 'Créer le bordereau'}
                           </button>
-                        </td>
-                        <td className='py-4 px-4'>
+
                           <button
                             onClick={() => handleCancel(s)}
                             disabled={
@@ -1859,7 +3484,7 @@ export default function DashboardPage() {
                               !!s.cancel_requested ||
                               cancelStatus[s.id] === 'loading'
                             }
-                            className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
+                            className={`px-2 py-1 rounded-md text-xs border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
                               s.cancel_requested ||
                               cancelStatus[s.id] === 'success'
                                 ? 'bg-green-50 text-green-700 border-green-200'
@@ -1875,7 +3500,6 @@ export default function DashboardPage() {
                                   : "Demander l'annulation"
                             }
                           >
-                            {s.cancel_requested}
                             {cancelStatus[s.id] === 'loading'
                               ? 'Envoi...'
                               : s.cancel_requested ||
@@ -1885,23 +3509,286 @@ export default function DashboardPage() {
                                   ? 'Réessayer'
                                   : "Demander l'annulation"}
                           </button>
-                        </td>
-                        <td className='py-4 px-4'>
+
                           <button
                             onClick={() => handleOpenHelp(s)}
-                            className={
-                              'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                            }
+                            className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                             title={"Besoin d'aide"}
                           >
                             Besoin d'aide
                           </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Vue bureau: tableau */}
+              <div className='hidden sm:block overflow-x-auto'>
+                <table className='w-full'>
+                  <thead>
+                    <tr className='border-b border-gray-200'>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Date
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        ID
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Client
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Référence produit
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Payé
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Reçu
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Méthode
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Statut
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Réseau
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Poids
+                      </th>
+
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Bordereau
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Annulation
+                      </th>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        Aide
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleShipments.length === 0 ? (
+                      <tr>
+                        <td
+                          className='py-4 px-4 text-gray-600 text-center'
+                          colSpan={12}
+                        >
+                          Aucune vente pour le filtre courant.
                         </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    ) : (
+                      visibleShipments.map(s => (
+                        <tr
+                          key={s.id}
+                          className='border-b border-gray-100 hover:bg-gray-50'
+                        >
+                          <td className='py-4 px-4 text-gray-700'>
+                            {formatDate(s.created_at)}
+                          </td>
+                          <td className='py-4 px-4 text-gray-700'>
+                            <div className='space-y-1'>
+                              <div className='font-medium'>
+                                {s.shipment_id || '—'}
+                              </div>
+                              {s.tracking_url ? (
+                                <a
+                                  href={s.tracking_url}
+                                  target='_blank'
+                                  rel='noopener noreferrer'
+                                  className='text-blue-600 hover:underline'
+                                >
+                                  Suivre
+                                </a>
+                              ) : (
+                                <span />
+                              )}
+                            </div>
+                          </td>
+                          <td className='py-4 px-4 text-gray-700'>
+                            {(() => {
+                              const stripeId = s.customer_stripe_id || '';
+                              const customer = stripeId
+                                ? customersMap[stripeId] || null
+                                : null;
+                              const clerkId =
+                                customer?.clerkUserId ||
+                                customer?.clerk_user_id;
+                              const u = clerkId
+                                ? socialsMap[clerkId] || null
+                                : null;
+                              const name =
+                                customer?.name ||
+                                [u?.firstName, u?.lastName]
+                                  .filter(Boolean)
+                                  .join(' ') ||
+                                stripeId ||
+                                '—';
+                              const email = (
+                                u?.emailAddress ||
+                                customer?.email ||
+                                ''
+                              ).trim();
+                              return (
+                                <div className='flex items-center space-x-2'>
+                                  {u?.hasImage && u?.imageUrl ? (
+                                    <img
+                                      src={u.imageUrl}
+                                      alt='avatar'
+                                      className='w-6 h-6 rounded-full object-cover'
+                                    />
+                                  ) : (
+                                    <span className='inline-block w-6 h-6 rounded-full bg-gray-200' />
+                                  )}
+                                  <div className='space-y-0.5'>
+                                    <div
+                                      className='font-medium truncate max-w-[180px]'
+                                      title={name}
+                                    >
+                                      {name}
+                                    </div>
+                                    <div className='text-xs text-gray-500 truncate max-w-[180px]'>
+                                      {email || '—'}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </td>
+                          <td className='py-4 px-4 text-gray-700'>
+                            {s.product_reference ?? '—'}
+                          </td>
+                          <td className='py-4 px-4 text-gray-900 font-semibold'>
+                            {formatValue(s.paid_value)}
+                          </td>
+                          <td className='py-4 px-4 text-gray-900 font-semibold'>
+                            {(() => {
+                              const hasPromo = !!s.promo_codes;
+                              const finalValue =
+                                (s.paid_value ?? 0) -
+                                (s.estimated_delivery_cost ?? 0);
+                              return (
+                                <>
+                                  {formatValue(finalValue)}
+                                  {hasPromo && (
+                                    <div className='text-xs text-gray-500 mt-1'>
+                                      <span className='line-through'>
+                                        {formatValue(s.product_value)}
+                                      </span>{' '}
+                                      (
+                                      {formatValue(
+                                        Math.max(
+                                          0,
+                                          (s.product_value ?? 0) -
+                                            (finalValue ?? 0)
+                                        )
+                                      )}{' '}
+                                      de remise avec le code:{' '}
+                                      {s.promo_codes!.replace(';', ', ')})
+                                    </div>
+                                  )}
+                                </>
+                              );
+                            })()}
+                          </td>
+                          <td className='py-4 px-4 text-gray-700'>
+                            {formatMethod(s.delivery_method)}
+                          </td>
+                          <td className='py-4 px-4 text-gray-700'>
+                            <div className='space-y-1'>
+                              <div className='font-medium'>
+                                {s.status || '—'}
+                              </div>
+                              <div className='text-xs text-gray-500'>
+                                {getStatusDescription(s.status)}
+                              </div>
+                            </div>
+                          </td>
+                          <td className='py-4 px-4 text-gray-700'>
+                            {getNetworkDescription(s.delivery_network)}
+                          </td>
+                          <td className='py-4 px-4 text-gray-700'>
+                            {s.weight || '—'}
+                          </td>
+
+                          <td className='py-4 px-4'>
+                            <button
+                              onClick={() => handleShippingDocument(s)}
+                              disabled={
+                                !s.document_created ||
+                                docStatus[s.id] === 'loading'
+                              }
+                              className={
+                                'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                              }
+                              title={
+                                s.document_created
+                                  ? 'Créer le bordereau'
+                                  : 'Bordereau indisponible'
+                              }
+                            >
+                              {docStatus[s.id] === 'loading'
+                                ? 'Création...'
+                                : 'Créer le bordereau'}
+                            </button>
+                          </td>
+                          <td className='py-4 px-4'>
+                            <button
+                              onClick={() => handleCancel(s)}
+                              disabled={
+                                !s.shipment_id ||
+                                s.is_final_destination ||
+                                !!s.cancel_requested ||
+                                cancelStatus[s.id] === 'loading'
+                              }
+                              className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
+                                s.cancel_requested ||
+                                cancelStatus[s.id] === 'success'
+                                  ? 'bg-green-50 text-green-700 border-green-200'
+                                  : cancelStatus[s.id] === 'error'
+                                    ? 'bg-red-50 text-red-700 border-red-200'
+                                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                              }`}
+                              title={
+                                !s.shipment_id
+                                  ? 'Annulation indisponible'
+                                  : s.cancel_requested
+                                    ? 'Demande déjà envoyée'
+                                    : "Demander l'annulation"
+                              }
+                            >
+                              {s.cancel_requested}
+                              {cancelStatus[s.id] === 'loading'
+                                ? 'Envoi...'
+                                : s.cancel_requested ||
+                                    cancelStatus[s.id] === 'success'
+                                  ? 'Demande envoyée'
+                                  : cancelStatus[s.id] === 'error'
+                                    ? 'Réessayer'
+                                    : "Demander l'annulation"}
+                            </button>
+                          </td>
+                          <td className='py-4 px-4'>
+                            <button
+                              onClick={() => handleOpenHelp(s)}
+                              className={
+                                'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                              }
+                              title={"Besoin d'aide"}
+                            >
+                              Besoin d'aide
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
@@ -1914,7 +3801,7 @@ export default function DashboardPage() {
                     Clients
                   </h2>
                 </div>
-                <div className='flex items-center space-x-3'>
+                <div className='hidden sm:flex items-center space-x-3'>
                   <div className='text-sm text-gray-600'>
                     {customersLoading ? (
                       <span>Chargement...</span>
@@ -1927,14 +3814,42 @@ export default function DashboardPage() {
                               .filter(Boolean)
                           )
                         ) as string[];
-                        const term = (clientIdSearch || '')
+                        const term = (clientsFilterTerm || '')
                           .trim()
                           .toLowerCase();
-                        const filteredIds = term
-                          ? allIds.filter(id =>
-                              (id || '').toLowerCase().includes(term)
-                            )
-                          : allIds;
+                        const filteredIds = allIds.filter(id => {
+                          if (!term) return true;
+                          const idLower = (id || '').toLowerCase();
+                          if (clientsFilterField === 'id') {
+                            return idLower.includes(term);
+                          }
+                          const customer = customersMap[id] || null;
+                          const clerkId =
+                            customer?.clerkUserId || customer?.clerk_user_id;
+                          const user = clerkId
+                            ? socialsMap[clerkId] || null
+                            : null;
+                          if (clientsFilterField === 'name') {
+                            const name1 = (customer?.name || '').toLowerCase();
+                            const name2 = [
+                              user?.firstName || '',
+                              user?.lastName || '',
+                            ]
+                              .filter(Boolean)
+                              .join(' ')
+                              .toLowerCase();
+                            return name1.includes(term) || name2.includes(term);
+                          }
+                          const email = (
+                            customer?.email ||
+                            '' ||
+                            user?.emailAddress ||
+                            ''
+                          )
+                            .toLowerCase()
+                            .trim();
+                          return email.includes(term);
+                        });
                         const totalClients = filteredIds.length;
                         const totalPagesClients = Math.max(
                           1,
@@ -1969,7 +3884,7 @@ export default function DashboardPage() {
                       setClientsPageSize(isNaN(v) ? 10 : v);
                       setClientsPage(1);
                     }}
-                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 flex-1 min-w-0 w-full'
                   >
                     <option value={5}>5</option>
                     <option value={10}>10</option>
@@ -2024,6 +3939,44 @@ export default function DashboardPage() {
                       );
                     })()}
                   </div>
+                  <div className='flex items-center space-x-2'>
+                    <span className='text-sm text-gray-700'>Filtrer par</span>
+                    <select
+                      value={clientsFilterField}
+                      onChange={e => {
+                        const v = e.target.value as 'id' | 'name' | 'email';
+                        setClientsFilterField(v);
+                        setClientsPage(1);
+                      }}
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    >
+                      <option value='id'>Client ID</option>
+                      <option value='name'>Nom</option>
+                      <option value='email'>Email</option>
+                    </select>
+                    <input
+                      type='text'
+                      value={clientsFilterTerm}
+                      onChange={e => {
+                        setClientsFilterTerm(e.target.value);
+                        setClientsPage(1);
+                      }}
+                      placeholder='Saisir…'
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                    />
+                  </div>
+                </div>
+                <div className='sm:hidden'>
+                  <button
+                    onClick={handleReloadSales}
+                    disabled={reloadingSales}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
+                    />
+                    <span>Recharger</span>
+                  </button>
                 </div>
               </div>
 
@@ -2042,21 +3995,42 @@ export default function DashboardPage() {
                     </p>
                   );
 
-                // Filtre par Client ID
-                const term = (clientIdSearch || '').trim().toLowerCase();
-                const filteredIds = term
-                  ? allIds.filter(id => (id || '').toLowerCase().includes(term))
-                  : allIds;
+                const term = (clientsFilterTerm || '').trim().toLowerCase();
+                const filteredIds = allIds.filter(id => {
+                  if (!term) return true;
+                  const idLower = (id || '').toLowerCase();
+                  if (clientsFilterField === 'id') {
+                    return idLower.includes(term);
+                  }
+                  const customer = customersMap[id] || null;
+                  const clerkId =
+                    customer?.clerkUserId || customer?.clerk_user_id;
+                  const user = clerkId ? socialsMap[clerkId] || null : null;
+                  if (clientsFilterField === 'name') {
+                    const name1 = (customer?.name || '').toLowerCase();
+                    const name2 = [user?.firstName || '', user?.lastName || '']
+                      .filter(Boolean)
+                      .join(' ')
+                      .toLowerCase();
+                    return name1.includes(term) || name2.includes(term);
+                  }
+                  const email = (
+                    customer?.email ||
+                    '' ||
+                    user?.emailAddress ||
+                    ''
+                  )
+                    .toLowerCase()
+                    .trim();
+                  return email.includes(term);
+                });
 
-                // Sommes dépensées par client (somme des shipments.reference_value)
                 const spentMap: Record<string, number> = {};
                 (shipments || []).forEach(s => {
                   const id = s.customer_stripe_id || '';
                   if (!id) return;
                   const v =
-                    typeof s.reference_value === 'number'
-                      ? s.reference_value || 0
-                      : 0;
+                    (s.paid_value ?? 0) - (s.estimated_delivery_cost ?? 0);
                   spentMap[id] = (spentMap[id] || 0) + v;
                 });
 
@@ -2081,67 +4055,40 @@ export default function DashboardPage() {
                 }));
 
                 return (
-                  <table className='w-full'>
-                    <thead>
-                      <tr className='border-b border-gray-200'>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Client ID
-                        </th>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Nom
-                        </th>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Email
-                        </th>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Téléphone
-                        </th>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Adresse
-                        </th>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          <div className='flex items-center space-x-2'>
-                            <span>Dépensé</span>
-                            <button
-                              onClick={() =>
-                                setClientsSortOrder(o =>
-                                  o === 'asc' ? 'desc' : 'asc'
-                                )
-                              }
-                              className='p-1 rounded hover:bg-gray-100'
-                              title={`Trier ${clientsSortOrder === 'asc' ? '↓' : '↑'}`}
-                            >
-                              <ArrowUpDown className='w-4 h-4 text-gray-600' />
-                            </button>
-                          </div>
-                        </th>
-                        <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                          Réseaux Sociaux
-                        </th>
-                      </tr>
-                      <tr className='border-b border-gray-100'>
-                        <th className='py-2 px-4'>
-                          <input
-                            type='text'
-                            value={clientIdSearch}
-                            onChange={e => {
-                              setClientIdSearch(e.target.value);
-                              setClientsPage(1);
-                            }}
-                            placeholder='Filtrer…'
-                            className='w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                          />
-                        </th>
-                        <th className='py-2 px-4'></th>
-                        <th className='py-2 px-4'></th>
-                        <th className='py-2 px-4'></th>
-                        <th className='py-2 px-4'></th>
-                        <th className='py-2 px-4'></th>
-                        <th className='py-2 px-4'></th>
-                        <th className='py-2 px-4'></th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  <>
+                    <div className='sm:hidden mb-3'>
+                      <div className='flex items-center space-x-2'>
+                        <span className='text-sm text-gray-700'>
+                          Filtrer par
+                        </span>
+                        <select
+                          value={clientsFilterField}
+                          onChange={e => {
+                            const v = e.target.value as 'id' | 'name' | 'email';
+                            setClientsFilterField(v);
+                            setClientsPage(1);
+                          }}
+                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                        >
+                          <option value='id'>Client ID</option>
+                          <option value='name'>Nom</option>
+                          <option value='email'>Email</option>
+                        </select>
+                        <input
+                          type='text'
+                          value={clientsFilterTerm}
+                          onChange={e => {
+                            setClientsFilterTerm(e.target.value);
+                            setClientsPage(1);
+                          }}
+                          placeholder='Saisir…'
+                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                        />
+                      </div>
+                    </div>
+
+                    {/* Vue mobile: cartes dépliables */}
+                    <div className='block sm:hidden space-y-3'>
                       {rows.map(r => {
                         const a = r.data?.address || {};
                         const addr = [
@@ -2151,68 +4098,94 @@ export default function DashboardPage() {
                         ]
                           .filter(Boolean)
                           .join(', ');
+                        const clerkId =
+                          r.data?.clerkUserId || r.data?.clerk_user_id;
+                        const u = clerkId ? socialsMap[clerkId] || null : null;
+                        const name =
+                          r.data?.name ||
+                          [u?.firstName, u?.lastName]
+                            .filter(Boolean)
+                            .join(' ') ||
+                          '—';
                         return (
-                          <tr
+                          <div
                             key={r.id}
-                            className='border-b border-gray-100 hover:bg-gray-50'
+                            className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
                           >
-                            <td className='py-4 px-4 text-gray-700'>
-                              <span
-                                className='truncate block max-w-[240px]'
-                                title={r.id}
-                              >
-                                {r.id}
-                              </span>
-                            </td>
-                            <td className='py-4 px-4 text-gray-700'>
-                              {(() => {
-                                const clerkId =
-                                  r.data?.clerkUserId || r.data?.clerk_user_id;
-                                const u = clerkId
-                                  ? socialsMap[clerkId] || null
-                                  : null;
-                                const name =
-                                  r.data?.name ||
-                                  [u?.firstName, u?.lastName]
-                                    .filter(Boolean)
-                                    .join(' ') ||
-                                  '—';
-                                return (
-                                  <div className='flex items-center space-x-2'>
-                                    {u?.hasImage && u?.imageUrl ? (
-                                      <img
-                                        src={u.imageUrl}
-                                        alt='avatar'
-                                        className='w-8 h-8 rounded-full object-cover'
-                                      />
-                                    ) : null}
-                                    <span>{name}</span>
+                            <div className='flex items-start justify-between'>
+                              <div className='flex items-center space-x-2'>
+                                {u?.hasImage && u?.imageUrl ? (
+                                  <img
+                                    src={u.imageUrl}
+                                    alt='avatar'
+                                    className='w-6 h-6 rounded-full object-cover'
+                                  />
+                                ) : (
+                                  <span className='inline-block w-6 h-6 rounded-full bg-gray-200' />
+                                )}
+                                <div>
+                                  <div className='text-sm font-semibold text-gray-900'>
+                                    {name}
                                   </div>
-                                );
-                              })()}
-                            </td>
-                            <td className='py-4 px-4 text-gray-700'>
-                              {r.data?.email || '—'}
-                            </td>
-                            <td className='py-4 px-4 text-gray-700'>
-                              {r.data?.phone || '—'}
-                            </td>
-                            <td className='py-4 px-4 text-gray-700'>
-                              {addr || '—'}
-                            </td>
-                            <td className='py-4 px-4 text-gray-700'>
-                              {formatValue(r.spent)}
-                            </td>
-                            <td className='py-4 px-4 text-gray-700'>
+                                  <div
+                                    className='text-xs text-gray-600 truncate max-w-[220px]'
+                                    title={r.id}
+                                  >
+                                    {r.id}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className='text-sm font-semibold text-gray-900'>
+                                {formatValue(r.spent)}
+                              </div>
+                            </div>
+
+                            <div className='mt-3 text-sm text-gray-700'>
+                              <div>
+                                <span className='font-medium'>Email:</span>{' '}
+                                {r.data?.email || '—'}
+                              </div>
+                              <div>
+                                <span className='font-medium'>Téléphone:</span>{' '}
+                                {r.data?.phone || '—'}
+                              </div>
+                              <div>
+                                <span className='font-medium'>Adresse:</span>{' '}
+                                {addr || '—'}
+                              </div>
+                            </div>
+
+                            <div className='mt-3 flex items-center justify-end'>
+                              <button
+                                onClick={() =>
+                                  setExpandedClientCardIds(prev => ({
+                                    ...prev,
+                                    [r.id]: !prev[r.id],
+                                  }))
+                                }
+                                className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                aria-expanded={Boolean(
+                                  expandedClientCardIds[r.id]
+                                )}
+                              >
+                                {expandedClientCardIds[r.id]
+                                  ? 'Voir moins'
+                                  : 'Voir plus'}
+                              </button>
+                            </div>
+
+                            <div
+                              className={`mt-3 space-y-2 text-sm transition-all duration-300 overflow-hidden ${
+                                expandedClientCardIds[r.id]
+                                  ? 'max-h-[1000px] opacity-100'
+                                  : 'max-h-0 opacity-0'
+                              }`}
+                            >
+                              <div className='font-medium'>Réseaux sociaux</div>
                               {(() => {
-                                const clerkId =
-                                  r.data?.clerkUserId || r.data?.clerk_user_id;
-                                const u = clerkId
-                                  ? socialsMap[clerkId] || null
-                                  : null;
                                 const accounts = u?.externalAccounts || [];
                                 if (!u || !accounts || accounts.length === 0)
-                                  return '—';
+                                  return <div>—</div>;
                                 return (
                                   <div className='space-y-1'>
                                     {accounts.map((acc: any) => {
@@ -2222,13 +4195,11 @@ export default function DashboardPage() {
                                       const Icon = getProviderIcon(
                                         acc?.provider
                                       );
-
                                       const isAppleOrTikTok =
                                         providerKey.includes('apple') ||
                                         providerKey.includes('tiktok');
 
                                       if (isAppleOrTikTok) {
-                                        // Pour Apple/TikTok: n'afficher que le logo si tous les champs sont vides
                                         const email =
                                           (acc?.emailAddress &&
                                             acc.emailAddress.trim()) ||
@@ -2249,13 +4220,12 @@ export default function DashboardPage() {
                                           (acc?.phoneNumber &&
                                             String(acc.phoneNumber).trim()) ||
                                           '';
-                                        const name = [firstName, lastName]
+                                        const name2 = [firstName, lastName]
                                           .filter(Boolean)
                                           .join(' ');
                                         const hasAny = Boolean(
-                                          email || name || phone || username
+                                          email || name2 || phone || username
                                         );
-
                                         if (!hasAny) {
                                           return (
                                             <div
@@ -2276,7 +4246,6 @@ export default function DashboardPage() {
                                             </div>
                                           );
                                         }
-
                                         return (
                                           <div
                                             key={acc?.id || acc?.provider}
@@ -2298,9 +4267,9 @@ export default function DashboardPage() {
                                                 {email}
                                               </span>
                                             ) : null}
-                                            {name ? (
+                                            {name2 ? (
                                               <span className='text-xs text-gray-700'>
-                                                {name}
+                                                {name2}
                                               </span>
                                             ) : null}
                                             {phone ? (
@@ -2317,34 +4286,32 @@ export default function DashboardPage() {
                                         );
                                       }
 
-                                      // Autres providers : afficher les champs si disponibles, prioriser les infos du compte externe, fallback user
-                                      const email =
+                                      const email2 =
                                         (acc?.emailAddress &&
                                           acc.emailAddress.trim()) ||
                                         (u?.emailAddress || '').trim() ||
                                         '';
-                                      const username =
+                                      const username2 =
                                         (acc?.username &&
                                           String(acc.username).trim()) ||
                                         '';
-                                      const firstName =
+                                      const firstName2 =
                                         (acc?.firstName || '').trim() ||
                                         (u?.firstName || '').trim();
-                                      const lastName =
+                                      const lastName2 =
                                         (acc?.lastName || '').trim() ||
                                         (u?.lastName || '').trim();
-                                      const name = [firstName, lastName]
+                                      const name3 = [firstName2, lastName2]
                                         .filter(Boolean)
                                         .join(' ');
-                                      const phone =
+                                      const phone2 =
                                         (acc?.phoneNumber &&
                                           String(acc.phoneNumber).trim()) ||
                                         (u?.phoneNumber || '').trim();
-                                      const hasAny = Boolean(
-                                        email || name || phone || username
+                                      const hasAny2 = Boolean(
+                                        email2 || name3 || phone2 || username2
                                       );
-
-                                      if (!hasAny) {
+                                      if (!hasAny2) {
                                         return (
                                           <div
                                             key={acc?.id || acc?.provider}
@@ -2364,7 +4331,6 @@ export default function DashboardPage() {
                                           </div>
                                         );
                                       }
-
                                       return (
                                         <div
                                           key={acc?.id || acc?.provider}
@@ -2381,24 +4347,24 @@ export default function DashboardPage() {
                                               className='text-gray-600'
                                             />
                                           )}
-                                          {email ? (
+                                          {email2 ? (
                                             <span className='text-xs text-gray-700'>
-                                              {email}
+                                              {email2}
                                             </span>
                                           ) : null}
-                                          {name ? (
+                                          {name3 ? (
                                             <span className='text-xs text-gray-700'>
-                                              {name}
+                                              {name3}
                                             </span>
                                           ) : null}
-                                          {phone ? (
+                                          {phone2 ? (
                                             <span className='text-xs text-gray-700'>
-                                              {phone}
+                                              {phone2}
                                             </span>
                                           ) : null}
-                                          {username ? (
+                                          {username2 ? (
                                             <span className='text-xs text-gray-700'>
-                                              @{username}
+                                              @{username2}
                                             </span>
                                           ) : null}
                                         </div>
@@ -2407,14 +4373,767 @@ export default function DashboardPage() {
                                   </div>
                                 );
                               })()}
-                            </td>
-                          </tr>
+                            </div>
+                          </div>
                         );
                       })}
-                    </tbody>
-                  </table>
+                    </div>
+
+                    {/* Vue bureau: tableau */}
+                    <div className='hidden sm:block overflow-x-auto'>
+                      <table className='w-full'>
+                        <thead>
+                          <tr className='border-b border-gray-200'>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Client ID
+                            </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Nom
+                            </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Email
+                            </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Téléphone
+                            </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Adresse
+                            </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              <div className='flex items-center space-x-2'>
+                                <span>Dépensé</span>
+                                <button
+                                  onClick={() =>
+                                    setClientsSortOrder(o =>
+                                      o === 'asc' ? 'desc' : 'asc'
+                                    )
+                                  }
+                                  className='p-1 rounded hover:bg-gray-100'
+                                  title={`Trier ${clientsSortOrder === 'asc' ? '↓' : '↑'}`}
+                                >
+                                  <ArrowUpDown className='w-4 h-4 text-gray-600' />
+                                </button>
+                              </div>
+                            </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Réseaux Sociaux
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {rows.map(r => {
+                            const a = r.data?.address || {};
+                            const addr = [
+                              a?.line1,
+                              `${a?.postal_code || ''} ${a?.city || ''}`.trim(),
+                              a?.country,
+                            ]
+                              .filter(Boolean)
+                              .join(', ');
+                            return (
+                              <tr
+                                key={r.id}
+                                className='border-b border-gray-100 hover:bg-gray-50'
+                              >
+                                <td className='py-4 px-4 text-gray-700'>
+                                  <span
+                                    className='truncate block max-w-[240px]'
+                                    title={r.id}
+                                  >
+                                    {r.id}
+                                  </span>
+                                </td>
+                                <td className='py-4 px-4 text-gray-700'>
+                                  {(() => {
+                                    const clerkId =
+                                      r.data?.clerkUserId ||
+                                      r.data?.clerk_user_id;
+                                    const u = clerkId
+                                      ? socialsMap[clerkId] || null
+                                      : null;
+                                    const name =
+                                      r.data?.name ||
+                                      [u?.firstName, u?.lastName]
+                                        .filter(Boolean)
+                                        .join(' ') ||
+                                      '—';
+                                    return (
+                                      <div className='flex items-center space-x-2'>
+                                        {u?.hasImage && u?.imageUrl ? (
+                                          <img
+                                            src={u.imageUrl}
+                                            alt='avatar'
+                                            className='w-8 h-8 rounded-full object-cover'
+                                          />
+                                        ) : null}
+                                        <span>{name}</span>
+                                      </div>
+                                    );
+                                  })()}
+                                </td>
+                                <td className='py-4 px-4 text-gray-700'>
+                                  {r.data?.email || '—'}
+                                </td>
+                                <td className='py-4 px-4 text-gray-700'>
+                                  {r.data?.phone || '—'}
+                                </td>
+                                <td className='py-4 px-4 text-gray-700'>
+                                  {addr || '—'}
+                                </td>
+                                <td className='py-4 px-4 text-gray-700'>
+                                  {formatValue(r.spent)}
+                                </td>
+                                <td className='py-4 px-4 text-gray-700'>
+                                  {(() => {
+                                    const clerkId =
+                                      r.data?.clerkUserId ||
+                                      r.data?.clerk_user_id;
+                                    const u = clerkId
+                                      ? socialsMap[clerkId] || null
+                                      : null;
+                                    const accounts = u?.externalAccounts || [];
+                                    if (
+                                      !u ||
+                                      !accounts ||
+                                      accounts.length === 0
+                                    )
+                                      return '—';
+                                    return (
+                                      <div className='space-y-1'>
+                                        {accounts.map((acc: any) => {
+                                          const providerKey = (
+                                            acc?.provider || ''
+                                          ).toLowerCase();
+                                          const Icon = getProviderIcon(
+                                            acc?.provider
+                                          );
+
+                                          const isAppleOrTikTok =
+                                            providerKey.includes('apple') ||
+                                            providerKey.includes('tiktok');
+
+                                          if (isAppleOrTikTok) {
+                                            // Pour Apple/TikTok: n'afficher que le logo si tous les champs sont vides
+                                            const email =
+                                              (acc?.emailAddress &&
+                                                acc.emailAddress.trim()) ||
+                                              '';
+                                            const firstName =
+                                              (acc?.firstName &&
+                                                acc.firstName.trim()) ||
+                                              '';
+                                            const lastName =
+                                              (acc?.lastName &&
+                                                acc.lastName.trim()) ||
+                                              '';
+                                            const username =
+                                              (acc?.username &&
+                                                String(acc.username).trim()) ||
+                                              '';
+                                            const phone =
+                                              (acc?.phoneNumber &&
+                                                String(
+                                                  acc.phoneNumber
+                                                ).trim()) ||
+                                              '';
+                                            const name = [firstName, lastName]
+                                              .filter(Boolean)
+                                              .join(' ');
+                                            const hasAny = Boolean(
+                                              email || name || phone || username
+                                            );
+
+                                            if (!hasAny) {
+                                              return (
+                                                <div
+                                                  key={acc?.id || acc?.provider}
+                                                  className='flex items-center space-x-2'
+                                                >
+                                                  {Icon ? (
+                                                    <Icon
+                                                      size={14}
+                                                      className='text-gray-600'
+                                                    />
+                                                  ) : (
+                                                    <FaShareAlt
+                                                      size={14}
+                                                      className='text-gray-600'
+                                                    />
+                                                  )}
+                                                </div>
+                                              );
+                                            }
+
+                                            return (
+                                              <div
+                                                key={acc?.id || acc?.provider}
+                                                className='flex items-center space-x-2'
+                                              >
+                                                {Icon ? (
+                                                  <Icon
+                                                    size={14}
+                                                    className='text-gray-600'
+                                                  />
+                                                ) : (
+                                                  <FaShareAlt
+                                                    size={14}
+                                                    className='text-gray-600'
+                                                  />
+                                                )}
+                                                {email ? (
+                                                  <span className='text-xs text-gray-700'>
+                                                    {email}
+                                                  </span>
+                                                ) : null}
+                                                {name ? (
+                                                  <span className='text-xs text-gray-700'>
+                                                    {name}
+                                                  </span>
+                                                ) : null}
+                                                {phone ? (
+                                                  <span className='text-xs text-gray-700'>
+                                                    {phone}
+                                                  </span>
+                                                ) : null}
+                                                {username ? (
+                                                  <span className='text-xs text-gray-700'>
+                                                    @{username}
+                                                  </span>
+                                                ) : null}
+                                              </div>
+                                            );
+                                          }
+
+                                          // Autres providers : afficher les champs si disponibles, prioriser les infos du compte externe, fallback user
+                                          const email =
+                                            (acc?.emailAddress &&
+                                              acc.emailAddress.trim()) ||
+                                            (u?.emailAddress || '').trim() ||
+                                            '';
+                                          const username =
+                                            (acc?.username &&
+                                              String(acc.username).trim()) ||
+                                            '';
+                                          const firstName =
+                                            (acc?.firstName || '').trim() ||
+                                            (u?.firstName || '').trim();
+                                          const lastName =
+                                            (acc?.lastName || '').trim() ||
+                                            (u?.lastName || '').trim();
+                                          const name = [firstName, lastName]
+                                            .filter(Boolean)
+                                            .join(' ');
+                                          const phone =
+                                            (acc?.phoneNumber &&
+                                              String(acc.phoneNumber).trim()) ||
+                                            (u?.phoneNumber || '').trim();
+                                          const hasAny = Boolean(
+                                            email || name || phone || username
+                                          );
+
+                                          if (!hasAny) {
+                                            return (
+                                              <div
+                                                key={acc?.id || acc?.provider}
+                                                className='flex items-center space-x-2'
+                                              >
+                                                {Icon ? (
+                                                  <Icon
+                                                    size={14}
+                                                    className='text-gray-600'
+                                                  />
+                                                ) : (
+                                                  <FaShareAlt
+                                                    size={14}
+                                                    className='text-gray-600'
+                                                  />
+                                                )}
+                                              </div>
+                                            );
+                                          }
+
+                                          return (
+                                            <div
+                                              key={acc?.id || acc?.provider}
+                                              className='flex items-center space-x-2'
+                                            >
+                                              {Icon ? (
+                                                <Icon
+                                                  size={14}
+                                                  className='text-gray-600'
+                                                />
+                                              ) : (
+                                                <FaShareAlt
+                                                  size={14}
+                                                  className='text-gray-600'
+                                                />
+                                              )}
+                                              {email ? (
+                                                <span className='text-xs text-gray-700'>
+                                                  {email}
+                                                </span>
+                                              ) : null}
+                                              {name ? (
+                                                <span className='text-xs text-gray-700'>
+                                                  {name}
+                                                </span>
+                                              ) : null}
+                                              {phone ? (
+                                                <span className='text-xs text-gray-700'>
+                                                  {phone}
+                                                </span>
+                                              ) : null}
+                                              {username ? (
+                                                <span className='text-xs text-gray-700'>
+                                                  @{username}
+                                                </span>
+                                              ) : null}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    );
+                                  })()}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
                 );
               })()}
+            </div>
+          )}
+
+          {section === 'promo' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center justify-between mb-4'>
+                <div className='flex items-center'>
+                  <Tag className='w-5 h-5 text-indigo-600 mr-2' />
+                  <h2 className='text-lg font-semibold text-gray-900'>
+                    Code Promo
+                  </h2>
+                </div>
+              </div>
+
+              <p className='text-sm text-gray-600 mb-4'>
+                Créez un code promo lié à un coupon existant et visualisez les
+                codes de votre boutique.
+              </p>
+
+              <div className='grid grid-cols-1 md:grid-cols-2 gap-4 mb-6'>
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Coupon
+                  </label>
+                  <div className='space-y-2'>
+                    {couponOptions.map(opt => (
+                      <label key={opt.id} className='flex items-center gap-2'>
+                        <input
+                          type='radio'
+                          name='promo-coupon'
+                          value={opt.id}
+                          checked={promoSelectedCouponId === opt.id}
+                          onChange={e =>
+                            setPromoSelectedCouponId(e.target.value)
+                          }
+                          className='h-4 w-4'
+                        />
+                        <span className='text-sm text-gray-700'>
+                          {opt.name || opt.id}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Nom du code
+                  </label>
+                  <input
+                    type='text'
+                    value={promoCodeName}
+                    onChange={e => setPromoCodeName(e.target.value)}
+                    placeholder='Ex: SUMMER20'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Montant minimum d’achat (€)
+                  </label>
+                  <input
+                    type='number'
+                    min='0'
+                    step='0.01'
+                    value={promoMinAmountEuro}
+                    onChange={e => setPromoMinAmountEuro(e.target.value)}
+                    placeholder='Ex: 50'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Restriction premiers achats
+                  </label>
+                  <div className='flex items-center gap-3'>
+                    <input
+                      id='promo-first-time'
+                      type='checkbox'
+                      checked={promoFirstTime}
+                      onChange={e => setPromoFirstTime(e.target.checked)}
+                      className='h-4 w-4'
+                      disabled
+                    />
+                    <label
+                      htmlFor='promo-first-time'
+                      className='text-sm text-gray-700'
+                    >
+                      Ce code ne sera valable que pour les clients qui n’ont
+                      jamais effectué d’achat auparavant.
+                    </label>
+                  </div>
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Date d’expiration
+                  </label>
+                  <input
+                    type='date'
+                    min={new Date().toISOString().slice(0, 10)}
+                    value={promoExpiresDate}
+                    onChange={e => setPromoExpiresDate(e.target.value)}
+                    required={!!promoExpiresTime}
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Heure d’expiration
+                  </label>
+                  <input
+                    type='time'
+                    step='60'
+                    value={promoExpiresTime}
+                    onChange={e => setPromoExpiresTime(e.target.value)}
+                    required={!!promoExpiresDate}
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                  <p className='text-xs text-gray-500 mt-1'>
+                    L’heure est obligatoire si une date est renseignée.
+                  </p>
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Nombre maximum d’utilisations
+                  </label>
+                  <input
+                    type='number'
+                    min='0'
+                    step='1'
+                    value={promoMaxRedemptions}
+                    onChange={e => setPromoMaxRedemptions(e.target.value)}
+                    placeholder='Ex: 10'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+              </div>
+
+              <div className='flex items-center gap-3 mb-6'>
+                <button
+                  onClick={handleCreatePromotionCode}
+                  disabled={promoCreating}
+                  className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                >
+                  {promoCreating && (
+                    <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                  )}
+                  <RiDiscountPercentFill className='w-4 h-4 mr-1' />
+                  <span>Créer le code promo</span>
+                </button>
+              </div>
+
+              {/* Barre de recherche par libellé du code */}
+              <div className='flex items-center justify-between mb-4'>
+                <div className='flex items-center'>
+                  <RiDiscountPercentFill className='w-5 h-5 text-indigo-600 mr-2' />
+                  <h2 className='text-lg font-semibold text-gray-900'>
+                    Mes Code Promo
+                  </h2>
+                </div>
+              </div>
+              <div className='flex items-center mb-3 gap-2'>
+                <input
+                  type='text'
+                  value={promoSearchTerm}
+                  onChange={e => setPromoSearchTerm(e.target.value)}
+                  placeholder={'Rechercher par code…'}
+                  className='w-full md:w-64 border border-gray-300 rounded-md px-3 py-2 text-sm'
+                />
+                {/* Bouton reload desktop à droite */}
+                <div className='sm:flex flex-end items-center space-x-3'>
+                  <button
+                    onClick={fetchPromotionCodes}
+                    disabled={promoListLoading}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${promoListLoading ? 'animate-spin' : ''}`}
+                    />
+                    <span>Recharger</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className='md:hidden space-y-3'>
+                {promoListLoading ? (
+                  <div className='text-sm text-gray-600'>Chargement...</div>
+                ) : promoCodes.length === 0 ? (
+                  <div className='text-sm text-gray-600'>Aucun code promo</div>
+                ) : (
+                  promoCodes
+                    .filter((p: any) => {
+                      const term = (promoSearchTerm || '').toLowerCase();
+                      if (!term) return true;
+                      return String(p?.code || '')
+                        .toLowerCase()
+                        .includes(term);
+                    })
+                    .map((p: any) => (
+                      <div
+                        key={p.id}
+                        className={`border border-gray-200 rounded-md p-3 ${p?.active === false ? 'opacity-60' : ''}`}
+                      >
+                        <div className='flex items-center justify-between'>
+                          <div className='text-base font-semibold text-gray-900'>
+                            {p.code}
+                          </div>
+                          <button
+                            onClick={() => handleDeletePromotionCode(p.id)}
+                            disabled={!!promoDeletingIds[p.id]}
+                            className='inline-flex items-center px-2 py-1 text-xs rounded-md bg-gray-600 text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                          >
+                            <FaArchive className='w-3 h-3 mr-1' />
+                            Archiver
+                          </button>
+                        </div>
+                        <div className='mt-2 text-sm text-gray-700 space-y-1'>
+                          <div>
+                            <span className='font-medium'>Coupon:</span>{' '}
+                            {(() => {
+                              const match = couponOptions.find(
+                                c => c.id === (p?.coupon?.id || '')
+                              );
+                              return (
+                                match?.name ||
+                                p?.coupon?.name ||
+                                p?.coupon?.id ||
+                                '—'
+                              );
+                            })()}
+                          </div>
+                          <div>
+                            <span className='font-medium'>Expiration:</span>{' '}
+                            {p.expires_at
+                              ? new Date(p.expires_at * 1000).toLocaleString(
+                                  'fr-FR',
+                                  {
+                                    dateStyle: 'short',
+                                    timeStyle: 'short',
+                                  }
+                                )
+                              : '—'}
+                          </div>
+                          <div>
+                            <span className='font-medium'>Utilisations:</span>{' '}
+                            {p.times_redeemed ?? 0}
+                            {p.max_redemptions ? ` / ${p.max_redemptions}` : ''}
+                          </div>
+                          <div>
+                            <span className='font-medium'>Restrictions:</span>{' '}
+                            {(() => {
+                              const r = p.restrictions || {};
+                              const parts: string[] = [];
+                              if (
+                                typeof r.minimum_amount === 'number' &&
+                                r.minimum_amount > 0
+                              ) {
+                                parts.push(
+                                  `${(r.minimum_amount / 100).toFixed(2)}€ min.`
+                                );
+                              }
+                              if (r.first_time_transaction) {
+                                parts.push('premier achat');
+                              }
+                              return parts.length ? parts.join(' • ') : '—';
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                )}
+              </div>
+
+              <div className='hidden md:block overflow-x-auto border border-gray-200 rounded-md'>
+                <table className='min-w-full divide-y divide-gray-200 text-sm'>
+                  <thead className='bg-gray-50'>
+                    <tr>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Code
+                      </th>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Coupon
+                      </th>
+
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Expiration
+                      </th>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Utilisations
+                      </th>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Max
+                      </th>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Restrictions
+                      </th>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className='bg-white divide-y divide-gray-200'>
+                    {promoListLoading ? (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className='px-4 py-6 text-center text-gray-600'
+                        >
+                          Chargement...
+                        </td>
+                      </tr>
+                    ) : promoCodes.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className='px-4 py-6 text-center text-gray-600'
+                        >
+                          Aucun code promo
+                        </td>
+                      </tr>
+                    ) : (
+                      promoCodes
+                        .filter((p: any) => {
+                          const term = (promoSearchTerm || '').toLowerCase();
+                          if (!term) return true;
+                          return String(p?.code || '')
+                            .toLowerCase()
+                            .includes(term);
+                        })
+                        .map((p: any) => (
+                          <tr
+                            key={p.id}
+                            className={p?.active === false ? 'opacity-60' : ''}
+                          >
+                            <td className='px-4 py-3 text-gray-900 font-medium'>
+                              {p.code}
+                            </td>
+                            <td
+                              className='px-4 py-3 text-gray-700 truncate max-w-[12rem]'
+                              title={(() => {
+                                const match = couponOptions.find(
+                                  c => c.id === (p?.coupon?.id || '')
+                                );
+                                return (
+                                  match?.name ||
+                                  p?.coupon?.name ||
+                                  p?.coupon?.id ||
+                                  ''
+                                );
+                              })()}
+                            >
+                              {(() => {
+                                const match = couponOptions.find(
+                                  c => c.id === (p?.coupon?.id || '')
+                                );
+                                return (
+                                  match?.name ||
+                                  p?.coupon?.name ||
+                                  p?.coupon?.id ||
+                                  '—'
+                                );
+                              })()}
+                            </td>
+
+                            <td className='px-4 py-3 text-gray-700'>
+                              {p.expires_at
+                                ? new Date(p.expires_at * 1000).toLocaleString(
+                                    'fr-FR',
+                                    {
+                                      dateStyle: 'short',
+                                      timeStyle: 'short',
+                                    }
+                                  )
+                                : '—'}
+                            </td>
+                            <td className='px-4 py-3 text-gray-700'>
+                              {p.times_redeemed ?? 0}
+                            </td>
+                            <td className='px-4 py-3 text-gray-700'>
+                              {p.max_redemptions ?? '—'}
+                            </td>
+                            <td className='px-4 py-3 text-gray-700'>
+                              {(() => {
+                                const r = p?.restrictions || {};
+                                const parts: string[] = [];
+                                if (typeof r.minimum_amount === 'number') {
+                                  const eur = (
+                                    r.minimum_amount / 100
+                                  ).toLocaleString('fr-FR', {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 2,
+                                  });
+                                  parts.push(`Min: ${eur} €`);
+                                }
+                                if (
+                                  typeof r.first_time_transaction === 'boolean'
+                                ) {
+                                  parts.push(
+                                    r.first_time_transaction
+                                      ? 'Premiers achats uniquement'
+                                      : 'Tous achats'
+                                  );
+                                }
+                                return parts.length ? parts.join(' • ') : '—';
+                              })()}
+                            </td>
+                            <td className='px-4 py-3 text-gray-700'>
+                              <button
+                                onClick={() => handleDeletePromotionCode(p.id)}
+                                disabled={!!promoDeletingIds[p.id]}
+                                className={`inline-flex items-center p-2 rounded-md border ${promoDeletingIds[p.id] ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-700 border-gray-300'}`}
+                                title={'Archiver'}
+                              >
+                                <FaArchive
+                                  className={`w-4 h-4 ${promoDeletingIds[p.id] ? 'opacity-60' : ''}`}
+                                />
+                                <span className='ml-1'>Archiver</span>
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 

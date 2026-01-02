@@ -12,10 +12,5 @@
       "dest": "/server.ts"
     }
   ],
-  "devCommand": "npm run dev",
-
-  "env": {
-    "PORT": "8080",
-    "CLIENT_URL": "https://paylive-client.vercel.app"
-  }
+  "devCommand": "npm run dev"
 }

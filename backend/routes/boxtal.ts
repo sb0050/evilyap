@@ -1,4 +1,5 @@
 import express from "express";
+import { XMLParser } from "fast-xml-parser";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
@@ -6,15 +7,21 @@ import {
   emailService,
   CustomerTrackingEmailData,
 } from "../services/emailService";
-import { url } from "inspector";
 
 const router = express.Router();
 
 // Configuration Boxtal
+const BOXTAL_API = process.env.BOXTAL_API || "";
 const BOXTAL_CONFIG = {
   client_id: process.env.BOXTAL_ACCESS_KEY || "your_client_id",
   client_secret: process.env.BOXTAL_SECRET_KEY || "your_client_secret",
-  auth_url: "https://api.boxtal.com/iam/account-app/token",
+  auth_url: `${BOXTAL_API}/iam/account-app/token`,
+};
+
+const BOXTAL_API_V1_CONFIG = {
+  client_id: process.env.BOXTAL_API_V1_ACCESS_KEY || "your_client_id",
+  client_secret: process.env.BOXTAL_API_V1_SECRET || "your_client_secret",
+  api_url: process.env.BOXTAL_API_V1 || "https://www.envoimoinscher.com/api/v1",
 };
 
 let boxtalToken: string | null = null;
@@ -92,11 +99,140 @@ router.post("/auth", async (req, res) => {
   }
 });
 
+// Cotation
+router.post("/cotation", async (req, res) => {
+  const weights = [
+    { label: "500g", value: 0.5 },
+    { label: "1kg", value: 1 },
+    { label: "2kg", value: 2 },
+  ];
+
+  const offerDimensions: any = {
+    FR: {
+      "MONR-CpourToi": { width: 41, length: 64, height: 38 },
+      "MONR-DomicileFrance": { width: 41, length: 64, height: 38 },
+      "SOGP-RelaisColis": { width: 50, length: 80, height: 40 },
+      "CHRP-Chrono2ShopDirect": { width: 30, length: 100, height: 20 },
+      "POFR-ColissimoAccess": { width: 24, length: 34, height: 26 },
+      "COPR-CoprRelaisDomicileNat": {
+        width: 49,
+        length: 69,
+        height: 29,
+      },
+      "COPR-CoprRelaisRelaisNat": { width: 49, length: 69, height: 29 },
+    },
+    BE: {
+      "MONR-CpourToiEurope": { width: 41, length: 64, height: 38 },
+      "CHRP-Chrono2ShopEurope": { width: 30, length: 100, height: 20 },
+      "MONR-DomicileEurope": { width: 41, length: 64, height: 38 },
+      "CHRP-ChronoInternationalClassic": { width: 30, length: 100, height: 20 },
+      "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
+    },
+    CH: {
+      "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
+    },
+  };
+  const { sender, recipient } = req.body || {};
+  if (
+    !sender ||
+    !recipient ||
+    !sender?.country ||
+    !sender?.postal_code ||
+    !sender?.city ||
+    !recipient?.country ||
+    !recipient?.postal_code ||
+    !recipient?.city
+  ) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
+  try {
+    const recipientCountry = String(recipient.country || "FR").toUpperCase();
+    const countryKey = recipientCountry;
+    const countryOffers = offerDimensions[countryKey] || {};
+    const networks = Object.keys(countryOffers);
+
+    const credentials = Buffer.from(
+      `${BOXTAL_API_V1_CONFIG.client_id}:${BOXTAL_API_V1_CONFIG.client_secret}`
+    ).toString("base64");
+    const options = {
+      method: "GET",
+      headers: {
+        Authorization: `Basic ${credentials}`,
+        Accept: "application/xml",
+      },
+    } as any;
+
+    const parser = new XMLParser({ ignoreAttributes: true });
+    const result: Record<string, Record<string, any>> = {};
+
+    await Promise.all(
+      networks.map(async (net) => {
+        const dimForNet = countryOffers[net] || {
+          width: 10,
+          length: 10,
+          height: 5,
+        };
+        result[net] = {};
+
+        const weightCalls = weights.map(async (w) => {
+          const params = new URLSearchParams();
+          params.append("colis_1.poids", String(w.value));
+          params.append("colis_1.longueur", String(dimForNet.length));
+          params.append("colis_1.largeur", String(dimForNet.width));
+          params.append("colis_1.hauteur", String(dimForNet.height));
+          params.append("code_contenu", "40110");
+          params.append("expediteur.pays", String(sender.country));
+          params.append("expediteur.code_postal", String(sender.postal_code));
+          params.append("expediteur.ville", String(sender.city));
+          params.append("expediteur.type", "entreprise");
+          params.append("destinataire.pays", String(recipient.country));
+          params.append(
+            "destinataire.code_postal",
+            String(recipient.postal_code)
+          );
+          params.append("destinataire.ville", String(recipient.city));
+          params.append("destinataire.type", "particulier");
+          params.append("offers[0]", net.replace(/-/g, ""));
+
+          const url = `${
+            BOXTAL_API_V1_CONFIG.api_url
+          }/cotation?${params.toString()}`;
+          const resp = await fetch(url, options);
+          if (!resp.ok) {
+            return;
+          }
+          const xml = await resp.text();
+          const json = parser.parse(xml);
+          const offer: any = (json as any)?.cotation?.shipment?.offer;
+          if (!offer) {
+            return;
+          }
+          const singleOffer = Array.isArray(offer) ? offer[0] : offer;
+          result[net][w.label] = {
+            price: singleOffer?.price || null,
+            characteristics: singleOffer?.characteristics || null,
+            delivery: singleOffer?.delivery || null,
+            collection: singleOffer?.collection || null,
+          };
+        });
+
+        await Promise.all(weightCalls);
+      })
+    );
+
+    return res.status(200).json(result);
+  } catch (error: any) {
+    console.error("Error in /api/boxtal/cotation:", error);
+    return res.status(500).json({ error: "Failed to get Boxtal cotation" });
+  }
+});
+
 //Point de proximité
 router.post("/parcel-points", async (req, res) => {
   try {
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `https://api.boxtal.com/shipping/v3.1/parcel-point`;
+    const url = `${BOXTAL_API}/shipping/v3.1/parcel-point`;
 
     // Construire les paramètres URL correctement
     const params = new URLSearchParams();
@@ -136,7 +272,7 @@ router.post("/parcel-points", async (req, res) => {
 router.post("/shipping-orders", async (req, res) => {
   try {
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order`;
+    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order`;
     const options = {
       method: "POST",
       headers: {
@@ -178,7 +314,7 @@ router.get("/shipping-orders/:id", async (req, res) => {
     }
 
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
       id
     )}`;
 
@@ -229,7 +365,7 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
     }
 
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
       id
     )}/shipping-document`;
 
@@ -320,7 +456,7 @@ router.get(
       }
 
       const token = await verifyAndRefreshBoxtalToken();
-      const apiUrl = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+      const apiUrl = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
         id
       )}/shipping-document`;
 
@@ -410,7 +546,7 @@ router.get("/shipping-orders/:id/tracking", async (req, res) => {
     }
 
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
       id
     )}/tracking`;
 
@@ -544,7 +680,7 @@ router.delete("/shipping-orders/:id", async (req, res) => {
     }
 
     const token = await verifyAndRefreshBoxtalToken();
-    const url = `https://api.boxtal.com/shipping/v3.1/shipping-order/${encodeURIComponent(
+    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
       id
     )}`;
 
@@ -594,9 +730,7 @@ router.delete("/shipping-orders/:id", async (req, res) => {
       if (supabase) {
         const { data: shipment, error: shipErr } = await supabase
           .from("shipments")
-          .select(
-            "id, store_id, shipment_id, customer_stripe_id, product_reference, value, reference_value, delivery_cost, status, tracking_url, payment_id"
-          )
+          .select("*")
           .eq("shipment_id", id)
           .single();
 
@@ -637,8 +771,8 @@ router.delete("/shipping-orders/:id", async (req, res) => {
         }
 
         const amountRaw =
-          typeof shipment?.reference_value === "number"
-            ? shipment.reference_value
+          typeof shipment?.product_value === "number"
+            ? shipment.product_value
             : typeof shipment?.value === "number"
             ? shipment.value
             : undefined;
@@ -730,7 +864,7 @@ router.post(
       // Gérer les différents types d'événements
       switch (event.type) {
         case "DOCUMENT_CREATED":
-          console.log(
+          console.warn(
             `DOCUMENT_CREATED at ${new Date().toISOString()}`,
             JSON.stringify(event)
           );
@@ -749,9 +883,7 @@ router.post(
             // Récupérer le shipment correspondant
             const { data: shipment, error: shipmentError } = await supabase
               .from("shipments")
-              .select(
-                "id, shipment_id, document_created, document_url, store_id, customer_stripe_id, product_reference, value, weight, delivery_method, delivery_network, pickup_point, dropoff_point"
-              )
+              .select("*")
               .eq("shipment_id", shippingOrderId)
               .maybeSingle();
 
@@ -912,7 +1044,7 @@ router.post(
           }
           break;
         case "TRACKING_CHANGED":
-          console.log("TRACKING_CHANGED event:", JSON.stringify(event));
+          console.warn("TRACKING_CHANGED event:", JSON.stringify(event));
           try {
             const shippingOrderId: string = event?.shippingOrderId;
             const tracking = event?.payload?.trackings?.[0];
@@ -922,6 +1054,31 @@ router.post(
                 "TRACKING_CHANGED: missing shippingOrderId or stripe/supabase not configured"
               );
               break;
+            }
+
+            // Mettre à jour la colonne tracking_url de shipments si elle existe
+            if (tracking?.packageTrackingUrl) {
+              try {
+                const { error: updErr } = await supabase
+                  .from("shipments")
+                  .update({ tracking_url: tracking?.packageTrackingUrl || "" })
+                  .eq("shipment_id", shippingOrderId);
+                if (updErr) {
+                  console.error(
+                    "TRACKING_CHANGED: error updating tracking_url:",
+                    updErr
+                  );
+                }
+                console.log(
+                  "TRACKING_CHANGED: updated tracking_url:",
+                  tracking?.packageTrackingUrl || ""
+                );
+              } catch (updEx) {
+                console.error(
+                  "TRACKING_CHANGED: exception updating tracking_url:",
+                  updEx
+                );
+              }
             }
 
             // N'envoyer l'email que si le statut a changé par rapport au dernier de l'historique

@@ -30,6 +30,9 @@ interface CustomerEmailData {
   pickupPointCode: string;
   estimatedDeliveryDate: string;
   trackingUrl: string;
+  promoCodes: string;
+  productValue: number;
+  estimatedDeliveryCost: number;
 }
 
 interface StoreOwnerEmailData {
@@ -68,6 +71,9 @@ interface StoreOwnerEmailData {
   paymentId: string;
   boxtalId: string;
   shipmentId?: string;
+  promoCodes?: string;
+  productValue: number;
+  estimatedDeliveryCost: number;
   // Pièces jointes optionnelles (ex: bordereau PDF)
   attachments?: Array<{
     filename: string;
@@ -217,6 +223,26 @@ class EmailService {
   async sendCustomerConfirmation(data: CustomerEmailData): Promise<boolean> {
     try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
+      const netProductValue =
+        (data.amount ?? 0) - (data.estimatedDeliveryCost ?? 0);
+      const formattedNetProduct =
+        this.formatAmount(netProductValue, data.currency) ||
+        String(netProductValue);
+      const formattedOriginalProduct =
+        this.formatAmount(data.productValue, data.currency) ||
+        String(data.productValue ?? 0);
+      const discountValue = Math.max(
+        0,
+        (data.productValue ?? 0) - netProductValue
+      );
+      const formattedDiscount =
+        this.formatAmount(discountValue, data.currency) ||
+        String(discountValue);
+      const promoNote = data.promoCodes
+        ? ` <span style="color:#666; font-size:12px;"><span style="text-decoration: line-through;">${formattedOriginalProduct}</span> (${formattedDiscount} de remise avec le code : ${String(
+            data.promoCodes || ""
+          ).replace(/;/g, ", ")})</span>`
+        : "";
       const formattedEstimatedDate = this.formatEstimatedDate(
         data.estimatedDeliveryDate
       );
@@ -267,6 +293,7 @@ class EmailService {
                   data.productReference
                 }</p>
                 <p><strong>Montant payé :</strong> <span class="amount">${formattedAmount}</span> (frais de livraison inclus)</p>
+                <p><strong>Valeur des produits :</strong> <span class="amount">${formattedNetProduct}</span>${promoNote}</p>
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
                 ${
                   data.deliveryMethod !== "store_pickup"
@@ -357,6 +384,26 @@ class EmailService {
   ): Promise<boolean> {
     try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
+      const netProductValue =
+        (data.amount ?? 0) - (data.estimatedDeliveryCost ?? 0);
+      const formattedNetProduct =
+        this.formatAmount(netProductValue, data.currency) ||
+        String(netProductValue);
+      const formattedOriginalProduct =
+        this.formatAmount(data.productValue, data.currency) ||
+        String(data.productValue ?? 0);
+      const discountValue = Math.max(
+        0,
+        (data.productValue ?? 0) - netProductValue
+      );
+      const formattedDiscount =
+        this.formatAmount(discountValue, data.currency) ||
+        String(discountValue);
+      const promoNote = data.promoCodes
+        ? ` <span style="color:#666; font-size:12px;"><span style="text-decoration: line-through;">${formattedOriginalProduct}</span> (${formattedDiscount} de remise avec le code : ${String(
+            data.promoCodes || ""
+          ).replace(/;/g, ", ")})</span>`
+        : "";
 
       // Préparer les infos réseau (lien carte + image dimensions) selon deliveryNetwork
       const getNetworkInfo = (
@@ -404,6 +451,21 @@ class EmailService {
             imageFile: "ups.jpg",
           };
         }
+        if (code.startsWith("COPR")) {
+          return {
+            name: "Colis Privé",
+            link: "https://client.colisprive-store.com/relais",
+            imageFile: "colis_prive.jpg",
+          };
+        }
+        if (code.startsWith("DLVG")) {
+          return {
+            name: "Delivengo",
+            link: "https://localiser.laposte.fr/",
+            imageFile: "delivengo.jpg",
+          };
+        }
+
         return null;
       };
 
@@ -477,7 +539,7 @@ class EmailService {
                 <p><strong>Référence produit :</strong> ${
                   data.productReference
                 }</p>
-                <p><strong>Montant :</strong> <span class="amount">${formattedAmount}</span></p>
+                <p><strong>Montant :</strong> <span class="amount">${formattedNetProduct}</span>${promoNote}</p>
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
                 ${
                   data.deliveryMethod !== "store_pickup"
@@ -581,7 +643,7 @@ class EmailService {
       const mailOptions = {
         from: `"PayLive - ${data.storeName}" <${process.env.SMTP_USER}>`,
         to: data.ownerEmail,
-        subject: `💰 Nouvelle commande reçue - ${formattedAmount} - ${data.storeName}`,
+        subject: `💰 Nouvelle commande reçue - ${formattedNetProduct} - ${data.storeName}`,
         html: htmlContent,
         // Ajouter les pièces jointes si présentes
         ...(mailAttachments.length ? { attachments: mailAttachments } : {}),
@@ -600,152 +662,6 @@ class EmailService {
       return true;
     } catch (error) {
       console.error("❌ Erreur envoi email propriétaire:", error);
-      return false;
-    }
-  }
-
-  // Email d'alerte SAV quand le document Boxtal n'est pas disponible (422)
-  async sendSupportShippingDocMissing(
-    data: SupportShippingDocMissingData
-  ): Promise<boolean> {
-    try {
-      const savEmail = process.env.SAV_EMAIL || "";
-      if (!savEmail) {
-        console.warn("SAV_EMAIL non configuré, email SAV non envoyé.");
-        return false;
-      }
-
-      const formattedAmount =
-        typeof data.amount === "number" && data.currency
-          ? this.formatAmount(data.amount, data.currency)
-          : undefined;
-
-      const shippingAddressHtml = (() => {
-        const a = data.shippingAddress?.address || {};
-        const lines = [
-          a.line1,
-          a.line2,
-          `${a.postal_code || ""} ${a.city || ""}`,
-          a.country,
-        ]
-          .filter(Boolean)
-          .join("<br>");
-        return lines || "N/A";
-      })();
-
-      const htmlContent = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="utf-8">
-          <title>SAV - Document d'expédition indisponible</title>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #dc3545 0%, #ff6b6b 100%); color: white; padding: 24px; text-align: center; border-radius: 10px 10px 0 0; }
-            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
-            .section { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #dc3545; }
-            .footer { text-align: center; margin-top: 20px; color: #666; font-size: 14px; }
-            .kv { margin: 0; }
-            .kv strong { display: inline-block; width: 220px; }
-            .note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; border-radius: 6px; margin-top: 12px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h1>🚨 SAV: Document d'expédition indisponible (422)</h1>
-              <p>${data.storeName}</p>
-            </div>
-            <div class="content">
-              <div class="section">
-                <h3>Résumé</h3>
-                <p class="kv"><strong>Store owner email :</strong> ${
-                  data.storeOwnerEmail
-                }</p>
-                <p class="kv"><strong>Boxtal ID :</strong> ${data.boxtalId}</p>
-                <p class="kv"><strong>Shipping Order ID :</strong> ${
-                  data.shippingOrderId || "N/A"
-                }</p>
-                <p class="kv"><strong>Payment ID :</strong> ${
-                  data.paymentId || "N/A"
-                }</p>
-              </div>
-
-              <div class="section">
-                <h3>Infos commande</h3>
-                <p class="kv"><strong>Référence produit :</strong> ${
-                  data.productReference || "N/A"
-                }</p>
-                <p class="kv"><strong>Montant :</strong> ${
-                  formattedAmount || "N/A"
-                }</p>
-                <p class="kv"><strong>Méthode de livraison :</strong> ${
-                  data.deliveryMethod || "N/A"
-                }</p>
-                <p class="kv"><strong>Réseau :</strong> ${
-                  data.deliveryNetwork || "N/A"
-                }</p>
-                <p class="kv"><strong>Point relais </strong>(${
-                  data.pickupPointCode || "N/A"
-                })</p>
-              </div>
-
-              <div class="section">
-                <h3>Infos client</h3>
-                <p class="kv"><strong>Nom :</strong> ${
-                  data.customerName || "N/A"
-                }</p>
-                <p class="kv"><strong>Email :</strong> ${
-                  data.customerEmail || "N/A"
-                }</p>
-                <p class="kv"><strong>Téléphone :</strong> ${
-                  data.customerPhone || "N/A"
-                }</p>
-                <p class="kv"><strong>Adresse :</strong><br>${shippingAddressHtml}</p>
-              </div>
-
-              <div class="section">
-                <h3>Détails d'erreur</h3>
-                <p>${
-                  data.errorDetails || "Document Boxtal non disponible (422)"
-                }</p>
-                ${
-                  data.additionalNote
-                    ? `<div class="note">${data.additionalNote}</div>`
-                    : ""
-                }
-              </div>
-
-              <p>Merci de vérifier la disponibilité des documents côté Boxtal et de relancer la génération si nécessaire.</p>
-              <p><strong>PayLive - Service SAV</strong></p>
-            </div>
-            <div class="footer">
-              <p>Cet email a été envoyé automatiquement suite à une indisponibilité de document d'expédition.</p>
-            </div>
-          </div>
-        </body>
-        </html>
-      `;
-
-      const mailOptions = {
-        from: `"PayLive SAV" <${process.env.SMTP_USER}>`,
-        to: savEmail,
-        subject: `🚨 SAV: Document Boxtal indisponible (422) - ${data.storeName}`,
-        html: htmlContent,
-      };
-
-      const info = await this.transporter.sendMail(mailOptions);
-      console.log(`✅ Email SAV envoyé à ${savEmail}`);
-      console.log("📨 sendMail result (SAV):", {
-        messageId: info.messageId,
-        accepted: info.accepted,
-        rejected: info.rejected,
-        response: info.response,
-      });
-      return true;
-    } catch (error) {
-      console.error("❌ Erreur envoi email SAV:", error);
       return false;
     }
   }
@@ -1187,8 +1103,8 @@ class EmailService {
         preferredOrder.forEach(addEntry);
         // Include any other keys not in preferred order
         Object.keys(contextObj || {})
-          .filter(k => !preferredOrder.includes(k))
-          .forEach(k => addEntry(k));
+          .filter((k) => !preferredOrder.includes(k))
+          .forEach((k) => addEntry(k));
 
         const esc = (x: any) =>
           String(x ?? "—")
@@ -1196,13 +1112,21 @@ class EmailService {
             .replace(/>/g, "&gt;");
 
         const rows = entries
-          .map(([k, v]) => `<p class="kv"><strong>${esc(k)} :</strong> ${esc(v)}</p>`) 
+          .map(
+            ([k, v]) =>
+              `<p class="kv"><strong>${esc(k)} :</strong> ${esc(v)}</p>`
+          )
           .join("\n");
 
         return `
           <div class="section">
             <h3>Contexte</h3>
-            ${rows || "<p class=\"kv\"><strong>raw:</strong> " + esc((contextObj as any)?.raw) + "</p>"}
+            ${
+              rows ||
+              '<p class="kv"><strong>raw:</strong> ' +
+                esc((contextObj as any)?.raw) +
+                "</p>"
+            }
           </div>
         `;
       })();
@@ -1304,6 +1228,7 @@ class EmailService {
     deliveryMethod?: string;
     deliveryNetwork?: string;
     message: string;
+    promoCodes?: string;
     attachments?: Array<{
       filename: string;
       content: Buffer;

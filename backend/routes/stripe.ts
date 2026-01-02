@@ -236,10 +236,10 @@ router.get("/refund/:paymentId", async (req, res) => {
       let productReference: string | number | undefined = undefined;
       let shipmentId: string | undefined = undefined;
       const currency: string = (paymentIntent?.currency || "eur").toUpperCase();
-      const refundedAmountNumber: number | undefined =
+      const refundedAmountNumber: number =
         typeof (refund as any)?.amount === "number"
-          ? (refund as any).amount / 100
-          : undefined;
+          ? Math.round((refund as any).amount)
+          : 0;
 
       if (paymentIntent?.customer) {
         try {
@@ -256,9 +256,7 @@ router.get("/refund/:paymentId", async (req, res) => {
       try {
         const { data: shipment, error: shipErr } = await supabase
           .from("shipments")
-          .select(
-            "id, store_id, product_reference, shipment_id, customer_stripe_id, value, delivery_cost"
-          )
+          .select("*")
           .eq("payment_id", paymentId)
           .maybeSingle();
         if (!shipErr && shipment) {
@@ -297,7 +295,8 @@ router.get("/refund/:paymentId", async (req, res) => {
           .eq("id", (shipment as any).store_id)
           .maybeSingle();
         if (!storeErr && (store as any)?.balance) {
-          const newBalance = (store as any).balance + refundedAmountNumber || 0;
+          const newBalance =
+            (store as any).balance + refundedAmountNumber / 100 || 0;
           await supabase
             .from("stores")
             .update({
@@ -316,7 +315,7 @@ router.get("/refund/:paymentId", async (req, res) => {
           storeName,
           paymentId,
           refundId: refund.id,
-          amount: refundedAmountNumber,
+          amount: refundedAmountNumber / 100,
           currency,
           productReference,
           shipmentId,
@@ -456,6 +455,25 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       return deliveryMethod || "inconnue";
     };
 
+    const offerDelivery: Record<string, { min: number; max: number }> = {
+      "MONR-CpourToi": { min: 3, max: 4 },
+      "MONR-DomicileFrance": { min: 5, max: 6 },
+      "SOGP-RelaisColis": { min: 3, max: 5 },
+      "CHRP-Chrono2ShopDirect": { min: 2, max: 4 },
+      "CHRP-Chrono18": { min: 1, max: 2 },
+      "UPSE-Express": { min: 1, max: 2 },
+      "POFR-ColissimoAccess": { min: 2, max: 3 },
+      "COPR-CoprRelaisDomicileNat": { min: 6, max: 7 },
+      "COPR-CoprRelaisRelaisNat": { min: 6, max: 7 },
+      // BELGIQUE
+      "MONR-CpourToiEurope": { min: 1, max: 3 },
+      "CHRP-Chrono2ShopEurope": { min: 2, max: 5 },
+      "MONR-DomicileEurope": { min: 3, max: 6 },
+      "CHRP-ChronoInternationalClassic": { min: 1, max: 2 },
+      "DLVG-DelivengoEasy": { min: 3, max: 5 },
+    };
+    const deliveryEstimate = offerDelivery[deliveryNetwork];
+
     // 1. Créer un produit
     const product = await stripe.products.create({
       name: `Référence: ${productReference || "N/A"}`,
@@ -530,19 +548,6 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           price: price.id,
           quantity: 1,
         },
-        {
-          price_data: {
-            currency: "eur",
-            product_data: {
-              name: "Frais asscoiés à votre méthode de livraison",
-              description: `Livraison ${formatDeliveryMethod(
-                deliveryMethod || ""
-              )} (${deliveryNetwork || ""})`,
-            },
-            unit_amount: Math.round(deliveryCost * 100), // Frais de livraison en centimes (5€)
-          },
-          quantity: 1,
-        },
       ],
       mode: "payment",
       return_url: `${
@@ -550,6 +555,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       }/payment/return?session_id={CHECKOUT_SESSION_ID}&store_name=${encodeURIComponent(
         slugify(storeName, { lower: true, strict: true }) || "default"
       )}`,
+      allow_promotion_codes: true,
       // Ajouter la collecte de consentement
       consent_collection: {
         terms_of_service: "required", // Rend la case à cocher obligatoire
@@ -557,9 +563,38 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       // Personnaliser le texte associé (optionnel)
       custom_text: {
         terms_of_service_acceptance: {
-          message: `J'accepte les [conditions générales de vente](${CLOUDFRONT_URL}/documents/terms_and_conditions) et la [politique de confidentialité](${CLOUDFRONT_URL}/documents/privacy_policy) de PayLive.`,
+          message: `J'accepte les conditions générales de vente et la politique de confidentialité de ${
+            storeName || "PayLive"
+          }.`,
         },
       },
+      shipping_options: [
+        {
+          shipping_rate_data: {
+            type: "fixed_amount",
+            fixed_amount: {
+              amount: Math.round(deliveryCost * 100),
+              currency: "eur",
+            },
+            display_name: `Livraison ${formatDeliveryMethod(
+              deliveryMethod || ""
+            )} `,
+            delivery_estimate:
+              deliveryMethod !== "store_pickup"
+                ? {
+                    minimum: {
+                      unit: "business_day",
+                      value: deliveryEstimate.min,
+                    },
+                    maximum: {
+                      unit: "business_day",
+                      value: deliveryEstimate.max,
+                    },
+                  }
+                : {},
+          },
+        },
+      ],
     } as any);
 
     res.json({
@@ -657,6 +692,233 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
   }
 });
 
+// Nouveau endpoint: récupérer un client Stripe par son ID
+router.get("/get-customer-by-id", async (req, res) => {
+  const { customerId } = req.query;
+  if (!customerId) {
+    res.status(400).json({ error: "Customer ID is required" });
+    return;
+  }
+  try {
+    const customer = await stripe.customers.retrieve(customerId as string);
+    if (!customer || (customer as any).deleted) {
+      res.status(404).json({ error: "Customer not found" });
+      return;
+    }
+    const c = customer as Stripe.Customer;
+    const customerData = {
+      name: c.name,
+      phone: c.phone,
+      email: c.email,
+      address: c.address,
+      shipping: c.shipping,
+      deliveryMethod: c.metadata?.delivery_method,
+      parcelPointCode: c.metadata?.parcel_point_code,
+      homeDeliveryNetwork: c.metadata?.home_delivery_network,
+      shippingOrderIds: c.metadata?.shipping_order_ids,
+      clerkUserId: (c.metadata as any)?.clerk_user_id,
+    } as any;
+    res.json({ customer: customerData });
+  } catch (error) {
+    console.error("Error retrieving customer by ID:", error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Nouveau endpoint: récupérer les comptes externes Clerk d’un utilisateur via clerk_user_id
+router.get("/get-clerk-user-by-id", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const clerkUserId = (req.query.clerkUserId as string) || "";
+    if (!clerkUserId) {
+      return res.status(400).json({ error: "Missing clerkUserId" });
+    }
+
+    const user = await clerkClient.users.getUser(clerkUserId);
+
+    const externalAccounts = (user?.externalAccounts || []).map((acc: any) => ({
+      id: acc.id,
+      provider: acc.provider,
+      username: acc.username || null,
+      emailAddress: acc.emailAddress || null,
+      firstName: acc.firstName || null,
+      lastName: acc.lastName || null,
+      phoneNumber: acc.phoneNumber || null,
+      providerUserId: acc.providerUserId || null,
+      verified:
+        acc.verification && acc.verification.status
+          ? acc.verification.status === "verified"
+          : null,
+    }));
+    const primaryEmail =
+      (user?.emailAddresses || []).find(
+        (e: any) => e.id === user?.primaryEmailAddressId
+      )?.emailAddress ||
+      (user?.emailAddresses || [])[0]?.emailAddress ||
+      null;
+    const primaryPhone =
+      (user?.phoneNumbers || []).find(
+        (p: any) => p.id === user?.primaryPhoneNumberId
+      )?.phoneNumber ||
+      (user?.phoneNumbers || [])[0]?.phoneNumber ||
+      null;
+    return res.json({
+      user: {
+        id: user.id,
+        firstName: user.firstName || null,
+        lastName: user.lastName || null,
+        imageUrl: user.imageUrl || null,
+        hasImage: !!user.imageUrl,
+        emailAddress: primaryEmail,
+        phoneNumber: primaryPhone,
+        externalAccounts,
+      },
+    });
+  } catch (error) {
+    console.error("Error retrieving Clerk user:", error);
+    return res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Créer un code promo Stripe à partir d'un coupon
+router.post("/promotion-codes", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const {
+      couponId,
+      code,
+      minimum_amount,
+      first_time_transaction,
+      expires_at,
+      active = true,
+      max_redemptions,
+      storeSlug,
+    } = req.body || {};
+
+    if (!couponId || !code) {
+      return res.status(400).json({ error: "couponId et code sont requis" });
+    }
+
+    const params: Stripe.PromotionCodeCreateParams = {
+      coupon: String(couponId),
+      code: String(code),
+      active: !!active,
+    } as Stripe.PromotionCodeCreateParams;
+
+    if (typeof max_redemptions === "number" && max_redemptions > 0) {
+      (params as any).max_redemptions = max_redemptions;
+    }
+    if (typeof expires_at === "number" && expires_at > 0) {
+      (params as any).expires_at = expires_at;
+    }
+    if (
+      typeof minimum_amount === "number" ||
+      typeof first_time_transaction === "boolean"
+    ) {
+      (params as any).restrictions = {
+        ...(typeof minimum_amount === "number" && minimum_amount > 0
+          ? { minimum_amount, minimum_amount_currency: "eur" }
+          : {}),
+        ...(typeof first_time_transaction === "boolean"
+          ? { first_time_transaction }
+          : {}),
+      } as Stripe.PromotionCodeCreateParams.Restrictions;
+    }
+
+    // Ajouter metadata avec le storeSlug si fourni
+    if (storeSlug) {
+      (params as any).metadata = {
+        storeSlug: String(storeSlug),
+      } as Record<string, string>;
+    }
+
+    const promotionCode = await stripe.promotionCodes.create(params);
+    return res.json({ promotionCode });
+  } catch (error) {
+    console.error("Erreur lors de la création du code promo:", error);
+    return res
+      .status(500)
+      .json({ error: error instanceof Error ? error.message : "Erreur" });
+  }
+});
+
+// Lister les codes promo (optionnellement filtré par couponId ou active)
+router.get("/promotion-codes", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { couponId, active, limit, storeSlug } = req.query as {
+      couponId?: string;
+      active?: string;
+      limit?: string;
+      storeSlug?: string;
+    };
+
+    const listParams: Stripe.PromotionCodeListParams = {
+      limit: Math.min(Math.max(parseInt(limit || "50", 10), 1), 100),
+    } as Stripe.PromotionCodeListParams;
+
+    if (couponId) (listParams as any).coupon = couponId;
+    if (typeof active !== "undefined")
+      (listParams as any).active = active === "true";
+
+    const result = await stripe.promotionCodes.list(listParams);
+
+    // Filtrage côté serveur par metadata.storeSlug si demandé
+    const data = Array.isArray(result.data) ? result.data : [];
+    const filtered = storeSlug
+      ? data.filter(
+          (pc) =>
+            String((pc as any)?.metadata?.storeSlug || "") === String(storeSlug)
+        )
+      : data;
+
+    return res.json({ data: filtered });
+  } catch (error) {
+    console.error("Erreur lors du listage des codes promo:", error);
+    return res
+      .status(500)
+      .json({ error: error instanceof Error ? error.message : "Erreur" });
+  }
+});
+
+// Désactiver (supprimer logiquement) un code promo Stripe
+router.delete("/promotion-codes/:id", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { id } = req.params as { id?: string };
+    if (!id) {
+      return res.status(400).json({ error: "promotion code id requis" });
+    }
+
+    // Stripe ne supprime pas vraiment les codes promo; on les désactive
+    const promotionCode = await stripe.promotionCodes.update(String(id), {
+      active: false,
+    } as Stripe.PromotionCodeUpdateParams);
+
+    return res.json({ success: true, promotionCode });
+  } catch (error) {
+    console.error("Erreur lors de la désactivation du code promo:", error);
+    return res
+      .status(500)
+      .json({ error: error instanceof Error ? error.message : "Erreur" });
+  }
+});
+
 // Webhook pour gérer les événements Stripe
 router.post(
   "/webhook",
@@ -691,7 +953,8 @@ router.post(
       case "checkout.session.completed":
         // Session checkout complétée
         try {
-          const session: any = event.data.object as any;
+          const session: Stripe.Checkout.Session = event.data
+            .object as Stripe.Checkout.Session;
           console.log("Session metadata:", session.metadata);
           // Résoudre l'ID client en évitant les erreurs lorsque session.customer est null
           let resolvedCustomerId: string | null =
@@ -780,6 +1043,14 @@ router.post(
             let boxtalId = "";
             let trackingUrl = "";
             let shipmentId = "";
+            const promoCodeDetails = [];
+            const estimatedDeliveryCost =
+              session.shipping_cost?.amount_total || 0;
+            console.log(
+              "estimated delivery cost: ",
+              estimatedDeliveryCost,
+              amount
+            );
 
             // Supprimer les items du panier si des identifiants ont été passés via la session
             try {
@@ -817,9 +1088,51 @@ router.post(
             const sessionRetrieved = await stripe.checkout.sessions.retrieve(
               sessionId,
               {
-                expand: ["line_items.data.price.product"],
+                expand: ["line_items.data.price.product", "discounts"],
               }
             );
+
+            // Vérifier s'il y a des remises
+            if (session.discounts?.length) {
+              console.log("Remises trouvées:", session.discounts);
+
+              for (const discount of session.discounts) {
+                try {
+                  if (discount.promotion_code) {
+                    // Récupérer les détails du code promo
+                    const promoCode = await stripe.promotionCodes.retrieve(
+                      discount.promotion_code as string
+                    );
+
+                    console.log("Promo Code Details:", promoCode);
+
+                    promoCodeDetails.push({
+                      code: promoCode.code,
+                      id: promoCode.id,
+                      amount_off: session.total_details?.amount_discount ?? 0,
+                      coupon: promoCode.coupon,
+                    });
+                  } else if (discount.coupon) {
+                    // Si une remise directe est appliquée sans code promo
+                    const coupon = await stripe.coupons.retrieve(
+                      discount.coupon as string
+                    );
+
+                    promoCodeDetails.push({
+                      code: null,
+                      id: coupon.id,
+                      amount_off: session.total_details?.amount_discount ?? 0,
+                      coupon,
+                    });
+                  }
+                } catch (error) {
+                  console.error(
+                    "Erreur lors de la récupération du code promo :",
+                    error
+                  );
+                }
+              }
+            }
 
             const products = sessionRetrieved.line_items?.data
               .filter(
@@ -833,12 +1146,12 @@ router.post(
                 description: item.price.product.description,
                 image: item.price.product.images?.[0],
                 quantity: item.quantity,
-                amount_total: item.amount_total / 100, // Convertir centimes en unités
+                amount_total: item.amount_total,
                 currency: item.currency,
-                unit_price: item.price.unit_amount / 100,
+                unit_price: item.price.unit_amount,
                 price_id: item.price.id,
               }));
-            const product_amount = Math.round(products?.[0]?.amount_total || 0);
+            //const product_amount = Math.round(products?.[0]?.unit_price || 0);
 
             // Récupérer les informations complètes de la boutique depuis Supabase
             let storeOwnerEmail = null;
@@ -922,6 +1235,22 @@ router.post(
               "CHRP-Chrono18": { width: 30, length: 100, height: 20 },
               "UPSE-Express": { width: 41, length: 64, height: 38 },
               "POFR-ColissimoAccess": { width: 24, length: 34, height: 26 },
+              "COPR-CoprRelaisDomicileNat": {
+                width: 49,
+                length: 69,
+                height: 29,
+              },
+              "COPR-CoprRelaisRelaisNat": { width: 49, length: 69, height: 29 },
+              //BELGIQUE-SUISSE
+              "MONR-CpourToiEurope": { width: 41, length: 64, height: 38 },
+              "CHRP-Chrono2ShopEurope": { width: 30, length: 100, height: 20 },
+              "MONR-DomicileEurope": { width: 41, length: 64, height: 38 },
+              "CHRP-ChronoInternationalClassic": {
+                width: 30,
+                length: 100,
+                height: 20,
+              },
+              "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
             };
             const dims = offerDimensions[deliveryNetwork] || {
               width: 10,
@@ -960,7 +1289,10 @@ router.post(
               labelType: "PDF_A4",
               shippingOfferCode: deliveryNetwork,
             };
-            console.log("createOrderPayload:", createOrderPayload);
+            console.log(
+              "createOrderPayload:",
+              JSON.stringify(createOrderPayload)
+            );
 
             let dataBoxtal: any = {};
             let attachments: Array<{
@@ -1125,15 +1457,24 @@ router.post(
                     pickup_point: pickupPoint,
                     weight: session.metadata?.weight || null,
                     product_reference: productReference || null,
-                    value: (amount || 0) / 100,
-                    delivery_cost:
-                      dataBoxtal?.content?.deliveryPriceExclTax?.value || 0,
-                    reference_value: product_amount || 0,
                     payment_id: paymentIntent?.id || null,
+                    paid_value: (amount || 0) / 100,
+                    delivery_cost:
+                      (dataBoxtal?.content?.deliveryPriceExclTax?.value || 0) *
+                      1.2, //ajout de la TVA de 20%
+                    promo_codes:
+                      promoCodeDetails
+                        .map((d: any) => d?.code || d?.id || "")
+                        .filter(Boolean)
+                        .join(";") || null,
+                    product_value: (products?.[0]?.unit_price || 0) / 100,
+                    estimated_delivery_cost: (estimatedDeliveryCost || 0) / 100,
                   })
                   .select("id")
                   .single();
               shipmentId = shipmentInsert?.id || "";
+
+              console.log("shipmentInsert:", shipmentInsert);
 
               if (shipmentInsertError) {
                 console.error(
@@ -1239,7 +1580,7 @@ router.post(
                 customerEmail:
                   paymentIntent?.receipt_email || customerEmail || "",
                 customerName: customerName,
-                storeName: storeName,
+                storeName: storeName || "Votre Boutique",
                 storeDescription: storeDescription,
                 storeLogo: `${process.env.CLOUDFRONT_URL}/images/${storeId}`,
                 storeAddress: storeAddress,
@@ -1254,6 +1595,13 @@ router.post(
                 pickupPointCode: pickupPoint.code || "",
                 estimatedDeliveryDate: estimatedDeliveryDate,
                 trackingUrl: trackingUrl,
+                promoCodes:
+                  promoCodeDetails
+                    .map((d: any) => d?.code || d?.id || "")
+                    .filter(Boolean)
+                    .join(", ") || "",
+                productValue: (products?.[0]?.unit_price || 0) / 100,
+                estimatedDeliveryCost: estimatedDeliveryCost / 100,
               });
               console.log(
                 "Customer confirmation email sent",
@@ -1269,7 +1617,6 @@ router.post(
             try {
               // Envoyer l'email au propriétaire (avec ou sans pièce jointe)
               if (storeOwnerEmail) {
-                console.log("product_amount:", product_amount);
                 const sentOwner = await emailService.sendStoreOwnerNotification(
                   {
                     ownerEmail: storeOwnerEmail,
@@ -1297,12 +1644,19 @@ router.post(
                     customerAddress: {},
                     pickupPointCode: pickupPoint.code || "",
                     productReference,
-                    amount: product_amount || amount,
+                    amount: amount / 100,
                     weight,
                     currency,
                     paymentId,
                     boxtalId,
                     shipmentId,
+                    promoCodes:
+                      promoCodeDetails
+                        .map((d: any) => d?.code || d?.id || "")
+                        .filter(Boolean)
+                        .join(", ") || "",
+                    productValue: (products?.[0]?.unit_price || 0) / 100,
+                    estimatedDeliveryCost: estimatedDeliveryCost / 100,
                     attachments,
                     documentPendingNote:
                       attachments?.length === 0
@@ -1333,7 +1687,8 @@ router.post(
                       const currentBalance = Number(
                         (storeBalanceRow as any)?.balance || 0
                       );
-                      const increment = Number(product_amount || 0);
+                      const increment =
+                        ((amount || 0) - estimatedDeliveryCost) / 100;
                       const newBalance = currentBalance + increment;
                       const { error: balanceUpdateErr } = await supabase
                         .from("stores")
@@ -1415,95 +1770,21 @@ router.post(
   }
 );
 
-// Nouveau endpoint: récupérer un client Stripe par son ID
-router.get("/get-customer-by-id", async (req, res) => {
-  const { customerId } = req.query;
-  if (!customerId) {
-    res.status(400).json({ error: "Customer ID is required" });
-    return;
-  }
-  try {
-    const customer = await stripe.customers.retrieve(customerId as string);
-    if (!customer || (customer as any).deleted) {
-      res.status(404).json({ error: "Customer not found" });
-      return;
-    }
-    const c = customer as Stripe.Customer;
-    const customerData = {
-      name: c.name,
-      phone: c.phone,
-      email: c.email,
-      address: c.address,
-      shipping: c.shipping,
-      deliveryMethod: c.metadata?.delivery_method,
-      parcelPointCode: c.metadata?.parcel_point_code,
-      homeDeliveryNetwork: c.metadata?.home_delivery_network,
-      shippingOrderIds: c.metadata?.shipping_order_ids,
-      clerkUserId: (c.metadata as any)?.clerk_user_id,
-    } as any;
-    res.json({ customer: customerData });
-  } catch (error) {
-    console.error("Error retrieving customer by ID:", error);
-    res.status(500).json({ error: (error as Error).message });
-  }
-});
-
-// Nouveau endpoint: récupérer les comptes externes Clerk d’un utilisateur via clerk_user_id
-router.get("/get-clerk-user-by-id", async (req, res) => {
+export default router;
+router.get("/coupons", async (req, res) => {
   try {
     const auth = getAuth(req);
     if (!auth?.isAuthenticated) {
-      return res.status(401).json({ error: "Unauthorized" });
+      res.status(401).json({ error: "Unauthorized" });
+      return;
     }
-    const clerkUserId = (req.query.clerkUserId as string) || "";
-    if (!clerkUserId) {
-      return res.status(400).json({ error: "Missing clerkUserId" });
-    }
-
-    const user = await clerkClient.users.getUser(clerkUserId);
-
-    const externalAccounts = (user?.externalAccounts || []).map((acc: any) => ({
-      id: acc.id,
-      provider: acc.provider,
-      username: acc.username || null,
-      emailAddress: acc.emailAddress || null,
-      firstName: acc.firstName || null,
-      lastName: acc.lastName || null,
-      phoneNumber: acc.phoneNumber || null,
-      providerUserId: acc.providerUserId || null,
-      verified:
-        acc.verification && acc.verification.status
-          ? acc.verification.status === "verified"
-          : null,
+    const list = await stripe.coupons.list({ limit: 50 });
+    const data = (list.data || []).map((c) => ({
+      id: c.id,
+      name: c.name || null,
     }));
-    const primaryEmail =
-      (user?.emailAddresses || []).find(
-        (e: any) => e.id === user?.primaryEmailAddressId
-      )?.emailAddress ||
-      (user?.emailAddresses || [])[0]?.emailAddress ||
-      null;
-    const primaryPhone =
-      (user?.phoneNumbers || []).find(
-        (p: any) => p.id === user?.primaryPhoneNumberId
-      )?.phoneNumber ||
-      (user?.phoneNumbers || [])[0]?.phoneNumber ||
-      null;
-    return res.json({
-      user: {
-        id: user.id,
-        firstName: user.firstName || null,
-        lastName: user.lastName || null,
-        imageUrl: user.imageUrl || null,
-        hasImage: !!user.imageUrl,
-        emailAddress: primaryEmail,
-        phoneNumber: primaryPhone,
-        externalAccounts,
-      },
-    });
+    res.json({ data });
   } catch (error) {
-    console.error("Error retrieving Clerk user:", error);
-    return res.status(500).json({ error: (error as Error).message });
+    res.status(500).json({ error: (error as any).message || "Internal error" });
   }
 });
-
-export default router;

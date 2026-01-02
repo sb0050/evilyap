@@ -6,6 +6,7 @@ import {
   CloudFrontClient,
   CreateInvalidationCommand,
 } from "@aws-sdk/client-cloudfront";
+import crypto from "crypto";
 
 const router = express.Router();
 
@@ -194,7 +195,7 @@ router.post("/rib", uploadDocs.single("document"), async (req, res) => {
       return res.status(404).json({ error: "Boutique non trouvée" });
     }
 
-    const baseName = `${(store as any).id}`;
+    const baseName = crypto.randomUUID();
     const key = `documents/${baseName}`;
 
     const params = {

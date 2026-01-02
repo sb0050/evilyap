@@ -15,6 +15,9 @@ import shipmentsRoutes from "./routes/shipments";
 import cartsRoutes from "./routes/carts";
 import supportRoutes from "./routes/support";
 import clerkRoutes from "./routes/clerk";
+import inseeBceRoutes from "./routes/insee-bce";
+import formsRoutes from "./routes/forms";
+import adminRoutes from "./routes/admin";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -32,15 +35,19 @@ const normalizeOrigin = (raw?: string) => {
   return `${scheme}://${val}`;
 };
 
-console.error("ERROR !!!! ", process.env.CLIENT_URL);
+const allowedOrigins = (
+  process.env.CLIENT_URL ||
+  process.env.CLIENT_URLS ||
+  "http://localhost:3000"
+)
+  .split(",")
+  .map((o) => normalizeOrigin(o))
+  .filter((o) => !!o);
 
+console.warn("CORS is enabled for:", allowedOrigins);
 app.use(
   cors({
-    origin: [
-      "paylive-server-dev.vercel.app",
-      "http://paylive-server-dev.vercel.app", // si besoin d'une version http locale
-      "http://localhost:3000", // utile pour tester en local
-    ],
+    origin: allowedOrigins,
     credentials: true,
   })
 );
@@ -75,6 +82,9 @@ app.use("/api/shipments", shipmentsRoutes);
 app.use("/api/carts", cartsRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api/clerk", clerkRoutes);
+app.use("/api/insee-bce", inseeBceRoutes);
+app.use("/api/forms", formsRoutes);
+app.use("/api/admin", adminRoutes);
 
 // Route de test
 app.get("/api/health", (req: Request, res: Response) => {
