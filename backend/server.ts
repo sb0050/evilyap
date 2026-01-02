@@ -25,12 +25,6 @@ const PORT = process.env.PORT || 5000;
 const allowedOrigins = process.env.CLIENT_URL || "http://localhost:3000";
 
 console.warn("CORS is enabled for:", allowedOrigins);
-app.use(
-  cors({
-    origin: "https://preview-paylive.vercel.app",
-    credentials: true,
-  })
-);
 
 // Pour les webhooks Stripe, nous devons traiter le raw body
 app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
