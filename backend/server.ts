@@ -35,15 +35,40 @@ const normalizeOrigin = (raw?: string) => {
   return `${scheme}://${val}`;
 };
 
-const allowedOrigins = process.env.CLIENT_URL || "http://localhost:3000";
-
-console.warn("CORS is enabled for:", allowedOrigins);
-app.use(
-  cors({
-    origin: allowedOrigins,
-    credentials: true,
-  })
-);
+const allowedOriginsRaw =
+  process.env.CLIENT_URL || process.env.CLIENT_URLS || "";
+const allowedOriginsList = (allowedOriginsRaw || "")
+  .split(",")
+  .map((s) => normalizeOrigin(s))
+  .filter(Boolean);
+if (allowedOriginsList.length === 0) {
+  allowedOriginsList.push("http://localhost:3000", "http://localhost:3001");
+}
+console.warn("CORS is enabled for:", allowedOriginsList);
+const corsOptions: cors.CorsOptions = {
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    const o = origin.trim();
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(o);
+    const ok = isLocalhost || allowedOriginsList.includes(o);
+    callback(ok ? null : new Error("Not allowed by CORS"), ok);
+  },
+  credentials: true,
+  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+  ],
+  optionsSuccessStatus: 204,
+};
+app.use((req: Request, res: Response, next: NextFunction) => {
+  res.header("Vary", "Origin");
+  next();
+});
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 //app.use(clerkMiddleware());
 
