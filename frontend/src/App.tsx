@@ -10,6 +10,7 @@ import {
   Routes,
   Route,
   Navigate,
+  useLocation,
 } from 'react-router-dom';
 import { dark, neobrutalism } from '@clerk/themes';
 
@@ -27,9 +28,32 @@ import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsAndConditions from './pages/TermsAndConditions';
 import FormPage from './pages/FormPage';
 import AdminPage from './pages/AdminPage';
+import { useEffect } from 'react';
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+  const LocationTracker: React.FC = () => {
+    const location = useLocation();
+    useEffect(() => {
+      try {
+        const fbq = (window as any).fbq;
+        if (typeof fbq === 'function') {
+          fbq('track', 'PageView');
+        }
+      } catch {}
+      try {
+        const w = window as any;
+        w.dataLayer = w.dataLayer || [];
+        w.dataLayer.push({
+          event: 'page_view',
+          page_path: `${location.pathname}${location.search}${location.hash}`,
+          page_location: window.location.href,
+          page_title: document.title,
+        });
+      } catch {}
+    }, [location.pathname, location.search, location.hash]);
+    return null;
+  };
 
   if (!publishableKey) {
     throw new Error('Missing Clerk Publishable Key');
@@ -39,6 +63,7 @@ function App() {
     <ClerkProvider publishableKey={publishableKey} localization={frFR}>
       <Router>
         <div className='min-h-screen bg-gray-50'>
+          <LocationTracker />
           <Routes>
             <Route path='/' element={<LandingPageBis />} />
             {/* Pages publiques: PDF */}

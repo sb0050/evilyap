@@ -70,7 +70,6 @@ router.post("/", async (req, res) => {
       });
     }
 
-    // Unicité: le couple (customer_stripe_id, product_reference, store_id) ne doit pas exister
     let existQuery = supabase
       .from("carts")
       .select("id")
@@ -145,9 +144,14 @@ router.get("/summary", async (req, res) => {
     const expiredIds: number[] = [];
     const validRows: any[] = [];
     for (const r of rows as any[]) {
-      const ttlMinutes = typeof (r as any).time_to_live === "number" ? (r as any).time_to_live : 15;
+      const ttlMinutes =
+        typeof (r as any).time_to_live === "number"
+          ? (r as any).time_to_live
+          : 15;
       const ttlMs = Number(ttlMinutes) * 60 * 1000;
-      const createdMs = (r as any)?.created_at ? new Date((r as any).created_at as any).getTime() : null;
+      const createdMs = (r as any)?.created_at
+        ? new Date((r as any).created_at as any).getTime()
+        : null;
       const leftMs = createdMs ? ttlMs - (nowMs - createdMs) : 0;
       if (leftMs <= 0) {
         expiredIds.push((r as any).id as number);
@@ -156,7 +160,7 @@ router.get("/summary", async (req, res) => {
       }
     }
     if (expiredIds.length > 0) {
-      await Promise.all(expiredIds.map(id => deleteCartInternal(id, true)));
+      await Promise.all(expiredIds.map((id) => deleteCartInternal(id, true)));
     }
     const storeIds = Array.from(
       new Set(validRows.map((r: any) => r.store_id).filter(Boolean))
@@ -329,9 +333,14 @@ router.get("/store/:slug", async (req, res) => {
     const expiredIds: number[] = [];
     const validRows: any[] = [];
     for (const r of rows as any[]) {
-      const ttlMinutes = typeof (r as any).time_to_live === "number" ? (r as any).time_to_live : 15;
+      const ttlMinutes =
+        typeof (r as any).time_to_live === "number"
+          ? (r as any).time_to_live
+          : 15;
       const ttlMs = Number(ttlMinutes) * 60 * 1000;
-      const createdMs = (r as any)?.created_at ? new Date((r as any).created_at as any).getTime() : null;
+      const createdMs = (r as any)?.created_at
+        ? new Date((r as any).created_at as any).getTime()
+        : null;
       const leftMs = createdMs ? ttlMs - (nowMs - createdMs) : 0;
       if (leftMs <= 0) {
         expiredIds.push((r as any).id as number);
@@ -340,7 +349,7 @@ router.get("/store/:slug", async (req, res) => {
       }
     }
     if (expiredIds.length > 0) {
-      await Promise.all(expiredIds.map(id => deleteCartInternal(id, true)));
+      await Promise.all(expiredIds.map((id) => deleteCartInternal(id, true)));
     }
     return res.json({ carts: validRows || [] });
   } catch (e) {
