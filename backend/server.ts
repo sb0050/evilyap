@@ -22,55 +22,15 @@ import adminRoutes from "./routes/admin";
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
-// Normaliser les origines autorisées pour CORS (supporte domaine seul et liste séparée par virgules)
-const normalizeOrigin = (raw?: string) => {
-  const val = (raw || "").trim();
-  if (!val) return "http://localhost:3000";
-  // Déjà avec schéma
-  if (/^https?:\/\//i.test(val)) return val;
-  // Domaine ou localhost sans schéma
-  const isLocal = /^(localhost|127\.0\.0\.1)/i.test(val);
-  const scheme = isLocal ? "http" : "https";
-  return `${scheme}://${val}`;
-};
+const allowedOrigins = process.env.CLIENT_URL || "http://localhost:3000";
 
-const allowedOriginsRaw =
-  process.env.CLIENT_URL || process.env.CLIENT_URLS || "";
-const allowedOriginsList = (allowedOriginsRaw || "")
-  .split(",")
-  .map((s) => normalizeOrigin(s))
-  .filter(Boolean);
-if (allowedOriginsList.length === 0) {
-  allowedOriginsList.push("http://localhost:3000", "http://localhost:3001");
-}
-console.warn("CORS is enabled for:", allowedOriginsList);
-const corsOptions: cors.CorsOptions = {
-  origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    const o = origin.trim();
-    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(o);
-    const ok = isLocalhost || allowedOriginsList.includes(o);
-    callback(ok ? null : new Error("Not allowed by CORS"), ok);
-  },
-  credentials: true,
-  methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
-  allowedHeaders: [
-    "Content-Type",
-    "Authorization",
-    "X-Requested-With",
-    "Accept",
-  ],
-  optionsSuccessStatus: 204,
-};
-app.use((req: Request, res: Response, next: NextFunction) => {
-  res.header("Vary", "Origin");
-  next();
-});
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
-
-//app.use(clerkMiddleware());
+console.warn("CORS is enabled for:", allowedOrigins);
+app.use(
+  cors({
+    origin: "https://preview-paylive.vercel.app",
+    credentials: true,
+  })
+);
 
 // Pour les webhooks Stripe, nous devons traiter le raw body
 app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
