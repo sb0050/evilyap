@@ -50,6 +50,12 @@ const LandingPageBis = () => {
               className='hidden md:inline-flex px-5 py-2.5 rounded-md border border-gray-300 text-gray-800 hover:bg-gray-50'
               onClick={e => {
                 e.preventDefault();
+                try {
+                  const fbq = (window as any).fbq;
+                  if (typeof fbq === 'function') {
+                    fbq('track', 'Lead', { content_name: 'demo' });
+                  }
+                } catch {}
                 setShowContactModal(true);
               }}
             >
@@ -447,7 +453,15 @@ const LandingPageBis = () => {
               Consulter notre FAQ
             </button>
             <button
-              onClick={() => setShowContactModal(true)}
+              onClick={() => {
+                try {
+                  const fbq = (window as any).fbq;
+                  if (typeof fbq === 'function') {
+                    fbq('track', 'Lead', { content_name: 'demo' });
+                  }
+                } catch {}
+                setShowContactModal(true);
+              }}
               className='px-5 py-2.5 rounded-md border border-gray-300 text-gray-800 hover:bg-gray-50'
             >
               Je veux une démo
