@@ -1,6 +1,6 @@
 import express, { Request, Response, NextFunction } from "express";
 import * as dotenv from "dotenv";
-import { clerkMiddleware } from "@clerk/express";
+import { clerkMiddleware, getAuth } from "@clerk/express";
 // Charger les variables d'environnement
 dotenv.config();
 
@@ -17,22 +17,18 @@ import clerkRoutes from "./routes/clerk";
 import inseeBceRoutes from "./routes/insee-bce";
 import formsRoutes from "./routes/forms";
 import adminRoutes from "./routes/admin";
-import { applyCors } from "./services/cors";
 
 const app = express();
 
 app.use((req: any, res: any, next: NextFunction) => {
   const origin = req.headers.origin;
 
-  if (origin?.endsWith(".vercel.app") || origin === "https://paylive.cc") {
+  if (origin === "https://paylive.cc" || origin?.endsWith(".vercel.app")) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
 
   res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Authorization, Content-Type, Clerk-Frontend-Api, Clerk-Publishable-Key"
-  );
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
 
   if (req.method === "OPTIONS") {
@@ -43,6 +39,22 @@ app.use((req: any, res: any, next: NextFunction) => {
 });
 
 app.use(clerkMiddleware());
+
+app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+  if (
+    req.path.startsWith("/stripe/webhook") ||
+    req.path.startsWith("/boxtal/webhook")
+  ) {
+    return next();
+  }
+
+  const auth = getAuth(req);
+  if (!auth?.isAuthenticated || !auth.userId) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  next();
+});
 
 const PORT = process.env.PORT || 5000;
 
