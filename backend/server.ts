@@ -20,26 +20,37 @@ import adminRoutes from "./routes/admin";
 import { applyCors } from "./services/cors";
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+
+app.use((req: any, res: any, next: NextFunction) => {
+  const origin = req.headers.origin;
+
+  if (origin?.endsWith(".vercel.app") || origin === "https://paylive.cc") {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Authorization, Content-Type, Clerk-Frontend-Api, Clerk-Publishable-Key"
+  );
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  next();
+});
 
 //app.use(clerkMiddleware());
+
+const PORT = process.env.PORT || 5000;
 
 // Pour les webhooks Stripe, nous devons traiter le raw body
 app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
 
 // Pour les webhooks Boxtal, traiter aussi le raw body avant express.json
 app.use("/api/boxtal/webhook", express.raw({ type: "application/json" }));
-
-app.use("/api", (req: Request, res: Response, next: NextFunction) => {
-  if (req.path === "/stripe/webhook" || req.path === "/boxtal/webhook") {
-    return next();
-  }
-  applyCors(req, res);
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
-  }
-  next();
-});
 
 // Pour les autres routes, utiliser JSON
 app.use(express.json());

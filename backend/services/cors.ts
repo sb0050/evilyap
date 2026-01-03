@@ -12,7 +12,6 @@ export function applyCors(req: Request, res: Response) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
 
-  res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader(
     "Access-Control-Allow-Headers",
