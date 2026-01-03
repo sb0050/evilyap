@@ -27,10 +27,27 @@ const allowedOrigins = process.env.CLIENT_URL || "http://localhost:3000";
 console.warn("CORS is enabled for:", allowedOrigins);
 app.use(
   cors({
-    origin: "*",
-    credentials: false,
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+
+      // autorise tous les previews Vercel
+      if (origin.endsWith(".vercel.app") || origin === "https://paylive.cc") {
+        return callback(null, true);
+      }
+
+      return callback(new Error("CORS blocked"));
+    },
+    credentials: true,
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "Clerk-Frontend-Api",
+      "Clerk-Publishable-Key",
+    ],
   })
 );
+
+app.options("*", cors());
 
 //app.use(clerkMiddleware());
 
