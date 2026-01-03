@@ -42,7 +42,7 @@ app.use((req: any, res: any, next: NextFunction) => {
   next();
 });
 
-//app.use(clerkMiddleware());
+app.use(clerkMiddleware());
 
 const PORT = process.env.PORT || 5000;
 
