@@ -1,5 +1,4 @@
 import express, { Request, Response, NextFunction } from "express";
-import cors = require("cors");
 import * as dotenv from "dotenv";
 import { clerkMiddleware } from "@clerk/express";
 // Charger les variables d'environnement
@@ -18,36 +17,10 @@ import clerkRoutes from "./routes/clerk";
 import inseeBceRoutes from "./routes/insee-bce";
 import formsRoutes from "./routes/forms";
 import adminRoutes from "./routes/admin";
+import { applyCors } from "./services/cors";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-const allowedOrigins = process.env.CLIENT_URL || "http://localhost:3000";
-
-console.warn("CORS is enabled for:", allowedOrigins);
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
-
-      // autorise tous les previews Vercel
-      if (origin.endsWith(".vercel.app") || origin === "https://paylive.cc") {
-        return callback(null, true);
-      }
-
-      return callback(new Error("CORS blocked"));
-    },
-    credentials: true,
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "Clerk-Frontend-Api",
-      "Clerk-Publishable-Key",
-    ],
-  })
-);
-
-app.options("*", cors());
 
 //app.use(clerkMiddleware());
 
@@ -56,6 +29,17 @@ app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
 
 // Pour les webhooks Boxtal, traiter aussi le raw body avant express.json
 app.use("/api/boxtal/webhook", express.raw({ type: "application/json" }));
+
+app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+  if (req.path === "/stripe/webhook" || req.path === "/boxtal/webhook") {
+    return next();
+  }
+  applyCors(req, res);
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+  next();
+});
 
 // Pour les autres routes, utiliser JSON
 app.use(express.json());
