@@ -48,9 +48,11 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
     return next();
   }
 
-  const auth = getAuth(req);
-  if (!auth?.isAuthenticated || !auth.userId) {
-    return res.status(401).json({ error: "Unauthorized" });
+  if (process.env.ENV === "prod") {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
   }
 
   next();
