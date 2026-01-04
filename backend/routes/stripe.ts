@@ -940,7 +940,7 @@ router.post(
     }
 
     let paymentIntent: Stripe.PaymentIntent | null = null;
-    console.warn("Event type Webhook:", event.type);
+    console.log("Event type Webhook:", event.type);
 
     // Gérer les événements
     switch (event.type) {

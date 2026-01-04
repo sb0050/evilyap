@@ -669,10 +669,10 @@ class EmailService {
   // Email de demande de remboursement au SAV après annulation Boxtal
   async sendAdminRefundRequest(data: AdminRefundRequestData): Promise<boolean> {
     try {
-      const savEmail = process.env.SAV_EMAIL || process.env.SUPPORT_EMAIL || "";
+      const savEmail = process.env.SMTP_USER || "";
       if (!savEmail) {
         console.warn(
-          "SAV_EMAIL/SUPPORT_EMAIL non configuré, email de remboursement non envoyé."
+          "SMTP_USER non configuré, email de remboursement non envoyé."
         );
         return false;
       }
@@ -976,13 +976,9 @@ class EmailService {
     context?: string;
   }): Promise<boolean> {
     try {
-      const to =
-        process.env.SAV_EMAIL ||
-        process.env.SUPPORT_EMAIL ||
-        process.env.SMTP_USER ||
-        "";
+      const to = process.env.SMTP_USER || "";
       if (!to) {
-        console.error("sendAdminError: SAV_EMAIL/SUPPORT_EMAIL non configuré");
+        console.error("sendAdminError: SMTP_USER non configuré");
         return false;
       }
 
@@ -1046,11 +1042,9 @@ class EmailService {
     }>;
   }): Promise<boolean> {
     try {
-      const toEmail = process.env.SUPPORT_EMAIL || process.env.SAV_EMAIL || "";
+      const toEmail = process.env.SMTP_USER || "";
       if (!toEmail) {
-        console.warn(
-          "SUPPORT_EMAIL/SAV_EMAIL non configuré, email de support non envoyé."
-        );
+        console.warn("SMTP_USER non configuré, email de support non envoyé.");
         return false;
       }
 
@@ -1389,9 +1383,9 @@ class EmailService {
     currency?: string;
   }): Promise<boolean> {
     try {
-      const savEmail = process.env.SAV_EMAIL || "";
+      const savEmail = process.env.SMTP_USER || "";
       if (!savEmail) {
-        console.warn("SAV_EMAIL non configuré, email SAV non envoyé.");
+        console.warn("SMTP_USER non configuré, email SAV non envoyé.");
         return false;
       }
 

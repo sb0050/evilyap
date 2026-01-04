@@ -265,7 +265,7 @@ router.post("/demo-request", async (req, res) => {
       return res.status(400).json({ error: "Email invalide" });
     }
     if (!to) {
-      return res.status(500).json({ error: "SAV_EMAIL non configuré" });
+      return res.status(500).json({ error: "SMTP_USER non configuré" });
     }
     if (!fromEmail) {
       return res.status(500).json({ error: "SMTP_GMAIL_USER non configuré" });
