@@ -1014,7 +1014,7 @@ class EmailService {
       `;
 
       const info = await this.transporter.sendMail({
-        from: process.env.SMTP_USER || "no-reply@example.com",
+        from: process.env.SMTP_USER || "contact@paylive.cc",
         to,
         subject: `[ALERT] ${data.subject}`,
         html: htmlContent,
@@ -1345,7 +1345,7 @@ class EmailService {
       `;
 
       const mailOptions = {
-        from: process.env.SMTP_USER || "no-reply@example.com",
+        from: process.env.SMTP_USER || "contact@paylive.cc",
         to: data.toEmail,
         subject: `📨 Client — ${data.storeName}${
           data.shipmentId ? ` (Shipment ${data.shipmentId})` : ""

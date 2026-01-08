@@ -987,7 +987,7 @@ router.post(
             )) as Stripe.Customer;
           } else {
             console.warn(
-              "checkout.session.completed without a linked customer; using session fallbacks"
+              "checkout.session.completed without a linked customer"
             );
           }
 
@@ -1161,12 +1161,15 @@ router.post(
             let storeId: number | null = null;
             let storeSlug: string | null = null;
             let storeAddress: any = null;
+            let storeStripeId: any = null;
 
             if (storeName) {
               try {
                 const { data: storeData, error: storeError } = await supabase
                   .from("stores")
-                  .select("id, slug, owner_email, description, address")
+                  .select(
+                    "id, slug, owner_email, description, address, stripe_id"
+                  )
                   .eq("name", storeName)
                   .single();
 
@@ -1175,6 +1178,7 @@ router.post(
                   storeDescription = storeData.description;
                   storeId = storeData.id || null;
                   storeSlug = storeData.slug || null;
+                  storeStripeId = storeData.stripe_id || null;
                   storeAddress = (storeData as any)?.address || null;
                   if (process.env.CLOUDFRONT_URL && storeSlug) {
                     storeLogo = `${process.env.CLOUDFRONT_URL}/images/${storeId}`;
@@ -1206,14 +1210,22 @@ router.post(
               },
             };
 
+            const storeOwner: any = await stripe.customers.retrieve(
+              storeStripeId as string
+            );
+
             // From address: privilégier l'adresse de la boutique si connue, sinon variables d'env / valeurs par défaut
             const fromAddress = {
               type: "BUSINESS",
               contact: {
-                email: "no-reply@paylive.cc",
+                email: process.env.SMTP_USER || "contact@paylive.cc",
                 phone: (storeAddress as any)?.phone || "33666477877",
-                lastName: storeName || "PayLive",
-                firstName: storeName || "PayLive",
+                lastName: storeOwner?.name?.split(" ").slice(-1)[0] || "",
+                firstName:
+                  storeOwner?.name?.split(" ").slice(0, -1).join(" ") ||
+                  storeOwner?.name ||
+                  "",
+                company: storeName || "PayLive",
               },
               location: {
                 city: (storeAddress?.city as any) || "Paris",
