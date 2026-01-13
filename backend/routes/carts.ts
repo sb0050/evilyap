@@ -12,6 +12,13 @@ if (!supabaseUrl || !supabaseKey) {
 }
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+function getSuggestedWeightFromItemCount(itemCount: number): string {
+  if (!Number.isFinite(itemCount) || itemCount <= 0) return "500g";
+  if (itemCount <= 1) return "500g";
+  if (itemCount <= 3) return "1kg";
+  return "2kg";
+}
+
 async function deleteCartInternal(id: number, requireExpired?: boolean) {
   if (!id || typeof id !== "number") {
     return { success: false, error: "id requis pour la suppression" };
@@ -191,6 +198,7 @@ router.get("/summary", async (req, res) => {
     const itemsByStore: Array<{
       store: { id: number; name: string; slug: string } | null;
       total: number;
+      suggestedWeight: string;
       items: Array<{
         id: number;
         product_reference: string;
@@ -223,10 +231,14 @@ router.get("/summary", async (req, res) => {
 
     let grandTotal = 0;
     for (const k of Object.keys(grouped)) {
+      const suggestedWeight = getSuggestedWeightFromItemCount(
+        Array.isArray(grouped[k].items) ? grouped[k].items.length : 0
+      );
       itemsByStore.push({
         store: grouped[k].store,
         total: grouped[k].total,
         items: grouped[k].items,
+        suggestedWeight,
       });
       grandTotal += grouped[k].total;
     }

@@ -76,6 +76,83 @@ const getInternalBase = (): string => {
   return `http://localhost:${process.env.PORT || 5000}`;
 };
 
+const CATEGORY_BASE_WEIGHT: Record<string, number> = {
+  robe: 0.6,
+  jean: 0.8,
+  pantalon: 0.75,
+  jupe: 0.5,
+  top: 0.35,
+  chemise: 0.45,
+  veste: 1.0,
+  manteau: 1.6,
+};
+const DEFAULT_HIGH_WEIGHT = 1.2;
+const PACKAGING_WEIGHT = 0.4;
+const SAFETY_MARGIN = 1.15;
+const CATEGORIES = Object.keys(CATEGORY_BASE_WEIGHT);
+const normalizeText = (text: string): string =>
+  text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+const detectCategory = (description: string) => {
+  const normalized = normalizeText(description);
+  for (const cat of CATEGORIES) {
+    if (normalized.includes(cat)) {
+      return { category: cat, confidence: 0.8 };
+    }
+  }
+  return { category: "unknown", confidence: 0 };
+};
+const computeUnitWeight = (description: string) => {
+  const { category, confidence } = detectCategory(description);
+  if (category === "unknown" || confidence < 0.6) {
+    return { category: "unknown", unitWeight: DEFAULT_HIGH_WEIGHT, confidence };
+  }
+  let weight = CATEGORY_BASE_WEIGHT[category] || DEFAULT_HIGH_WEIGHT;
+  const text = normalizeText(description);
+  if (text.includes("long")) weight += 0.2;
+  if (text.includes("epais") || text.includes("hiver")) weight += 0.3;
+  if (text.includes("manche longue")) weight += 0.1;
+  if (text.includes("coton")) weight += 0.05;
+  if (text.includes("double")) weight += 0.25;
+  return { category, unitWeight: weight, confidence };
+};
+const calculateParcelWeight = (
+  items: Array<{ description: string; quantity: number }>
+) => {
+  let total = 0;
+  const breakdown: Array<{
+    description: string;
+    category: string;
+    unitWeight: number;
+    quantity: number;
+    subtotal: number;
+    confidence: number;
+  }> = [];
+  for (const item of items) {
+    const { category, unitWeight, confidence } = computeUnitWeight(
+      item.description || ""
+    );
+    const qty = Number(item.quantity || 1);
+    const subtotal = unitWeight * qty;
+    total += subtotal;
+    breakdown.push({
+      description: item.description || "",
+      category,
+      unitWeight,
+      quantity: qty,
+      subtotal,
+      confidence,
+    });
+  }
+  total += PACKAGING_WEIGHT;
+  total *= SAFETY_MARGIN;
+  const finalWeightKg = Math.ceil(total);
+  return { totalWeightKg: finalWeightKg, rawTotalKg: total, breakdown };
+};
+
 // Types pour les requêtes
 interface OrderItem {
   id: string;
@@ -116,9 +193,10 @@ router.get("/get-customer-details", async (req, res) => {
       address: customer.address,
       shipping: customer.shipping,
       deliveryMethod: customer.metadata.delivery_method,
-      parcelPointCode: customer.metadata.parcel_point_code,
-      homeDeliveryNetwork: customer.metadata.home_delivery_network,
+      parcelPointCode: customer.metadata.parcel_point,
+      deliveryNetwork: customer.metadata.delivery_network,
     };
+    console.log("Customer metadata:", customerData);
 
     res.json({ customer: customerData });
   } catch (error) {
@@ -360,7 +438,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       customerEmail,
       clerkUserId,
       storeName,
-      productReference,
+      items,
       address,
       deliveryMethod,
       parcelPoint,
@@ -368,6 +446,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       deliveryCost,
       deliveryNetwork,
       cartItemIds,
+      shippingHasBeenModified,
     } = req.body;
 
     const pickupPointCode = parcelPoint?.code || "";
@@ -403,7 +482,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       let customer: Stripe.Customer;
       console.log("Existing customers:", existingCustomers.data);
 
-      if (existingCustomers.data.length > 0) {
+      if (existingCustomers.data.length > 0 && shippingHasBeenModified) {
         // Mettre à jour le client existant
         customer = await stripe.customers.update(existingCustomers.data[0].id, {
           name: customerName,
@@ -419,7 +498,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           shipping:
             deliveryMethod === "pickup_point" && parcelPoint
               ? {
-                  name: customerName,
+                  name: `${parcelPoint.name || ""} - ${parcelPoint.network}`,
                   phone: phone,
                   address: {
                     line1: parcelPoint.location.street,
@@ -432,10 +511,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
                 }
               : ({} as Stripe.CustomerUpdateParams.Shipping),
           metadata: {
-            clerk_user_id: clerkUserId || "",
+            clerk_id: clerkUserId || "",
             delivery_method: deliveryMethod || "",
-            home_delivery_network: deliveryNetwork || "",
+            delivery_network: deliveryNetwork || "",
             store_name: storeName || "",
+            parcel_point: pickupPointCode || "",
           },
         });
         customerId = customer.id;
@@ -473,21 +553,109 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       "DLVG-DelivengoEasy": { min: 3, max: 5 },
     };
     const deliveryEstimate = offerDelivery[deliveryNetwork];
+    console.log("deliveryEstimate:", deliveryNetwork);
 
-    // 1. Créer un produit
-    const product = await stripe.products.create({
-      name: `Référence: ${productReference || "N/A"}`,
-      description: `Boutique: ${storeName || ""}`,
-      type: "good",
-      shippable: true,
-    });
-
-    // 2. Créer un prix pour ce produit
-    const price = await stripe.prices.create({
-      product: product.id,
-      unit_amount: Math.round(amount * 100), // Montant en centimes (20€)
-      currency: "eur",
-    });
+    const incomingItems: Array<{
+      reference: string;
+      description: string;
+      price: number;
+    }> = Array.isArray(items) ? items : [];
+    const joinedRefs = incomingItems
+      .map((it) => String(it.reference || "").trim())
+      .filter((s) => s.length > 0)
+      .join(";");
+    const weightCalc = calculateParcelWeight(
+      incomingItems.map((it) => ({
+        description: String(it.description || ""),
+        quantity: 1,
+      }))
+    );
+    const rawKg = Number(weightCalc.rawTotalKg || 0);
+    let weightLabel = "500g";
+    if (rawKg <= 0.5) weightLabel = "500g";
+    else if (rawKg <= 1) weightLabel = "1kg";
+    else weightLabel = "2kg";
+    let computedDeliveryCost = Number(deliveryCost || 0);
+    if (deliveryMethod !== "store_pickup") {
+      try {
+        let senderCity = "Paris";
+        let senderPostal = "75001";
+        let senderCountry = "FR";
+        try {
+          const { data: storeData, error: storeError } = await supabase
+            .from("stores")
+            .select("address")
+            .eq("name", storeName)
+            .single();
+          if (!storeError && storeData && (storeData as any)?.address) {
+            const a = (storeData as any).address;
+            senderCity = String(a?.city || senderCity);
+            senderPostal = String(a?.postal_code || senderPostal);
+            senderCountry = String(a?.country || senderCountry);
+          }
+        } catch (_e) {}
+        const recipientCity =
+          deliveryMethod === "pickup_point"
+            ? String(parcelPoint?.location?.city || "")
+            : String(address?.city || "");
+        const recipientPostal =
+          deliveryMethod === "pickup_point"
+            ? String(parcelPoint?.location?.postalCode || "")
+            : String(address?.postal_code || "");
+        const recipientCountry =
+          deliveryMethod === "pickup_point"
+            ? String(parcelPoint?.location?.countryIsoCode || "FR")
+            : String(address?.country || "FR");
+        const apiBase = getInternalBase();
+        const cotResp = await fetch(`${apiBase}/api/boxtal/cotation`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sender: {
+              country: senderCountry,
+              postal_code: senderPostal,
+              city: senderCity,
+            },
+            recipient: {
+              country: recipientCountry,
+              postal_code: recipientPostal,
+              city: recipientCity,
+            },
+          }),
+        });
+        if (cotResp.ok) {
+          const cotJson: any = await cotResp.json();
+          const netBlock = cotJson?.[deliveryNetwork] || null;
+          const offerForWeight = netBlock ? netBlock[weightLabel] : null;
+          const priceStr = offerForWeight ? offerForWeight.price : null;
+          const parsed = priceStr
+            ? Number(String(priceStr).replace(",", "."))
+            : NaN;
+          if (Number.isFinite(parsed)) {
+            computedDeliveryCost = parsed;
+          }
+        }
+      } catch (_e) {}
+    } else {
+      computedDeliveryCost = 0;
+    }
+    const orderLineItems: Array<{ price: string; quantity: number }> = [];
+    for (const it of incomingItems) {
+      const p = await stripe.products.create({
+        name: `${String(it.reference || "N/A")}`,
+        description: `${String(it.description || "")}`,
+        type: "good",
+        shippable: true,
+      });
+      const pr = await stripe.prices.create({
+        product: p.id,
+        unit_amount: Math.round(Number(it.price || 0) * 100),
+        currency: "eur",
+      });
+      orderLineItems.push({ price: pr.id, quantity: 1 });
+    }
+    const finalLineItems =
+      orderLineItems.length > 0 ? orderLineItems : undefined;
 
     // Créer la session de checkout intégrée
     const session = await stripe.checkout.sessions.create({
@@ -496,11 +664,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       customer: customerId,
       payment_intent_data: {
         description: `store: ${storeName || ""} - reference: ${
-          productReference || ""
+          joinedRefs || ""
         }`,
         metadata: {
           store_name: storeName || "PayLive",
-          product_reference: productReference || "N/A",
+          product_reference: joinedRefs || "N/A",
           cart_item_ids: Array.isArray(cartItemIds)
             ? (cartItemIds as any[]).join(",")
             : typeof cartItemIds === "string"
@@ -511,10 +679,10 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       // Duplicate useful metadata at the session level for easier retrieval
       metadata: {
         store_name: storeName || "PayLive",
-        product_reference: productReference || "N/A",
+        product_reference: joinedRefs || "N/A",
         delivery_method: deliveryMethod || "",
         delivery_network: deliveryNetwork || "",
-        weight: String(selectedWeight || ""),
+        weight: String(weightLabel || ""),
         pickup_point: JSON.stringify({
           street: parcelPoint?.location?.street,
           city: parcelPoint?.location?.city,
@@ -543,12 +711,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           ? cartItemIds
           : "",
       },
-      line_items: [
-        {
-          price: price.id,
-          quantity: 1,
-        },
-      ],
+      line_items: finalLineItems as any,
       mode: "payment",
       return_url: `${
         process.env.CLIENT_URL
@@ -573,7 +736,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           shipping_rate_data: {
             type: "fixed_amount",
             fixed_amount: {
-              amount: Math.round(deliveryCost * 100),
+              amount: Math.round(Number(computedDeliveryCost || 0) * 100),
               currency: "eur",
             },
             display_name: `Livraison ${formatDeliveryMethod(
@@ -664,8 +827,7 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
     const referenceFromSession = (session as any)?.metadata?.product_reference;
     const deliveryMethodFromSession = (session as any)?.metadata
       ?.delivery_method;
-    const parcelPointCodeFromSession = (session as any)?.metadata
-      ?.parcel_point_code;
+    const parcelPointCodeFromSession = (session as any)?.metadata?.parcel_point;
     const parcelPointNameFromSession = (session as any)?.metadata
       ?.parcel_point_name;
     const parcelPointNetworkFromSession = (session as any)?.metadata
@@ -713,10 +875,10 @@ router.get("/get-customer-by-id", async (req, res) => {
       address: c.address,
       shipping: c.shipping,
       deliveryMethod: c.metadata?.delivery_method,
-      parcelPointCode: c.metadata?.parcel_point_code,
-      homeDeliveryNetwork: c.metadata?.home_delivery_network,
+      parcelPointCode: c.metadata?.parcel_point,
+      deliveryNetwork: c.metadata?.delivery_network,
       shippingOrderIds: c.metadata?.shipping_order_ids,
-      clerkUserId: (c.metadata as any)?.clerk_user_id,
+      clerkUserId: (c.metadata as any)?.clerk_id,
     } as any;
     res.json({ customer: customerData });
   } catch (error) {
@@ -725,7 +887,7 @@ router.get("/get-customer-by-id", async (req, res) => {
   }
 });
 
-// Nouveau endpoint: récupérer les comptes externes Clerk d’un utilisateur via clerk_user_id
+// Nouveau endpoint: récupérer les comptes externes Clerk d’un utilisateur via clerk_id
 router.get("/get-clerk-user-by-id", async (req, res) => {
   try {
     const auth = getAuth(req);
@@ -1010,7 +1172,7 @@ router.post(
               (session.metadata?.delivery_network as any) ||
               customer.metadata?.delivery_network ||
               "N/A";
-            const clerkUserId = customer.metadata.clerk_user_id || null;
+            const clerkUserId = customer.metadata.clerk_id || null;
             let pickupPoint: any = {};
             let dropOffPoint: any = {};
             try {

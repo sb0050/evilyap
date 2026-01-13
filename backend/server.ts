@@ -23,7 +23,11 @@ const app = express();
 app.use((req: any, res: any, next: NextFunction) => {
   const origin = req.headers.origin;
 
-  if (origin === "https://paylive.cc" || origin?.endsWith(".vercel.app")) {
+  if (
+    origin === "https://paylive.cc" ||
+    origin?.endsWith(".vercel.app") ||
+    origin === "http://localhost:3000"
+  ) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
 

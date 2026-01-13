@@ -20,6 +20,7 @@
     "cors": "^2.8.5",
     "dotenv": "17.2.1",
     "express": "5.1.0",
+    "fast-fuzzy": "^1.12.0",
     "fast-xml-parser": "^4.5.3",
     "ibantools": "^4.5.1",
     "multer": "^2.0.2",

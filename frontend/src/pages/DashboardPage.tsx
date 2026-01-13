@@ -1032,7 +1032,7 @@ export default function DashboardPage() {
       const customer = s.customer_stripe_id
         ? customersMap[s.customer_stripe_id] || null
         : null;
-      const clerkId = customer?.clerkUserId || customer?.clerk_user_id;
+      const clerkId = customer?.clerkUserId || customer?.clerk_id;
       const user = clerkId ? socialsMap[clerkId] || null : null;
       const nameParts = [user?.firstName || '', user?.lastName || '']
         .filter(Boolean)
@@ -1076,7 +1076,7 @@ export default function DashboardPage() {
         const customer = s.customer_stripe_id
           ? customersMap[s.customer_stripe_id] || null
           : null;
-        const clerkId = customer?.clerkUserId || customer?.clerk_user_id;
+        const clerkId = customer?.clerkUserId || customer?.clerk_id;
         const user = clerkId ? socialsMap[clerkId] || null : null;
         const nameParts = [user?.firstName || '', user?.lastName || '']
           .filter(Boolean)
@@ -1150,7 +1150,7 @@ export default function DashboardPage() {
       const ids = Array.from(
         new Set(
           entries
-            .map(c => c?.clerkUserId || c?.clerk_user_id)
+            .map(c => c?.clerkUserId || c?.clerk_id)
             .filter((v: any) => !!v)
         )
       ) as string[];
@@ -3349,7 +3349,7 @@ export default function DashboardPage() {
                               ? customersMap[stripeId] || null
                               : null;
                             const clerkId =
-                              customer?.clerkUserId || customer?.clerk_user_id;
+                              customer?.clerkUserId || customer?.clerk_id;
                             const u = clerkId
                               ? socialsMap[clerkId] || null
                               : null;
@@ -3617,7 +3617,7 @@ export default function DashboardPage() {
                                 : null;
                               const clerkId =
                                 customer?.clerkUserId ||
-                                customer?.clerk_user_id;
+                                customer?.clerk_id;
                               const u = clerkId
                                 ? socialsMap[clerkId] || null
                                 : null;
@@ -3825,7 +3825,7 @@ export default function DashboardPage() {
                           }
                           const customer = customersMap[id] || null;
                           const clerkId =
-                            customer?.clerkUserId || customer?.clerk_user_id;
+                            customer?.clerkUserId || customer?.clerk_id;
                           const user = clerkId
                             ? socialsMap[clerkId] || null
                             : null;
@@ -4004,7 +4004,7 @@ export default function DashboardPage() {
                   }
                   const customer = customersMap[id] || null;
                   const clerkId =
-                    customer?.clerkUserId || customer?.clerk_user_id;
+                    customer?.clerkUserId || customer?.clerk_id;
                   const user = clerkId ? socialsMap[clerkId] || null : null;
                   if (clientsFilterField === 'name') {
                     const name1 = (customer?.name || '').toLowerCase();
@@ -4099,7 +4099,7 @@ export default function DashboardPage() {
                           .filter(Boolean)
                           .join(', ');
                         const clerkId =
-                          r.data?.clerkUserId || r.data?.clerk_user_id;
+                          r.data?.clerkUserId || r.data?.clerk_id;
                         const u = clerkId ? socialsMap[clerkId] || null : null;
                         const name =
                           r.data?.name ||
@@ -4447,7 +4447,7 @@ export default function DashboardPage() {
                                   {(() => {
                                     const clerkId =
                                       r.data?.clerkUserId ||
-                                      r.data?.clerk_user_id;
+                                      r.data?.clerk_id;
                                     const u = clerkId
                                       ? socialsMap[clerkId] || null
                                       : null;
@@ -4487,7 +4487,7 @@ export default function DashboardPage() {
                                   {(() => {
                                     const clerkId =
                                       r.data?.clerkUserId ||
-                                      r.data?.clerk_user_id;
+                                      r.data?.clerk_id;
                                     const u = clerkId
                                       ? socialsMap[clerkId] || null
                                       : null;

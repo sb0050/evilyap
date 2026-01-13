@@ -101,12 +101,6 @@ router.post("/auth", async (req, res) => {
 
 // Cotation
 router.post("/cotation", async (req, res) => {
-  const weights = [
-    { label: "500g", value: 0.5 },
-    { label: "1kg", value: 1 },
-    { label: "2kg", value: 2 },
-  ];
-
   const offerDimensions: any = {
     FR: {
       "MONR-CpourToi": { width: 41, length: 64, height: 38 },
@@ -132,7 +126,7 @@ router.post("/cotation", async (req, res) => {
       "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
     },
   };
-  const { sender, recipient } = req.body || {};
+  const { sender, recipient, network, weight } = req.body || {};
   if (
     !sender ||
     !recipient ||
@@ -141,7 +135,9 @@ router.post("/cotation", async (req, res) => {
     !sender?.city ||
     !recipient?.country ||
     !recipient?.postal_code ||
-    !recipient?.city
+    !recipient?.city ||
+    !network ||
+    !weight
   ) {
     return res.status(400).json({ error: "Missing required fields" });
   }
@@ -150,7 +146,13 @@ router.post("/cotation", async (req, res) => {
     const recipientCountry = String(recipient.country || "FR").toUpperCase();
     const countryKey = recipientCountry;
     const countryOffers = offerDimensions[countryKey] || {};
-    const networks = Object.keys(countryOffers);
+    const dimForNet = countryOffers[network] || {
+      width: 10,
+      length: 10,
+      height: 5,
+    };
+    const weightValue =
+      String(weight) === "500g" ? 0.5 : String(weight) === "1kg" ? 1 : 2;
 
     const credentials = Buffer.from(
       `${BOXTAL_API_V1_CONFIG.client_id}:${BOXTAL_API_V1_CONFIG.client_secret}`
@@ -164,63 +166,48 @@ router.post("/cotation", async (req, res) => {
     } as any;
 
     const parser = new XMLParser({ ignoreAttributes: true });
-    const result: Record<string, Record<string, any>> = {};
 
-    await Promise.all(
-      networks.map(async (net) => {
-        const dimForNet = countryOffers[net] || {
-          width: 10,
-          length: 10,
-          height: 5,
-        };
-        result[net] = {};
+    const params = new URLSearchParams();
+    params.append("colis_1.poids", String(weightValue));
+    params.append("colis_1.longueur", String(dimForNet.length));
+    params.append("colis_1.largeur", String(dimForNet.width));
+    params.append("colis_1.hauteur", String(dimForNet.height));
+    params.append("code_contenu", "40110");
+    params.append("expediteur.pays", String(sender.country));
+    params.append("expediteur.code_postal", String(sender.postal_code));
+    params.append("expediteur.ville", String(sender.city));
+    params.append("expediteur.type", "entreprise");
+    params.append("destinataire.pays", String(recipient.country));
+    params.append("destinataire.code_postal", String(recipient.postal_code));
+    params.append("destinataire.ville", String(recipient.city));
+    params.append("destinataire.type", "particulier");
+    params.append("offers[0]", String(network).replace(/-/g, ""));
 
-        const weightCalls = weights.map(async (w) => {
-          const params = new URLSearchParams();
-          params.append("colis_1.poids", String(w.value));
-          params.append("colis_1.longueur", String(dimForNet.length));
-          params.append("colis_1.largeur", String(dimForNet.width));
-          params.append("colis_1.hauteur", String(dimForNet.height));
-          params.append("code_contenu", "40110");
-          params.append("expediteur.pays", String(sender.country));
-          params.append("expediteur.code_postal", String(sender.postal_code));
-          params.append("expediteur.ville", String(sender.city));
-          params.append("expediteur.type", "entreprise");
-          params.append("destinataire.pays", String(recipient.country));
-          params.append(
-            "destinataire.code_postal",
-            String(recipient.postal_code)
-          );
-          params.append("destinataire.ville", String(recipient.city));
-          params.append("destinataire.type", "particulier");
-          params.append("offers[0]", net.replace(/-/g, ""));
-
-          const url = `${
-            BOXTAL_API_V1_CONFIG.api_url
-          }/cotation?${params.toString()}`;
-          const resp = await fetch(url, options);
-          if (!resp.ok) {
-            return;
-          }
-          const xml = await resp.text();
-          const json = parser.parse(xml);
-          const offer: any = (json as any)?.cotation?.shipment?.offer;
-          if (!offer) {
-            return;
-          }
-          const singleOffer = Array.isArray(offer) ? offer[0] : offer;
-          result[net][w.label] = {
-            price: singleOffer?.price || null,
-            characteristics: singleOffer?.characteristics || null,
-            delivery: singleOffer?.delivery || null,
-            collection: singleOffer?.collection || null,
-          };
+    const url = `${BOXTAL_API_V1_CONFIG.api_url}/cotation?${params.toString()}`;
+    const resp = await fetch(url, options);
+    if (!resp.ok) {
+      const contentType = resp.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const errJson = await resp.json();
+        return res.status(resp.status).json(errJson);
+      } else {
+        const errText = await resp.text();
+        return res.status(resp.status).json({
+          error: "Failed to get Boxtal cotation",
+          details: errText,
         });
-
-        await Promise.all(weightCalls);
-      })
-    );
-
+      }
+    }
+    const xml = await resp.text();
+    const json = parser.parse(xml);
+    const offer: any = (json as any)?.cotation?.shipment?.offer;
+    const singleOffer = Array.isArray(offer) ? offer?.[0] : offer;
+    const result = {
+      price: singleOffer?.price || null,
+      characteristics: singleOffer?.characteristics || null,
+      delivery: singleOffer?.delivery || null,
+      collection: singleOffer?.collection || null,
+    };
     return res.status(200).json(result);
   } catch (error: any) {
     console.error("Error in /api/boxtal/cotation:", error);
