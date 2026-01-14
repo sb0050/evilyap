@@ -2,7 +2,6 @@ import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import { useEffect, useState, useRef } from 'react';
-import { RefreshCw } from 'lucide-react';
 import { createShippingOrder } from '../utils/api';
 import { CreateShippingOrderRequest } from '../types/shipping';
 import { Address } from '@stripe/stripe-js';
@@ -475,7 +474,6 @@ export default function ParcelPointMap({
   storeWebsite,
   onParcelPointSelect,
   defaultDeliveryMethod = 'pickup_point',
-  initialDeliveryNetwork,
   disablePopupsOnMobile = false,
 }: ParcelPointMapProps) {
   const [parcelPoints, setParcelPoints] = useState<ParcelPointResponse[]>([]);
@@ -502,8 +500,56 @@ export default function ParcelPointMap({
   const [canShowRefreshMessages, setCanShowRefreshMessages] =
     useState<boolean>(true);
 
+  const [dynamicPricesByOfferCode, setDynamicPricesByOfferCode] = useState<
+    Record<string, Record<string, number>>
+  >({});
+
   // Helper pour changer le poids et propager au parent
-  const applyWeightChange = (_newWeight: string) => {};
+  const applyWeightChange = (newWeight: string) => {
+    setSelectedWeight(newWeight);
+    if (onParcelPointSelect) {
+      if (deliveryType === 'PICKUP') {
+        if (selectedPoint) {
+          const cost = getDeliveryPrice(selectedPoint.network);
+          const countryCodeRaw = address?.country || 'FR';
+          const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
+          const shippingOfferCode = (networkConfig as any)[countryCode]?.[
+            selectedPoint.network
+          ]?.shippingOfferCode;
+          onParcelPointSelect(
+            selectedPoint,
+            'pickup_point',
+            cost,
+            newWeight,
+            shippingOfferCode
+          );
+        } else {
+          onParcelPointSelect(null, 'pickup_point', 0, newWeight, undefined);
+        }
+      } else if (deliveryType === 'HOME') {
+        if (selectedHomeDelivery) {
+          const network = selectedHomeDelivery.replace('_HOME', '');
+          const cost = getDeliveryPrice(network, true);
+          const countryCodeRaw = address?.country || 'FR';
+          const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
+          const shippingOfferCode = (homeDeliveryConfig as any)[countryCode]?.[
+            selectedHomeDelivery
+          ]?.shippingOfferCode;
+          onParcelPointSelect(
+            null,
+            'home_delivery',
+            cost,
+            newWeight,
+            shippingOfferCode
+          );
+        } else {
+          onParcelPointSelect(null, 'home_delivery', 0, newWeight, undefined);
+        }
+      } else if (deliveryType === 'STORE') {
+        onParcelPointSelect(null, 'store_pickup', 0, newWeight, undefined);
+      }
+    }
+  };
 
   // useEffect de debug pour surveiller les changements d'état
   useEffect(() => {}, [
@@ -618,6 +664,59 @@ export default function ParcelPointMap({
     }
   };
 
+  const fetchCotationPrices = async () => {
+    try {
+      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const sender = {
+        country: storePickupAddress?.country || 'FR',
+        postal_code: storePickupAddress?.postal_code || '',
+        city: storePickupAddress?.city || '',
+      };
+      const recipient = {
+        country: address?.country || 'FR',
+        postal_code: address?.postal_code || '',
+        city: address?.city || '',
+      };
+      if (!recipient.postal_code || !recipient.city) {
+        return;
+      }
+      const resp = await fetch(`${apiBase}/api/boxtal/cotation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sender, recipient }),
+      });
+      if (!resp.ok) {
+        return;
+      }
+      const data = (await resp.json()) as Record<
+        string,
+        Record<string, { price?: any; characteristics?: any }>
+      >;
+      const next: Record<string, Record<string, number>> = {};
+      Object.keys(data || {}).forEach(offerCode => {
+        const perWeight = data[offerCode] || {};
+        const weightMap: Record<string, number> = {};
+        Object.keys(perWeight).forEach(wLabel => {
+          const p = perWeight[wLabel]?.price;
+          const incl =
+            p && typeof p['tax-inclusive'] !== 'undefined'
+              ? Number(p['tax-inclusive'])
+              : undefined;
+          if (typeof incl === 'number' && Number.isFinite(incl)) {
+            weightMap[wLabel] = incl;
+          }
+        });
+        if (Object.keys(weightMap).length > 0) {
+          next[offerCode] = weightMap;
+        }
+      });
+      setDynamicPricesByOfferCode(next);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('Erreur cotation:', e);
+    }
+  };
+
   // Effet pour charger les points relais quand l'adresse change
   const lastLine1Ref = useRef<string | undefined>(undefined);
   const autoSelectRef = useRef<boolean>(false);
@@ -659,6 +758,7 @@ export default function ParcelPointMap({
   const handleManualRefresh = () => {
     if (address && address.line1) {
       fetchParcelPoints(address);
+      fetchCotationPrices();
       setNeedsRefresh(false);
     }
   };
@@ -702,34 +802,6 @@ export default function ParcelPointMap({
 
   useEffect(() => {
     if (
-      deliveryType === 'HOME' &&
-      initialDeliveryNetwork &&
-      !selectedHomeDelivery
-    ) {
-      const code = String(initialDeliveryNetwork).toUpperCase();
-      const key = `${code}_HOME`;
-      const countryCodeRaw = address?.country || 'FR';
-      const countryKey = (
-        countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw
-      ) as keyof typeof homeDeliveryConfig;
-      const cfg = (homeDeliveryConfig as any)[countryKey]?.[key];
-      if (cfg) {
-        setSelectedHomeDelivery(key);
-        const shippingOfferCode = cfg?.shippingOfferCode;
-        if (onParcelPointSelect) {
-          onParcelPointSelect(
-            null,
-            'home_delivery',
-            0,
-            selectedWeight,
-            shippingOfferCode
-          );
-        }
-      }
-    }
-  }, [deliveryType, initialDeliveryNetwork, address?.country]);
-  useEffect(() => {
-    if (
       (address?.country === 'CE' || address?.country === 'CH') &&
       deliveryType === 'PICKUP'
     ) {
@@ -749,6 +821,7 @@ export default function ParcelPointMap({
   // Gestion de la sélection d'un point relais
   const handleMarkerClick = (parcelPoint: ParcelPointData) => {
     setSelectedPoint(parcelPoint);
+    const cost = getDeliveryPrice(parcelPoint.network, false);
     const countryCodeRaw = address?.country || 'FR';
     const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
     const shippingOfferCode = (networkConfig as any)[countryCode]?.[
@@ -759,8 +832,8 @@ export default function ParcelPointMap({
       onParcelPointSelect(
         parcelPoint,
         'pickup_point',
-        0,
-        undefined,
+        cost,
+        selectedWeight,
         shippingOfferCode
       );
     }
@@ -774,19 +847,25 @@ export default function ParcelPointMap({
       setSelectedPoint(null);
       setSelectedHomeDelivery('');
       if (onParcelPointSelect) {
-        onParcelPointSelect(null, 'home_delivery', 0, undefined, undefined);
+        onParcelPointSelect(
+          null,
+          'home_delivery',
+          0,
+          selectedWeight,
+          undefined
+        );
       }
     } else if (type === 'PICKUP') {
       setSelectedHomeDelivery('');
       setSelectedPoint(null);
       if (onParcelPointSelect) {
-        onParcelPointSelect(null, 'pickup_point', 0, undefined, undefined);
+        onParcelPointSelect(null, 'pickup_point', 0, selectedWeight, undefined);
       }
     } else if (type === 'STORE') {
       setSelectedHomeDelivery('');
       setSelectedPoint(null);
       if (onParcelPointSelect) {
-        onParcelPointSelect(null, 'store_pickup', 0, undefined, undefined);
+        onParcelPointSelect(null, 'store_pickup', 0, selectedWeight, undefined);
       }
     }
   };
@@ -803,14 +882,15 @@ export default function ParcelPointMap({
     }
     setSelectedHomeDelivery(deliveryKey);
     const baseNetwork = String(deliveryKey).replace('_HOME', '');
+    const price = getDeliveryPrice(baseNetwork, true);
     const shippingOfferCode = config?.shippingOfferCode;
 
     if (onParcelPointSelect) {
       onParcelPointSelect(
         null,
         'home_delivery',
-        0,
-        undefined,
+        price,
+        selectedWeight,
         shippingOfferCode
       );
     }
@@ -824,6 +904,35 @@ export default function ParcelPointMap({
     if (networkFilter === 'ALL') return true;
     return network === networkFilter;
   });
+
+  // Calculer le prix de livraison pour un point relais ou domicile
+  const getDeliveryPrice = (
+    network: string,
+    isHomeDelivery: boolean = false
+  ): number => {
+    const getByOffer = (offerCode?: string) => {
+      const val = offerCode
+        ? dynamicPricesByOfferCode[offerCode]?.[selectedWeight]
+        : undefined;
+      return typeof val === 'number' ? val : 0;
+    };
+    const countryCodeRaw = address?.country || 'FR';
+    const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
+    if (isHomeDelivery) {
+      const homeKey = `${network}_HOME`;
+      const cfg = (homeDeliveryConfig as any)[countryCode]?.[homeKey];
+      const dyn = getByOffer(cfg?.shippingOfferCode);
+      if (dyn && Number.isFinite(dyn) && dyn > 0) return dyn;
+      const fallback = cfg?.prices?.[selectedWeight];
+      return typeof fallback === 'number' ? fallback : 0;
+    } else {
+      const cfg = (networkConfig as any)[countryCode]?.[network];
+      const dyn = getByOffer(cfg?.shippingOfferCode);
+      if (dyn && Number.isFinite(dyn) && dyn > 0) return dyn;
+      const fallback = cfg?.prices?.[selectedWeight];
+      return typeof fallback === 'number' ? fallback : 0;
+    }
+  };
 
   // Obtenir le délai de livraison
   const getDeliveryDelay = (
@@ -883,27 +992,39 @@ export default function ParcelPointMap({
         {/* Header */}
         <div className='bg-slate-50 px-4 py-3 border-b border-gray-200'>
           <div className='flex items-center justify-between mb-3'>
-            <div className='flex items-center space-x-2 text-xs text-gray-500'>
-              {loading && <span className='text-blue-600'>Chargement...</span>}
-              {error && <span className='text-red-600'>Erreur</span>}
-            </div>
-            {address?.line1 && (
-              <div className='sm:flex flex-end items-center space-x-3'>
+            <h4 className='text-sm font-medium text-gray-900'>
+              Choisir sa livraison
+            </h4>
+            <div className='flex items-center space-x-2'>
+              <div className='flex items-center space-x-2 text-xs text-gray-500'>
+                {loading && (
+                  <span className='text-blue-600'>🔄 Chargement...</span>
+                )}
+                {error && <span className='text-red-600'>❌ Erreur</span>}
+              </div>
+              {address?.line1 && needsRefresh && canShowRefreshMessages && (
                 <button
                   ref={refreshBtnRef}
                   onClick={handleManualRefresh}
                   disabled={loading}
-                  className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                  className={`px-2 py-1 text-xs rounded border transition-colors ${
+                    loading
+                      ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                      : 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+                  }`}
                   title='Rafraîchir les points relais'
                 >
-                  <RefreshCw
-                    className={`w-4 h-4 mr-1 ${loading ? 'animate-spin' : ''}`}
-                  />
-                  <span>Recharger</span>
+                  {'🔄 Rafraîchir (adresse modifiée)'}
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
+          {needsRefresh && canShowRefreshMessages && (
+            <div className='mb-3 px-3 py-2 rounded bg-yellow-50 border border-yellow-200 text-yellow-800 text-xs'>
+              L'adresse a été modifiée. Cliquez sur "Rafraîchir" pour charger
+              les points relais à proximité ainsi que les tarifs de livraison.
+            </div>
+          )}
 
           {/* Filtres */}
           <div className='space-y-3 mb-3'>
@@ -1010,6 +1131,64 @@ export default function ParcelPointMap({
                   </div>
                 </div>
               )}
+              <div className='flex-1'>
+                <div className='text-xs font-medium text-gray-700'>
+                  Choisis le format du colis
+                </div>
+                <div className='mt-2 space-y-2'>
+                  <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
+                    <div>
+                      <div className='text-sm font-medium text-gray-900'>
+                        Petit
+                      </div>
+                      <div className='text-xs text-gray-600'>
+                        Poids: 500g — Convient pour un article qui tient dans
+                        une grande enveloppe.
+                      </div>
+                    </div>
+                    <input
+                      type='radio'
+                      name='parcelWeight'
+                      checked={selectedWeight === '500g'}
+                      onChange={() => applyWeightChange('500g')}
+                    />
+                  </label>
+                  <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
+                    <div>
+                      <div className='text-sm font-medium text-gray-900'>
+                        Moyen
+                      </div>
+                      <div className='text-xs text-gray-600'>
+                        Poids: 1kg — Convient pour un article qui tient dans une
+                        boîte à chaussures.
+                      </div>
+                    </div>
+                    <input
+                      type='radio'
+                      name='parcelWeight'
+                      checked={selectedWeight === '1kg'}
+                      onChange={() => applyWeightChange('1kg')}
+                    />
+                  </label>
+                  <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
+                    <div>
+                      <div className='text-sm font-medium text-gray-900'>
+                        Grand
+                      </div>
+                      <div className='text-xs text-gray-600'>
+                        Poids: 2kg — Convient pour un article qui tient dans un
+                        carton de déménagement.
+                      </div>
+                    </div>
+                    <input
+                      type='radio'
+                      name='parcelWeight'
+                      checked={selectedWeight === '2kg'}
+                      onChange={() => applyWeightChange('2kg')}
+                    />
+                  </label>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1081,23 +1260,30 @@ export default function ParcelPointMap({
                       <strong>Téléphone:</strong> {storePickupPhone}
                     </p>
                   )}
-                  {storeWebsite && (
-                    <div className='text-blue-600 mt-2'>
-                      {'Infos sur la boutique:   '}
-                      <a
-                        href={
-                          storeWebsite.startsWith('http')
-                            ? storeWebsite
-                            : `https://${storeWebsite}`
-                        }
-                        target='_blank'
-                        rel='noopener noreferrer'
-                        className='text-blue-600 hover:text-blue-800 underline'
-                      >
-                        {storeWebsite}
-                      </a>
+                  <div className='flex items-center space-x-4 mt-2'>
+                    <span className='font-semibold text-green-600'>
+                      Prix: 0€
+                    </span>
+                    <div className='text-blue-600'>
+                      {storeWebsite && (
+                        <>
+                          {'Infos sur la boutique:   '}
+                          <a
+                            href={
+                              storeWebsite.startsWith('http')
+                                ? storeWebsite
+                                : `https://${storeWebsite}`
+                            }
+                            target='_blank'
+                            rel='noopener noreferrer'
+                            className='text-blue-600 hover:text-blue-800 underline'
+                          >
+                            {storeWebsite}
+                          </a>
+                        </>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -1254,6 +1440,16 @@ export default function ParcelPointMap({
                                 <br />
                                 <strong>Distance:</strong> {distance}m<br />
                                 <div className='flex items-center space-x-1 mt-1'>
+                                  <strong>
+                                    Prix livraison ({selectedWeight}):
+                                  </strong>
+                                  <span className='text-green-600 font-semibold'>
+                                    {needsRefresh
+                                      ? '- €'
+                                      : `${getDeliveryPrice(point.network).toFixed(2)}€`}
+                                  </span>
+                                </div>
+                                <div className='flex items-center space-x-1 mt-1'>
                                   <strong>Délai:</strong>
                                   <span className='text-blue-600 font-medium'>
                                     {getDeliveryDelay(point.network)}
@@ -1306,6 +1502,7 @@ export default function ParcelPointMap({
                 .filter(([, cfg]) => (cfg as any)?.disabled !== true)
                 .map(([key, config]: any) => {
                   const network = key.replace('_HOME', '');
+                  const price = getDeliveryPrice(network, true);
                   const delay = getDeliveryDelay(network, true);
                   const isSelected = selectedHomeDelivery === key;
                   const isDisabled = !!config.disabled;
@@ -1344,6 +1541,14 @@ export default function ParcelPointMap({
                                 Livraison à votre domicile
                               </span>
                             </div>
+                          </div>
+                        </div>
+                        <div className='text-right'>
+                          <div className='text-lg font-semibold text-green-600'>
+                            {needsRefresh ? '- €' : `${price.toFixed(2)}€`}
+                          </div>
+                          <div className='text-xs text-gray-500'>
+                            pour {selectedWeight}
                           </div>
                         </div>
                       </div>
@@ -1407,8 +1612,16 @@ export default function ParcelPointMap({
                           selectedPoint.network}{' '}
                         • Code: {selectedPoint.code}
                       </div>
-                      <div className='text-xs text-blue-600 font-medium mt-2'>
-                        Délai: {getDeliveryDelay(selectedPoint.network)}
+                      <div className='flex items-center justify-between mt-2'>
+                        <div className='text-sm font-semibold text-green-700'>
+                          Livraison ({selectedWeight}):{' '}
+                          {needsRefresh
+                            ? '- €'
+                            : `${getDeliveryPrice(selectedPoint.network).toFixed(2)}€`}
+                        </div>
+                        <div className='text-xs text-blue-600 font-medium'>
+                          Délai: {getDeliveryDelay(selectedPoint.network)}
+                        </div>
                       </div>
                     </div>
                     <button
