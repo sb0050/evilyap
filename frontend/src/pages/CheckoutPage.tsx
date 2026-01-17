@@ -220,6 +220,7 @@ export default function CheckoutPage() {
   const [orderAccordionOpen, setOrderAccordionOpen] = useState(true);
   const [paymentAccordionOpen, setPaymentAccordionOpen] = useState(false);
   const [orderCompleted, setOrderCompleted] = useState(false);
+  const [isEditingOrder, setIsEditingOrder] = useState(false);
   const [isEditingDelivery, setIsEditingDelivery] = useState(false);
   const [shippingHasBeenModified, setShippingHasBeenModified] = useState(false);
 
@@ -377,28 +378,6 @@ export default function CheckoutPage() {
       Boolean((formData.phone || '').trim());
 
     return hasEmail && hasDeliveryInfo && hasContactInfo;
-  };
-  const hasSavedDeliveryChoice = () => {
-    const md = (customerData as any)?.metadata || {};
-    const savedMethod =
-      md.delivery_method ||
-      (customerData as any)?.delivery_method ||
-      (customerData as any)?.deliveryMethod ||
-      null;
-    if (!savedMethod) return false;
-    if (savedMethod === 'home_delivery') {
-      const netOk =
-        Boolean(md.delivery_network) ||
-        Boolean((formData as any)?.shippingOfferCode);
-      return netOk;
-    }
-    if (savedMethod === 'pickup_point') {
-      return Boolean(md.parcel_point || (selectedParcelPoint as any)?.code);
-    }
-    if (savedMethod === 'store_pickup') {
-      return true;
-    }
-    return false;
   };
 
   const handleProceedToPayment = async () => {
@@ -611,7 +590,25 @@ export default function CheckoutPage() {
     setOrderAccordionOpen(true);
     setPaymentAccordionOpen(false);
     setShowPayment(false);
+    setIsEditingOrder(true);
+    setIsEditingDelivery(false);
+    setFormData(prev => ({
+      ...prev,
+      reference: '',
+      description: '',
+    }));
+    setAmount(0);
+    setAmountInput('');
+    setEmbeddedClientSecret('');
+  };
 
+  const handleModifyDelivery = () => {
+    setOrderCompleted(false);
+    setOrderAccordionOpen(true);
+    setPaymentAccordionOpen(false);
+    setShowPayment(false);
+    setIsEditingOrder(false);
+    setIsEditingDelivery(true);
     setEmbeddedClientSecret('');
   };
 
@@ -699,38 +696,22 @@ export default function CheckoutPage() {
 
           <div className='grid grid-cols-1 gap-8'>
             {/* Accordéon Votre Commande */}
-            <div className='bg-white rounded-lg shadow-sm'>
-              <div
-                className={`p-6 border-b cursor-pointer flex items-center justify-between ${
-                  orderCompleted ? 'bg-gray-50' : ''
-                }`}
-              >
-                <div className='flex items-center space-x-3'>
-                  <ShoppingBag
-                    className='w-6 h-6'
-                    style={{ color: themeColor }}
-                  />
-                  <h2 className='text-xl font-semibold text-gray-900'>
-                    Votre Commande
-                  </h2>
-                  {orderCompleted && (
-                    <button
-                      onClick={e => {
-                        e.stopPropagation();
-                        handleModifyOrder();
-                      }}
-                      className='ml-4 px-3 py-1 text-sm bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 flex items-center space-x-1'
-                    >
-                      <Edit className='w-4 h-4' />
-                      <span>Modifier</span>
-                    </button>
-                  )}
+            <div className=' rounded-lg shadow-sm'>
+              {!orderCompleted && (
+                <div className='p-6 border-b flex items-center justify-between'>
+                  <div className='flex items-center space-x-3'>
+                    <ShoppingBag
+                      className='w-6 h-6'
+                      style={{ color: themeColor }}
+                    />
+                    <h2 className='text-xl font-semibold text-gray-900'>
+                      Votre Commande
+                    </h2>
+                  </div>
                 </div>
-              </div>
+              )}
 
-              <div
-                className={`p-6 ${orderAccordionOpen && !orderCompleted ? '' : 'hidden'}`}
-              >
+              <div className='p-6'>
                 <CheckoutForm
                   store={store}
                   amount={amount}
@@ -771,9 +752,11 @@ export default function CheckoutPage() {
                   showDelivery={showDelivery}
                   setShowDelivery={setShowDelivery}
                   showToast={showToast}
-                  isEditingDelivery={isEditingDelivery}
                   shippingHasBeenModified={shippingHasBeenModified}
                   setShippingHasBeenModified={setShippingHasBeenModified}
+                  isEditingDelivery={isEditingDelivery}
+                  isEditingOrder={isEditingOrder}
+                  cartItemsCount={cartItemsForStore.length}
                 />
               </div>
 
@@ -836,9 +819,7 @@ export default function CheckoutPage() {
                       <button
                         onClick={e => {
                           e.stopPropagation();
-                          setIsEditingDelivery(true);
-                          setDeliveryMethod('pickup_point');
-                          handleModifyOrder();
+                          handleModifyDelivery();
                         }}
                         className='px-3 py-1 text-sm bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 flex items-center space-x-1'
                       >
@@ -943,11 +924,13 @@ export default function CheckoutPage() {
                     (customerData as any)?.delivery_method ||
                     (customerData as any)?.metadata?.delivery_method ||
                     null;
-                  const canProceed =
-                    cartItemsForStore.length > 0 &&
-                    (isEditingDelivery
-                      ? isFormComplete()
-                      : Boolean(savedMethod));
+                  const hasItems = cartItemsForStore.length > 0;
+                  const deliveryIsValid =
+                    isEditingDelivery || savedMethod ? true : isFormComplete();
+
+                  const canProceed = hasItems && deliveryIsValid;
+
+                  
                   const btnColor = canProceed ? '#0074D4' : '#6B7280';
                   return (
                     <button
@@ -1051,6 +1034,8 @@ function CheckoutForm({
   isEditingDelivery,
   shippingHasBeenModified,
   setShippingHasBeenModified,
+  isEditingOrder,
+  cartItemsCount,
 }: {
   store: Store | null;
   amount: number;
@@ -1094,6 +1079,8 @@ function CheckoutForm({
   isEditingDelivery: boolean;
   shippingHasBeenModified: boolean;
   setShippingHasBeenModified: (val: boolean) => void;
+  isEditingOrder: boolean;
+  cartItemsCount: number;
 }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -1101,6 +1088,28 @@ function CheckoutForm({
     !Boolean((formData.reference || '').trim()) ||
     !(amount > 0) ||
     !Boolean(String((formData as any).description || '').trim());
+
+  const hasDeliveryMethod = (() => {
+    const md = (customerData as any)?.metadata || {};
+    return Boolean(
+      (customerData as any)?.deliveryMethod ||
+        (customerData as any)?.delivery_method ||
+        md.delivery_method
+    );
+  })();
+
+  const hasCartItems = cartItemsCount > 0;
+
+  const showOrderFields = !showPayment;
+
+  const showDeliveryFields = (() => {
+    if (isEditingOrder) return false;
+    if (isEditingDelivery) return true;
+    if (hasDeliveryMethod && !hasCartItems) return false;
+    if (!hasDeliveryMethod && hasCartItems) return true;
+    if (hasDeliveryMethod && hasCartItems) return false;
+    return true;
+  })();
 
   if (!store) {
     return (
@@ -1313,184 +1322,178 @@ function CheckoutForm({
 
   return (
     <div className='space-y-6'>
-      {/* Référence de commande (obligatoire) */}
-      <div>
-        <label className='block text-sm font-medium text-gray-700 mb-2'>
-          Référence de commande
-        </label>
-        <input
-          type='text'
-          value={formData.reference}
-          onChange={e =>
-            setFormData({ ...formData, reference: e.target.value })
-          }
-          className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300`}
-          style={{ lineHeight: '1.5' }}
-          placeholder='Votre référence'
-          required
-        />
-      </div>
+      {showOrderFields && (
+        <>
+          <div>
+            <label className='block text-sm font-medium text-gray-700 mb-2'>
+              Référence de commande
+            </label>
+            <input
+              type='text'
+              value={formData.reference}
+              onChange={e =>
+                setFormData({ ...formData, reference: e.target.value })
+              }
+              className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300`}
+              style={{ lineHeight: '1.5' }}
+              placeholder='Votre référence'
+              required
+            />
+          </div>
 
-      <div>
-        <label className='block text-sm font-medium text-gray-700 mb-2'>
-          Description
-        </label>
-        <textarea
-          value={(formData as any).description}
-          onChange={e =>
-            setFormData({ ...formData, description: e.target.value })
-          }
-          className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300`}
-          style={{ lineHeight: '1.5' }}
-          placeholder='Détails (taille, couleur, etc.)'
-          rows={3}
-          required
-        />
-      </div>
+          <div>
+            <label className='block text-sm font-medium text-gray-700 mb-2'>
+              Description
+            </label>
+            <textarea
+              value={(formData as any).description}
+              onChange={e =>
+                setFormData({ ...formData, description: e.target.value })
+              }
+              className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300`}
+              style={{ lineHeight: '1.5' }}
+              placeholder='Détails (taille, couleur, etc.)'
+              rows={3}
+              required
+            />
+          </div>
 
-      {/* Montant */}
-      <div>
-        <label className='block text-sm font-medium text-gray-700 mb-2'>
-          Montant à payer (€)
-        </label>
-        <input
-          type='number'
-          step='0.01'
-          min='0.01'
-          value={amountInput}
-          onChange={e => {
-            let raw = e.target.value.replace(',', '.');
-            // Empêcher plus de 2 décimales
-            const parts = raw.split('.');
-            if (parts.length === 2) {
-              parts[1] = parts[1].slice(0, 2);
-              raw = `${parts[0]}.${parts[1]}`;
-            }
-            setAmountInput(raw);
-            const value = parseFloat(raw);
-            if (!isNaN(value) && value > 0) {
-              setAmount(value);
-            } else {
-              setAmount(0);
-            }
-          }}
-          onBlur={() => {
-            if (amount > 0) {
-              setAmountInput(amount.toFixed(2));
-            }
-          }}
-          className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300`}
-          style={{ lineHeight: '1.5' }}
-          placeholder='0.00'
-          required
-        />
+          <div>
+            <label className='block text-sm font-medium text-gray-700 mb-2'>
+              Montant à payer (€)
+            </label>
+            <input
+              type='number'
+              step='0.01'
+              min='0.01'
+              value={amountInput}
+              onChange={e => {
+                let raw = e.target.value.replace(',', '.');
+                const parts = raw.split('.');
+                if (parts.length === 2) {
+                  parts[1] = parts[1].slice(0, 2);
+                  raw = `${parts[0]}.${parts[1]}`;
+                }
+                setAmountInput(raw);
+                const value = parseFloat(raw);
+                if (!isNaN(value) && value > 0) {
+                  setAmount(value);
+                } else {
+                  setAmount(0);
+                }
+              }}
+              onBlur={() => {
+                if (amount > 0) {
+                  setAmountInput(amount.toFixed(2));
+                }
+              }}
+              className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300`}
+              style={{ lineHeight: '1.5' }}
+              placeholder='0.00'
+              required
+            />
 
-        {/* Actions: Ajouter au panier */}
-        <div className='mt-3 flex flex-col sm:flex-row gap-3'>
-          <button
-            type='button'
-            disabled={isAddToCartDisabled}
-            onClick={addToCart}
-            className='flex items-center justify-center gap-1 mt-4 w-full sm:w-auto px-4 py-2.5 rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600'
-          >
-            <ShoppingCart className='w-4 h-4 mr-1' />
-            <span>Ajouter au panier</span>
-          </button>
-        </div>
-      </div>
-
-      {customerDetailsLoaded &&
-        (!customerData?.address || isEditingDelivery) && (
-          <div className='bg-white rounded-lg shadow-sm'>
-            <div className='pb-6 pt-6 border-b flex items-center space-x-3'>
-              <MapPin className='w-6 h-6' style={{ color: themeColor }} />
-              <h2 className='text-xl font-semibold text-gray-900'>
-                Votre adresse de livraison
-              </h2>
-            </div>
-            <div className='pt-6'>
-              {(() => {
-                const defaultName = user?.fullName || '';
-                const defaultPhone = customerData?.phone || '';
-                const presetAddress =
-                  (customerData?.address as any) || undefined;
-                const addressKey = presetAddress
-                  ? `addr-${[
-                      presetAddress.line1,
-                      presetAddress.postal_code,
-                      presetAddress.city,
-                      presetAddress.country,
-                    ]
-                      .map(v => String(v || ''))
-                      .join('|')}`
-                  : 'addr-empty';
-                const addressIncomplete = !(
-                  (formData.name || '').trim() &&
-                  (formData.phone || '').trim() &&
-                  (address as any)?.line1 &&
-                  (address as any)?.postal_code
-                );
-
-                return (
-                  <div
-                    className={`rounded-md border ${
-                      addressIncomplete ? 'border-red-500' : 'border-gray-300'
-                    } p-2`}
-                  >
-                    <AddressElement
-                      key={addressKey}
-                      options={{
-                        mode: 'shipping',
-                        allowedCountries: ['FR', 'BE', 'CH'],
-                        fields: {
-                          phone: 'always',
-                        },
-                        validation: {
-                          phone: {
-                            required: 'always',
-                          },
-                        },
-                        defaultValues: {
-                          name: defaultName,
-                          phone: defaultPhone,
-                          address: presetAddress,
-                        },
-                      }}
-                      onChange={(event: any) => {
-                        const {
-                          name,
-                          phone,
-                          address: addr,
-                        } = event.value || {};
-                        if (typeof name === 'string') {
-                          setFormData((prev: any) => ({ ...prev, name }));
-                        }
-                        if (typeof phone === 'string') {
-                          setFormData((prev: any) => ({ ...prev, phone }));
-                        }
-
-                        setAddress(addr || undefined);
-                        setIsFormValid(!!event.complete);
-
-                        if (deliveryMethod === 'home_delivery') {
-                          const cost = computeHomeDeliveryCost(
-                            addr as Address | undefined,
-                            selectedWeight
-                          );
-                          setDeliveryCost(cost);
-                        }
-                      }}
-                    />
-                  </div>
-                );
-              })()}
+            <div className='mt-3 flex flex-col sm:flex-row gap-3'>
+              <button
+                type='button'
+                disabled={isAddToCartDisabled}
+                onClick={addToCart}
+                className='flex items-center justify-center gap-1 mt-4 w-full sm:w-auto px-4 py-2.5 rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600'
+              >
+                <ShoppingCart className='w-4 h-4 mr-1' />
+                <span>Ajouter au panier</span>
+              </button>
             </div>
           </div>
-        )}
+        </>
+      )}
+
+      {showDeliveryFields && customerDetailsLoaded && (
+        <div className='bg-white rounded-lg shadow-sm'>
+          <div className='pb-6 pt-6 border-b flex items-center space-x-3'>
+            <MapPin className='w-6 h-6' style={{ color: themeColor }} />
+            <h2 className='text-xl font-semibold text-gray-900'>
+              Votre adresse de livraison
+            </h2>
+          </div>
+          <div className='pt-6'>
+            {(() => {
+              const defaultName = user?.fullName || '';
+              const defaultPhone = customerData?.phone || '';
+              const presetAddress = (customerData?.address as any) || undefined;
+              const addressKey = presetAddress
+                ? `addr-${[
+                    presetAddress.line1,
+                    presetAddress.postal_code,
+                    presetAddress.city,
+                    presetAddress.country,
+                  ]
+                    .map(v => String(v || ''))
+                    .join('|')}`
+                : 'addr-empty';
+              const addressIncomplete = !(
+                (formData.name || '').trim() &&
+                (formData.phone || '').trim() &&
+                (address as any)?.line1 &&
+                (address as any)?.postal_code
+              );
+
+              return (
+                <div
+                  className={`rounded-md border ${
+                    addressIncomplete ? 'border-red-500' : 'border-gray-300'
+                  } p-2`}
+                >
+                  <AddressElement
+                    key={addressKey}
+                    options={{
+                      mode: 'shipping',
+                      allowedCountries: ['FR', 'BE', 'CH'],
+                      fields: {
+                        phone: 'always',
+                      },
+                      validation: {
+                        phone: {
+                          required: 'always',
+                        },
+                      },
+                      defaultValues: {
+                        name: defaultName,
+                        phone: defaultPhone,
+                        address: presetAddress,
+                      },
+                    }}
+                    onChange={(event: any) => {
+                      const { name, phone, address: addr } = event.value || {};
+                      if (typeof name === 'string') {
+                        setFormData((prev: any) => ({ ...prev, name }));
+                      }
+                      if (typeof phone === 'string') {
+                        setFormData((prev: any) => ({ ...prev, phone }));
+                      }
+
+                      setAddress(addr || undefined);
+                      setIsFormValid(!!event.complete);
+
+                      if (deliveryMethod === 'home_delivery') {
+                        const cost = computeHomeDeliveryCost(
+                          addr as Address | undefined,
+                          selectedWeight
+                        );
+                        setDeliveryCost(cost);
+                      }
+                    }}
+                  />
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
 
       {/* ParcelPointMap (gère la méthode de livraison en interne et se met à jour sur changement d’adresse) */}
       <div className='mt-6'>
-        {customerDetailsLoaded
+        {showDeliveryFields && customerDetailsLoaded
           ? (() => {
               const md = (customerData as any)?.metadata || {};
               const savedMethod =
@@ -1527,8 +1530,9 @@ function CheckoutForm({
                       weight,
                       shippingOfferCode
                     ) => {
+                      setShippingHasBeenModified(true);
                       if (typeof shippingOfferCode === 'string') {
-                        setShippingHasBeenModified(true);
+                        
                         setFormData((prev: any) => ({
                           ...prev,
                           shippingOfferCode,
