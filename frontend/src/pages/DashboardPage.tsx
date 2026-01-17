@@ -204,7 +204,6 @@ export default function DashboardPage() {
   const [cartReference, setCartReference] = useState<string>('');
   const [cartDescription, setCartDescription] = useState<string>('');
   const [cartAmountEuro, setCartAmountEuro] = useState<string>('');
-  const [cartTTLMinutes, setCartTTLMinutes] = useState<string>('15');
   const [cartCreating, setCartCreating] = useState<boolean>(false);
   const [storeCarts, setStoreCarts] = useState<any[]>([]);
   const [cartDeletingIds, setCartDeletingIds] = useState<
@@ -1282,8 +1281,6 @@ export default function DashboardPage() {
   const handleCreateCart = async () => {
     try {
       const ref = (cartReference || '').trim();
-      const ttlRaw = (cartTTLMinutes || '').trim();
-      const ttl = parseInt(ttlRaw, 10);
       const amt = parseFloat((cartAmountEuro || '').trim().replace(',', '.'));
       if (!(amt > 0)) {
         showToast('Veuillez saisir un montant supérieur à 0', 'error');
@@ -1299,10 +1296,6 @@ export default function DashboardPage() {
       }
       if (!ref) {
         showToast('Veuillez saisir la référence', 'error');
-        return;
-      }
-      if (!Number.isInteger(ttl) || ttl < 1) {
-        showToast('La durée du panier doit être un entier positif', 'error');
         return;
       }
       setCartCreating(true);
@@ -1334,7 +1327,6 @@ export default function DashboardPage() {
         product_reference: ref,
         value: amt,
         customer_stripe_id: stripeId,
-        time_to_live: Number.isFinite(ttl) ? ttl : 15,
         description: (cartDescription || '').trim() || null,
       };
       const resp = await apiPost('/api/carts', payload);
@@ -1346,7 +1338,6 @@ export default function DashboardPage() {
       showToast('Panier créé', 'success');
       setCartReference('');
       setCartDescription('');
-      setCartTTLMinutes('15');
       setCartAmountEuro('');
       if (store?.slug) {
         const r = await apiGet(
@@ -2645,26 +2636,6 @@ export default function DashboardPage() {
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />
                 </div>
-
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Durée du panier (minutes)
-                  </label>
-                  <input
-                    type='number'
-                    min='1'
-                    step='1'
-                    value={cartTTLMinutes}
-                    onChange={e => {
-                      const v = e.target.value;
-                      // autoriser uniquement des entiers positifs
-                      const normalized = v.replace(/[^0-9]/g, '');
-                      setCartTTLMinutes(normalized);
-                    }}
-                    placeholder='15'
-                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                  />
-                </div>
               </div>
 
               <div className='flex items-center gap-3 mb-6'>
@@ -2777,9 +2748,6 @@ export default function DashboardPage() {
                                     Description
                                   </th>
                                   <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Durée (min)
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
                                     Montant (€)
                                   </th>
                                   <th className='px-4 py-2 text-left font-medium text-gray-700'>
@@ -2807,11 +2775,6 @@ export default function DashboardPage() {
                                       </td>
                                       <td className='px-4 py-3 text-gray-700'>
                                         {c.description || '—'}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {typeof c.time_to_live === 'number'
-                                          ? c.time_to_live
-                                          : '—'}
                                       </td>
                                       <td className='px-4 py-3 text-gray-700'>
                                         {typeof c.value === 'number'
@@ -3616,8 +3579,7 @@ export default function DashboardPage() {
                                 ? customersMap[stripeId] || null
                                 : null;
                               const clerkId =
-                                customer?.clerkUserId ||
-                                customer?.clerk_id;
+                                customer?.clerkUserId || customer?.clerk_id;
                               const u = clerkId
                                 ? socialsMap[clerkId] || null
                                 : null;
@@ -4003,8 +3965,7 @@ export default function DashboardPage() {
                     return idLower.includes(term);
                   }
                   const customer = customersMap[id] || null;
-                  const clerkId =
-                    customer?.clerkUserId || customer?.clerk_id;
+                  const clerkId = customer?.clerkUserId || customer?.clerk_id;
                   const user = clerkId ? socialsMap[clerkId] || null : null;
                   if (clientsFilterField === 'name') {
                     const name1 = (customer?.name || '').toLowerCase();
@@ -4098,8 +4059,7 @@ export default function DashboardPage() {
                         ]
                           .filter(Boolean)
                           .join(', ');
-                        const clerkId =
-                          r.data?.clerkUserId || r.data?.clerk_id;
+                        const clerkId = r.data?.clerkUserId || r.data?.clerk_id;
                         const u = clerkId ? socialsMap[clerkId] || null : null;
                         const name =
                           r.data?.name ||
@@ -4446,8 +4406,7 @@ export default function DashboardPage() {
                                 <td className='py-4 px-4 text-gray-700'>
                                   {(() => {
                                     const clerkId =
-                                      r.data?.clerkUserId ||
-                                      r.data?.clerk_id;
+                                      r.data?.clerkUserId || r.data?.clerk_id;
                                     const u = clerkId
                                       ? socialsMap[clerkId] || null
                                       : null;
@@ -4486,8 +4445,7 @@ export default function DashboardPage() {
                                 <td className='py-4 px-4 text-gray-700'>
                                   {(() => {
                                     const clerkId =
-                                      r.data?.clerkUserId ||
-                                      r.data?.clerk_id;
+                                      r.data?.clerkUserId || r.data?.clerk_id;
                                     const u = clerkId
                                       ? socialsMap[clerkId] || null
                                       : null;

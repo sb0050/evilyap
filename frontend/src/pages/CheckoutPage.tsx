@@ -21,6 +21,7 @@ import {
   Edit,
   ShoppingCart,
   BadgeCheck,
+  Trash2,
 } from 'lucide-react';
 import StripeWrapper from '../components/StripeWrapper';
 import ParcelPointMap from '../components/ParcelPointMap';
@@ -302,7 +303,6 @@ export default function CheckoutPage() {
 
         if (response.ok) {
           const data = await response.json();
-          console.log('Customer data:', data.customer);
           if (data.customer) {
             setCustomerData(data.customer);
             if (data.customer.name) {
@@ -460,8 +460,6 @@ export default function CheckoutPage() {
               '',
       };
 
-      console.log('payloadData', payloadData);
-
       const response = await fetch(
         `${
           import.meta.env.VITE_API_URL || 'http://localhost:5000'
@@ -583,6 +581,32 @@ export default function CheckoutPage() {
     } finally {
       setIsProcessingPayment(false);
     }
+  };
+
+  const handleDeleteCartItem = async (id: number) => {
+    if (!id) return;
+
+    setCartItemsForStore(prev => {
+      const next = prev.filter(it => it.id !== id);
+      const newTotal = next.reduce((sum, it) => sum + Number(it.value || 0), 0);
+      setCartTotalForStore(newTotal);
+      return next;
+    });
+
+    try {
+      const apiBase = API_BASE_URL;
+      const resp = await fetch(`${apiBase}/api/carts`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      if (!resp.ok) {
+        return;
+      }
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('cart:updated'));
+      }
+    } catch (_e) {}
   };
 
   const handleModifyOrder = () => {
@@ -712,6 +736,53 @@ export default function CheckoutPage() {
               )}
 
               <div className='p-6'>
+                {cartItemsForStore.length > 0 && !showPayment && (
+                  <div className='mb-6 border border-gray-200 rounded-md p-4 bg-gray-50'>
+                    <div className='mb-2'>
+                      <h3 className='text-base font-semibold text-gray-900'>
+                        Articles du panier
+                      </h3>
+                    </div>
+                    <ul className='mt-1 space-y-1 max-h-40 overflow-auto text-sm text-gray-700'>
+                      {cartItemsForStore.map(it => (
+                        <li
+                          key={it.id}
+                          className='flex items-center justify-between gap-3'
+                        >
+                          <span className='truncate'>
+                            {(() => {
+                              const ref = String(
+                                it.product_reference || ''
+                              ).trim();
+                              const desc = String(
+                                (it as any).description || ''
+                              ).trim();
+                              return desc ? `${ref} — ${desc}` : ref;
+                            })()}
+                          </span>
+                          <div className='flex items-center gap-2'>
+                            <span className='whitespace-nowrap'>
+                              {Number(it.value || 0).toFixed(2)} €
+                            </span>
+                            <button
+                              type='button'
+                              onClick={() => handleDeleteCartItem(it.id)}
+                              className='p-1 rounded hover:bg-red-50 text-red-600'
+                              aria-label='Supprimer cet article'
+                            >
+                              <Trash2 className='w-4 h-4' />
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className='mt-3 flex items-center justify-between border-t border-gray-200 pt-2 text-sm font-semibold text-gray-900'>
+                      <span>Total</span>
+                      <span>{Number(cartTotalForStore || 0).toFixed(2)} €</span>
+                    </div>
+                  </div>
+                )}
+
                 <CheckoutForm
                   store={store}
                   amount={amount}
@@ -930,7 +1001,6 @@ export default function CheckoutPage() {
 
                   const canProceed = hasItems && deliveryIsValid;
 
-                  
                   const btnColor = canProceed ? '#0074D4' : '#6B7280';
                   return (
                     <button
@@ -1532,7 +1602,6 @@ function CheckoutForm({
                     ) => {
                       setShippingHasBeenModified(true);
                       if (typeof shippingOfferCode === 'string') {
-                        
                         setFormData((prev: any) => ({
                           ...prev,
                           shippingOfferCode,
