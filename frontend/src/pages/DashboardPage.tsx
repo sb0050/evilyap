@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
@@ -21,6 +21,7 @@ import {
   Tag,
   Trash2,
   Coins,
+  Dice5,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -181,6 +182,12 @@ export default function DashboardPage() {
   const [clientsFilterTerm, setClientsFilterTerm] = useState<string>('');
   const [socialsMap, setSocialsMap] = useState<Record<string, any>>({});
   const [billingAddress, setBillingAddress] = useState<Address | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [drawLoading, setDrawLoading] = useState<boolean>(false);
+  const [winner, setWinner] = useState<any | null>(null);
+  const [showWinnerModal, setShowWinnerModal] = useState<boolean>(false);
+  const [sendingCongrats, setSendingCongrats] = useState<boolean>(false);
+  const drawButtonRef = useRef<HTMLButtonElement | null>(null);
   const [isAddressComplete, setIsAddressComplete] = useState(false);
   const [formPhone, setFormPhone] = useState<string>('');
 
@@ -1649,6 +1656,66 @@ export default function DashboardPage() {
       setIsSubmittingModifications(false);
     }
   };
+
+  const handleDraw = async () => {
+    try {
+      if (selectedIds.size < 2) {
+        showToast('Sélectionnez au moins deux clients', 'error');
+        return;
+      }
+      setDrawLoading(true);
+      const token = await getToken();
+      const resp = await apiPost(
+        '/api/raffle/draw',
+        { participantIds: Array.from(selectedIds) },
+        {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      const w = json?.winner || null;
+      if (!w) {
+        throw new Error('Erreur lors du tirage');
+      }
+      setWinner(w);
+      setShowWinnerModal(true);
+      showToast('Tirage effectué', 'success');
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur lors du tirage';
+      const trimmed = (raw || '').replace(/^Error:\s*/, '');
+      showToast(trimmed, 'error');
+    } finally {
+      setDrawLoading(false);
+    }
+  };
+
+  const toggleSelectId = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showWinnerModal) {
+        setShowWinnerModal(false);
+        if (drawButtonRef.current) {
+          try {
+            drawButtonRef.current.focus();
+          } catch {}
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [showWinnerModal]);
 
   const confirmPayout = async () => {
     if (!store?.slug) return;
@@ -3755,13 +3822,37 @@ export default function DashboardPage() {
           )}
 
           {section === 'clients' && (
+            <>
             <div className='bg-white rounded-lg shadow p-6'>
-              <div className='flex items-center justify-between mb-4'>
-                <div className='flex items-center'>
-                  <Users className='w-5 h-5 text-indigo-600 mr-2' />
-                  <h2 className='text-lg font-semibold text-gray-900'>
-                    Clients
-                  </h2>
+              <div className='flex items-start justify-between mb-4'>
+                <div className='flex flex-col items-start'>
+                  <div className='flex items-center'>
+                    <Users className='w-5 h-5 text-indigo-600 mr-2' />
+                    <h2 className='text-lg font-semibold text-gray-900'>
+                      Clients
+                    </h2>
+                  </div>
+                  <div className='mt-2'>
+                    <button
+                      ref={drawButtonRef}
+                      onClick={handleDraw}
+                      disabled={selectedIds.size < 2 || drawLoading}
+                      className='flex items-center sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border bg-white text-gray-700 border-gray-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                      title='Lancer le tirage'
+                    >
+                      {drawLoading ? (
+                        <span className='inline-flex items-center'>
+                          <span className='animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 mr-2' />
+                          Tirage…
+                        </span>
+                      ) : (
+                        <span className='inline-flex items-center'>
+                          <Dice5 className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+                          <span>Lancer le tirage</span>
+                        </span>
+                      )}
+                    </button>
+                  </div>
                 </div>
                 <div className='hidden sm:flex items-center space-x-3'>
                   <div className='text-sm text-gray-600'>
@@ -3837,6 +3928,9 @@ export default function DashboardPage() {
                     />
                     <span>Recharger</span>
                   </button>
+                  <div className='text-sm text-gray-700'>
+                    {selectedIds.size} sélectionné(s)
+                  </div>
 
                   <label className='text-sm text-gray-700'>Lignes</label>
                   <select
@@ -3928,7 +4022,7 @@ export default function DashboardPage() {
                     />
                   </div>
                 </div>
-                <div className='sm:hidden'>
+                <div className='sm:hidden flex items-center flex-wrap gap-2 mt-2 ml-2'>
                   <button
                     onClick={handleReloadSales}
                     disabled={reloadingSales}
@@ -3939,6 +4033,9 @@ export default function DashboardPage() {
                     />
                     <span>Recharger</span>
                   </button>
+                  <div className='text-sm text-gray-700'>
+                    {selectedIds.size} sélectionné(s)
+                  </div>
                 </div>
               </div>
 
@@ -4074,6 +4171,13 @@ export default function DashboardPage() {
                           >
                             <div className='flex items-start justify-between'>
                               <div className='flex items-center space-x-2'>
+                                <input
+                                  type='checkbox'
+                                  checked={selectedIds.has(r.id)}
+                                  onChange={() => toggleSelectId(r.id)}
+                                  aria-label='Sélectionner'
+                                  className='h-4 w-4'
+                                />
                                 {u?.hasImage && u?.imageUrl ? (
                                   <img
                                     src={u.imageUrl}
@@ -4345,6 +4449,88 @@ export default function DashboardPage() {
                         <thead>
                           <tr className='border-b border-gray-200'>
                             <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              {(() => {
+                                const allIds = Array.from(
+                                  new Set(
+                                    (shipments || [])
+                                      .map(s => s.customer_stripe_id)
+                                      .filter(Boolean)
+                                  )
+                                ) as string[];
+                                const term = (clientsFilterTerm || '')
+                                  .trim()
+                                  .toLowerCase();
+                                const filteredIds = allIds.filter(id => {
+                                  if (!term) return true;
+                                  const idLower = (id || '').toLowerCase();
+                                  if (clientsFilterField === 'id') {
+                                    return idLower.includes(term);
+                                  }
+                                  const customer = customersMap[id] || null;
+                                  const clerkId =
+                                    customer?.clerkUserId || customer?.clerk_id;
+                                  const user = clerkId
+                                    ? socialsMap[clerkId] || null
+                                    : null;
+                                  if (clientsFilterField === 'name') {
+                                    const name1 = (customer?.name || '').toLowerCase();
+                                    const name2 = [user?.firstName || '', user?.lastName || '']
+                                      .filter(Boolean)
+                                      .join(' ')
+                                      .toLowerCase();
+                                    return name1.includes(term) || name2.includes(term);
+                                  }
+                                  const email = (
+                                    customer?.email ||
+                                    '' ||
+                                    user?.emailAddress ||
+                                    ''
+                                  )
+                                    .toLowerCase()
+                                    .trim();
+                                  return email.includes(term);
+                                });
+                                const spentMap: Record<string, number> = {};
+                                (shipments || []).forEach(s => {
+                                  const id = s.customer_stripe_id || '';
+                                  if (!id) return;
+                                  const v =
+                                    (s.paid_value ?? 0) - (s.estimated_delivery_cost ?? 0);
+                                  spentMap[id] = (spentMap[id] || 0) + v;
+                                });
+                                const sortedIds = [...filteredIds].sort((a, b) => {
+                                  const sa = spentMap[a] || 0;
+                                  const sb = spentMap[b] || 0;
+                                  return clientsSortOrder === 'asc' ? sa - sb : sb - sa;
+                                });
+                                const startIdx = (clientsPage - 1) * clientsPageSize;
+                                const pageIds = sortedIds.slice(
+                                  startIdx,
+                                  startIdx + clientsPageSize
+                                );
+                                const allSelected = pageIds.every(id => selectedIds.has(id));
+                                return (
+                                  <input
+                                    type='checkbox'
+                                    checked={allSelected}
+                                    onChange={e => {
+                                      const checked = e.target.checked;
+                                      setSelectedIds(prev => {
+                                        const next = new Set(prev);
+                                        if (checked) {
+                                          pageIds.forEach(id => next.add(id));
+                                        } else {
+                                          pageIds.forEach(id => next.delete(id));
+                                        }
+                                        return next;
+                                      });
+                                    }}
+                                    aria-label='Tout sélectionner'
+                                  />
+                                );
+                              })()}
+                            </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                               Client ID
                             </th>
                             <th className='text-left py-3 px-4 font-semibold text-gray-700'>
@@ -4395,6 +4581,14 @@ export default function DashboardPage() {
                                 key={r.id}
                                 className='border-b border-gray-100 hover:bg-gray-50'
                               >
+                                <td className='py-4 px-4'>
+                                  <input
+                                    type='checkbox'
+                                    checked={selectedIds.has(r.id)}
+                                    onChange={() => toggleSelectId(r.id)}
+                                    aria-label='Sélectionner'
+                                  />
+                                </td>
                                 <td className='py-4 px-4 text-gray-700'>
                                   <span
                                     className='truncate block max-w-[240px]'
@@ -4663,6 +4857,137 @@ export default function DashboardPage() {
                 );
               })()}
             </div>
+            {showWinnerModal && (
+              <div
+                className='fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center p-4'
+                onClick={() => {
+                  setShowWinnerModal(false);
+                  if (drawButtonRef.current) {
+                    try {
+                      drawButtonRef.current.focus();
+                    } catch {}
+                  }
+                }}
+              >
+                <div
+                  className='bg-white rounded-lg shadow-xl w-full max-w-lg overflow-hidden'
+                  role='dialog'
+                  aria-modal='true'
+                  aria-label='Résultat du tirage'
+                  onClick={e => e.stopPropagation()}
+                >
+                  <div className='p-4 border-b border-gray-200 flex items-center justify-between'>
+                    <h3 className='text-lg font-semibold text-gray-900'>
+                      Gagnant du tirage
+                    </h3>
+                    <span className='inline-flex items-center px-2 py-1 text-xs rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200'>
+                      Winner
+                    </span>
+                  </div>
+                  <div className='p-6'>
+                    {winner ? (
+                      <div className='flex items-start space-x-4'>
+                        <div className='w-14 h-14 rounded-full bg-gray-200 overflow-hidden flex items-center justify-center'>
+                          <span className='text-gray-500'>👤</span>
+                        </div>
+                        <div className='flex-1 space-y-1'>
+                          <div className='text-lg font-semibold text-gray-900'>
+                            {winner.name || '—'}
+                          </div>
+                          <div className='text-sm text-gray-700'>
+                            {winner.email || '—'}
+                          </div>
+                          <div className='text-sm text-gray-700'>
+                            {winner.phone || '—'}
+                          </div>
+                          <div className='text-sm text-gray-700'>
+                            {(() => {
+                              const a = winner.address || {};
+                              const addr = [
+                                a?.line1,
+                                `${a?.postal_code || ''} ${a?.city || ''}`.trim(),
+                                a?.country,
+                              ]
+                                .filter(Boolean)
+                                .join(', ');
+                              return addr || '—';
+                            })()}
+                          </div>
+                          <div className='text-sm text-gray-700'>
+                            {winner.deliveryNetwork || winner.deliveryMethod || '—'}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className='text-center text-gray-600'>—</div>
+                    )}
+                  </div>
+                  <div className='p-4 border-t border-gray-200 flex items-center justify-end gap-2'>
+                    <button
+                      onClick={async () => {
+                        const email = winner?.email || '';
+                        if (!email) {
+                          showToast('Email indisponible', 'error');
+                          return;
+                        }
+                        try {
+                          setSendingCongrats(true);
+                          const token = await getToken();
+                          const resp = await apiPost(
+                            '/api/raffle/notify',
+                            {
+                              email,
+                              name: winner?.name || '',
+                              storeSlug: store?.slug || undefined,
+                              storeName: store?.name || undefined,
+                            },
+                            {
+                              headers: {
+                                Authorization: token ? `Bearer ${token}` : '',
+                              },
+                            }
+                          );
+                          const json = await resp.json().catch(() => ({}));
+                          if (!resp.ok || !json?.success) {
+                            throw new Error(
+                              json?.error || "Échec de l'envoi"
+                            );
+                          }
+                          showToast('Email envoyé', 'success');
+                        } catch (e: any) {
+                          const msg =
+                            (e?.message || "Erreur lors de l'envoi").replace(
+                              /^Error:\s*/,
+                              ''
+                            );
+                          showToast(msg, 'error');
+                        } finally {
+                          setSendingCongrats(false);
+                        }
+                      }}
+                      disabled={!winner?.email || sendingCongrats}
+                      className='px-3 py-2 text-sm rounded-md border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                    >
+                      {sendingCongrats ? 'Envoi…' : 'Envoyer email'}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowWinnerModal(false);
+                        if (drawButtonRef.current) {
+                          try {
+                            drawButtonRef.current.focus();
+                          } catch {}
+                        }
+                      }}
+                      className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700'
+                    >
+                      Fermer
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+            </>
           )}
 
           {section === 'promo' && (
