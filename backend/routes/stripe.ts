@@ -10,48 +10,9 @@ import { clerkClient } from "@clerk/express";
 
 const router = express.Router();
 
-// Fonction pour formater les montants en devise
-const formatToCurrency = (amount: number): string => {
-  return new Intl.NumberFormat("fr-FR", {
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount);
-};
-
-// Fonction pour convertir le poids en string vers un nombre en kg
-const formatWeight = (weight?: string): number => {
-  if (!weight) return 0;
-
-  // Nettoyer la chaîne et la convertir en minuscules
-  const cleanWeight = weight.toString().toLowerCase().trim();
-
-  // Extraire le nombre et l'unité
-  const match = cleanWeight.match(/^(\d+(?:\.\d+)?)\s*(g|kg)?$/);
-
-  if (!match) {
-    console.warn(`Format de poids non reconnu: ${weight}`);
-    return 0;
-  }
-
-  const value = parseFloat(match[1]);
-  const unit = match[2] || "g"; // Par défaut en grammes si pas d'unité
-
-  // Convertir en kg
-  if (unit === "kg") {
-    return value;
-  } else if (unit === "g") {
-    return value / 1000;
-  }
-
-  return 0;
-};
-
 // Configuration Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
-const CLOUDFRONT_URL = process.env.CLOUDFRONT_URL;
 
 if (!supabaseUrl || !supabaseKey) {
   console.error("Supabase environment variables are missing");
@@ -59,14 +20,6 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
-
-const normalizeRefs = (raw: unknown): string[] => {
-  const refs = String(raw || "")
-    .split(";")
-    .map((s) => String(s || "").trim())
-    .filter((s) => s.length > 0);
-  return Array.from(new Set(refs));
-};
 
 const buildProductReferenceOrFilter = (ref: string): string => {
   const safeRef = String(ref || "").trim();
@@ -77,75 +30,6 @@ const buildProductReferenceOrFilter = (ref: string): string => {
     `product_reference.ilike.%;${safeRef}`,
     `product_reference.ilike.%;${safeRef};%`,
   ].join(",");
-};
-
-const hasPaidShipmentForRef = async (
-  storeId: number,
-  ref: string,
-): Promise<boolean> => {
-  const or = buildProductReferenceOrFilter(ref);
-  if (!or) return false;
-  const { data, error } = await supabase
-    .from("shipments")
-    .select("id")
-    .eq("store_id", storeId)
-    .not("payment_id", "is", null)
-    .or(or)
-    .limit(1);
-  if (error) throw error;
-  return (data || []).length > 0;
-};
-
-const hasFailedCartForRef = async (
-  storeId: number,
-  ref: string,
-): Promise<boolean> => {
-  const safeRef = String(ref || "").trim();
-  if (!safeRef) return false;
-  const { data, error } = await supabase
-    .from("carts")
-    .select("id")
-    .eq("store_id", storeId)
-    .eq("product_reference", safeRef)
-    .eq("status", "PAYMENT_FAILED")
-    .limit(1);
-  if (error) throw error;
-  return (data || []).length > 0;
-};
-
-const findBlockedRefForStore = async (
-  storeId: number,
-  refs: string[],
-): Promise<string | null> => {
-  for (const ref of refs) {
-    if (await hasFailedCartForRef(storeId, ref)) {
-      return ref;
-    }
-    if (await hasPaidShipmentForRef(storeId, ref)) {
-      return ref;
-    }
-  }
-  return null;
-};
-
-const findBlockedRefsForStore = async (
-  storeId: number,
-  refs: string[],
-): Promise<string[]> => {
-  const blocked: string[] = [];
-  for (const ref of refs) {
-    const safe = String(ref || "").trim();
-    if (!safe) continue;
-    if (await hasFailedCartForRef(storeId, safe)) {
-      blocked.push(safe);
-      continue;
-    }
-    if (await hasPaidShipmentForRef(storeId, safe)) {
-      blocked.push(safe);
-      continue;
-    }
-  }
-  return Array.from(new Set(blocked));
 };
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
@@ -176,7 +60,6 @@ const CATEGORY_BASE_WEIGHT: Record<string, number> = {
 };
 const DEFAULT_HIGH_WEIGHT = 1.2;
 const PACKAGING_WEIGHT = 0.4;
-const SAFETY_MARGIN = 1.15;
 const CATEGORIES = Object.keys(CATEGORY_BASE_WEIGHT);
 const normalizeText = (text: string): string =>
   text
@@ -236,7 +119,6 @@ const calculateParcelWeight = (
     });
   }
   total += PACKAGING_WEIGHT;
-  total *= SAFETY_MARGIN;
   const finalWeightKg = Math.ceil(total);
   return { totalWeightKg: finalWeightKg, rawTotalKg: total, breakdown };
 };
@@ -521,7 +403,6 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     const {
       amount,
       currency = "eur",
-      selectedWeight = 0.25,
       customerName,
       customerEmail,
       clerkUserId,
@@ -531,7 +412,6 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       deliveryMethod,
       parcelPoint,
       phone,
-      deliveryCost,
       deliveryNetwork,
       cartItemIds,
       shippingHasBeenModified,
@@ -657,18 +537,32 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       .map((it) => String(it.reference || "").trim())
       .filter((s) => s.length > 0)
       .join(";");
-    const weightCalc = calculateParcelWeight(
-      incomingItems.map((it) => ({
-        description: String(it.description || ""),
-        quantity: Number(it.quantity || 1),
-      })),
-    );
-    const rawKg = Number(weightCalc.rawTotalKg || 0);
-    let weightLabel = "500g";
-    if (rawKg <= 0.5) weightLabel = "500g";
-    else if (rawKg <= 1) weightLabel = "1kg";
-    else weightLabel = "2kg";
-    let computedDeliveryCost = Number(deliveryCost || 0);
+    let weightLabel = "";
+    let weightKg = 0;
+    if (deliveryMethod !== "store_pickup") {
+      const weightCalc = calculateParcelWeight(
+        incomingItems.map((it) => ({
+          description: String(it.description || ""),
+          quantity: Number(it.quantity || 1),
+        })),
+      );
+      console.log("weight:calculation", {
+        items: incomingItems.map((it) => ({
+          description: String(it.description || ""),
+          quantity: Number(it.quantity || 1),
+        })),
+        breakdown: weightCalc.breakdown,
+        rawTotalKg: weightCalc.rawTotalKg,
+        totalWeightKg: weightCalc.totalWeightKg,
+      });
+      const rawKg = Number(weightCalc.rawTotalKg || 0);
+      weightKg = rawKg;
+      if (rawKg <= 0.5) weightLabel = "500g";
+      else if (rawKg <= 1) weightLabel = "1kg";
+      else weightLabel = "2kg";
+      console.log("weight:label", { rawKg, weightKg, weightLabel });
+    }
+    let computedDeliveryCost = 0;
     if (deliveryMethod !== "store_pickup") {
       try {
         let senderCity = "Paris";
@@ -714,15 +608,18 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
               postal_code: recipientPostal,
               city: recipientCity,
             },
+            weight: weightLabel || weightKg,
+            network: deliveryNetwork,
           }),
         });
         if (cotResp.ok) {
           const cotJson: any = await cotResp.json();
-          const netBlock = cotJson?.[deliveryNetwork] || null;
-          const offerForWeight = netBlock ? netBlock[weightLabel] : null;
-          const priceStr = offerForWeight ? offerForWeight.price : null;
-          const parsed = priceStr
-            ? Number(String(priceStr).replace(",", "."))
+          const priceRaw =
+            cotJson?.price?.["tax-inclusive"] ??
+            cotJson?.price?.taxInclusive ??
+            cotJson?.price;
+          const parsed = priceRaw
+            ? Number(String(priceRaw).replace(",", "."))
             : NaN;
           if (Number.isFinite(parsed)) {
             computedDeliveryCost = parsed;

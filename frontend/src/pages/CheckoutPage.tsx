@@ -118,8 +118,7 @@ export default function CheckoutPage() {
   const [storePickupPhone, setStorePickupPhone] = useState<
     string | undefined
   >();
-  const [deliveryCost, setDeliveryCost] = useState<number>(0);
-  const [selectedWeight, setSelectedWeight] = useState<string>('250g');
+
   const [toast, setToast] = useState<{
     message: string;
     type: 'error' | 'info' | 'success';
@@ -160,19 +159,6 @@ export default function CheckoutPage() {
         if (groupForStore) {
           setCartItemsForStore(groupForStore.items || []);
           setCartTotalForStore(Number(groupForStore.total || 0));
-          const suggested = String(groupForStore?.suggestedWeight || '').trim();
-          if (suggested && ['500g', '1kg', '2kg'].includes(suggested) && true) {
-            setSelectedWeight(prev => {
-              if (
-                !prev ||
-                prev === '250g' ||
-                !['500g', '1kg', '2kg'].includes(prev)
-              ) {
-                return suggested;
-              }
-              return prev;
-            });
-          }
         } else {
           setCartItemsForStore([]);
           setCartTotalForStore(0);
@@ -487,9 +473,8 @@ export default function CheckoutPage() {
             ? selectedParcelPoint || null
             : null,
         phone: customerInfo.phone,
-        deliveryCost,
+
         cartItemIds: (cartItemsForStore || []).map(it => it.id),
-        selectedWeight,
         deliveryNetwork:
           effectiveDeliveryMethod === 'store_pickup'
             ? 'STORE_PICKUP'
@@ -921,10 +906,6 @@ export default function CheckoutPage() {
                   email={email}
                   setEmail={setEmail}
                   themeColor={themeColor}
-                  deliveryCost={deliveryCost}
-                  setDeliveryCost={setDeliveryCost}
-                  selectedWeight={selectedWeight}
-                  setSelectedWeight={setSelectedWeight}
                   showDelivery={showDelivery}
                   setShowDelivery={setShowDelivery}
                   showToast={showToast}
@@ -1209,10 +1190,7 @@ function CheckoutForm({
   email,
   setEmail,
   themeColor,
-  deliveryCost,
-  setDeliveryCost,
-  selectedWeight,
-  setSelectedWeight,
+
   showDelivery,
   setShowDelivery,
   showToast,
@@ -1254,10 +1232,7 @@ function CheckoutForm({
   email: string;
   setEmail: any;
   themeColor: string;
-  deliveryCost: number;
-  setDeliveryCost: any;
-  selectedWeight: string;
-  setSelectedWeight: any;
+
   showDelivery: boolean;
   setShowDelivery: (val: boolean) => void;
   showToast: (message: string, type?: 'error' | 'info' | 'success') => void;
@@ -1306,18 +1281,6 @@ function CheckoutForm({
       </div>
     );
   }
-
-  const computeHomeDeliveryCost = (
-    addr: Address | undefined,
-    weight: string
-  ) => {
-    const country = addr?.country || 'FR';
-    const base = country === 'FR' ? 4 : 6;
-    let extra = 0;
-    if (weight === '500g') extra = 1.5;
-    else if (weight === '1000g') extra = 4;
-    return base + extra;
-  };
 
   const addToCart = async () => {
     try {
@@ -1659,14 +1622,6 @@ function CheckoutForm({
 
                       setAddress(addr || undefined);
                       setIsFormValid(!!event.complete);
-
-                      if (deliveryMethod === 'home_delivery') {
-                        const cost = computeHomeDeliveryCost(
-                          addr as Address | undefined,
-                          selectedWeight
-                        );
-                        setDeliveryCost(cost);
-                      }
                     }}
                   />
                 </div>
@@ -1708,13 +1663,7 @@ function CheckoutForm({
                     storePickupAddress={storePickupAddress}
                     storePickupPhone={storePickupPhone}
                     storeWebsite={store?.website}
-                    onParcelPointSelect={(
-                      point,
-                      method,
-                      cost,
-                      weight,
-                      shippingOfferCode
-                    ) => {
+                    onParcelPointSelect={(point, method, shippingOfferCode) => {
                       setShippingHasBeenModified(true);
                       if (typeof shippingOfferCode === 'string') {
                         setFormData((prev: any) => ({
@@ -1739,8 +1688,6 @@ function CheckoutForm({
                       }
 
                       setDeliveryMethod(method);
-                      if (typeof cost === 'number') setDeliveryCost(cost);
-                      if (typeof weight === 'string') setSelectedWeight(weight);
                       setIsFormValid(true);
                     }}
                     defaultDeliveryMethod={deliveryMethod}

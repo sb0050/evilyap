@@ -38,70 +38,13 @@ const normalizeRefs = (raw: unknown): string[] => {
   return Array.from(new Set(refs));
 };
 
-const buildProductReferenceOrFilter = (ref: string): string => {
-  const safeRef = String(ref || "").trim();
-  if (!safeRef) return "";
-  return [
-    `product_reference.eq.${safeRef}`,
-    `product_reference.ilike.${safeRef};%`,
-    `product_reference.ilike.%;${safeRef}`,
-    `product_reference.ilike.%;${safeRef};%`,
-  ].join(",");
-};
 
-const hasPaidShipmentForRef = async (
-  storeId: number,
-  ref: string,
-): Promise<boolean> => {
-  const or = buildProductReferenceOrFilter(ref);
-  if (!or) return false;
-  const { data, error } = await supabase
-    .from("shipments")
-    .select("id")
-    .eq("store_id", storeId)
-    .not("payment_id", "is", null)
-    .or(or)
-    .limit(1);
-  if (error) throw error;
-  return (data || []).length > 0;
-};
 
-const hasFailedCartForRef = async (
-  storeId: number,
-  ref: string,
-): Promise<boolean> => {
-  const safeRef = String(ref || "").trim();
-  if (!safeRef) return false;
-  const { data, error } = await supabase
-    .from("carts")
-    .select("id")
-    .eq("store_id", storeId)
-    .eq("product_reference", safeRef)
-    .eq("status", "PAYMENT_FAILED")
-    .limit(1);
-  if (error) throw error;
-  return (data || []).length > 0;
-};
 
-const findBlockedRefsForStore = async (
-  storeId: number,
-  refs: string[],
-): Promise<string[]> => {
-  const blocked: string[] = [];
-  for (const ref of refs) {
-    const safe = String(ref || "").trim();
-    if (!safe) continue;
-    if (await hasFailedCartForRef(storeId, safe)) {
-      blocked.push(safe);
-      continue;
-    } /*
-    if (await hasPaidShipmentForRef(storeId, safe)) {
-      blocked.push(safe);
-      continue;
-    }*/
-  }
-  return Array.from(new Set(blocked));
-};
+
+
+
+
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
