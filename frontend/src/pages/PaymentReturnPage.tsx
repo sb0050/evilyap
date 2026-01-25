@@ -19,6 +19,9 @@ interface PaymentSession {
   } | null;
   payment_intent_id?: string | null;
   blocked_references?: string[];
+  refunded_references?: string[];
+  purchased_references?: string[];
+  refund_amount?: number | null;
   customer_details?: {
     email?: string;
     name?: string;
@@ -248,8 +251,21 @@ const PaymentReturnPage: React.FC = () => {
     )
       ? ((session as any)?.blocked_references as string[])
       : [];
+    const refundedRefs: string[] = Array.isArray(
+      (session as any)?.refunded_references
+    )
+      ? ((session as any)?.refunded_references as string[])
+      : [];
+    const purchasedRefs: string[] = Array.isArray(
+      (session as any)?.purchased_references
+    )
+      ? ((session as any)?.purchased_references as string[])
+      : [];
+    const refundDetails = (session as any)?.refund_details || null;
+    const isPartial = !!refundDetails?.is_partial;
     const amt =
-      (session as any)?.refund_details?.amount_refunded ??
+      refundDetails?.amount_refunded ??
+      (session as any)?.refund_amount ??
       (session as any)?.amount ??
       (session as any)?.amount_total ??
       0;
@@ -261,9 +277,11 @@ const PaymentReturnPage: React.FC = () => {
             Paiement remboursé
           </h1>
           <p className='text-gray-600 mb-6'>
-            {blockedList.length > 0
-              ? `Certaines références de votre panier ont déjà été achetées. Vous avez été remboursé.`
-              : 'Une ou plusieurs références ont déjà été achetées. Vous avez été remboursé.'}
+            {isPartial
+              ? 'Certaines références n’étaient plus disponibles. Vous avez été partiellement remboursé.'
+              : blockedList.length > 0
+                ? `Certaines références de votre panier ont déjà été achetées. Vous avez été remboursé.`
+                : 'Une ou plusieurs références ont déjà été achetées. Vous avez été remboursé.'}
           </p>
           <div className='text-left space-y-2'>
             <p>
@@ -273,7 +291,27 @@ const PaymentReturnPage: React.FC = () => {
                 (session as any)?.currency || 'EUR'
               )}
             </p>
-            {blockedList.length > 0 && (
+            {purchasedRefs.length > 0 && (
+              <div>
+                <strong>Références achetées:</strong>
+                <ul className='mt-1 list-disc list-inside text-gray-700'>
+                  {purchasedRefs.map(ref => (
+                    <li key={ref}>{ref}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {refundedRefs.length > 0 && (
+              <div>
+                <strong>Références remboursées:</strong>
+                <ul className='mt-1 list-disc list-inside text-gray-700'>
+                  {refundedRefs.map(ref => (
+                    <li key={ref}>{ref}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {blockedList.length > 0 && refundedRefs.length === 0 && (
               <div>
                 <strong>Références déjà achetées:</strong>
                 <ul className='mt-1 list-disc list-inside text-gray-700'>

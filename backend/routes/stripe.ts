@@ -81,7 +81,7 @@ const buildProductReferenceOrFilter = (ref: string): string => {
 
 const hasPaidShipmentForRef = async (
   storeId: number,
-  ref: string
+  ref: string,
 ): Promise<boolean> => {
   const or = buildProductReferenceOrFilter(ref);
   if (!or) return false;
@@ -98,7 +98,7 @@ const hasPaidShipmentForRef = async (
 
 const hasFailedCartForRef = async (
   storeId: number,
-  ref: string
+  ref: string,
 ): Promise<boolean> => {
   const safeRef = String(ref || "").trim();
   if (!safeRef) return false;
@@ -115,7 +115,7 @@ const hasFailedCartForRef = async (
 
 const findBlockedRefForStore = async (
   storeId: number,
-  refs: string[]
+  refs: string[],
 ): Promise<string | null> => {
   for (const ref of refs) {
     if (await hasFailedCartForRef(storeId, ref)) {
@@ -130,7 +130,7 @@ const findBlockedRefForStore = async (
 
 const findBlockedRefsForStore = async (
   storeId: number,
-  refs: string[]
+  refs: string[],
 ): Promise<string[]> => {
   const blocked: string[] = [];
   for (const ref of refs) {
@@ -208,7 +208,7 @@ const computeUnitWeight = (description: string) => {
   return { category, unitWeight: weight, confidence };
 };
 const calculateParcelWeight = (
-  items: Array<{ description: string; quantity: number }>
+  items: Array<{ description: string; quantity: number }>,
 ) => {
   let total = 0;
   const breakdown: Array<{
@@ -221,7 +221,7 @@ const calculateParcelWeight = (
   }> = [];
   for (const item of items) {
     const { category, unitWeight, confidence } = computeUnitWeight(
-      item.description || ""
+      item.description || "",
     );
     const qty = Number(item.quantity || 1);
     const subtotal = unitWeight * qty;
@@ -321,7 +321,7 @@ router.post("/create-customer", async (req, res) => {
     } catch (listErr) {
       console.warn(
         "Erreur lors de la recherche du client Stripe par email:",
-        listErr
+        listErr,
       );
     }
 
@@ -367,7 +367,7 @@ router.post("/create-customer", async (req, res) => {
       } catch (updErr) {
         console.warn(
           "Mise à jour Clerk publicMetadata (stripe_id) échouée:",
-          updErr
+          updErr,
         );
       }
     }
@@ -410,7 +410,7 @@ router.get("/refund/:paymentId", async (req, res) => {
       if (paymentIntent?.customer) {
         try {
           const cust = await stripe.customers.retrieve(
-            paymentIntent.customer as string
+            paymentIntent.customer as string,
           );
           customerEmail = customerEmail || (cust as any)?.email || undefined;
           customerName = (cust as any)?.name || customerName;
@@ -441,14 +441,14 @@ router.get("/refund/:paymentId", async (req, res) => {
           if (!customerEmail && (shipment as any)?.customer_stripe_id) {
             try {
               const cust2 = await stripe.customers.retrieve(
-                (shipment as any).customer_stripe_id as string
+                (shipment as any).customer_stripe_id as string,
               );
               customerEmail = (cust2 as any)?.email || customerEmail;
               customerName = (cust2 as any)?.name || customerName;
             } catch (c2Err) {
               console.warn(
                 "refund: fallback retrieve Stripe customer failed:",
-                c2Err
+                c2Err,
               );
             }
           }
@@ -489,13 +489,13 @@ router.get("/refund/:paymentId", async (req, res) => {
       } else {
         console.log(
           "refund: no customer email available to send refund confirmation",
-          paymentId
+          paymentId,
         );
       }
     } catch (emailEx) {
       console.error(
         "refund: error while preparing/sending customer refund email:",
-        emailEx
+        emailEx,
       );
     }
 
@@ -661,7 +661,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       incomingItems.map((it) => ({
         description: String(it.description || ""),
         quantity: Number(it.quantity || 1),
-      }))
+      })),
     );
     const rawKg = Number(weightCalc.rawTotalKg || 0);
     let weightLabel = "500g";
@@ -837,8 +837,8 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           cart_item_ids: Array.isArray(cartItemIds)
             ? (cartItemIds as any[]).join(",")
             : typeof cartItemIds === "string"
-            ? cartItemIds
-            : "",
+              ? cartItemIds
+              : "",
         },
       },
       // Duplicate useful metadata at the session level for easier retrieval
@@ -873,15 +873,15 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         cart_item_ids: Array.isArray(cartItemIds)
           ? (cartItemIds as any[]).join(",")
           : typeof cartItemIds === "string"
-          ? cartItemIds
-          : "",
+            ? cartItemIds
+            : "",
       },
       line_items: finalLineItems as any,
       mode: "payment",
       return_url: `${
         process.env.CLIENT_URL
       }/payment/return?session_id={CHECKOUT_SESSION_ID}&store_name=${encodeURIComponent(
-        slugify(storeName, { lower: true, strict: true }) || "default"
+        slugify(storeName, { lower: true, strict: true }) || "default",
       )}`,
       allow_promotion_codes: true,
       // Ajouter la collecte de consentement
@@ -905,7 +905,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
               currency: "eur",
             },
             display_name: `Livraison ${formatDeliveryMethod(
-              deliveryMethod || ""
+              deliveryMethod || "",
             )} `,
             delivery_estimate:
               deliveryMethod !== "store_pickup"
@@ -995,7 +995,7 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
           paymentIntentObj = session.payment_intent as Stripe.PaymentIntent;
         } else {
           paymentIntentObj = await stripe.paymentIntents.retrieve(
-            session.payment_intent as string
+            session.payment_intent as string,
           );
         }
       }
@@ -1003,13 +1003,13 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
     const paymentIntentId: string | null = paymentIntentObj
       ? paymentIntentObj.id
       : typeof session.payment_intent === "string"
-      ? (session.payment_intent as string)
-      : null;
+        ? (session.payment_intent as string)
+        : null;
     const paymentStatus =
       (paymentIntentObj?.status as any) || (session.payment_status as any);
-    const amountRefunded = Number(paymentIntentObj?.amount_received || 0);
+    let amountRefunded = 0;
     const totalAmount = Number(
-      paymentIntentObj?.amount || session.amount_total || 0
+      paymentIntentObj?.amount || session.amount_total || 0,
     );
     let refundDetails: any = null;
     if (paymentStatus === "succeeded" && paymentIntentId) {
@@ -1019,6 +1019,10 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
           limit: 20,
         });
         if ((refunds.data || []).length > 0) {
+          amountRefunded = (refunds.data || []).reduce((sum, r) => {
+            const amt = typeof (r as any)?.amount === "number" ? r.amount : 0;
+            return sum + amt;
+          }, 0);
           refundDetails = {
             refunded: true,
             amount_refunded: amountRefunded,
@@ -1039,6 +1043,30 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
             .map((s: string) => String(s || "").trim())
             .filter((s: string) => s.length > 0)
         : [];
+    const refundedReferencesRaw =
+      (paymentIntentObj?.metadata as any)?.refunded_references || null;
+    const refundedReferences =
+      typeof refundedReferencesRaw === "string" && refundedReferencesRaw
+        ? refundedReferencesRaw
+            .split(";")
+            .map((s: string) => String(s || "").trim())
+            .filter((s: string) => s.length > 0)
+        : [];
+    const purchasedReferencesRaw =
+      (paymentIntentObj?.metadata as any)?.purchased_references || null;
+    const purchasedReferences =
+      typeof purchasedReferencesRaw === "string" && purchasedReferencesRaw
+        ? purchasedReferencesRaw
+            .split(";")
+            .map((s: string) => String(s || "").trim())
+            .filter((s: string) => s.length > 0)
+        : [];
+    const refundAmountRaw =
+      (paymentIntentObj?.metadata as any)?.refund_amount || null;
+    const refundAmountMetadata =
+      typeof refundAmountRaw === "string" && refundAmountRaw
+        ? Number(refundAmountRaw)
+        : null;
 
     const storeNameFromSession = (session as any)?.metadata?.store_name;
     const referenceFromSession = (session as any)?.metadata?.product_reference;
@@ -1054,7 +1082,7 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
     try {
       const lineItemsResp = await stripe.checkout.sessions.listLineItems(
         sessionId,
-        { limit: 100, expand: ["data.price.product"] }
+        { limit: 100, expand: ["data.price.product"] },
       );
       const refQtyMap = new Map<string, number>();
       for (const item of (lineItemsResp?.data || []) as any[]) {
@@ -1081,6 +1109,9 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
       session_status: session.payment_status,
       payment_intent_id: paymentIntentId,
       blocked_references: blockedReferences,
+      refunded_references: refundedReferences,
+      purchased_references: purchasedReferences,
+      refund_amount: refundAmountMetadata,
       deliveryMethod: deliveryMethodFromSession || undefined,
       parcelPointCode: parcelPointCodeFromSession || undefined,
       parcelPointName: parcelPointNameFromSession || undefined,
@@ -1150,7 +1181,7 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
       businessStatus,
       success: paymentStatus === "succeeded" && !refundDetails,
       failed: ["requires_payment_method", "canceled", "failed"].includes(
-        String(paymentStatus || "")
+        String(paymentStatus || ""),
       ),
       refunded: !!refundDetails,
       refund_details: refundDetails,
@@ -1226,13 +1257,13 @@ router.get("/get-clerk-user-by-id", async (req, res) => {
     }));
     const primaryEmail =
       (user?.emailAddresses || []).find(
-        (e: any) => e.id === user?.primaryEmailAddressId
+        (e: any) => e.id === user?.primaryEmailAddressId,
       )?.emailAddress ||
       (user?.emailAddresses || [])[0]?.emailAddress ||
       null;
     const primaryPhone =
       (user?.phoneNumbers || []).find(
-        (p: any) => p.id === user?.primaryPhoneNumberId
+        (p: any) => p.id === user?.primaryPhoneNumberId,
       )?.phoneNumber ||
       (user?.phoneNumbers || [])[0]?.phoneNumber ||
       null;
@@ -1350,7 +1381,8 @@ router.get("/promotion-codes", async (req, res) => {
     const filtered = storeSlug
       ? data.filter(
           (pc) =>
-            String((pc as any)?.metadata?.storeSlug || "") === String(storeSlug)
+            String((pc as any)?.metadata?.storeSlug || "") ===
+            String(storeSlug),
         )
       : data;
 

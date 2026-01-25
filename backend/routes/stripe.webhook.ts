@@ -364,6 +364,21 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                           "checkout.session.completed: refundAmount",
                           refundAmount,
                         );
+                        try {
+                          await stripe.paymentIntents.update(pi.id, {
+                            metadata: {
+                              ...(pi.metadata || {}),
+                              refunded_references: missingRefs.join(";"),
+                              purchased_references: availableRefs.join(";"),
+                              refund_amount: String(Math.round(refundAmount)),
+                            },
+                          });
+                        } catch (metaErr: any) {
+                          console.warn(
+                            "checkout.session.completed: Update PI metadata failed:",
+                            metaErr?.message || metaErr,
+                          );
+                        }
                         if (refundAmount > 0) {
                           try {
                             const refund = await stripe.refunds.create({
