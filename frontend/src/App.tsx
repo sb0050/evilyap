@@ -26,7 +26,6 @@ import DashboardPage from './pages/DashboardPage';
 
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsAndConditions from './pages/TermsAndConditions';
-import FormPage from './pages/FormPage';
 import AdminPage from './pages/AdminPage';
 import { useEffect } from 'react';
 
@@ -71,14 +70,6 @@ function App() {
             <Route
               path='/terms_and_conditions'
               element={<TermsAndConditions />}
-            />
-            <Route
-              path='/form'
-              element={
-                <>
-                  <FormPage />
-                </>
-              }
             />
             <Route
               path='/checkout/:storeName'

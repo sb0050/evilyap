@@ -15,6 +15,7 @@
     "@aws-sdk/client-cloudfront": "^3.918.0",
     "@aws-sdk/client-s3": "^3.913.0",
     "@clerk/express": "^1.7.29",
+    "@clerk/backend": "^2.4.0",
     "@supabase/supabase-js": "^2.57.4",
     "@types/nodemailer": "^7.0.1",
     "cors": "^2.8.5",

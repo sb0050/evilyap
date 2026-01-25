@@ -39,6 +39,7 @@ router.post("/", async (req, res) => {
       value,
       customer_stripe_id,
       description,
+      quantity,
     } = req.body || {};
 
     if (!customer_stripe_id) {
@@ -63,6 +64,12 @@ router.post("/", async (req, res) => {
           customer_stripe_id,
           description: typeof description === "string" ? description : null,
           status: "PENDING",
+          quantity:
+            typeof quantity === "number" &&
+            Number.isFinite(quantity) &&
+            quantity > 0
+              ? quantity
+              : 1,
           // Horodatage de création côté serveur (timestamptz)
           created_at: new Date().toISOString(),
         },
@@ -92,7 +99,7 @@ router.get("/summary", async (req, res) => {
     const { data: cartRows, error } = await supabase
       .from("carts")
       .select(
-        "id,store_id,product_reference,value,created_at,description,status"
+        "id,store_id,product_reference,value,quantity,created_at,description,status"
       )
       .eq("customer_stripe_id", stripeId)
       .eq("status", "PENDING")
@@ -137,6 +144,7 @@ router.get("/summary", async (req, res) => {
         id: number;
         product_reference: string;
         value: number;
+        quantity?: number;
         created_at?: string;
       }>;
     }> = [];
@@ -156,10 +164,12 @@ router.get("/summary", async (req, res) => {
         id: r.id,
         product_reference: r.product_reference,
         value: r.value,
+        quantity: (r as any).quantity ?? 1,
         created_at: (r as any).created_at,
         description: (r as any).description,
       });
-      grouped[key].total += r.value || 0;
+      const qty = Number((r as any).quantity ?? 1);
+      grouped[key].total += (r.value || 0) * (Number.isFinite(qty) ? qty : 1);
     }
 
     let grandTotal = 0;
@@ -208,6 +218,36 @@ router.delete("/", async (req, res) => {
   }
 });
 
+// PUT /api/carts/:id - Update quantity for a cart item
+router.put("/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { quantity } = req.body || {};
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "id invalide" });
+    }
+    const qty = Number(quantity);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return res.status(400).json({ error: "quantity invalide" });
+    }
+    const { data, error } = await supabase
+      .from("carts")
+      .update({ quantity: qty })
+      .eq("id", id)
+      .select(
+        "id,store_id,product_reference,value,quantity,created_at,description,status"
+      )
+      .single();
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+    return res.json({ success: true, item: data });
+  } catch (e) {
+    console.error("Error updating cart item quantity:", e);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
 // GET /api/carts/store/:slug - list all carts for a given store
 router.get("/store/:slug", async (req, res) => {
   try {
@@ -230,7 +270,7 @@ router.get("/store/:slug", async (req, res) => {
     const { data: carts, error } = await supabase
       .from("carts")
       .select(
-        "id, store_id, customer_stripe_id, product_reference, value, created_at, description, status"
+        "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status"
       )
       .eq("store_id", storeId)
       .eq("status", "PENDING")

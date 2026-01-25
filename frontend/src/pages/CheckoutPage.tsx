@@ -106,6 +106,7 @@ export default function CheckoutPage() {
       id: number;
       product_reference: string;
       value: number;
+      quantity?: number;
       created_at?: string;
     }>
   >([]);
@@ -391,6 +392,44 @@ export default function CheckoutPage() {
     setIsProcessingPayment(true);
 
     try {
+      // Vérifier les doublons de références dans la table carts pour ce store et ce client
+      try {
+        const apiBase = API_BASE_URL;
+        const refreshResp = await fetch(
+          `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(stripeCustomerId)}`
+        );
+        if (refreshResp.ok) {
+          const json = await refreshResp.json();
+          const groups = Array.isArray(json?.itemsByStore)
+            ? json.itemsByStore
+            : [];
+          const groupForStore = groups.find(
+            (g: any) => g?.store?.id && store?.id && g.store.id === store.id
+          );
+          const items = groupForStore?.items || [];
+          const refs = items.map((it: any) =>
+            String(it.product_reference || '').trim()
+          );
+          const seen = new Set<string>();
+          let hasDuplicate = false;
+          for (const r of refs) {
+            if (seen.has(r)) {
+              hasDuplicate = true;
+              break;
+            }
+            seen.add(r);
+          }
+          if (hasDuplicate) {
+            const msg =
+              'Vous avez la même référence plusieurs fois dans le panier';
+            setPaymentError(msg);
+            showToast(msg, 'error');
+            setIsProcessingPayment(false);
+            return;
+          }
+        }
+      } catch (_e) {}
+
       // Ajout automatique au panier si référence et montant renseignés
 
       const effectiveDeliveryMethod:
@@ -420,6 +459,7 @@ export default function CheckoutPage() {
         reference: String(it.product_reference || '').trim(),
         description: String((it as any).description || '').trim(),
         price: Number(it.value || 0),
+        quantity: Number(it.quantity || 1),
       }));
 
       const payloadData = {
@@ -471,11 +511,21 @@ export default function CheckoutPage() {
         }
       );
 
-      const data = await response.json();
+      const data = await response.json().catch(() => null as any);
 
       if (!response.ok) {
+        if (
+          response.status === 409 &&
+          data?.blocked &&
+          data?.reason === 'already_bought' &&
+          data?.reference
+        ) {
+          throw new Error(
+            `Malheureusement, la référence ${String(data.reference)} a déjà été achetée.`
+          );
+        }
         throw new Error(
-          data.error || 'Erreur lors de la création de la session'
+          data?.error || 'Erreur lors de la création de la session'
         );
       }
 
@@ -588,7 +638,10 @@ export default function CheckoutPage() {
 
     setCartItemsForStore(prev => {
       const next = prev.filter(it => it.id !== id);
-      const newTotal = next.reduce((sum, it) => sum + Number(it.value || 0), 0);
+      const newTotal = next.reduce(
+        (sum, it) => sum + Number(it.value || 0) * Number(it.quantity || 1),
+        0
+      );
       setCartTotalForStore(newTotal);
       return next;
     });
@@ -605,6 +658,35 @@ export default function CheckoutPage() {
       }
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new Event('cart:updated'));
+      }
+    } catch (_e) {}
+  };
+  const handleUpdateCartItemQuantity = async (id: number, quantity: number) => {
+    if (!id || !Number.isFinite(quantity) || quantity <= 0) return;
+    // Update UI immediately
+    setCartItemsForStore(prev => {
+      const next = prev.map(it => (it.id === id ? { ...it, quantity } : it));
+      const newTotal = next.reduce(
+        (sum, it) => sum + Number(it.value || 0) * Number(it.quantity || 1),
+        0
+      );
+      setCartTotalForStore(newTotal);
+      return next;
+    });
+    // Persist to backend
+    try {
+      const apiBase = API_BASE_URL;
+      const resp = await fetch(`${apiBase}/api/carts/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quantity }),
+      });
+      if (!resp.ok) {
+        // silently ignore
+      } else {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new Event('cart:updated'));
+        }
       }
     } catch (_e) {}
   };
@@ -761,8 +843,31 @@ export default function CheckoutPage() {
                             })()}
                           </span>
                           <div className='flex items-center gap-2'>
+                            <select
+                              value={Number(it.quantity || 1)}
+                              onChange={e =>
+                                handleUpdateCartItemQuantity(
+                                  it.id,
+                                  Math.max(1, Number(e.target.value || 1))
+                                )
+                              }
+                              className='border border-gray-300 rounded px-1 py-0.5 text-sm'
+                              aria-label='Quantité'
+                            >
+                              {Array.from({ length: 10 }).map((_, idx) => {
+                                const q = idx + 1;
+                                return (
+                                  <option key={q} value={q}>
+                                    {q}
+                                  </option>
+                                );
+                              })}
+                            </select>
                             <span className='whitespace-nowrap'>
-                              {Number(it.value || 0).toFixed(2)} €
+                              {(
+                                Number(it.value || 0) * Number(it.quantity || 1)
+                              ).toFixed(2)}{' '}
+                              €
                             </span>
                             <button
                               type='button'
@@ -872,10 +977,20 @@ export default function CheckoutPage() {
                                   const desc = String(
                                     (it as any).description || ''
                                   ).trim();
-                                  return desc ? `${ref} — ${desc}` : ref;
+                                  const qty = Number(it.quantity || 1);
+                                  const qtyLabel = qty > 1 ? ` × ${qty}` : '';
+                                  return desc
+                                    ? `${ref} — ${desc}${qtyLabel}`
+                                    : `${ref}${qtyLabel}`;
                                 })()}
                               </span>
-                              <span>{Number(it.value || 0).toFixed(2)} €</span>
+                              <span>
+                                {(
+                                  Number(it.value || 0) *
+                                  Number(it.quantity || 1)
+                                ).toFixed(2)}{' '}
+                                €
+                              </span>
                             </li>
                           ))}
                         </ul>
@@ -1366,7 +1481,7 @@ function CheckoutForm({
         return;
       }
       setPaymentError(null);
-      showToast('Ajouté au panier pour une durée de 15 minutes', 'success');
+      showToast('Ajouté au panier', 'success');
       // Notifier le header de rafraîchir le panier
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('cart:updated'));

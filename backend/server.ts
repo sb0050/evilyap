@@ -15,8 +15,10 @@ import cartsRoutes from "./routes/carts";
 import supportRoutes from "./routes/support";
 import clerkRoutes from "./routes/clerk";
 import inseeBceRoutes from "./routes/insee-bce";
-import formsRoutes from "./routes/forms";
 import adminRoutes from "./routes/admin";
+import { stripeWebhookHandler } from "./routes/stripe.webhook";
+import { boxtalWebhookHandler } from "./routes/boxtal.webhook";
+import { clerkWebhookHandler } from "./routes/clerk.webhook";
 
 const app = express();
 
@@ -42,12 +44,34 @@ app.use((req: any, res: any, next: NextFunction) => {
   next();
 });
 
+// Pour les webhooks Stripe, nous devons traiter le raw body
+app.post(
+  "/api/stripe/webhook",
+  express.raw({ type: "application/json" }),
+  stripeWebhookHandler
+);
+
+// Pour les webhooks Boxtal, traiter aussi le raw body avant express.json
+app.post(
+  "/api/boxtal/webhook",
+  express.raw({ type: "application/json" }),
+  boxtalWebhookHandler
+);
+
+// Pour le webhook Clerk, traiter le raw body avant express.json
+app.post(
+  "/api/clerk/webhook",
+  express.raw({ type: "application/json" }),
+  clerkWebhookHandler
+);
+
 app.use(clerkMiddleware());
 
 app.use("/api", (req: Request, res: Response, next: NextFunction) => {
   if (
     req.path.startsWith("/stripe/webhook") ||
-    req.path.startsWith("/boxtal/webhook")
+    req.path.startsWith("/boxtal/webhook") ||
+    req.path.startsWith("/clerk/webhook")
   ) {
     return next();
   }
@@ -63,12 +87,6 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
 });
 
 const PORT = process.env.PORT || 5000;
-
-// Pour les webhooks Stripe, nous devons traiter le raw body
-app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
-
-// Pour les webhooks Boxtal, traiter aussi le raw body avant express.json
-app.use("/api/boxtal/webhook", express.raw({ type: "application/json" }));
 
 // Pour les autres routes, utiliser JSON
 app.use(express.json());
@@ -93,7 +111,6 @@ app.use("/api/carts", cartsRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api/clerk", clerkRoutes);
 app.use("/api/insee-bce", inseeBceRoutes);
-app.use("/api/forms", formsRoutes);
 app.use("/api/admin", adminRoutes);
 
 // Route de test

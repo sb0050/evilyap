@@ -60,6 +60,94 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+const normalizeRefs = (raw: unknown): string[] => {
+  const refs = String(raw || "")
+    .split(";")
+    .map((s) => String(s || "").trim())
+    .filter((s) => s.length > 0);
+  return Array.from(new Set(refs));
+};
+
+const buildProductReferenceOrFilter = (ref: string): string => {
+  const safeRef = String(ref || "").trim();
+  if (!safeRef) return "";
+  return [
+    `product_reference.eq.${safeRef}`,
+    `product_reference.ilike.${safeRef};%`,
+    `product_reference.ilike.%;${safeRef}`,
+    `product_reference.ilike.%;${safeRef};%`,
+  ].join(",");
+};
+
+const hasPaidShipmentForRef = async (
+  storeId: number,
+  ref: string
+): Promise<boolean> => {
+  const or = buildProductReferenceOrFilter(ref);
+  if (!or) return false;
+  const { data, error } = await supabase
+    .from("shipments")
+    .select("id")
+    .eq("store_id", storeId)
+    .not("payment_id", "is", null)
+    .or(or)
+    .limit(1);
+  if (error) throw error;
+  return (data || []).length > 0;
+};
+
+const hasFailedCartForRef = async (
+  storeId: number,
+  ref: string
+): Promise<boolean> => {
+  const safeRef = String(ref || "").trim();
+  if (!safeRef) return false;
+  const { data, error } = await supabase
+    .from("carts")
+    .select("id")
+    .eq("store_id", storeId)
+    .eq("product_reference", safeRef)
+    .eq("status", "PAYMENT_FAILED")
+    .limit(1);
+  if (error) throw error;
+  return (data || []).length > 0;
+};
+
+const findBlockedRefForStore = async (
+  storeId: number,
+  refs: string[]
+): Promise<string | null> => {
+  for (const ref of refs) {
+    if (await hasFailedCartForRef(storeId, ref)) {
+      return ref;
+    }
+    if (await hasPaidShipmentForRef(storeId, ref)) {
+      return ref;
+    }
+  }
+  return null;
+};
+
+const findBlockedRefsForStore = async (
+  storeId: number,
+  refs: string[]
+): Promise<string[]> => {
+  const blocked: string[] = [];
+  for (const ref of refs) {
+    const safe = String(ref || "").trim();
+    if (!safe) continue;
+    if (await hasFailedCartForRef(storeId, safe)) {
+      blocked.push(safe);
+      continue;
+    }
+    if (await hasPaidShipmentForRef(storeId, safe)) {
+      blocked.push(safe);
+      continue;
+    }
+  }
+  return Array.from(new Set(blocked));
+};
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
 });
@@ -482,7 +570,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       let customer: Stripe.Customer;
       console.log("Existing customers:", existingCustomers.data);
 
-      if (existingCustomers.data.length > 0 && shippingHasBeenModified) {
+      if (existingCustomers.data.length > 0) {
         // Mettre à jour le client existant
         customer = await stripe.customers.update(existingCustomers.data[0].id, {
           name: customerName,
@@ -559,7 +647,12 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       reference: string;
       description: string;
       price: number;
+      quantity: number;
     }> = Array.isArray(items) ? items : [];
+    const refsForCheck = incomingItems
+      .map((it) => String(it.reference || "").trim())
+      .filter((s) => s.length > 0);
+    const uniqueRefsForCheck = Array.from(new Set(refsForCheck));
     const joinedRefs = incomingItems
       .map((it) => String(it.reference || "").trim())
       .filter((s) => s.length > 0)
@@ -567,7 +660,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     const weightCalc = calculateParcelWeight(
       incomingItems.map((it) => ({
         description: String(it.description || ""),
-        quantity: 1,
+        quantity: Number(it.quantity || 1),
       }))
     );
     const rawKg = Number(weightCalc.rawTotalKg || 0);
@@ -639,6 +732,75 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     } else {
       computedDeliveryCost = 0;
     }
+
+    let storeIdForCheck: number | null = null;
+    if (storeName) {
+      const { data: storeRowForCheck, error: storeRowForCheckErr } =
+        await supabase
+          .from("stores")
+          .select("id")
+          .eq("name", storeName)
+          .maybeSingle();
+      if (storeRowForCheckErr) {
+        res.status(500).json({ error: storeRowForCheckErr.message });
+        return;
+      }
+      storeIdForCheck = (storeRowForCheck as any)?.id ?? null;
+    }
+    if (!storeIdForCheck) {
+      res.status(400).json({ error: "Boutique introuvable" });
+      return;
+    }
+
+    for (const ref of uniqueRefsForCheck) {
+      const { data: failedCartRows, error: failedCartErr } = await supabase
+        .from("carts")
+        .select("id")
+        .eq("store_id", storeIdForCheck)
+        .eq("product_reference", ref)
+        .eq("status", "PAYMENT_FAILED")
+        .limit(1);
+
+      if (failedCartErr) {
+        console.log("Failed Cart Err", failedCartErr);
+        res.status(500).json({ error: failedCartErr.message });
+        return;
+      }
+      if ((failedCartRows || []).length > 0) {
+        console.log("Cart Failed", failedCartRows);
+        res.status(409).json({
+          blocked: true,
+          reason: "already_bought",
+          reference: ref,
+          source: "carts",
+        });
+        return;
+      }
+
+      const { data: shippedRows, error: shippedErr } = await supabase
+        .from("shipments")
+        .select("id")
+        .eq("store_id", storeIdForCheck)
+        .or(buildProductReferenceOrFilter(ref))
+        .not("payment_id", "is", null)
+        .limit(1);
+
+      if (shippedErr) {
+        console.log("Shipped Err", shippedErr);
+        res.status(500).json({ error: shippedErr.message });
+        return;
+      }
+      if ((shippedRows || []).length > 0) {
+        res.status(409).json({
+          blocked: true,
+          reason: "already_bought",
+          reference: ref,
+          source: "shipments",
+        });
+        return;
+      }
+    }
+
     const orderLineItems: Array<{ price: string; quantity: number }> = [];
     for (const it of incomingItems) {
       const p = await stripe.products.create({
@@ -652,7 +814,10 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         unit_amount: Math.round(Number(it.price || 0) * 100),
         currency: "eur",
       });
-      orderLineItems.push({ price: pr.id, quantity: 1 });
+      orderLineItems.push({
+        price: pr.id,
+        quantity: Number(it.quantity || 1),
+      });
     }
     const finalLineItems =
       orderLineItems.length > 0 ? orderLineItems : undefined;
@@ -823,6 +988,58 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
     }
 
     const customer = session.customer as Stripe.Customer;
+    let paymentIntentObj: Stripe.PaymentIntent | null = null;
+    try {
+      if (session.payment_intent) {
+        if (typeof session.payment_intent !== "string") {
+          paymentIntentObj = session.payment_intent as Stripe.PaymentIntent;
+        } else {
+          paymentIntentObj = await stripe.paymentIntents.retrieve(
+            session.payment_intent as string
+          );
+        }
+      }
+    } catch (_e) {}
+    const paymentIntentId: string | null = paymentIntentObj
+      ? paymentIntentObj.id
+      : typeof session.payment_intent === "string"
+      ? (session.payment_intent as string)
+      : null;
+    const paymentStatus =
+      (paymentIntentObj?.status as any) || (session.payment_status as any);
+    const amountRefunded = Number(paymentIntentObj?.amount_received || 0);
+    const totalAmount = Number(
+      paymentIntentObj?.amount || session.amount_total || 0
+    );
+    let refundDetails: any = null;
+    if (paymentStatus === "succeeded" && paymentIntentId) {
+      try {
+        const refunds = await stripe.refunds.list({
+          payment_intent: paymentIntentId,
+          limit: 20,
+        });
+        if ((refunds.data || []).length > 0) {
+          refundDetails = {
+            refunded: true,
+            amount_refunded: amountRefunded,
+            is_partial: amountRefunded > 0 && amountRefunded < totalAmount,
+            refunds: refunds.data,
+          };
+        }
+      } catch (_e) {}
+    }
+    const blockedReferencesRaw =
+      (paymentIntentObj?.metadata as any)?.blocked_references ||
+      (session.metadata as any)?.blocked_references ||
+      null;
+    const blockedReferences =
+      typeof blockedReferencesRaw === "string" && blockedReferencesRaw
+        ? blockedReferencesRaw
+            .split(";")
+            .map((s: string) => String(s || "").trim())
+            .filter((s: string) => s.length > 0)
+        : [];
+
     const storeNameFromSession = (session as any)?.metadata?.store_name;
     const referenceFromSession = (session as any)?.metadata?.product_reference;
     const deliveryMethodFromSession = (session as any)?.metadata
@@ -833,21 +1050,113 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
     const parcelPointNetworkFromSession = (session as any)?.metadata
       ?.parcel_point_network;
 
+    let referenceWithQuantity: string | undefined = undefined;
+    try {
+      const lineItemsResp = await stripe.checkout.sessions.listLineItems(
+        sessionId,
+        { limit: 100, expand: ["data.price.product"] }
+      );
+      const refQtyMap = new Map<string, number>();
+      for (const item of (lineItemsResp?.data || []) as any[]) {
+        const name = String(item?.price?.product?.name || "").trim();
+        if (!name) continue;
+        const qty = Number(item?.quantity || 1);
+        refQtyMap.set(name, (refQtyMap.get(name) || 0) + qty);
+      }
+      referenceWithQuantity = Array.from(refQtyMap.entries())
+        .map(([n, q]) => `${n}**${q}`)
+        .join(";");
+      if (!referenceWithQuantity) referenceWithQuantity = undefined;
+    } catch (_e) {}
+
     const paymentDetails = {
       amount: session.amount_total || 0,
       currency: session.currency || "eur",
       reference: referenceFromSession || "N/A",
+      reference_with_quantity: referenceWithQuantity || undefined,
       storeName: storeNameFromSession || "PayLive",
       customerEmail: customer?.email || "N/A",
       customerPhone: customer?.phone || "N/A",
-      status: session.payment_status,
+      status: paymentStatus,
+      session_status: session.payment_status,
+      payment_intent_id: paymentIntentId,
+      blocked_references: blockedReferences,
       deliveryMethod: deliveryMethodFromSession || undefined,
       parcelPointCode: parcelPointCodeFromSession || undefined,
       parcelPointName: parcelPointNameFromSession || undefined,
       parcelPointNetwork: parcelPointNetworkFromSession || undefined,
     };
 
-    res.json(paymentDetails);
+    let businessStatus: "PAID" | "PAYMENT_FAILED" | "PENDING" | undefined =
+      undefined;
+
+    try {
+      const storeNameToCheck = String(storeNameFromSession || "").trim();
+      const refsToCheck = String(referenceFromSession || "")
+        .split(";")
+        .map((s) => String(s || "").trim())
+        .filter((s) => s.length > 0);
+      const uniqueRefs = Array.from(new Set(refsToCheck));
+
+      if (storeNameToCheck && uniqueRefs.length > 0) {
+        const { data: storeRow, error: storeErr } = await supabase
+          .from("stores")
+          .select("id")
+          .eq("name", storeNameToCheck)
+          .maybeSingle();
+        if (!storeErr) {
+          const storeId = (storeRow as any)?.id ?? null;
+          if (storeId) {
+            for (const ref of uniqueRefs) {
+              const { data: failedCart, error: failedErr } = await supabase
+                .from("carts")
+                .select("id")
+                .eq("store_id", storeId)
+                .eq("product_reference", ref)
+                .eq("status", "PAYMENT_FAILED")
+                .limit(1);
+              if (!failedErr && (failedCart || []).length > 0) {
+                businessStatus = "PAYMENT_FAILED";
+                break;
+              }
+            }
+
+            if (!businessStatus) {
+              for (const ref of uniqueRefs) {
+                const { data: shippedRows, error: shippedErr } = await supabase
+                  .from("shipments")
+                  .select("id")
+                  .eq("store_id", storeId)
+                  .or(buildProductReferenceOrFilter(ref))
+                  .not("payment_id", "is", null)
+                  .limit(1);
+                if (!shippedErr && (shippedRows || []).length > 0) {
+                  businessStatus = "PAID";
+                  break;
+                }
+              }
+            }
+
+            if (!businessStatus) {
+              businessStatus = "PENDING";
+            }
+          }
+        }
+      }
+    } catch (_e) {}
+
+    const result = {
+      ...paymentDetails,
+      businessStatus,
+      success: paymentStatus === "succeeded" && !refundDetails,
+      failed: ["requires_payment_method", "canceled", "failed"].includes(
+        String(paymentStatus || "")
+      ),
+      refunded: !!refundDetails,
+      refund_details: refundDetails,
+    };
+
+    res.json(result);
   } catch (error) {
     console.error("Erreur lors de la récupération de la session:", error);
     res.status(500).json({ error: "Erreur interne du serveur" });
@@ -1080,870 +1389,6 @@ router.delete("/promotion-codes/:id", async (req, res) => {
       .json({ error: error instanceof Error ? error.message : "Erreur" });
   }
 });
-
-// Webhook pour gérer les événements Stripe
-router.post(
-  "/webhook",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    const sig: any = req.headers["stripe-signature"];
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET!
-      );
-    } catch (err: any) {
-      console.log(`Webhook signature verification failed.`, err.message);
-      res.status(400).send(`Webhook Error: ${err.message}`);
-      return;
-    }
-
-    let paymentIntent: Stripe.PaymentIntent | null = null;
-    console.log("Event type Webhook:", event.type);
-
-    // Gérer les événements
-    switch (event.type) {
-      case "payment_intent.succeeded":
-        // Paiement réussi (PaymentIntent)
-        console.log("PaymentIntent succeeded:", event.data.object.id);
-        break;
-      case "payment_intent.created":
-        console.log("PaymentIntent created:", (event.data.object as any).id);
-        break;
-      case "checkout.session.completed":
-        // Session checkout complétée
-        try {
-          const session: Stripe.Checkout.Session = event.data
-            .object as Stripe.Checkout.Session;
-          console.log("Session metadata:", session.metadata);
-          // Résoudre l'ID client en évitant les erreurs lorsque session.customer est null
-          let resolvedCustomerId: string | null =
-            typeof session.customer === "string"
-              ? (session.customer as string)
-              : null;
-
-          // Récupérer le payment intent pour les informations de paiement et fallback customer
-          try {
-            if (session.payment_intent) {
-              paymentIntent = await stripe.paymentIntents.retrieve(
-                session.payment_intent as string
-              );
-              if (!resolvedCustomerId && paymentIntent?.customer) {
-                resolvedCustomerId = paymentIntent.customer as string;
-              }
-            }
-          } catch (e) {
-            console.warn(
-              "⚠️ Unable to retrieve PaymentIntent, falling back to session fields:",
-              (e as any)?.message || e
-            );
-          }
-
-          let customer: Stripe.Customer | null = null;
-          if (resolvedCustomerId) {
-            customer = (await stripe.customers.retrieve(
-              resolvedCustomerId
-            )) as Stripe.Customer;
-          } else {
-            console.warn(
-              "checkout.session.completed without a linked customer"
-            );
-          }
-
-          // customer peut être un id de customer ou null
-          //const stripeCustomerId = (session.customer as string) || null;
-
-          if (customer && !("deleted" in customer)) {
-            // récupérer email/phone/adresse depuis la session
-            const customerPhone = customer.phone || null;
-            const customerId = customer.id;
-            const customerShippingAddress: any = customer.shipping;
-            const customerEmail = customer.email || null;
-            const customerName = customer.name || "Client";
-            const customerBillingAddress: any = customer.address;
-            const deliveryMethod =
-              (session.metadata?.delivery_method as any) ||
-              customer.metadata?.delivery_method ||
-              "N/A";
-            const deliveryNetwork =
-              (session.metadata?.delivery_network as any) ||
-              customer.metadata?.delivery_network ||
-              "N/A";
-            const clerkUserId = customer.metadata.clerk_id || null;
-            let pickupPoint: any = {};
-            let dropOffPoint: any = {};
-            try {
-              pickupPoint = session.metadata?.pickup_point
-                ? JSON.parse(session.metadata.pickup_point as any)
-                : {};
-            } catch (e) {
-              console.warn("Invalid JSON in session.metadata.pickup_point:", e);
-              pickupPoint = {};
-            }
-            try {
-              dropOffPoint = session.metadata?.dropoff_point
-                ? JSON.parse(session.metadata.dropoff_point as any)
-                : {};
-            } catch (e) {
-              console.warn(
-                "Invalid JSON in session.metadata.dropoff_point:",
-                e
-              );
-              dropOffPoint = {};
-            }
-            const storeName = session.metadata?.store_name || null;
-            const productReference =
-              session.metadata?.product_reference || "N/A";
-            const amount = paymentIntent?.amount ?? session.amount_total ?? 0;
-            const currency =
-              paymentIntent?.currency ?? session.currency ?? "eur";
-            const paymentId = paymentIntent?.id ?? session.id;
-            const weight = formatWeight(session.metadata?.weight);
-            let estimatedDeliveryDate: string = "";
-            let boxtalId = "";
-            let trackingUrl = "";
-            let shipmentId = "";
-            const promoCodeDetails = [];
-            const estimatedDeliveryCost =
-              session.shipping_cost?.amount_total || 0;
-            console.log(
-              "estimated delivery cost: ",
-              estimatedDeliveryCost,
-              amount
-            );
-
-            // Supprimer les items du panier si des identifiants ont été passés via la session
-            try {
-              const cartItemsRaw =
-                (session.metadata?.cart_item_ids as any) || "";
-              const cartItemIds: number[] = Array.isArray(cartItemsRaw)
-                ? (cartItemsRaw as any[])
-                    .map((x) => Number(String(x).trim()))
-                    .filter((n) => Number.isFinite(n))
-                : String(cartItemsRaw)
-                    .split(",")
-                    .map((s) => Number(s.trim()))
-                    .filter((n) => Number.isFinite(n));
-              if (cartItemIds.length > 0) {
-                const { error: cartDelErr } = await supabase
-                  .from("carts")
-                  .delete()
-                  .in("id", cartItemIds);
-                if (cartDelErr) {
-                  console.error(
-                    "Error deleting cart items after payment:",
-                    cartDelErr.message
-                  );
-                }
-              }
-            } catch (cartCleanupErr) {
-              console.error(
-                "Unexpected error during cart cleanup:",
-                cartCleanupErr
-              );
-            }
-            // Extraire les produits des line_items
-
-            const sessionId = event.data.object.id;
-            const sessionRetrieved = await stripe.checkout.sessions.retrieve(
-              sessionId,
-              {
-                expand: ["line_items.data.price.product", "discounts"],
-              }
-            );
-
-            // Vérifier s'il y a des remises
-            if (session.discounts?.length) {
-              console.log("Remises trouvées:", session.discounts);
-
-              for (const discount of session.discounts) {
-                try {
-                  if (discount.promotion_code) {
-                    // Récupérer les détails du code promo
-                    const promoCode = await stripe.promotionCodes.retrieve(
-                      discount.promotion_code as string
-                    );
-
-                    console.log("Promo Code Details:", promoCode);
-
-                    promoCodeDetails.push({
-                      code: promoCode.code,
-                      id: promoCode.id,
-                      amount_off: session.total_details?.amount_discount ?? 0,
-                      coupon: promoCode.coupon,
-                    });
-                  } else if (discount.coupon) {
-                    // Si une remise directe est appliquée sans code promo
-                    const coupon = await stripe.coupons.retrieve(
-                      discount.coupon as string
-                    );
-
-                    promoCodeDetails.push({
-                      code: null,
-                      id: coupon.id,
-                      amount_off: session.total_details?.amount_discount ?? 0,
-                      coupon,
-                    });
-                  }
-                } catch (error) {
-                  console.error(
-                    "Erreur lors de la récupération du code promo :",
-                    error
-                  );
-                }
-              }
-            }
-
-            const products = sessionRetrieved.line_items?.data
-              .filter(
-                (item: any) =>
-                  item.price.product.type === "good" &&
-                  item.price.product.shippable
-              )
-              .map((item: any) => ({
-                id: item.price.product.id,
-                name: item.price.product.name,
-                description: item.price.product.description,
-                image: item.price.product.images?.[0],
-                quantity: item.quantity,
-                amount_total: item.amount_total,
-                currency: item.currency,
-                unit_price: item.price.unit_amount,
-                price_id: item.price.id,
-              }));
-            //const product_amount = Math.round(products?.[0]?.unit_price || 0);
-
-            // Récupérer les informations complètes de la boutique depuis Supabase
-            let storeOwnerEmail = null;
-            let storeDescription = null;
-            let storeLogo = null;
-            let storeId: number | null = null;
-            let storeSlug: string | null = null;
-            let storeAddress: any = null;
-            let storeStripeId: any = null;
-
-            if (storeName) {
-              try {
-                const { data: storeData, error: storeError } = await supabase
-                  .from("stores")
-                  .select(
-                    "id, slug, owner_email, description, address, stripe_id"
-                  )
-                  .eq("name", storeName)
-                  .single();
-
-                if (!storeError && storeData) {
-                  storeOwnerEmail = storeData.owner_email;
-                  storeDescription = storeData.description;
-                  storeId = storeData.id || null;
-                  storeSlug = storeData.slug || null;
-                  storeStripeId = storeData.stripe_id || null;
-                  storeAddress = (storeData as any)?.address || null;
-                  if (process.env.CLOUDFRONT_URL && storeSlug) {
-                    storeLogo = `${process.env.CLOUDFRONT_URL}/images/${storeId}`;
-                  }
-                }
-              } catch (storeErr) {
-                console.error("Error fetching store data:", storeErr);
-              }
-            }
-
-            // Préparer l'adresse d'expéditeur à partir des infos du store si disponibles
-
-            const toAddress = {
-              type: "RESIDENTIAL",
-              contact: {
-                email: customerEmail,
-                phone: customerPhone?.split("+")[1],
-                lastName: (customerName || "").split(" ").slice(-1)[0] || "",
-                firstName:
-                  (customerName || "").split(" ").slice(0, -1).join(" ") ||
-                  customerName ||
-                  "",
-              },
-              location: {
-                city: customerBillingAddress?.city,
-                street: customerBillingAddress?.line1,
-                postalCode: customerBillingAddress?.postal_code,
-                countryIsoCode: customerBillingAddress?.country || "FR",
-              },
-            };
-
-            const storeOwner: any = await stripe.customers.retrieve(
-              storeStripeId as string
-            );
-
-            // From address: privilégier l'adresse de la boutique si connue, sinon variables d'env / valeurs par défaut
-            const fromAddress = {
-              type: "BUSINESS",
-              contact: {
-                email: process.env.SMTP_USER || "contact@paylive.cc",
-                phone: (storeAddress as any)?.phone || "33666477877",
-                lastName: storeOwner?.name?.split(" ").slice(-1)[0] || "",
-                firstName:
-                  storeOwner?.name?.split(" ").slice(0, -1).join(" ") ||
-                  storeOwner?.name ||
-                  "",
-                company: storeName || "PayLive",
-              },
-              location: {
-                city: (storeAddress?.city as any) || "Paris",
-                street: (storeAddress?.line1 as any) || "1 Rue Exemple",
-                number: (storeAddress?.line1 as any).split(" ")[0] || "1",
-                postalCode: (storeAddress?.postal_code as any) || "75001",
-                countryIsoCode: (storeAddress?.country as any) || "FR",
-              },
-            };
-
-            // Dimensions dynamiques selon l'offre de transport
-            const offerDimensions: Record<
-              string,
-              { width: number; length: number; height: number }
-            > = {
-              "MONR-CpourToi": { width: 41, length: 64, height: 38 },
-              "MONR-DomicileFrance": { width: 41, length: 64, height: 38 },
-              "SOGP-RelaisColis": { width: 50, length: 80, height: 40 },
-              "CHRP-Chrono2ShopDirect": { width: 30, length: 100, height: 20 },
-              "CHRP-Chrono18": { width: 30, length: 100, height: 20 },
-              "UPSE-Express": { width: 41, length: 64, height: 38 },
-              "POFR-ColissimoAccess": { width: 24, length: 34, height: 26 },
-              "COPR-CoprRelaisDomicileNat": {
-                width: 49,
-                length: 69,
-                height: 29,
-              },
-              "COPR-CoprRelaisRelaisNat": { width: 49, length: 69, height: 29 },
-              //BELGIQUE-SUISSE
-              "MONR-CpourToiEurope": { width: 41, length: 64, height: 38 },
-              "CHRP-Chrono2ShopEurope": { width: 30, length: 100, height: 20 },
-              "MONR-DomicileEurope": { width: 41, length: 64, height: 38 },
-              "CHRP-ChronoInternationalClassic": {
-                width: 30,
-                length: 100,
-                height: 20,
-              },
-              "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
-            };
-            const dims = offerDimensions[deliveryNetwork] || {
-              width: 10,
-              length: 10,
-              height: 5,
-            };
-
-            // Compose shipment
-            const shipment = {
-              packages: [
-                {
-                  type: "PARCEL",
-                  value: {
-                    value: (amount || 0) / 100,
-                    currency: "EUR",
-                  },
-                  width: dims.width, // en cm
-                  length: dims.length, // en cm
-                  height: dims.height, // en cm
-                  weight: weight, // poids en Kg
-                  content: {
-                    id: "content:v1:40110", //40110\tTissus, vêtements neufs
-                    description: `${storeName} - ${productReference}`,
-                  },
-                },
-              ],
-              toAddress,
-              fromAddress,
-              pickupPointCode: pickupPoint.code,
-              dropOffPointCode: dropOffPoint.code,
-            };
-
-            const createOrderPayload: any = {
-              insured: false,
-              shipment,
-              labelType: "PDF_A4",
-              shippingOfferCode: deliveryNetwork,
-            };
-            console.log(
-              "createOrderPayload:",
-              JSON.stringify(createOrderPayload)
-            );
-
-            let dataBoxtal: any = {};
-            let attachments: Array<{
-              filename: string;
-              content: Buffer;
-              contentType?: string;
-            }> = [];
-
-            if (deliveryMethod !== "store_pickup") {
-              // Call internal Boxtal shipping-orders endpoint
-              const apiBase = getInternalBase();
-              const resp = await fetch(
-                `${apiBase}/api/boxtal/shipping-orders`,
-                {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify(createOrderPayload),
-                }
-              );
-
-              if (!resp.ok) {
-                const text = await resp.text();
-                console.error(
-                  "Failed to create Boxtal shipping order:",
-                  resp.status,
-                  text
-                );
-                await emailService.sendAdminError({
-                  subject: "Boxtal shipping order échec",
-                  message: `Echec de création Boxtal pour store ${storeName} / network ${deliveryNetwork}`,
-                  context: text,
-                });
-              } else {
-                dataBoxtal = await resp.json();
-                estimatedDeliveryDate =
-                  dataBoxtal.content.estimatedDeliveryDate;
-                boxtalId = dataBoxtal.content.id;
-                console.log("Boxtal shipping order created:", dataBoxtal);
-
-                // Attendre, tenter récupération du document 2× avec 2s de délai et notifier le propriétaire
-                try {
-                  const shippingOrderIdForDoc = boxtalId;
-                  const base = getInternalBase();
-                  console.log("shippingOrderIdForDoc:", shippingOrderIdForDoc);
-
-                  for (let attempt = 1; attempt <= 2; attempt++) {
-                    // Attente 10 s avant chaque tentative pour laisser Boxtal générer le document
-                    await new Promise((resolve) => setTimeout(resolve, 10000));
-                    console.log(
-                      `Attempt ${attempt}: Checking for document at ${new Date().toISOString()}`
-                    );
-
-                    const docApiResp = await fetch(
-                      `${base}/api/boxtal/shipping-orders/${encodeURIComponent(
-                        shippingOrderIdForDoc
-                      )}/shipping-document`,
-                      { method: "GET" }
-                    );
-
-                    if (docApiResp.ok) {
-                      const docJson: any = await docApiResp.json();
-                      const docs: any[] = docJson?.content || [];
-                      const labelDoc =
-                        docs.find((d) => d.type === "LABEL") || docs[0];
-
-                      if (labelDoc?.url) {
-                        const docResp = await fetch(labelDoc.url);
-                        if (docResp.ok) {
-                          const buf = Buffer.from(await docResp.arrayBuffer());
-                          attachments = [
-                            {
-                              filename: `${
-                                labelDoc.type || "LABEL"
-                              }_${shippingOrderIdForDoc}.pdf`,
-                              content: buf,
-                              contentType: "application/pdf",
-                            },
-                          ];
-                          break; // pièce jointe prête, on sort
-                        } else {
-                          console.warn(
-                            "Failed to download shipping document PDF:",
-                            labelDoc.url,
-                            docResp.status
-                          );
-                        }
-                      } else {
-                        console.warn(
-                          "No shipping document available in Boxtal response"
-                        );
-                      }
-                    } else {
-                      const errText = await docApiResp.text();
-                      console.log(
-                        "Failed to fetch shipping document from Boxtal:",
-                        docApiResp.status,
-                        errText
-                      );
-
-                      console.warn(
-                        "Failed to get shipping documents via internal route:",
-                        docApiResp.status,
-                        errText
-                      );
-                      // autres erreurs : on log et on sort de la boucle
-                      break;
-                    }
-                  }
-
-                  // Marquer document_created = true si une pièce jointe PDF a été récupérée
-                  if (attachments && attachments.length > 0) {
-                    try {
-                      const { error: updateErr } = await supabase
-                        .from("shipments")
-                        .update({ document_created: true })
-                        .eq("shipment_id", shippingOrderIdForDoc);
-                      if (updateErr) {
-                        console.error(
-                          "Error updating shipments.document_created:",
-                          updateErr
-                        );
-                        await emailService.sendAdminError({
-                          subject: "Erreur update document_created",
-                          message: `Mise à jour échouée pour boxtalId ${shippingOrderIdForDoc}`,
-                          context: JSON.stringify(updateErr),
-                        });
-                      }
-                    } catch (updEx) {
-                      console.error(
-                        "Exception updating shipments.document_created:",
-                        updEx
-                      );
-                    }
-                  }
-                } catch (e) {
-                  console.error(
-                    "Error sending store owner notification with document:",
-                    e
-                  );
-                }
-              }
-            } // end if deliveryMethod === "pickup_point"
-
-            // Enregistrer l'expédition dans la table shipments (plus de metadata Stripe)
-            try {
-              const { data: shipmentInsert, error: shipmentInsertError } =
-                await supabase
-                  .from("shipments")
-                  .insert({
-                    store_id: storeId,
-                    customer_stripe_id: customerId || null,
-                    shipment_id: boxtalId,
-                    status: (dataBoxtal?.content?.status as any) || null,
-                    estimated_delivery_date: estimatedDeliveryDate || null,
-                    created_at: dataBoxtal?.timestamp
-                      ? new Date(dataBoxtal.timestamp).toISOString()
-                      : new Date().toISOString(),
-                    document_created: attachments && attachments.length > 0,
-                    delivery_method: deliveryMethod,
-                    delivery_network: deliveryNetwork,
-                    dropoff_point: dropOffPoint,
-                    pickup_point: pickupPoint,
-                    weight: session.metadata?.weight || null,
-                    product_reference: productReference || null,
-                    payment_id: paymentIntent?.id || null,
-                    paid_value: (amount || 0) / 100,
-                    delivery_cost:
-                      (dataBoxtal?.content?.deliveryPriceExclTax?.value || 0) *
-                      1.2, //ajout de la TVA de 20%
-                    promo_codes:
-                      promoCodeDetails
-                        .map((d: any) => d?.code || d?.id || "")
-                        .filter(Boolean)
-                        .join(";") || null,
-                    product_value: (products?.[0]?.unit_price || 0) / 100,
-                    estimated_delivery_cost: (estimatedDeliveryCost || 0) / 100,
-                  })
-                  .select("id")
-                  .single();
-              shipmentId = shipmentInsert?.id || "";
-
-              console.log("shipmentInsert:", shipmentInsert);
-
-              if (shipmentInsertError) {
-                console.error(
-                  "Error inserting shipment row:",
-                  shipmentInsertError
-                );
-                await emailService.sendAdminError({
-                  subject: "Erreur insertion shipments",
-                  message: `Insertion échouée pour boxtalId ${boxtalId} (store ${storeName}).`,
-                  context: JSON.stringify(shipmentInsertError),
-                });
-              } else {
-                console.log("Shipments row inserted:", shipmentInsert);
-              }
-            } catch (dbErr) {
-              console.error("DB insert shipments exception:", dbErr);
-              await emailService.sendAdminError({
-                subject: "Erreur insertion shipments",
-                message: `Insertion échouée pour boxtalId ${boxtalId} (store ${storeName}).`,
-                context: JSON.stringify(dbErr),
-              });
-            }
-
-            // Recuperer le lien de suivi de la livraison depuis l'appel à boxtal et l'enregistrer dans la table shipments
-            if (deliveryMethod !== "store_pickup") {
-              console.log("Fetching tracking for boxtalId:", boxtalId);
-              try {
-                if (boxtalId) {
-                  console.log("boxtalId:", boxtalId);
-                  const base = getInternalBase();
-
-                  const trackingResp = await fetch(
-                    `${base}/api/boxtal/shipping-orders/${encodeURIComponent(
-                      boxtalId
-                    )}/tracking`,
-                    { method: "GET" }
-                  );
-
-                  if (trackingResp.ok) {
-                    const trackingJson: any = await trackingResp.json();
-                    console.log(
-                      "Boxtal tracking response:",
-                      JSON.stringify(trackingJson)
-                    );
-                    let packageTrackingUrl: string | undefined = undefined;
-
-                    // Boxtal peut renvoyer content comme objet ou tableau d'événements
-                    if (Array.isArray(trackingJson?.content)) {
-                      const firstWithUrl = (trackingJson.content || []).find(
-                        (ev: any) => ev && ev.packageTrackingUrl
-                      );
-                      packageTrackingUrl =
-                        firstWithUrl?.packageTrackingUrl ||
-                        (trackingJson.content[0]?.packageTrackingUrl as any);
-                    } else {
-                      packageTrackingUrl =
-                        trackingJson?.content?.packageTrackingUrl;
-                    }
-
-                    if (packageTrackingUrl) {
-                      // Mettre à jour la variable utilisée pour les emails
-                      trackingUrl = packageTrackingUrl;
-
-                      // Mettre à jour la colonne tracking_url dans la table shipments
-                      try {
-                        const { error: updError } = await supabase
-                          .from("shipments")
-                          .update({ tracking_url: packageTrackingUrl })
-                          .eq("shipment_id", boxtalId);
-                        if (updError) {
-                          console.error(
-                            "Error updating shipments.tracking_url:",
-                            updError
-                          );
-                        }
-                      } catch (updEx) {
-                        console.error(
-                          "Exception updating shipments.tracking_url:",
-                          updEx
-                        );
-                      }
-                    }
-                  } else {
-                    const errText = await trackingResp.text();
-                    console.warn(
-                      "Boxtal tracking API non-OK:",
-                      trackingResp.status,
-                      errText
-                    );
-                  }
-                }
-              } catch (trackErr) {
-                console.error(
-                  "Error retrieving tracking URL from internal Boxtal API:",
-                  trackErr
-                );
-              }
-            }
-
-            // Envoyer l'email de confirmation au client
-            try {
-              await emailService.sendCustomerConfirmation({
-                customerEmail:
-                  paymentIntent?.receipt_email || customerEmail || "",
-                customerName: customerName,
-                storeName: storeName || "Votre Boutique",
-                storeDescription: storeDescription,
-                storeLogo: `${process.env.CLOUDFRONT_URL}/images/${storeId}`,
-                storeAddress: storeAddress,
-                productReference: productReference,
-                amount: amount / 100,
-                currency: currency,
-                paymentId: paymentId,
-                boxtalId: boxtalId,
-                shipmentId: shipmentId,
-                deliveryMethod: deliveryMethod,
-                deliveryNetwork: deliveryNetwork,
-                pickupPointCode: pickupPoint.code || "",
-                estimatedDeliveryDate: estimatedDeliveryDate,
-                trackingUrl: trackingUrl,
-                promoCodes:
-                  promoCodeDetails
-                    .map((d: any) => d?.code || d?.id || "")
-                    .filter(Boolean)
-                    .join(", ") || "",
-                productValue: (products?.[0]?.unit_price || 0) / 100,
-                estimatedDeliveryCost: estimatedDeliveryCost / 100,
-              });
-              console.log(
-                "Customer confirmation email sent",
-                paymentIntent?.receipt_email || customerEmail
-              );
-            } catch (emailErr) {
-              console.error(
-                "Error sending customer confirmation email:",
-                emailErr
-              );
-            }
-
-            try {
-              // Envoyer l'email au propriétaire (avec ou sans pièce jointe)
-              if (storeOwnerEmail) {
-                const sentOwner = await emailService.sendStoreOwnerNotification(
-                  {
-                    ownerEmail: storeOwnerEmail,
-                    storeName: storeName || "Votre Boutique",
-                    customerEmail: customerEmail || "",
-                    customerName: customerName || "",
-                    customerPhone: customerPhone || "",
-                    deliveryMethod,
-                    deliveryNetwork,
-                    shippingAddress: {
-                      name: (customerShippingAddress as any)?.name,
-                      address: {
-                        line1: (customerShippingAddress as any)?.address?.line1,
-                        line2:
-                          (customerShippingAddress as any)?.address?.line2 ||
-                          "",
-                        city: (customerShippingAddress as any)?.address?.city,
-                        state: (customerShippingAddress as any)?.address?.state,
-                        postal_code: (customerShippingAddress as any)?.address
-                          ?.postal_code,
-                        country: (customerShippingAddress as any)?.address
-                          ?.country,
-                      },
-                    },
-                    customerAddress: {},
-                    pickupPointCode: pickupPoint.code || "",
-                    productReference,
-                    amount: amount / 100,
-                    weight,
-                    currency,
-                    paymentId,
-                    boxtalId,
-                    shipmentId,
-                    promoCodes:
-                      promoCodeDetails
-                        .map((d: any) => d?.code || d?.id || "")
-                        .filter(Boolean)
-                        .join(", ") || "",
-                    productValue: (products?.[0]?.unit_price || 0) / 100,
-                    estimatedDeliveryCost: estimatedDeliveryCost / 100,
-                    attachments,
-                    documentPendingNote:
-                      attachments?.length === 0
-                        ? "Vous pourrez télécharger votre bordereau d'envoi depuis votre tableau de bord dans quelques minutes."
-                        : undefined,
-                  }
-                );
-                console.log(
-                  "Store owner notification sent",
-                  sentOwner,
-                  storeOwnerEmail
-                );
-                // Mettre à jour le solde de la boutique après envoi de l'email au propriétaire
-                try {
-                  if (sentOwner && storeId) {
-                    const { data: storeBalanceRow, error: storeBalanceErr } =
-                      await supabase
-                        .from("stores")
-                        .select("balance")
-                        .eq("id", storeId)
-                        .single();
-                    if (storeBalanceErr) {
-                      console.error(
-                        "Error fetching current store balance:",
-                        storeBalanceErr
-                      );
-                    } else {
-                      const currentBalance = Number(
-                        (storeBalanceRow as any)?.balance || 0
-                      );
-                      const increment =
-                        ((amount || 0) - estimatedDeliveryCost) / 100;
-                      const newBalance = currentBalance + increment;
-                      const { error: balanceUpdateErr } = await supabase
-                        .from("stores")
-                        .update({ balance: newBalance })
-                        .eq("id", storeId);
-                      if (balanceUpdateErr) {
-                        console.error(
-                          "Error updating stores.balance:",
-                          balanceUpdateErr
-                        );
-                      } else {
-                        console.log(
-                          `stores.balance updated for store ${storeId}: +${increment} => ${newBalance}`
-                        );
-                      }
-                    }
-                  }
-                } catch (balanceEx) {
-                  console.error(
-                    "Exception updating stores.balance:",
-                    balanceEx
-                  );
-                }
-              } else {
-                console.warn(
-                  "No storeOwnerEmail found, skipping owner notification"
-                );
-              }
-            } catch (ownerEmailErr) {
-              console.error(
-                "Error sending store owner notification:",
-                ownerEmailErr
-              );
-            }
-
-            // Notification storeowner supprimée: l’envoi des documents se fait via webhook Boxtal
-          }
-        } catch (sessionErr) {
-          // envoyer l'erreur à l'admin
-          await emailService.sendAdminError({
-            subject: "Erreur lors de la création de la session de paiement",
-            message: `Une erreur est survenue lors de la création de la session de paiement pour l'email ${
-              paymentIntent?.receipt_email
-            }: ${JSON.stringify(sessionErr)}`,
-          });
-          console.error(
-            "Error handling checkout.session.completed:",
-            sessionErr
-          );
-        }
-        break;
-      case "payment_intent.payment_failed":
-        // Paiement échoué - rediriger vers la page d'échec
-        const failedPaymentIntent = event.data.object as Stripe.PaymentIntent;
-        console.log("Payment failed:", failedPaymentIntent.id);
-
-        // Récupérer la session associée pour obtenir les détails
-        try {
-          const sessions = await stripe.checkout.sessions.list({
-            payment_intent: failedPaymentIntent.id,
-            limit: 1,
-          });
-
-          if (sessions.data.length > 0) {
-            const failedSession = sessions.data[0];
-            console.log(`Payment failed for session: ${failedSession.id}`);
-            // La redirection vers la page d'échec sera gérée côté frontend
-            // via les paramètres de l'URL de retour de Stripe
-          }
-        } catch (sessionErr) {
-          console.error("Error handling payment failure:", sessionErr);
-        }
-        break;
-      default:
-        console.log(`Unhandled event type ${event.type}`);
-    }
-
-    res.json({ received: true });
-  }
-);
 
 export default router;
 router.get("/coupons", async (req, res) => {
