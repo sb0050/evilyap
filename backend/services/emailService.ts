@@ -1480,6 +1480,74 @@ class EmailService {
       return false;
     }
   }
+  async sendRaffleWinnerCongrats(data: {
+    customerEmail: string;
+    customerName?: string;
+    storeName: string;
+    storeLogo?: string;
+  }): Promise<boolean> {
+    try {
+      const to = (data.customerEmail || "").trim();
+      if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+        return false;
+      }
+      const name = (data.customerName || "").trim();
+      const logo = (data.storeLogo || "").trim();
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Félicitations</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #111827; background: #f9fafb; }
+            .container { max-width: 680px; margin: 0 auto; padding: 24px; }
+            .card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+            .header { padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; gap: 12px; }
+            .brand { font-weight: 700; font-size: 18px; color: #111827; }
+            .content { padding: 20px; }
+            .cta { display:inline-block; margin-top: 16px; background:#4f46e5; color:white; text-decoration:none; padding:10px 14px; border-radius:8px; font-weight:600; }
+            .muted { color:#6b7280; font-size:14px; margin-top:16px; }
+            img.logo { width:36px; height:36px; border-radius:8px; object-fit:cover; border:1px solid #e5e7eb; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="card">
+              <div class="header">
+                ${logo ? `<img class="logo" src="${logo}" alt="${data.storeName}" />` : ""}
+                <div class="brand">${data.storeName}</div>
+              </div>
+              <div class="content">
+                <p>Bonjour${name ? ` ${name}` : ""},</p>
+                <p>🎉 Félicitations ! Vous avez été tiré au sort lors de notre live.</p>
+                <p>Nous vous recontactons très vite avec les modalités pour recevoir votre gain.</p>
+                <p class="muted">Si vous avez des questions, vous pouvez répondre directement à cet email.</p>
+                <p>À très vite,<br/>L’équipe ${data.storeName}</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+      const info = await this.transporter.sendMail({
+        from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
+        to,
+        subject: `🎉 Félicitations — ${data.storeName}`,
+        html: htmlContent,
+      });
+      console.log("raffle congrats email:", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
+      return true;
+    } catch (error) {
+      console.error("Erreur envoi email tirage:", error);
+      return false;
+    }
+  }
 }
 
 // Exporter une instance unique du service

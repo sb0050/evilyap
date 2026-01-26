@@ -19,6 +19,7 @@ import adminRoutes from "./routes/admin";
 import { stripeWebhookHandler } from "./routes/stripe.webhook";
 import { boxtalWebhookHandler } from "./routes/boxtal.webhook";
 import { clerkWebhookHandler } from "./routes/clerk.webhook";
+import raffleRoutes from "./routes/raffle";
 
 const app = express();
 
@@ -28,7 +29,8 @@ app.use((req: any, res: any, next: NextFunction) => {
   if (
     origin === "https://paylive.cc" ||
     origin?.endsWith(".vercel.app") ||
-    origin === "http://localhost:3000"
+    origin === "http://localhost:3000" ||
+    origin === "http://localhost:3001"
   ) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
@@ -112,6 +114,7 @@ app.use("/api/support", supportRoutes);
 app.use("/api/clerk", clerkRoutes);
 app.use("/api/insee-bce", inseeBceRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/raffle", raffleRoutes);
 
 // Route de test
 app.get("/api/health", (req: Request, res: Response) => {
