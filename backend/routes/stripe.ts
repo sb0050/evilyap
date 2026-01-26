@@ -4,6 +4,7 @@ import { emailService } from "../services/emailService";
 import { createClient } from "@supabase/supabase-js";
 
 import slugify from "slugify";
+import { CATEGORY_BASE_WEIGHT } from "../CATEGORY_BASE_WEIGHT";
 
 import { getAuth } from "@clerk/express";
 import { clerkClient } from "@clerk/express";
@@ -48,17 +49,7 @@ const getInternalBase = (): string => {
   return `http://localhost:${process.env.PORT || 5000}`;
 };
 
-const CATEGORY_BASE_WEIGHT: Record<string, number> = {
-  robe: 0.6,
-  jean: 0.8,
-  pantalon: 0.75,
-  jupe: 0.5,
-  top: 0.35,
-  chemise: 0.45,
-  veste: 1.0,
-  manteau: 1.6,
-};
-const DEFAULT_HIGH_WEIGHT = 1.2;
+const DEFAULT_WEIGHT = 0.5;
 const PACKAGING_WEIGHT = 0.4;
 const CATEGORIES = Object.keys(CATEGORY_BASE_WEIGHT);
 const normalizeText = (text: string): string =>
@@ -79,9 +70,9 @@ const detectCategory = (description: string) => {
 const computeUnitWeight = (description: string) => {
   const { category, confidence } = detectCategory(description);
   if (category === "unknown" || confidence < 0.6) {
-    return { category: "unknown", unitWeight: DEFAULT_HIGH_WEIGHT, confidence };
+    return { category: "unknown", unitWeight: DEFAULT_WEIGHT, confidence };
   }
-  let weight = CATEGORY_BASE_WEIGHT[category] || DEFAULT_HIGH_WEIGHT;
+  let weight = CATEGORY_BASE_WEIGHT[category] || DEFAULT_WEIGHT;
   const text = normalizeText(description);
   if (text.includes("long")) weight += 0.2;
   if (text.includes("epais") || text.includes("hiver")) weight += 0.3;
@@ -1318,6 +1309,7 @@ router.get("/coupons", async (req, res) => {
       return;
     }
     const list = await stripe.coupons.list({ limit: 50 });
+    console.log("********************", list);
     const data = (list.data || []).map((c) => ({
       id: c.id,
       name: c.name || null,
