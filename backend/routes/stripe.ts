@@ -608,7 +608,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
               postal_code: recipientPostal,
               city: recipientCity,
             },
-            weight: weightLabel || weightKg,
+            weight: weightKg,
             network: deliveryNetwork,
           }),
         });

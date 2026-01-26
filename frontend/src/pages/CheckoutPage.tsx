@@ -424,6 +424,36 @@ export default function CheckoutPage() {
         | 'store_pickup' = deliveryMethod;
 
       const md = (customerData as any) || {};
+      const resolvedParcelPoint =
+        effectiveDeliveryMethod === 'pickup_point'
+          ? (() => {
+              if (selectedParcelPoint) return selectedParcelPoint;
+              const fromCustomer = (customerData as any)?.parcel_point;
+              if (fromCustomer && typeof fromCustomer === 'object') {
+                if ((fromCustomer as any)?.location) return fromCustomer;
+              }
+              const fromShipping = (customerData as any)?.shipping?.address;
+              if (fromShipping && typeof fromShipping === 'object') {
+                return {
+                  name: (customerData as any)?.shipping?.name || '',
+                  location: {
+                    street: fromShipping?.street || fromShipping?.line1 || '',
+                    number: fromShipping?.number || fromShipping?.line2 || '',
+                    postalCode:
+                      fromShipping?.postalCode ||
+                      fromShipping?.postal_code ||
+                      '',
+                    city: fromShipping?.city || '',
+                    countryIsoCode:
+                      fromShipping?.countryIsoCode ||
+                      fromShipping?.country ||
+                      'FR',
+                  },
+                };
+              }
+              return null;
+            })()
+          : null;
       const customerInfo = {
         email: email || user.primaryEmailAddress.emailAddress,
         name: (formData.name || md.name || user.fullName || 'Client') as string,
@@ -437,7 +467,7 @@ export default function CheckoutPage() {
         delivery_method: effectiveDeliveryMethod,
         parcel_point:
           effectiveDeliveryMethod === 'pickup_point'
-            ? selectedParcelPoint
+            ? resolvedParcelPoint
             : null,
       };
 
@@ -470,7 +500,7 @@ export default function CheckoutPage() {
         deliveryMethod: effectiveDeliveryMethod,
         parcelPoint:
           effectiveDeliveryMethod === 'pickup_point'
-            ? selectedParcelPoint || null
+            ? resolvedParcelPoint || null
             : null,
         phone: customerInfo.phone,
 
@@ -478,7 +508,7 @@ export default function CheckoutPage() {
         deliveryNetwork:
           effectiveDeliveryMethod === 'store_pickup'
             ? 'STORE_PICKUP'
-            : selectedParcelPoint?.shippingOfferCode ||
+            : (resolvedParcelPoint as any)?.shippingOfferCode ||
               (formData as any)?.shippingOfferCode ||
               (md.deliveryNetwork as any) ||
               ((md.metadata || {})?.delivery_network as any) ||
@@ -1568,17 +1598,13 @@ function CheckoutForm({
             {(() => {
               const defaultName = user?.fullName || '';
               const defaultPhone = customerData?.phone || '';
-              const presetAddress = (customerData?.address as any) || undefined;
-              const addressKey = presetAddress
-                ? `addr-${[
-                    presetAddress.line1,
-                    presetAddress.postal_code,
-                    presetAddress.city,
-                    presetAddress.country,
-                  ]
-                    .map(v => String(v || ''))
-                    .join('|')}`
-                : 'addr-empty';
+              const currentAddress =
+                address || (customerData?.address as any) || undefined;
+              const addressKey = (customerData as any)?.id
+                ? `addr-${String((customerData as any).id)}`
+                : user?.id
+                  ? `addr-${String(user.id)}`
+                  : 'addr-default';
               const addressIncomplete = !(
                 (formData.name || '').trim() &&
                 (formData.phone || '').trim() &&
@@ -1608,7 +1634,7 @@ function CheckoutForm({
                       defaultValues: {
                         name: defaultName,
                         phone: defaultPhone,
-                        address: presetAddress,
+                        address: currentAddress,
                       },
                     }}
                     onChange={(event: any) => {
@@ -1621,6 +1647,7 @@ function CheckoutForm({
                       }
 
                       setAddress(addr || undefined);
+
                       setIsFormValid(!!event.complete);
                     }}
                   />
