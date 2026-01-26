@@ -64,21 +64,6 @@ router.post("/draw", async (req, res) => {
       clerkUserId: (customer.metadata as any)?.clerk_id,
     } as any;
 
-    try {
-      if (supabase) {
-        await supabase.from("raffle_audit").insert({
-          admin_id: auth.userId,
-          participant_ids: ids,
-          winner_id: winnerId,
-          created_at: new Date().toISOString(),
-        } as any);
-      } else {
-        console.warn("Supabase not configured, skipping raffle audit log");
-      }
-    } catch (auditErr) {
-      console.warn("Raffle audit insert failed:", auditErr);
-    }
-
     return res.json({ winner: customerData });
   } catch (e) {
     console.error("Error in raffle draw:", e);
