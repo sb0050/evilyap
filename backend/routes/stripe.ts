@@ -123,14 +123,6 @@ const calculateParcelWeight = (
   return { totalWeightKg: finalWeightKg, rawTotalKg: total, breakdown };
 };
 
-// Types pour les requêtes
-interface OrderItem {
-  id: string;
-  name: string;
-  price: number;
-  quantity: number;
-}
-
 // Endpoint to get customer details
 router.get("/get-customer-details", async (req, res) => {
   const { customerEmail } = req.query;
@@ -166,8 +158,6 @@ router.get("/get-customer-details", async (req, res) => {
       parcelPointCode: customer.metadata.parcel_point,
       deliveryNetwork: customer.metadata.delivery_network,
     };
-    console.log("Customer metadata:", customerData);
-
     res.json({ customer: customerData });
   } catch (error) {
     console.log("Error retrieving customer:", error);

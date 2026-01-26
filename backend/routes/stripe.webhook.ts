@@ -38,14 +38,6 @@ const normalizeRefs = (raw: unknown): string[] => {
   return Array.from(new Set(refs));
 };
 
-
-
-
-
-
-
-
-
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
 });
@@ -666,6 +658,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               deliveryNetwork,
             );
             const apiBase = getInternalBase();
+            console.log(
+              "createOrderPayload",
+              JSON.stringify(createOrderPayload),
+            );
             const resp = await fetch(`${apiBase}/api/boxtal/shipping-orders`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -811,7 +807,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               product_reference: _productReference,
               payment_id: paymentIntent?.id || null,
               paid_value: (netAmount || 0) / 100,
-              boxtal_json: boxtalOrderFailed
+              boxtal_shipping_json: boxtalOrderFailed
                 ? JSON.stringify(createOrderPayload)
                 : null,
               delivery_cost:
