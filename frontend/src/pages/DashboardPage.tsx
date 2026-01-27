@@ -3508,6 +3508,15 @@ export default function DashboardPage() {
               </div>
 
               {/* Vue mobile: cartes dépliables */}
+              <div className='sm:hidden mb-2 flex items-center gap-2'>
+                <input
+                  type='checkbox'
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAllVisible}
+                  className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
+                />
+                <span className='text-sm text-gray-700'>Tout sélectionner</span>
+              </div>
               <div className='block sm:hidden space-y-3'>
                 {visibleShipments.length === 0 ? (
                   <div className='text-gray-600 text-center py-4'>

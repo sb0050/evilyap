@@ -734,7 +734,7 @@ export default function OrdersPage() {
                     Page {page} / {totalPages} — {(shipments || []).length}{' '}
                     commandes
                   </span>
-                  <span className='text-gray-400'>•</span>
+                  <span className='text-gray-400'>—</span>
                   <span className='inline-flex items-center gap-2 whitespace-nowrap'>
                     <span className='inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-gray-100 px-1.5 text-xs font-semibold text-gray-700'>
                       {selectedOrders.length}
