@@ -51,7 +51,7 @@ const verifyAndRefreshBoxtalToken = async () => {
   // Si le token est invalide ou expiré, appelle l'endpoint pour en générer un nouveau
   const url = `${BOXTAL_CONFIG.auth_url}`;
   const credentials = Buffer.from(
-    `${BOXTAL_CONFIG.client_id}:${BOXTAL_CONFIG.client_secret}`
+    `${BOXTAL_CONFIG.client_id}:${BOXTAL_CONFIG.client_secret}`,
   ).toString("base64");
   const options = {
     method: "POST",
@@ -101,12 +101,6 @@ router.post("/auth", async (req, res) => {
 
 // Cotation
 router.post("/cotation", async (req, res) => {
-  const weights = [
-    { label: "500g", value: 0.5 },
-    { label: "1kg", value: 1 },
-    { label: "2kg", value: 2 },
-  ];
-
   const offerDimensions: any = {
     FR: {
       "MONR-CpourToi": { width: 41, length: 64, height: 38 },
@@ -132,10 +126,13 @@ router.post("/cotation", async (req, res) => {
       "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
     },
   };
-  const { sender, recipient } = req.body || {};
+  const { sender, recipient, weight, network } = req.body || {};
   if (
     !sender ||
     !recipient ||
+    !network ||
+    weight === undefined ||
+    weight === null ||
     !sender?.country ||
     !sender?.postal_code ||
     !sender?.city ||
@@ -150,10 +147,38 @@ router.post("/cotation", async (req, res) => {
     const recipientCountry = String(recipient.country || "FR").toUpperCase();
     const countryKey = recipientCountry;
     const countryOffers = offerDimensions[countryKey] || {};
-    const networks = Object.keys(countryOffers);
+    const networkKey = String(network || "").trim();
+    if (!networkKey) {
+      return res.status(400).json({ error: "Missing network" });
+    }
+    const dimForNet = countryOffers[networkKey] || {
+      width: 10,
+      length: 10,
+      height: 5,
+    };
+    const weightValue = (() => {
+      if (typeof weight === "number") return weight;
+      const w = String(weight || "")
+        .trim()
+        .toLowerCase();
+      if (!w) return NaN;
+      if (w.endsWith("kg")) {
+        const parsed = Number(w.replace("kg", "").trim().replace(",", "."));
+        return parsed;
+      }
+      if (w.endsWith("g")) {
+        const parsed = Number(w.replace("g", "").trim().replace(",", "."));
+        return parsed / 1000;
+      }
+      const parsed = Number(w.replace(",", "."));
+      return parsed;
+    })();
+    if (!Number.isFinite(weightValue) || weightValue <= 0) {
+      return res.status(400).json({ error: "Invalid weight" });
+    }
 
     const credentials = Buffer.from(
-      `${BOXTAL_API_V1_CONFIG.client_id}:${BOXTAL_API_V1_CONFIG.client_secret}`
+      `${BOXTAL_API_V1_CONFIG.client_id}:${BOXTAL_API_V1_CONFIG.client_secret}`,
     ).toString("base64");
     const options = {
       method: "GET",
@@ -164,64 +189,43 @@ router.post("/cotation", async (req, res) => {
     } as any;
 
     const parser = new XMLParser({ ignoreAttributes: true });
-    const result: Record<string, Record<string, any>> = {};
+    const params = new URLSearchParams();
+    params.append("colis_1.poids", String(weightValue));
+    params.append("colis_1.longueur", String(dimForNet.length));
+    params.append("colis_1.largeur", String(dimForNet.width));
+    params.append("colis_1.hauteur", String(dimForNet.height));
+    params.append("code_contenu", "40110");
+    params.append("expediteur.pays", String(sender.country));
+    params.append("expediteur.code_postal", String(sender.postal_code));
+    params.append("expediteur.ville", String(sender.city));
+    params.append("expediteur.type", "entreprise");
+    params.append("destinataire.pays", String(recipient.country));
+    params.append("destinataire.code_postal", String(recipient.postal_code));
+    params.append("destinataire.ville", String(recipient.city));
+    params.append("destinataire.type", "particulier");
+    params.append("offers[0]", networkKey.replace(/-/g, ""));
 
-    await Promise.all(
-      networks.map(async (net) => {
-        const dimForNet = countryOffers[net] || {
-          width: 10,
-          length: 10,
-          height: 5,
-        };
-        result[net] = {};
-
-        const weightCalls = weights.map(async (w) => {
-          const params = new URLSearchParams();
-          params.append("colis_1.poids", String(w.value));
-          params.append("colis_1.longueur", String(dimForNet.length));
-          params.append("colis_1.largeur", String(dimForNet.width));
-          params.append("colis_1.hauteur", String(dimForNet.height));
-          params.append("code_contenu", "40110");
-          params.append("expediteur.pays", String(sender.country));
-          params.append("expediteur.code_postal", String(sender.postal_code));
-          params.append("expediteur.ville", String(sender.city));
-          params.append("expediteur.type", "entreprise");
-          params.append("destinataire.pays", String(recipient.country));
-          params.append(
-            "destinataire.code_postal",
-            String(recipient.postal_code)
-          );
-          params.append("destinataire.ville", String(recipient.city));
-          params.append("destinataire.type", "particulier");
-          params.append("offers[0]", net.replace(/-/g, ""));
-
-          const url = `${
-            BOXTAL_API_V1_CONFIG.api_url
-          }/cotation?${params.toString()}`;
-          const resp = await fetch(url, options);
-          if (!resp.ok) {
-            return;
-          }
-          const xml = await resp.text();
-          const json = parser.parse(xml);
-          const offer: any = (json as any)?.cotation?.shipment?.offer;
-          if (!offer) {
-            return;
-          }
-          const singleOffer = Array.isArray(offer) ? offer[0] : offer;
-          result[net][w.label] = {
-            price: singleOffer?.price || null,
-            characteristics: singleOffer?.characteristics || null,
-            delivery: singleOffer?.delivery || null,
-            collection: singleOffer?.collection || null,
-          };
-        });
-
-        await Promise.all(weightCalls);
-      })
-    );
-
-    return res.status(200).json(result);
+    const url = `${BOXTAL_API_V1_CONFIG.api_url}/cotation?${params.toString()}`;
+    const resp = await fetch(url, options);
+    if (!resp.ok) {
+      const text = await resp.text();
+      return res.status(resp.status).json({ error: text || "Cotation failed" });
+    }
+    const xml = await resp.text();
+    const json = parser.parse(xml);
+    const offer: any = (json as any)?.cotation?.shipment?.offer;
+    if (!offer) {
+      return res.status(404).json({ error: "No offer returned" });
+    }
+    const singleOffer = Array.isArray(offer) ? offer[0] : offer;
+    return res.status(200).json({
+      network: networkKey,
+      weight,
+      price: singleOffer?.price || null,
+      characteristics: singleOffer?.characteristics || null,
+      delivery: singleOffer?.delivery || null,
+      collection: singleOffer?.collection || null,
+    });
   } catch (error: any) {
     console.error("Error in /api/boxtal/cotation:", error);
     return res.status(500).json({ error: "Failed to get Boxtal cotation" });
@@ -315,7 +319,7 @@ router.get("/shipping-orders/:id", async (req, res) => {
 
     const token = await verifyAndRefreshBoxtalToken();
     const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
-      id
+      id,
     )}`;
 
     const options = {
@@ -366,7 +370,7 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
 
     const token = await verifyAndRefreshBoxtalToken();
     const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
-      id
+      id,
     )}/shipping-document`;
 
     console.log("Fetching shipping documents for order ID:", id);
@@ -404,18 +408,18 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
           if (updUrlErr) {
             console.error(
               "DOCUMENT_CREATED: error updating document_url:",
-              updUrlErr
+              updUrlErr,
             );
           }
         } catch (updEx) {
           console.error(
             "DOCUMENT_CREATED: exception updating document_url:",
-            updEx
+            updEx,
           );
         }
       }
       console.log(
-        "DOCUMENT_CREATED: document already marked as created, skipping email"
+        "DOCUMENT_CREATED: document already marked as created, skipping email",
       );
 
       return res.status(200).json(data);
@@ -436,7 +440,7 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
   } catch (error) {
     console.error(
       "Error in /api/boxtal/shipping-orders/:id/shipping-document:",
-      error
+      error,
     );
     return res.status(500).json({
       error: "Failed to get shipping documents",
@@ -457,7 +461,7 @@ router.get(
 
       const token = await verifyAndRefreshBoxtalToken();
       const apiUrl = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
-        id
+        id,
       )}/shipping-document`;
 
       const options = {
@@ -519,20 +523,20 @@ router.get(
       res.setHeader("Content-Type", ct);
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename="${filename}"`
+        `attachment; filename="${filename}"`,
       );
       return res.status(200).send(buf);
     } catch (error) {
       console.error(
         "Error in /api/boxtal/shipping-orders/:id/shipping-document/download:",
-        error
+        error,
       );
       return res.status(500).json({
         error: "Failed to download shipping document",
         message: error instanceof Error ? error.message : "Unknown error",
       });
     }
-  }
+  },
 );
 
 // Récupérer le suivi d'une commande d'expédition
@@ -547,7 +551,7 @@ router.get("/shipping-orders/:id/tracking", async (req, res) => {
 
     const token = await verifyAndRefreshBoxtalToken();
     const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
-      id
+      id,
     )}/tracking`;
 
     const options = {
@@ -637,7 +641,7 @@ router.get("/shipping-orders/:id/return", async (req, res) => {
         shipment,
       },
       null,
-      2
+      2,
     );
 
     const sent = await emailService.sendAdminError({
@@ -681,7 +685,7 @@ router.delete("/shipping-orders/:id", async (req, res) => {
 
     const token = await verifyAndRefreshBoxtalToken();
     const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
-      id
+      id,
     )}`;
 
     const options = {
@@ -774,8 +778,8 @@ router.delete("/shipping-orders/:id", async (req, res) => {
           typeof shipment?.product_value === "number"
             ? shipment.product_value
             : typeof shipment?.value === "number"
-            ? shipment.value
-            : undefined;
+              ? shipment.value
+              : undefined;
         const deliveryCostRaw =
           typeof shipment?.delivery_cost === "number"
             ? shipment.delivery_cost
@@ -821,7 +825,7 @@ router.delete("/shipping-orders/:id", async (req, res) => {
 const verifyWebhookSignature = (
   payload: string,
   signature: string,
-  secret: string
+  secret: string,
 ): boolean => {
   if (!signature || !payload || !secret) {
     return false;
@@ -834,429 +838,5 @@ const verifyWebhookSignature = (
 
   return computedSignature === signature;
 };
-
-// Route webhook pour recevoir les événements Boxtal
-router.post(
-  "/webhook",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    try {
-      const signature = req.headers["x-bxt-signature"] as string;
-      const webhookSecret = process.env.BOXTAL_WEBHOOK_SECRET;
-
-      if (!webhookSecret) {
-        console.error("BOXTAL_WEBHOOK_SECRET environment variable is not set");
-        return res.status(500).json({ error: "Webhook secret not configured" });
-      }
-
-      // Convertir le buffer en string pour la vérification
-      const payload = req.body.toString("utf8");
-
-      // Vérifier la signature
-      if (!verifyWebhookSignature(payload, signature, webhookSecret)) {
-        console.error("Invalid webhook signature");
-        return res.status(401).json({ error: "Invalid signature" });
-      }
-
-      // Parser le JSON
-      const event = JSON.parse(payload);
-
-      // Gérer les différents types d'événements
-      switch (event.type) {
-        case "DOCUMENT_CREATED":
-          console.warn(
-            `DOCUMENT_CREATED at ${new Date().toISOString()}`,
-            JSON.stringify(event)
-          );
-          try {
-            const shippingOrderId: string = event?.shippingOrderId;
-            const docUrl: string | undefined =
-              event?.payload?.documents?.[0]?.url;
-
-            if (!shippingOrderId || !supabase) {
-              console.warn(
-                "DOCUMENT_CREATED: missing shippingOrderId or supabase not configured"
-              );
-              break;
-            }
-
-            // Récupérer le shipment correspondant
-            const { data: shipment, error: shipmentError } = await supabase
-              .from("shipments")
-              .select("*")
-              .eq("shipment_id", shippingOrderId)
-              .maybeSingle();
-
-            if (shipmentError) {
-              console.error(
-                "DOCUMENT_CREATED: Supabase error fetching shipment:",
-                shipmentError
-              );
-              break;
-            }
-            if (!shipment) {
-              console.log(
-                "DOCUMENT_CREATED: shipment not found for",
-                shippingOrderId
-              );
-              break;
-            }
-
-            // Si déjà créé, mettre à jour l'URL si nécessaire et sortir
-            if (shipment.document_created === true) {
-              console.log("DOCUMENT_CREATED: existing document_url:", docUrl);
-              if (docUrl) {
-                try {
-                  const { error: updUrlErr } = await supabase
-                    .from("shipments")
-                    .update({ document_url: docUrl })
-                    .eq("id", shipment.id);
-                  if (updUrlErr) {
-                    console.error(
-                      "DOCUMENT_CREATED: error updating document_url:",
-                      updUrlErr
-                    );
-                  }
-                } catch (updEx) {
-                  console.error(
-                    "DOCUMENT_CREATED: exception updating document_url:",
-                    updEx
-                  );
-                }
-              }
-              console.log(
-                "DOCUMENT_CREATED: document already marked as created, skipping email"
-              );
-              break;
-            }
-
-            // Récupérer les infos de la boutique (email du propriétaire + nom)
-            let storeOwnerEmail: string | undefined;
-            let storeName: string = "Votre Boutique";
-            if (shipment.store_id) {
-              try {
-                const { data: store, error: storeErr } = await supabase
-                  .from("stores")
-                  .select("owner_email,name")
-                  .eq("id", shipment.store_id as any)
-                  .maybeSingle();
-                if (!storeErr) {
-                  storeOwnerEmail = (store as any)?.owner_email || undefined;
-                  storeName = (store as any)?.name || storeName;
-                } else {
-                  console.warn(
-                    "DOCUMENT_CREATED: error fetching store:",
-                    storeErr
-                  );
-                }
-              } catch (storeEx) {
-                console.warn(
-                  "DOCUMENT_CREATED: exception fetching store:",
-                  storeEx
-                );
-              }
-            }
-
-            if (!storeOwnerEmail) {
-              console.warn(
-                "DOCUMENT_CREATED: no store owner email found, skipping"
-              );
-              break;
-            }
-
-            // Récupérer les infos client via stripe_id
-            let customerEmail: string = "";
-            let customerName: string = "";
-            try {
-              if (stripe && shipment.customer_stripe_id) {
-                const customer = await stripe.customers.retrieve(
-                  shipment.customer_stripe_id as string
-                );
-                customerEmail = (customer as any)?.email || "";
-                customerName =
-                  ((customer as any)?.name as string) ||
-                  ((customer as any)?.metadata?.name as any as string) ||
-                  "";
-              }
-            } catch (retrieveErr) {
-              console.warn(
-                "DOCUMENT_CREATED: unable to retrieve Stripe customer:",
-                retrieveErr
-              );
-            }
-
-            // Télécharger le document pour l'attacher au mail
-            let attachments: Array<{
-              filename: string;
-              content: Buffer;
-              contentType?: string;
-            }> = [];
-            if (docUrl) {
-              try {
-                const resp = await fetch(docUrl);
-                if (resp.ok) {
-                  const buf = Buffer.from(await resp.arrayBuffer());
-                  const ct =
-                    resp.headers.get("content-type") || "application/pdf";
-                  let filename = "shipping-document.pdf";
-                  try {
-                    const urlObj = new URL(docUrl);
-                    const parts = urlObj.pathname.split("/").filter(Boolean);
-                    filename = parts[parts.length - 1] || filename;
-                  } catch {}
-                  attachments.push({ filename, content: buf, contentType: ct });
-                } else {
-                  console.warn(
-                    "DOCUMENT_CREATED: failed to download document:",
-                    resp.status
-                  );
-                }
-              } catch (downloadEx) {
-                console.error(
-                  "DOCUMENT_CREATED: exception downloading document:",
-                  downloadEx
-                );
-              }
-            }
-
-            // Mettre à jour les colonnes document_created et document_url
-            try {
-              const updateData: any = { document_created: true };
-              if (docUrl) updateData.document_url = docUrl;
-              const { error: updErr } = await supabase
-                .from("shipments")
-                .update(updateData)
-                .eq("id", shipment.id);
-              if (updErr) {
-                console.error(
-                  "DOCUMENT_CREATED: error updating shipments document fields:",
-                  updErr
-                );
-              }
-            } catch (updEx) {
-              console.error(
-                "DOCUMENT_CREATED: exception updating shipments document fields:",
-                updEx
-              );
-            }
-          } catch (e) {
-            console.error("DOCUMENT_CREATED processing error:", e);
-          }
-          break;
-        case "TRACKING_CHANGED":
-          console.warn("TRACKING_CHANGED event:", JSON.stringify(event));
-          try {
-            const shippingOrderId: string = event?.shippingOrderId;
-            const tracking = event?.payload?.trackings?.[0];
-
-            if (!shippingOrderId || !stripe || !supabase) {
-              console.warn(
-                "TRACKING_CHANGED: missing shippingOrderId or stripe/supabase not configured"
-              );
-              break;
-            }
-
-            // Mettre à jour la colonne tracking_url de shipments si elle existe
-            if (tracking?.packageTrackingUrl) {
-              try {
-                const { error: updErr } = await supabase
-                  .from("shipments")
-                  .update({ tracking_url: tracking?.packageTrackingUrl || "" })
-                  .eq("shipment_id", shippingOrderId);
-                if (updErr) {
-                  console.error(
-                    "TRACKING_CHANGED: error updating tracking_url:",
-                    updErr
-                  );
-                }
-                console.log(
-                  "TRACKING_CHANGED: updated tracking_url:",
-                  tracking?.packageTrackingUrl || ""
-                );
-              } catch (updEx) {
-                console.error(
-                  "TRACKING_CHANGED: exception updating tracking_url:",
-                  updEx
-                );
-              }
-            }
-
-            // N'envoyer l'email que si le statut a changé par rapport au dernier de l'historique
-            const currentStatus: string | undefined = tracking?.status;
-            const historyArray: any[] = Array.isArray(tracking?.history)
-              ? tracking.history
-              : [];
-            const lastHistoryStatus: string | undefined = historyArray.length
-              ? historyArray[historyArray.length - 1]?.status
-              : undefined;
-
-            if (lastHistoryStatus && currentStatus === lastHistoryStatus) {
-              console.log(
-                "TRACKING_CHANGED: status unchanged, skipping email",
-                currentStatus,
-                shippingOrderId
-              );
-              break;
-            }
-
-            // Vérifier via la table shipments si l'ID existe et si le statut a changé
-            const { data: shipment, error: shipmentError } = await supabase
-              .from("shipments")
-              .select("id, shipment_id, status, customer_stripe_id, store_id")
-              .eq("shipment_id", shippingOrderId)
-              .maybeSingle();
-
-            if (shipmentError) {
-              console.error("Supabase error fetching shipment:", shipmentError);
-              break;
-            }
-            if (!shipment) {
-              console.log(
-                "TRACKING_CHANGED: shipment not found for",
-                shippingOrderId
-              );
-              break;
-            }
-
-            const previousStatus: string | undefined =
-              shipment.status || undefined;
-            if (previousStatus && currentStatus === previousStatus) {
-              console.log(
-                "TRACKING_CHANGED: status unchanged vs DB, skipping email",
-                currentStatus,
-                shippingOrderId
-              );
-              break;
-            }
-
-            // Récupérer le store pour le nom à afficher
-            let storeName = "Votre Boutique";
-            try {
-              if (shipment.store_id) {
-                const { data: store, error: storeErr } = await supabase
-                  .from("stores")
-                  .select("name")
-                  .eq("id", shipment.store_id as any)
-                  .maybeSingle();
-                if (!storeErr && (store as any)?.name) {
-                  storeName = (store as any).name;
-                }
-              }
-            } catch (storeEx) {
-              console.warn(
-                "TRACKING_CHANGED: error fetching store name:",
-                storeEx
-              );
-            }
-
-            // Récupérer l'email du client via stripe_id
-            let customerEmail: string | undefined;
-            let customerName: string = "";
-            try {
-              const customer = await stripe.customers.retrieve(
-                shipment.customer_stripe_id as string
-              );
-              customerEmail = (customer as any)?.email || undefined;
-              customerName =
-                ((customer as any)?.name as string) ||
-                ((customer as any)?.metadata?.name as any as string) ||
-                "";
-            } catch (retrieveErr) {
-              console.error(
-                "TRACKING_CHANGED: unable to retrieve Stripe customer:",
-                retrieveErr
-              );
-            }
-
-            if (!customerEmail) {
-              console.log(
-                "TRACKING_CHANGED: no email found for Stripe customer",
-                shipment.customer_stripe_id
-              );
-              break;
-            }
-
-            // Construire et envoyer l'email au client
-            const emailData: CustomerTrackingEmailData = {
-              customerEmail,
-              customerName,
-              storeName,
-              shippingOrderId,
-              status: currentStatus || "Mise à jour",
-              message: tracking?.message || undefined,
-              trackingNumber: tracking?.trackingNumber || undefined,
-              packageId: tracking?.packageId,
-              packageTrackingUrl: tracking?.packageTrackingUrl || undefined,
-            };
-
-            const sent = await emailService.sendCustomerTrackingUpdate(
-              emailData
-            );
-            console.log(
-              `TRACKING_CHANGED: email sent=${sent} to ${customerEmail} for ${shippingOrderId}`
-            );
-
-            // Mettre à jour le statut du shipment dans la base
-            try {
-              const { error: updErr } = await supabase
-                .from("shipments")
-                .update({ status: currentStatus })
-                .eq("shipment_id", shippingOrderId);
-              if (updErr) {
-                console.error(
-                  "TRACKING_CHANGED: error updating shipments.status:",
-                  updErr
-                );
-              }
-            } catch (updEx) {
-              console.error(
-                "TRACKING_CHANGED: exception updating shipments.status:",
-                updEx
-              );
-            }
-            // Mettre à jour la colonne isFinal si le suivi est final
-            try {
-              if (tracking?.isFinal === true) {
-                const { error: finalErr } = await supabase
-                  .from("shipments")
-                  .update({ is_final_destination: true })
-                  .eq("shipment_id", shippingOrderId);
-                if (finalErr) {
-                  console.error(
-                    "TRACKING_CHANGED: error updating shipments.is_final_destination:",
-                    finalErr
-                  );
-                } else {
-                  console.log(
-                    "TRACKING_CHANGED: shipments.is_final_destination set to TRUE for",
-                    shippingOrderId
-                  );
-                }
-              }
-            } catch (finalEx) {
-              console.error(
-                "TRACKING_CHANGED: exception updating shipments.is_final_destination:",
-                finalEx
-              );
-            }
-          } catch (e) {
-            console.error("TRACKING_CHANGED processing error:", e);
-          }
-          break;
-        default:
-          console.log("Unhandled event type:", event.type);
-      }
-
-      // Répondre avec succès (obligatoire selon la doc Boxtal)
-      return res.status(200).json({ received: true });
-    } catch (error) {
-      console.error("Error processing Boxtal webhook:", error);
-      return res.status(400).json({
-        error: "Failed to process webhook",
-        message: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
-  }
-);
 
 export default router;

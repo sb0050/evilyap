@@ -1,6 +1,7 @@
 import { clerkClient } from "@clerk/express";
 import { getAuth } from "@clerk/express";
 import express from "express";
+import { verifyWebhook } from "@clerk/express/webhooks";
 
 const router = express.Router();
 

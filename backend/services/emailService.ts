@@ -233,18 +233,18 @@ class EmailService {
         String(data.productValue ?? 0);
       const discountValue = Math.max(
         0,
-        (data.productValue ?? 0) - netProductValue
+        (data.productValue ?? 0) - netProductValue,
       );
       const formattedDiscount =
         this.formatAmount(discountValue, data.currency) ||
         String(discountValue);
       const promoNote = data.promoCodes
         ? ` <span style="color:#666; font-size:12px;"><span style="text-decoration: line-through;">${formattedOriginalProduct}</span> (${formattedDiscount} de remise avec le code : ${String(
-            data.promoCodes || ""
+            data.promoCodes || "",
           ).replace(/;/g, ", ")})</span>`
         : "";
       const formattedEstimatedDate = this.formatEstimatedDate(
-        data.estimatedDeliveryDate
+        data.estimatedDeliveryDate,
       );
 
       const htmlContent = `
@@ -308,15 +308,15 @@ class EmailService {
                     day: "numeric",
                     hour: "2-digit",
                     minute: "2-digit",
-                  }
+                  },
                 )}</p>
                 
                 <p><strong>Méthode de livraison :</strong> ${
                   data.deliveryMethod === "pickup_point"
                     ? `Point relais (${data.pickupPointCode})`
                     : data.deliveryMethod === "home_delivery"
-                    ? "À domicile"
-                    : "Retrait en Magasin"
+                      ? "À domicile"
+                      : "Retrait en Magasin"
                 }</p>
                 ${
                   data.deliveryMethod === "store_pickup"
@@ -348,8 +348,8 @@ class EmailService {
             <div class="footer">
               <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
               <p>© ${new Date().getFullYear()} ${
-        data.storeName
-      } - Tous droits réservés</p>
+                data.storeName
+              } - Tous droits réservés</p>
             </div>
           </div>
         </body>
@@ -380,7 +380,7 @@ class EmailService {
 
   // Email de notification pour le propriétaire de la boutique
   async sendStoreOwnerNotification(
-    data: StoreOwnerEmailData
+    data: StoreOwnerEmailData,
   ): Promise<boolean> {
     try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
@@ -394,20 +394,20 @@ class EmailService {
         String(data.productValue ?? 0);
       const discountValue = Math.max(
         0,
-        (data.productValue ?? 0) - netProductValue
+        (data.productValue ?? 0) - netProductValue,
       );
       const formattedDiscount =
         this.formatAmount(discountValue, data.currency) ||
         String(discountValue);
       const promoNote = data.promoCodes
         ? ` <span style="color:#666; font-size:12px;"><span style="text-decoration: line-through;">${formattedOriginalProduct}</span> (${formattedDiscount} de remise avec le code : ${String(
-            data.promoCodes || ""
+            data.promoCodes || "",
           ).replace(/;/g, ", ")})</span>`
         : "";
 
       // Préparer les infos réseau (lien carte + image dimensions) selon deliveryNetwork
       const getNetworkInfo = (
-        networkCode?: string
+        networkCode?: string,
       ): {
         name: string;
         link?: string;
@@ -484,7 +484,7 @@ class EmailService {
               __dirname,
               "..",
               "public",
-              networkInfo.imageFile
+              networkInfo.imageFile,
             );
             if (fs.existsSync(imgPath)) {
               return {
@@ -554,7 +554,7 @@ class EmailService {
                     day: "numeric",
                     hour: "2-digit",
                     minute: "2-digit",
-                  }
+                  },
                 )}</p>
                  ${
                    data.documentPendingNote
@@ -581,8 +581,8 @@ class EmailService {
                   data.deliveryMethod === "pickup_point"
                     ? `Point relais (${data.pickupPointCode})`
                     : data.deliveryMethod === "home_delivery"
-                    ? "À domicile"
-                    : "Retrait en Magasin"
+                      ? "À domicile"
+                      : "Retrait en Magasin"
                 }
                 </p>
                 <p><strong>Poids du colis :</strong> ${data.weight} kg</p>
@@ -590,8 +590,8 @@ class EmailService {
                   networkInfo
                     ? `
                         <p><strong>Réseau :</strong> ${data.deliveryNetwork} (${
-                        networkInfo.name
-                      })</p>
+                          networkInfo.name
+                        })</p>
                         <p>Vous pouvez déposer ce colis dans n'importe quel point relais du réseau <strong>${
                           data.deliveryNetwork
                         }</strong>.</p>
@@ -651,7 +651,7 @@ class EmailService {
 
       const info = await this.transporter.sendMail(mailOptions);
       console.log(
-        `✅ Email de notification envoyé au propriétaire ${data.ownerEmail}`
+        `✅ Email de notification envoyé au propriétaire ${data.ownerEmail}`,
       );
       console.log("📨 sendMail result (owner):", {
         messageId: info.messageId,
@@ -669,25 +669,25 @@ class EmailService {
   // Email de demande de remboursement au SAV après annulation Boxtal
   async sendAdminRefundRequest(data: AdminRefundRequestData): Promise<boolean> {
     try {
-      const savEmail = process.env.SAV_EMAIL || process.env.SUPPORT_EMAIL || "";
+      const savEmail = process.env.SMTP_USER || "";
       if (!savEmail) {
         console.warn(
-          "SAV_EMAIL/SUPPORT_EMAIL non configuré, email de remboursement non envoyé."
+          "SMTP_USER non configuré, email de remboursement non envoyé.",
         );
         return false;
       }
 
       const formattedAmount = this.formatAmount(
         data.amount,
-        data.currency || "EUR"
+        data.currency || "EUR",
       );
       const formattedDelivery = this.formatAmount(
         data.deliveryCost,
-        data.currency || "EUR"
+        data.currency || "EUR",
       );
       const formattedTotal = this.formatAmount(
         data.total,
-        data.currency || "EUR"
+        data.currency || "EUR",
       );
 
       const htmlContent = `
@@ -711,8 +711,8 @@ class EmailService {
             <div class="header">
               <h1>💸 Remboursement à effectuer</h1>
               <p>${data.storeName}${
-        data.storeSlug ? ` — ${data.storeSlug}` : ""
-      }</p>
+                data.storeSlug ? ` — ${data.storeSlug}` : ""
+              }</p>
             </div>
             <div class="content">
               <div class="section">
@@ -799,7 +799,7 @@ class EmailService {
   }
   // Email de confirmation de remboursement pour le client
   async sendCustomerRefundConfirmation(
-    data: CustomerRefundEmailData
+    data: CustomerRefundEmailData,
   ): Promise<boolean> {
     try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
@@ -869,7 +869,7 @@ class EmailService {
         html: htmlContent,
       });
       console.log(
-        `✅ Email de remboursement client envoyé à ${data.customerEmail}`
+        `✅ Email de remboursement client envoyé à ${data.customerEmail}`,
       );
       console.log("📨 sendMail result (customer refund):", {
         messageId: info.messageId,
@@ -884,7 +884,7 @@ class EmailService {
     }
   }
   async sendCustomerTrackingUpdate(
-    data: CustomerTrackingEmailData
+    data: CustomerTrackingEmailData,
   ): Promise<boolean> {
     try {
       const htmlContent = `
@@ -976,13 +976,9 @@ class EmailService {
     context?: string;
   }): Promise<boolean> {
     try {
-      const to =
-        process.env.SAV_EMAIL ||
-        process.env.SUPPORT_EMAIL ||
-        process.env.SMTP_USER ||
-        "";
+      const to = process.env.SMTP_USER || "";
       if (!to) {
-        console.error("sendAdminError: SAV_EMAIL/SUPPORT_EMAIL non configuré");
+        console.error("sendAdminError: SMTP_USER non configuré");
         return false;
       }
 
@@ -1018,7 +1014,7 @@ class EmailService {
       `;
 
       const info = await this.transporter.sendMail({
-        from: process.env.SMTP_USER || "no-reply@example.com",
+        from: process.env.SMTP_USER || "contact@paylive.cc",
         to,
         subject: `[ALERT] ${data.subject}`,
         html: htmlContent,
@@ -1046,11 +1042,9 @@ class EmailService {
     }>;
   }): Promise<boolean> {
     try {
-      const toEmail = process.env.SUPPORT_EMAIL || process.env.SAV_EMAIL || "";
+      const toEmail = process.env.SMTP_USER || "";
       if (!toEmail) {
-        console.warn(
-          "SUPPORT_EMAIL/SAV_EMAIL non configuré, email de support non envoyé."
-        );
+        console.warn("SMTP_USER non configuré, email de support non envoyé.");
         return false;
       }
 
@@ -1080,6 +1074,9 @@ class EmailService {
 
       const contextHtml = (() => {
         if (!contextObj) return "";
+        const salesKey = Object.keys(contextObj || {}).find(
+          (k) => k.toLowerCase() === "sales",
+        );
         const entries: Array<[string, any]> = [];
         const preferredOrder = [
           "saleId",
@@ -1098,7 +1095,8 @@ class EmailService {
         ];
         const addEntry = (k: string) => {
           const v = (contextObj as any)[k];
-          if (v !== undefined) entries.push([k, v]);
+          if (v !== undefined && k.toLowerCase() !== "sales")
+            entries.push([k, v]);
         };
         preferredOrder.forEach(addEntry);
         // Include any other keys not in preferred order
@@ -1111,12 +1109,65 @@ class EmailService {
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;");
 
+        const formatContextValue = (val: any) => {
+          if (val === undefined || val === null) return "—";
+          if (typeof val === "object") {
+            try {
+              return esc(JSON.stringify(val));
+            } catch {
+              return esc(String(val));
+            }
+          }
+          return esc(val);
+        };
+
         const rows = entries
           .map(
             ([k, v]) =>
-              `<p class="kv"><strong>${esc(k)} :</strong> ${esc(v)}</p>`
+              `<p class="kv"><strong>${esc(k)} :</strong> ${formatContextValue(
+                v,
+              )}</p>`,
           )
           .join("\n");
+
+        const salesList: Array<any> =
+          salesKey && Array.isArray((contextObj as any)[salesKey])
+            ? (contextObj as any)[salesKey]
+            : [];
+        const fmtMoney = (val: any) => {
+          if (typeof val === "number") {
+            try {
+              return new Intl.NumberFormat("fr-FR", {
+                style: "currency",
+                currency: "EUR",
+              }).format(val);
+            } catch {
+              return String(val);
+            }
+          }
+          return esc(val);
+        };
+        const salesRows =
+          salesList.length > 0
+            ? `
+            <div class="section">
+              <h3>Ventes sélectionnées</h3>
+              ${salesList
+                .map((s: any) => {
+                  const id = s?.shipmentId || s?.shipment_id || s?.id || "—";
+                  const ref =
+                    s?.productReference || s?.product_reference || "—";
+                  const st = s?.status || "—";
+                  const val = fmtMoney(s?.value);
+                  return `<p class="kv"><strong>${esc(
+                    ref,
+                  )}</strong> — ID: ${esc(id)} — Statut: ${esc(
+                    st,
+                  )} — Valeur: ${val}</p>`;
+                })
+                .join("\n")}
+            </div>`
+            : "";
 
         return `
           <div class="section">
@@ -1128,6 +1179,7 @@ class EmailService {
                 "</p>"
             }
           </div>
+          ${salesRows}
         `;
       })();
 
@@ -1238,7 +1290,7 @@ class EmailService {
     try {
       if (!data.toEmail) {
         console.warn(
-          "Destinataire (toEmail) manquant pour message client→propriétaire"
+          "Destinataire (toEmail) manquant pour message client→propriétaire",
         );
         return false;
       }
@@ -1278,8 +1330,8 @@ class EmailService {
             <div class="header">
               <h1>📨 Message client</h1>
               <p>${data.storeName}${
-        data.storeSlug ? ` — ${data.storeSlug}` : ""
-      }</p>
+                data.storeSlug ? ` — ${data.storeSlug}` : ""
+              }</p>
             </div>
             <div class="content">
               <div class="section">
@@ -1351,7 +1403,7 @@ class EmailService {
       `;
 
       const mailOptions = {
-        from: process.env.SMTP_USER || "no-reply@example.com",
+        from: process.env.SMTP_USER || "contact@paylive.cc",
         to: data.toEmail,
         subject: `📨 Client — ${data.storeName}${
           data.shipmentId ? ` (Shipment ${data.shipmentId})` : ""
@@ -1389,15 +1441,15 @@ class EmailService {
     currency?: string;
   }): Promise<boolean> {
     try {
-      const savEmail = process.env.SAV_EMAIL || "";
+      const savEmail = process.env.SMTP_USER || "";
       if (!savEmail) {
-        console.warn("SAV_EMAIL non configuré, email SAV non envoyé.");
+        console.warn("SMTP_USER non configuré, email SAV non envoyé.");
         return false;
       }
 
       const formattedAmount = this.formatAmount(
         data.amount,
-        (data.currency || "EUR") as string
+        (data.currency || "EUR") as string,
       );
 
       const ribDetailsHtml =
@@ -1483,6 +1535,74 @@ class EmailService {
       return true;
     } catch (error) {
       console.error("❌ Erreur envoi email demande de versement:", error);
+      return false;
+    }
+  }
+  async sendRaffleWinnerCongrats(data: {
+    customerEmail: string;
+    customerName?: string;
+    storeName: string;
+    storeLogo?: string;
+  }): Promise<boolean> {
+    try {
+      const to = (data.customerEmail || "").trim();
+      if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+        return false;
+      }
+      const name = (data.customerName || "").trim();
+      const logo = (data.storeLogo || "").trim();
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Félicitations</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #111827; background: #f9fafb; }
+            .container { max-width: 680px; margin: 0 auto; padding: 24px; }
+            .card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+            .header { padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; gap: 12px; }
+            .brand { font-weight: 700; font-size: 18px; color: #111827; }
+            .content { padding: 20px; }
+            .cta { display:inline-block; margin-top: 16px; background:#4f46e5; color:white; text-decoration:none; padding:10px 14px; border-radius:8px; font-weight:600; }
+            .muted { color:#6b7280; font-size:14px; margin-top:16px; }
+            img.logo { width:36px; height:36px; border-radius:8px; object-fit:cover; border:1px solid #e5e7eb; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="card">
+              <div class="header">
+                ${logo ? `<img class="logo" src="${logo}" alt="${data.storeName}" />` : ""}
+                <div class="brand">${data.storeName}</div>
+              </div>
+              <div class="content">
+                <p>Bonjour${name ? ` ${name}` : ""},</p>
+                <p>🎉 Félicitations ! Vous avez été tiré au sort lors de notre live.</p>
+                <p>Nous vous recontactons très vite avec les modalités pour recevoir votre gain.</p>
+                <p class="muted">Si vous avez des questions, vous pouvez répondre directement à cet email.</p>
+                <p>À très vite,<br/>L’équipe ${data.storeName}</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+      const info = await this.transporter.sendMail({
+        from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
+        to,
+        subject: `🎉 Félicitations — ${data.storeName}`,
+        html: htmlContent,
+      });
+      console.log("raffle congrats email:", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
+      return true;
+    } catch (error) {
+      console.error("Erreur envoi email tirage:", error);
       return false;
     }
   }

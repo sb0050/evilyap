@@ -1,7 +1,6 @@
 import express, { Request, Response, NextFunction } from "express";
-import cors = require("cors");
 import * as dotenv from "dotenv";
-import { clerkMiddleware } from "@clerk/express";
+import { clerkMiddleware, getAuth } from "@clerk/express";
 // Charger les variables d'environnement
 dotenv.config();
 
@@ -16,50 +15,80 @@ import cartsRoutes from "./routes/carts";
 import supportRoutes from "./routes/support";
 import clerkRoutes from "./routes/clerk";
 import inseeBceRoutes from "./routes/insee-bce";
-import formsRoutes from "./routes/forms";
 import adminRoutes from "./routes/admin";
+import { stripeWebhookHandler } from "./routes/stripe.webhook";
+import { boxtalWebhookHandler } from "./routes/boxtal.webhook";
+import { clerkWebhookHandler } from "./routes/clerk.webhook";
+import raffleRoutes from "./routes/raffle";
 
 const app = express();
-const PORT = process.env.PORT || 5000;
 
-// Middleware
-// Normaliser les origines autorisées pour CORS (supporte domaine seul et liste séparée par virgules)
-const normalizeOrigin = (raw?: string) => {
-  const val = (raw || "").trim();
-  if (!val) return "http://localhost:3000";
-  // Déjà avec schéma
-  if (/^https?:\/\//i.test(val)) return val;
-  // Domaine ou localhost sans schéma
-  const isLocal = /^(localhost|127\.0\.0\.1)/i.test(val);
-  const scheme = isLocal ? "http" : "https";
-  return `${scheme}://${val}`;
-};
+app.use((req: any, res: any, next: NextFunction) => {
+  const origin = req.headers.origin;
 
-const allowedOrigins = (
-  process.env.CLIENT_URL ||
-  process.env.CLIENT_URLS ||
-  "http://localhost:3000"
-)
-  .split(",")
-  .map((o) => normalizeOrigin(o))
-  .filter((o) => !!o);
+  if (
+    origin === "https://paylive.cc" ||
+    origin?.endsWith(".vercel.app") ||
+    origin === "http://localhost:3000" ||
+    origin === "http://localhost:3001"
+  ) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
 
-console.warn("CORS is enabled for:", allowedOrigins);
-app.use(
-  cors({
-    origin: allowedOrigins,
-    credentials: true,
-  })
-);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
 
-// Appliquer Clerk à toutes les routes pour pouvoir utiliser getAuth(req)
-app.use(clerkMiddleware());
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  next();
+});
 
 // Pour les webhooks Stripe, nous devons traiter le raw body
-app.use("/api/stripe/webhook", express.raw({ type: "application/json" }));
+app.post(
+  "/api/stripe/webhook",
+  express.raw({ type: "application/json" }),
+  stripeWebhookHandler
+);
 
 // Pour les webhooks Boxtal, traiter aussi le raw body avant express.json
-app.use("/api/boxtal/webhook", express.raw({ type: "application/json" }));
+app.post(
+  "/api/boxtal/webhook",
+  express.raw({ type: "application/json" }),
+  boxtalWebhookHandler
+);
+
+// Pour le webhook Clerk, traiter le raw body avant express.json
+app.post(
+  "/api/clerk/webhook",
+  express.raw({ type: "application/json" }),
+  clerkWebhookHandler
+);
+
+app.use(clerkMiddleware());
+
+app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+  if (
+    req.path.startsWith("/stripe/webhook") ||
+    req.path.startsWith("/boxtal/webhook") ||
+    req.path.startsWith("/clerk/webhook")
+  ) {
+    return next();
+  }
+
+  if (process.env.ENV === "prod") {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+  }
+
+  next();
+});
+
+const PORT = process.env.PORT || 5000;
 
 // Pour les autres routes, utiliser JSON
 app.use(express.json());
@@ -84,8 +113,8 @@ app.use("/api/carts", cartsRoutes);
 app.use("/api/support", supportRoutes);
 app.use("/api/clerk", clerkRoutes);
 app.use("/api/insee-bce", inseeBceRoutes);
-app.use("/api/forms", formsRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/raffle", raffleRoutes);
 
 // Route de test
 app.get("/api/health", (req: Request, res: Response) => {

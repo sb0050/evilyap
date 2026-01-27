@@ -91,10 +91,11 @@ export default function OrdersPage() {
   const [contactOpen, setContactOpen] = useState<boolean>(false);
   const [contactMessage, setContactMessage] = useState<string>('');
   const [contactFile, setContactFile] = useState<File | null>(null);
-  const [selectedShipment, setSelectedShipment] = useState<Shipment | null>(
-    null
-  );
+  const [contactShipments, setContactShipments] = useState<Shipment[]>([]);
   const [isSendingContact, setIsSendingContact] = useState<boolean>(false);
+  const [selectedOrderIds, setSelectedOrderIds] = useState<Set<number>>(
+    new Set()
+  );
 
   const apiBase = API_BASE_URL;
 
@@ -406,6 +407,55 @@ export default function OrdersPage() {
     startIndex,
     startIndex + pageSize
   );
+  const selectedOrders = (shipments || []).filter(s =>
+    selectedOrderIds.has(s.id)
+  );
+  const selectedForReturn = selectedOrders.filter(
+    s =>
+      s.shipment_id &&
+      !s.return_requested &&
+      !!s.is_final_destination &&
+      returnStatus[s.id] !== 'loading'
+  );
+  const selectedForContact = selectedOrders.filter(s => !!s.shipment_id);
+  const visibleOrderIds = visibleShipments.map(s => s.id);
+  const allVisibleSelected =
+    visibleOrderIds.length > 0 &&
+    visibleOrderIds.every(id => selectedOrderIds.has(id));
+  const toggleOrderSelection = (id: number) => {
+    setSelectedOrderIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const toggleSelectAllVisible = () => {
+    setSelectedOrderIds(prev => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        visibleOrderIds.forEach(id => next.delete(id));
+      } else {
+        visibleOrderIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+  const mobileOrderIds = sortedShipments.map(s => s.id);
+  const allMobileSelected =
+    mobileOrderIds.length > 0 &&
+    mobileOrderIds.every(id => selectedOrderIds.has(id));
+  const toggleSelectAllMobile = () => {
+    setSelectedOrderIds(prev => {
+      const next = new Set(prev);
+      if (allMobileSelected) {
+        mobileOrderIds.forEach(id => next.delete(id));
+      } else {
+        mobileOrderIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     const filteredLength = (() => {
@@ -422,6 +472,17 @@ export default function OrdersPage() {
     if (page > newTotal) setPage(newTotal);
     if (page < 1) setPage(1);
   }, [shipments, pageSize, ordersFilterField, ordersFilterTerm]);
+
+  useEffect(() => {
+    setSelectedOrderIds(prev => {
+      const validIds = new Set((shipments || []).map(s => s.id));
+      const next = new Set<number>();
+      prev.forEach(id => {
+        if (validIds.has(id)) next.add(id);
+      });
+      return next;
+    });
+  }, [shipments]);
 
   const showToast = (
     message: string,
@@ -490,8 +551,14 @@ export default function OrdersPage() {
     return map[c] || code || '—';
   };
 
-  const handleOpenContact = (s: Shipment) => {
-    setSelectedShipment(s);
+  const handleOpenContact = (s?: Shipment | Shipment[]) => {
+    const list = Array.isArray(s) ? s : s ? [s] : selectedForContact;
+    const effective = (list || []).filter(it => !!it?.shipment_id);
+    if (effective.length === 0) {
+      showToast('Sélectionnez au moins une commande', 'error');
+      return;
+    }
+    setContactShipments(effective);
     setContactMessage('');
     setContactFile(null);
     setContactOpen(true);
@@ -499,27 +566,44 @@ export default function OrdersPage() {
 
   const handleCloseContact = () => {
     setContactOpen(false);
-    setSelectedShipment(null);
+    setContactShipments([]);
   };
 
   const handleSendContact = async () => {
     const msg = (contactMessage || '').trim();
     if (!msg) return;
-    if (!selectedShipment?.shipment_id) return;
+    if (contactShipments.length === 0) return;
     try {
       setIsSendingContact(true);
       const token = await getToken();
-      const fd = new FormData();
-      fd.append('shipmentId', selectedShipment.shipment_id);
-      fd.append('message', msg);
-      if (contactFile) fd.append('attachment', contactFile);
-      await apiPostForm('/api/support/customer-contact', fd, {
-        headers: { Authorization: token ? `Bearer ${token}` : '' },
-      });
-      showToast('Message envoyé au propriétaire de la boutique', 'success');
+      const references: string[] = [];
+      for (const s of contactShipments) {
+        if (!s?.shipment_id) continue;
+        const fd = new FormData();
+        fd.append('shipmentId', s.shipment_id);
+        fd.append('message', msg);
+        if (contactFile) fd.append('attachment', contactFile);
+        await apiPostForm('/api/support/customer-contact', fd, {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        });
+        const ref = String(s.product_reference || s.shipment_id || '').trim();
+        references.push(ref || String(s.shipment_id));
+      }
+      if (references.length === 0) {
+        showToast("Aucune commande n'a été traitée", 'error');
+        return;
+      }
+      const toastMsg =
+        references.length <= 3
+          ? `Messages envoyés pour : ${references.join(', ')}`
+          : `Messages envoyés pour ${references.length} références (${references
+              .slice(0, 3)
+              .join(', ')}...)`;
+      showToast(toastMsg, 'success');
       setContactOpen(false);
       setContactMessage('');
       setContactFile(null);
+      setContactShipments([]);
     } catch (e) {
       console.error('Contact propriétaire échoué:', e);
       showToast("Erreur lors de l'envoi du message", 'error');
@@ -528,10 +612,11 @@ export default function OrdersPage() {
     }
   };
 
-  const handleReturn = async (s: Shipment) => {
+  const handleReturn = async (s: Shipment, options?: { silent?: boolean }) => {
+    const silent = options?.silent;
     if (!s.shipment_id) {
       setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
-      return;
+      return false;
     }
     try {
       setReturnStatus(prev => ({ ...prev, [s.id]: 'loading' }));
@@ -554,23 +639,61 @@ export default function OrdersPage() {
             it.id === s.id ? { ...it, return_requested: true } : it
           )
         );
-        showToast('Demande de retour envoyée avec succès', 'success');
+        if (!silent) {
+          showToast('Demande de retour envoyée avec succès', 'success');
+        }
+        return true;
       } else {
         setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
         const msg =
           json?.error ||
           json?.message ||
           "Erreur lors de l'envoi de la demande";
-        showToast(typeof msg === 'string' ? msg : "Erreur d'envoi", 'error');
+        if (!silent) {
+          showToast(typeof msg === 'string' ? msg : "Erreur d'envoi", 'error');
+        }
+        return false;
       }
     } catch (e: any) {
       setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
       const rawMsg = e?.message || "Erreur lors de l'envoi de la demande";
-      showToast(
-        typeof rawMsg === 'string' ? rawMsg : "Erreur d'envoi",
-        'error'
-      );
+      if (!silent) {
+        showToast(
+          typeof rawMsg === 'string' ? rawMsg : "Erreur d'envoi",
+          'error'
+        );
+      }
+      return false;
     }
+  };
+
+  const handleBatchReturn = async () => {
+    if (selectedForReturn.length === 0) {
+      showToast('Aucune commande sélectionnée pour le retour', 'error');
+      return;
+    }
+    const references: string[] = [];
+    for (const s of selectedForReturn) {
+      const ok = await handleReturn(s, { silent: true });
+      if (ok) {
+        const ref = String(s.product_reference || s.shipment_id || '').trim();
+        references.push(ref || String(s.shipment_id));
+      }
+    }
+    if (references.length === 0) {
+      showToast(
+        'Aucune commande traitée pour le retour. Vérifiez l’éligibilité des commandes sélectionnées.',
+        'info'
+      );
+      return;
+    }
+    const msg =
+      references.length <= 3
+        ? `Retours demandés pour : ${references.join(', ')}`
+        : `Retours demandés pour ${references.length} références (${references
+            .slice(0, 3)
+            .join(', ')}...)`;
+    showToast(msg, 'success');
   };
 
   return (
@@ -606,9 +729,21 @@ export default function OrdersPage() {
           ) : (
             <div className='overflow-x-auto'>
               <div className='hidden sm:flex items-center justify-between mb-3 mt-1'>
-                <div className='text-sm text-gray-600'>
-                  Page {page} / {totalPages} — {(shipments || []).length}{' '}
-                  commandes
+                <div className='text-sm text-gray-600 flex items-center gap-3'>
+                  <span>
+                    Page {page} / {totalPages} — {(shipments || []).length}{' '}
+                    commandes
+                  </span>
+                  <span className='text-gray-400'>—</span>
+                  <span className='inline-flex items-center gap-2 whitespace-nowrap'>
+                    <span className='inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-gray-100 px-1.5 text-xs font-semibold text-gray-700'>
+                      {selectedOrders.length}
+                    </span>
+                    <span>
+                      élément{selectedOrders.length > 1 ? 's' : ''} sélectionné
+                      {selectedOrders.length > 1 ? 's' : ''}
+                    </span>
+                  </span>
                 </div>
                 <div className='flex items-center space-x-3'>
                   <button
@@ -738,6 +873,43 @@ export default function OrdersPage() {
                 </div>
               </div>
 
+              <div className='mb-4 flex flex-wrap items-center gap-2'>
+                <button
+                  onClick={handleBatchReturn}
+                  disabled={selectedForReturn.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedForReturn.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Demander le retour'
+                >
+                  Demander le retour
+                </button>
+                <button
+                  onClick={() => handleOpenContact(selectedForContact)}
+                  disabled={selectedForContact.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedForContact.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Contacter la boutique'
+                >
+                  Contacter la boutique
+                </button>
+              </div>
+
+              <div className='sm:hidden mb-2 flex items-center gap-2'>
+                <input
+                  type='checkbox'
+                  checked={allMobileSelected}
+                  onChange={toggleSelectAllMobile}
+                  className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
+                />
+                <span className='text-sm text-gray-700'>Tout sélectionner</span>
+              </div>
+
               {/* Vue mobile: cartes accordéon */}
               <div className='block sm:hidden space-y-3'>
                 {sortedShipments.map((s, idx) => (
@@ -778,8 +950,16 @@ export default function OrdersPage() {
                           />
                         </div>
                       </div>
-                      <div className='text-sm font-semibold text-gray-900'>
-                        {formatValue(s.paid_value)}
+                      <div className='flex items-center gap-2'>
+                        <input
+                          type='checkbox'
+                          checked={selectedOrderIds.has(s.id)}
+                          onChange={() => toggleOrderSelection(s.id)}
+                          className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
+                        />
+                        <div className='text-sm font-semibold text-gray-900'>
+                          {formatValue(s.paid_value)}
+                        </div>
                       </div>
                     </div>
 
@@ -897,48 +1077,6 @@ export default function OrdersPage() {
                           <span />
                         )}
                       </div>
-
-                      <div className='flex items-center gap-2 pt-1'>
-                        <button
-                          onClick={() => handleReturn(s)}
-                          disabled={
-                            !s.shipment_id ||
-                            returnStatus[s.id] === 'loading' ||
-                            !!s.return_requested ||
-                            !s.is_final_destination
-                          }
-                          className={`inline-flex items-center px-2 py-1 rounded-md text-xs font-medium border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
-                            s.return_requested ||
-                            returnStatus[s.id] === 'success'
-                              ? 'bg-green-50 text-green-700 border-green-200'
-                              : returnStatus[s.id] === 'error'
-                                ? 'bg-red-50 text-red-700 border-red-200'
-                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                          }`}
-                          title={
-                            !s.shipment_id
-                              ? 'Retour indisponible'
-                              : s.return_requested
-                                ? 'Demande déjà envoyée'
-                                : 'Envoyer une demande de retour'
-                          }
-                        >
-                          {returnStatus[s.id] === 'loading'
-                            ? 'Envoi...'
-                            : s.return_requested
-                              ? 'Demande envoyée'
-                              : returnStatus[s.id] === 'error'
-                                ? 'Erreur'
-                                : 'Demander le retour'}
-                        </button>
-
-                        <button
-                          onClick={() => handleOpenContact(s)}
-                          className='px-2 py-1 rounded-md text-xs font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                        >
-                          Contacter la boutique
-                        </button>
-                      </div>
                     </div>
                   </div>
                 ))}
@@ -948,6 +1086,14 @@ export default function OrdersPage() {
               <table className='w-full hidden sm:table'>
                 <thead>
                   <tr className='border-b border-gray-200'>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      <input
+                        type='checkbox'
+                        checked={allVisibleSelected}
+                        onChange={toggleSelectAllVisible}
+                        className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
+                      />
+                    </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Date
                     </th>
@@ -994,13 +1140,6 @@ export default function OrdersPage() {
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Point Retrait
                     </th>
-
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Retour
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Contacter
-                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1009,6 +1148,14 @@ export default function OrdersPage() {
                       key={s.id}
                       className='border-b border-gray-100 hover:bg-gray-50'
                     >
+                      <td className='py-4 px-4 text-gray-700'>
+                        <input
+                          type='checkbox'
+                          checked={selectedOrderIds.has(s.id)}
+                          onChange={() => toggleOrderSelection(s.id)}
+                          className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
+                        />
+                      </td>
                       <td className='py-4 px-4 text-gray-700'>
                         {formatDate(s.created_at)}
                       </td>
@@ -1136,50 +1283,6 @@ export default function OrdersPage() {
                           '—'
                         )}
                       </td>
-
-                      <td className='py-4 px-4'>
-                        <button
-                          onClick={() => handleReturn(s)}
-                          disabled={
-                            !s.shipment_id ||
-                            returnStatus[s.id] === 'loading' ||
-                            !!s.return_requested ||
-                            !s.is_final_destination
-                          }
-                          className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
-                            s.return_requested ||
-                            returnStatus[s.id] === 'success'
-                              ? 'bg-green-50 text-green-700 border-green-200'
-                              : returnStatus[s.id] === 'error'
-                                ? 'bg-red-50 text-red-700 border-red-200'
-                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                          }`}
-                          title={
-                            !s.shipment_id
-                              ? 'Retour indisponible'
-                              : s.return_requested
-                                ? 'Demande déjà envoyée'
-                                : 'Envoyer une demande de retour'
-                          }
-                        >
-                          {returnStatus[s.id] === 'loading'
-                            ? 'Envoi...'
-                            : s.return_requested
-                              ? 'Demande envoyée'
-                              : returnStatus[s.id] === 'error'
-                                ? 'Erreur'
-                                : 'Demander le retour'}
-                        </button>
-                      </td>
-                      <td className='py-4 px-4'>
-                        <button
-                          onClick={() => handleOpenContact(s)}
-                          className={`px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 `}
-                          title='Contacter la boutique'
-                        >
-                          Contacter la boutique
-                        </button>
-                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1201,13 +1304,62 @@ export default function OrdersPage() {
                 <h3 className='text-lg font-semibold text-gray-900'>
                   Contacter la boutique
                 </h3>
-                {selectedShipment?.shipment_id && (
-                  <p className='text-xs text-gray-600 mt-1'>
-                    Shipment: {selectedShipment.shipment_id}
-                  </p>
-                )}
+                <p className='text-xs text-gray-600 mt-1'>
+                  Commandes sélectionnées: {contactShipments.length}
+                </p>
               </div>
               <div className='p-4 space-y-3'>
+                <div className='rounded-md border border-gray-200 bg-gray-50 p-3'>
+                  <div className='text-sm font-semibold text-gray-900'>
+                    Commandes concernées
+                  </div>
+                  <div className='mt-2 max-h-40 overflow-auto space-y-2'>
+                    {contactShipments.map(s => (
+                      <div
+                        key={s.id}
+                        className='rounded-md border border-gray-200 bg-white p-2'
+                      >
+                        <div className='flex items-start justify-between gap-3'>
+                          <div className='min-w-0'>
+                            <div className='text-sm font-medium text-gray-900 truncate'>
+                              {s.store?.name || '—'}
+                            </div>
+                            <div className='text-xs text-gray-600'>
+                              Réf: {s.product_reference || '—'}
+                            </div>
+                            <div className='text-xs text-gray-600'>
+                              Shipment: {s.shipment_id || '—'}
+                            </div>
+                          </div>
+                          <div className='text-right'>
+                            <div className='text-xs font-semibold text-gray-900'>
+                              {formatValue(s.paid_value)}
+                            </div>
+                            <div className='text-xs text-gray-600'>
+                              {s.status || '—'}
+                            </div>
+                            {s.tracking_url ? (
+                              <a
+                                href={s.tracking_url}
+                                target='_blank'
+                                rel='noopener noreferrer'
+                                className='text-xs text-blue-600 hover:underline'
+                              >
+                                Suivre
+                              </a>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className='mt-2 flex items-center justify-between text-xs text-gray-600'>
+                          <span>Créée: {formatDate(s.created_at)}</span>
+                          <span>
+                            Estimée: {formatDate(s.estimated_delivery_date)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
                 <label className='block text-sm font-medium text-gray-700'>
                   Message
                 </label>
@@ -1217,7 +1369,7 @@ export default function OrdersPage() {
                   rows={5}
                   className='w-full border border-gray-300 rounded-md p-3 focus:ring-indigo-500 focus:border-indigo-500'
                   placeholder={
-                    'Expliquez votre demande concernant cette expédition…'
+                    'Expliquez votre demande concernant cette/ces expédition(s)…'
                   }
                 />
                 <div className='space-y-2'>

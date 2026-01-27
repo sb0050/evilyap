@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
@@ -21,6 +21,7 @@ import {
   Tag,
   Trash2,
   Coins,
+  Dice5,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -154,8 +155,11 @@ export default function DashboardPage() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [helpMessage, setHelpMessage] = useState<string>('');
   const [helpFile, setHelpFile] = useState<File | null>(null);
-  const [selectedSale, setSelectedSale] = useState<Shipment | null>(null);
+  const [helpSales, setHelpSales] = useState<Shipment[]>([]);
   const [isSendingHelp, setIsSendingHelp] = useState<boolean>(false);
+  const [selectedSaleIds, setSelectedSaleIds] = useState<Set<number>>(
+    new Set()
+  );
   // Pagination pour la section Ventes
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState<number>(1);
@@ -181,6 +185,12 @@ export default function DashboardPage() {
   const [clientsFilterTerm, setClientsFilterTerm] = useState<string>('');
   const [socialsMap, setSocialsMap] = useState<Record<string, any>>({});
   const [billingAddress, setBillingAddress] = useState<Address | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [drawLoading, setDrawLoading] = useState<boolean>(false);
+  const [winner, setWinner] = useState<any | null>(null);
+  const [showWinnerModal, setShowWinnerModal] = useState<boolean>(false);
+  const [sendingCongrats, setSendingCongrats] = useState<boolean>(false);
+  const drawButtonRef = useRef<HTMLButtonElement | null>(null);
   const [isAddressComplete, setIsAddressComplete] = useState(false);
   const [formPhone, setFormPhone] = useState<string>('');
 
@@ -204,7 +214,6 @@ export default function DashboardPage() {
   const [cartReference, setCartReference] = useState<string>('');
   const [cartDescription, setCartDescription] = useState<string>('');
   const [cartAmountEuro, setCartAmountEuro] = useState<string>('');
-  const [cartTTLMinutes, setCartTTLMinutes] = useState<string>('15');
   const [cartCreating, setCartCreating] = useState<boolean>(false);
   const [storeCarts, setStoreCarts] = useState<any[]>([]);
   const [cartDeletingIds, setCartDeletingIds] = useState<
@@ -710,9 +719,13 @@ export default function DashboardPage() {
     }
   };
 
-  // Ouverture du popup "Besoin d'aide" pour une vente
-  const handleOpenHelp = (s: Shipment) => {
-    setSelectedSale(s);
+  const handleOpenHelp = (sales?: Shipment | Shipment[]) => {
+    const list = Array.isArray(sales) ? sales : sales ? [sales] : selectedSales;
+    if (list.length === 0) {
+      showToast('Sélectionnez au moins une vente', 'error');
+      return;
+    }
+    setHelpSales(list);
     setHelpMessage('');
     setHelpFile(null);
     setHelpOpen(true);
@@ -720,37 +733,45 @@ export default function DashboardPage() {
 
   const handleCloseHelp = () => {
     setHelpOpen(false);
-    setSelectedSale(null);
+    setHelpSales([]);
   };
 
   // Envoi du message d'aide au support PayLive avec le contexte de la ligne
   const handleSendHelp = async () => {
     const msg = (helpMessage || '').trim();
     if (!msg) return;
+    if (helpSales.length === 0) {
+      showToast('Sélectionnez au moins une vente', 'error');
+      return;
+    }
     try {
       setIsSendingHelp(true);
       const token = await getToken();
       const fd = new FormData();
       if (store?.slug) fd.append('storeSlug', store.slug);
-      if (selectedSale?.shipment_id)
-        fd.append('shipmentId', selectedSale.shipment_id);
+      if (helpSales.length === 1 && helpSales[0]?.shipment_id) {
+        fd.append('shipmentId', helpSales[0].shipment_id);
+      }
+      fd.append(
+        'shipmentIds',
+        JSON.stringify(helpSales.map(s => s.shipment_id).filter(Boolean))
+      );
       fd.append('message', msg);
-      // Contexte détaillé de la vente (pour faciliter le support)
       fd.append(
         'context',
         JSON.stringify({
           source: 'dashboard_sales_help',
-          saleId: selectedSale?.id ?? null,
-          shipmentId: selectedSale?.shipment_id ?? null,
-          productReference: selectedSale?.product_reference ?? null,
-          value: selectedSale?.paid_value ?? null,
-          customerStripeId: selectedSale?.customer_stripe_id ?? null,
-          status: selectedSale?.status ?? null,
-          createdAt: selectedSale?.created_at ?? null,
-          deliveryMethod: selectedSale?.delivery_method ?? null,
-          deliveryNetwork: selectedSale?.delivery_network ?? null,
-          tracking_url: selectedSale?.tracking_url ?? null,
-          delivery_cost: selectedSale?.delivery_cost ?? null,
+          sales: helpSales.map(s => ({
+            id: s.id ?? null,
+            shipmentId: s.shipment_id ?? null,
+            productReference: s.product_reference ?? null,
+            value: s.paid_value ?? null,
+            customerStripeId: s.customer_stripe_id ?? null,
+            status: s.status ?? null,
+            createdAt: s.created_at ?? null,
+            deliveryMethod: s.delivery_method ?? null,
+            deliveryNetwork: s.delivery_network ?? null,
+          })),
         })
       );
       if (helpFile) fd.append('attachment', helpFile);
@@ -761,7 +782,7 @@ export default function DashboardPage() {
       setHelpOpen(false);
       setHelpMessage('');
       setHelpFile(null);
-      setSelectedSale(null);
+      setHelpSales([]);
     } catch (e: any) {
       const raw = e?.message || 'Erreur inconnue';
       const trimmed = (raw || '').replace(/^Error:\s*/, '');
@@ -859,10 +880,11 @@ export default function DashboardPage() {
     Record<number, 'idle' | 'loading' | 'success' | 'error'>
   >({});
 
-  const handleCancel = async (s: Shipment) => {
+  const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
+    const silent = options?.silent;
     if (!s.shipment_id) {
       setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
-      return;
+      return false;
     }
     try {
       setCancelStatus(prev => ({ ...prev, [s.id]: 'loading' }));
@@ -884,29 +906,42 @@ export default function DashboardPage() {
             it.id === s.id ? { ...it, cancel_requested: true } : it
           )
         );
-        showToast("Demande d'annulation envoyée", 'success');
+        if (!silent) {
+          showToast("Demande d'annulation envoyée", 'success');
+        }
+        return true;
       } else {
         setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
         const msg =
           json?.error || json?.message || "Erreur lors de l'annulation";
-        showToast(
-          typeof msg === 'string' ? msg : "Demande d'annulation échouée",
-          'error'
-        );
+        if (!silent) {
+          showToast(
+            typeof msg === 'string' ? msg : "Demande d'annulation échouée",
+            'error'
+          );
+        }
+        return false;
       }
     } catch (e: any) {
       setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
       const rawMsg = e?.message || "Erreur lors de l'annulation";
-      showToast(
-        typeof rawMsg === 'string' ? rawMsg : "Demande d'annulation échouée",
-        'error'
-      );
+      if (!silent) {
+        showToast(
+          typeof rawMsg === 'string' ? rawMsg : "Demande d'annulation échouée",
+          'error'
+        );
+      }
+      return false;
     }
   };
 
-  const handleShippingDocument = async (s: Shipment) => {
+  const handleShippingDocument = async (
+    s: Shipment,
+    options?: { silent?: boolean }
+  ) => {
+    const silent = options?.silent;
     try {
-      if (!s.shipment_id) return;
+      if (!s.shipment_id) return false;
       setDocStatus(prev => ({ ...prev, [s.id]: 'loading' }));
       const token = await getToken();
       const url = `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
@@ -929,11 +964,19 @@ export default function DashboardPage() {
         document.body.removeChild(a);
         window.URL.revokeObjectURL(objectUrl);
         setDocStatus(prev => ({ ...prev, [s.id]: 'success' }));
-        showToast('Bordereau créé', 'success');
+        if (!silent) {
+          showToast('Bordereau créé', 'success');
+        }
+        return true;
       } else {
         const data = await resp.json().catch(() => ({}));
         const msg = data?.error || data?.message || 'Erreur bordereau';
-        showToast(typeof msg === 'string' ? msg : 'Erreur bordereau', 'error');
+        if (!silent) {
+          showToast(
+            typeof msg === 'string' ? msg : 'Erreur bordereau',
+            'error'
+          );
+        }
         // Fallback: ouvrir l'URL existante si disponible (peut s'afficher inline selon headers)
         if (s.document_url) {
           const a = document.createElement('a');
@@ -944,15 +987,77 @@ export default function DashboardPage() {
           document.body.removeChild(a);
         }
         setDocStatus(prev => ({ ...prev, [s.id]: 'error' }));
+        return false;
       }
     } catch (e: any) {
       setDocStatus(prev => ({ ...prev, [s.id]: 'error' }));
       const rawMsg = e?.message || 'Erreur bordereau';
-      showToast(
-        typeof rawMsg === 'string' ? rawMsg : 'Erreur bordereau',
-        'error'
-      );
+      if (!silent) {
+        showToast(
+          typeof rawMsg === 'string' ? rawMsg : 'Erreur bordereau',
+          'error'
+        );
+      }
+      return false;
     }
+  };
+
+  const handleBatchShippingDocuments = async () => {
+    const targets = selectedSales.filter(
+      s => s.document_created && s.shipment_id
+    );
+    if (targets.length === 0) {
+      showToast('Aucune vente sélectionnée pour le bordereau', 'error');
+      return;
+    }
+    const references: string[] = [];
+    for (const s of targets) {
+      const ok = await handleShippingDocument(s, { silent: true });
+      if (ok) {
+        const ref = String(s.product_reference || s.shipment_id || '').trim();
+        references.push(ref || String(s.shipment_id));
+      }
+    }
+    if (references.length === 0) {
+      showToast('Aucune vente traitée pour le bordereau', 'error');
+      return;
+    }
+    const msg =
+      references.length <= 3
+        ? `Bordereaux créés pour : ${references.join(', ')}`
+        : `Bordereaux créés pour ${references.length} références (${references
+            .slice(0, 3)
+            .join(', ')}...)`;
+    showToast(msg, 'success');
+  };
+
+  const handleBatchCancel = async () => {
+    const targets = selectedSales.filter(
+      s => s.shipment_id && !s.is_final_destination && !s.cancel_requested
+    );
+    if (targets.length === 0) {
+      showToast("Aucune vente sélectionnée pour l'annulation", 'error');
+      return;
+    }
+    const references: string[] = [];
+    for (const s of targets) {
+      const ok = await handleCancel(s, { silent: true });
+      if (ok) {
+        const ref = String(s.product_reference || s.shipment_id || '').trim();
+        references.push(ref || String(s.shipment_id));
+      }
+    }
+    if (references.length === 0) {
+      showToast("Aucune vente traitée pour l'annulation", 'error');
+      return;
+    }
+    const msg =
+      references.length <= 3
+        ? `Annulations envoyées pour : ${references.join(', ')}`
+        : `Annulations envoyées pour ${references.length} références (${references
+            .slice(0, 3)
+            .join(', ')}...)`;
+    showToast(msg, 'success');
   };
 
   const handleReloadSales = async () => {
@@ -1032,7 +1137,7 @@ export default function DashboardPage() {
       const customer = s.customer_stripe_id
         ? customersMap[s.customer_stripe_id] || null
         : null;
-      const clerkId = customer?.clerkUserId || customer?.clerk_user_id;
+      const clerkId = customer?.clerkUserId || customer?.clerk_id;
       const user = clerkId ? socialsMap[clerkId] || null : null;
       const nameParts = [user?.firstName || '', user?.lastName || '']
         .filter(Boolean)
@@ -1061,6 +1166,49 @@ export default function DashboardPage() {
     startIndex,
     startIndex + pageSize
   );
+  const selectedSales = (shipments || []).filter(s =>
+    selectedSaleIds.has(s.id)
+  );
+  const selectedForDoc = selectedSales.filter(
+    s => s.document_created && s.shipment_id
+  );
+  const selectedForCancel = selectedSales.filter(
+    s => s.shipment_id && !s.is_final_destination && !s.cancel_requested
+  );
+  const visibleSaleIds = visibleShipments.map(s => s.id);
+  const allVisibleSelected =
+    visibleSaleIds.length > 0 &&
+    visibleSaleIds.every(id => selectedSaleIds.has(id));
+  const toggleSaleSelection = (id: number) => {
+    setSelectedSaleIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const toggleSelectAllVisible = () => {
+    setSelectedSaleIds(prev => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        visibleSaleIds.forEach(id => next.delete(id));
+      } else {
+        visibleSaleIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    setSelectedSaleIds(prev => {
+      const validIds = new Set((shipments || []).map(s => s.id));
+      const next = new Set<number>();
+      prev.forEach(id => {
+        if (validIds.has(id)) next.add(id);
+      });
+      return next;
+    });
+  }, [shipments]);
 
   useEffect(() => {
     const filteredLength = (shipments || []).filter(s => {
@@ -1076,7 +1224,7 @@ export default function DashboardPage() {
         const customer = s.customer_stripe_id
           ? customersMap[s.customer_stripe_id] || null
           : null;
-        const clerkId = customer?.clerkUserId || customer?.clerk_user_id;
+        const clerkId = customer?.clerkUserId || customer?.clerk_id;
         const user = clerkId ? socialsMap[clerkId] || null : null;
         const nameParts = [user?.firstName || '', user?.lastName || '']
           .filter(Boolean)
@@ -1150,7 +1298,7 @@ export default function DashboardPage() {
       const ids = Array.from(
         new Set(
           entries
-            .map(c => c?.clerkUserId || c?.clerk_user_id)
+            .map(c => c?.clerkUserId || c?.clerk_id)
             .filter((v: any) => !!v)
         )
       ) as string[];
@@ -1282,8 +1430,6 @@ export default function DashboardPage() {
   const handleCreateCart = async () => {
     try {
       const ref = (cartReference || '').trim();
-      const ttlRaw = (cartTTLMinutes || '').trim();
-      const ttl = parseInt(ttlRaw, 10);
       const amt = parseFloat((cartAmountEuro || '').trim().replace(',', '.'));
       if (!(amt > 0)) {
         showToast('Veuillez saisir un montant supérieur à 0', 'error');
@@ -1299,10 +1445,6 @@ export default function DashboardPage() {
       }
       if (!ref) {
         showToast('Veuillez saisir la référence', 'error');
-        return;
-      }
-      if (!Number.isInteger(ttl) || ttl < 1) {
-        showToast('La durée du panier doit être un entier positif', 'error');
         return;
       }
       setCartCreating(true);
@@ -1334,7 +1476,6 @@ export default function DashboardPage() {
         product_reference: ref,
         value: amt,
         customer_stripe_id: stripeId,
-        time_to_live: Number.isFinite(ttl) ? ttl : 15,
         description: (cartDescription || '').trim() || null,
       };
       const resp = await apiPost('/api/carts', payload);
@@ -1346,7 +1487,6 @@ export default function DashboardPage() {
       showToast('Panier créé', 'success');
       setCartReference('');
       setCartDescription('');
-      setCartTTLMinutes('15');
       setCartAmountEuro('');
       if (store?.slug) {
         const r = await apiGet(
@@ -1658,6 +1798,66 @@ export default function DashboardPage() {
       setIsSubmittingModifications(false);
     }
   };
+
+  const handleDraw = async () => {
+    try {
+      if (selectedIds.size < 2) {
+        showToast('Sélectionnez au moins deux clients', 'error');
+        return;
+      }
+      setDrawLoading(true);
+      const token = await getToken();
+      const resp = await apiPost(
+        '/api/raffle/draw',
+        { participantIds: Array.from(selectedIds) },
+        {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      const w = json?.winner || null;
+      if (!w) {
+        throw new Error('Erreur lors du tirage');
+      }
+      setWinner(w);
+      setShowWinnerModal(true);
+      showToast('Tirage effectué', 'success');
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur lors du tirage';
+      const trimmed = (raw || '').replace(/^Error:\s*/, '');
+      showToast(trimmed, 'error');
+    } finally {
+      setDrawLoading(false);
+    }
+  };
+
+  const toggleSelectId = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showWinnerModal) {
+        setShowWinnerModal(false);
+        if (drawButtonRef.current) {
+          try {
+            drawButtonRef.current.focus();
+          } catch {}
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [showWinnerModal]);
 
   const confirmPayout = async () => {
     if (!store?.slug) return;
@@ -2645,26 +2845,6 @@ export default function DashboardPage() {
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />
                 </div>
-
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Durée du panier (minutes)
-                  </label>
-                  <input
-                    type='number'
-                    min='1'
-                    step='1'
-                    value={cartTTLMinutes}
-                    onChange={e => {
-                      const v = e.target.value;
-                      // autoriser uniquement des entiers positifs
-                      const normalized = v.replace(/[^0-9]/g, '');
-                      setCartTTLMinutes(normalized);
-                    }}
-                    placeholder='15'
-                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                  />
-                </div>
               </div>
 
               <div className='flex items-center gap-3 mb-6'>
@@ -2777,9 +2957,6 @@ export default function DashboardPage() {
                                     Description
                                   </th>
                                   <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Durée (min)
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
                                     Montant (€)
                                   </th>
                                   <th className='px-4 py-2 text-left font-medium text-gray-700'>
@@ -2807,11 +2984,6 @@ export default function DashboardPage() {
                                       </td>
                                       <td className='px-4 py-3 text-gray-700'>
                                         {c.description || '—'}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {typeof c.time_to_live === 'number'
-                                          ? c.time_to_live
-                                          : '—'}
                                       </td>
                                       <td className='px-4 py-3 text-gray-700'>
                                         {typeof c.value === 'number'
@@ -3155,9 +3327,21 @@ export default function DashboardPage() {
                   </h2>
                 </div>
                 <div className='hidden sm:flex items-center space-x-3'>
-                  <div className='text-sm text-gray-600'>
-                    Page {page} / {totalPages} — {filteredShipments.length}{' '}
-                    ventes
+                  <div className='text-sm text-gray-600 flex items-center gap-3'>
+                    <span className='inline-flex items-center gap-2 whitespace-nowrap'>
+                      <span className='inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-gray-100 px-1.5 text-xs font-semibold text-gray-700'>
+                        {selectedSales.length}
+                      </span>
+                      <span>
+                        élément{selectedSales.length > 1 ? 's' : ''} sélectionné
+                        {selectedSales.length > 1 ? 's' : ''}
+                      </span>
+                    </span>
+                    <span>—</span>
+                    <span>
+                      Page {page} / {totalPages} — {filteredShipments.length}{' '}
+                      ventes
+                    </span>
                   </div>
                   <button
                     onClick={handleReloadSales}
@@ -3284,7 +3468,55 @@ export default function DashboardPage() {
                 </div>
               </div>
 
+              <div className='mb-4 flex flex-wrap items-center gap-2'>
+                <button
+                  onClick={handleBatchShippingDocuments}
+                  disabled={selectedForDoc.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedForDoc.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Créer le bordereau'
+                >
+                  Créer le bordereau
+                </button>
+                <button
+                  onClick={handleBatchCancel}
+                  disabled={selectedForCancel.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedForCancel.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title="Demander l'annulation"
+                >
+                  Demander l'annulation
+                </button>
+                <button
+                  onClick={() => handleOpenHelp(selectedSales)}
+                  disabled={selectedSales.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedSales.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title="Besoin d'aide"
+                >
+                  Besoin d'aide
+                </button>
+              </div>
+
               {/* Vue mobile: cartes dépliables */}
+              <div className='sm:hidden mb-2 flex items-center gap-2'>
+                <input
+                  type='checkbox'
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAllVisible}
+                  className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
+                />
+                <span className='text-sm text-gray-700'>Tout sélectionner</span>
+              </div>
               <div className='block sm:hidden space-y-3'>
                 {visibleShipments.length === 0 ? (
                   <div className='text-gray-600 text-center py-4'>
@@ -3306,6 +3538,14 @@ export default function DashboardPage() {
                           </div>
                         </div>
                         <div className='text-right'>
+                          <div className='flex items-center justify-end'>
+                            <input
+                              type='checkbox'
+                              checked={selectedSaleIds.has(s.id)}
+                              onChange={() => toggleSaleSelection(s.id)}
+                              className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
+                            />
+                          </div>
                           <div className='text-sm font-semibold text-gray-900'>
                             Payé: {formatValue(s.paid_value)}
                           </div>
@@ -3349,7 +3589,7 @@ export default function DashboardPage() {
                               ? customersMap[stripeId] || null
                               : null;
                             const clerkId =
-                              customer?.clerkUserId || customer?.clerk_user_id;
+                              customer?.clerkUserId || customer?.clerk_id;
                             const u = clerkId
                               ? socialsMap[clerkId] || null
                               : null;
@@ -3457,67 +3697,7 @@ export default function DashboardPage() {
                           )}
                         </div>
 
-                        <div className='flex flex-wrap items-center gap-2 pt-2'>
-                          <button
-                            onClick={() => handleShippingDocument(s)}
-                            disabled={
-                              !s.document_created ||
-                              docStatus[s.id] === 'loading'
-                            }
-                            className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                            title={
-                              s.document_created
-                                ? 'Créer le bordereau'
-                                : 'Bordereau indisponible'
-                            }
-                          >
-                            {docStatus[s.id] === 'loading'
-                              ? 'Création...'
-                              : 'Créer le bordereau'}
-                          </button>
-
-                          <button
-                            onClick={() => handleCancel(s)}
-                            disabled={
-                              !s.shipment_id ||
-                              s.is_final_destination ||
-                              !!s.cancel_requested ||
-                              cancelStatus[s.id] === 'loading'
-                            }
-                            className={`px-2 py-1 rounded-md text-xs border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
-                              s.cancel_requested ||
-                              cancelStatus[s.id] === 'success'
-                                ? 'bg-green-50 text-green-700 border-green-200'
-                                : cancelStatus[s.id] === 'error'
-                                  ? 'bg-red-50 text-red-700 border-red-200'
-                                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                            }`}
-                            title={
-                              !s.shipment_id
-                                ? 'Annulation indisponible'
-                                : s.cancel_requested
-                                  ? 'Demande déjà envoyée'
-                                  : "Demander l'annulation"
-                            }
-                          >
-                            {cancelStatus[s.id] === 'loading'
-                              ? 'Envoi...'
-                              : s.cancel_requested ||
-                                  cancelStatus[s.id] === 'success'
-                                ? 'Demande envoyée'
-                                : cancelStatus[s.id] === 'error'
-                                  ? 'Réessayer'
-                                  : "Demander l'annulation"}
-                          </button>
-
-                          <button
-                            onClick={() => handleOpenHelp(s)}
-                            className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                            title={"Besoin d'aide"}
-                          >
-                            Besoin d'aide
-                          </button>
-                        </div>
+                        <div />
                       </div>
                     </div>
                   ))
@@ -3529,6 +3709,16 @@ export default function DashboardPage() {
                 <table className='w-full'>
                   <thead>
                     <tr className='border-b border-gray-200'>
+                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                        <label className='inline-flex items-center gap-2'>
+                          <input
+                            type='checkbox'
+                            checked={allVisibleSelected}
+                            onChange={toggleSelectAllVisible}
+                            className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
+                          />
+                        </label>
+                      </th>
                       <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                         Date
                       </th>
@@ -3559,16 +3749,6 @@ export default function DashboardPage() {
                       <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                         Poids
                       </th>
-
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Bordereau
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Annulation
-                      </th>
-                      <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Aide
-                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3576,7 +3756,7 @@ export default function DashboardPage() {
                       <tr>
                         <td
                           className='py-4 px-4 text-gray-600 text-center'
-                          colSpan={12}
+                          colSpan={11}
                         >
                           Aucune vente pour le filtre courant.
                         </td>
@@ -3587,6 +3767,14 @@ export default function DashboardPage() {
                           key={s.id}
                           className='border-b border-gray-100 hover:bg-gray-50'
                         >
+                          <td className='py-4 px-4 text-gray-700'>
+                            <input
+                              type='checkbox'
+                              checked={selectedSaleIds.has(s.id)}
+                              onChange={() => toggleSaleSelection(s.id)}
+                              className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
+                            />
+                          </td>
                           <td className='py-4 px-4 text-gray-700'>
                             {formatDate(s.created_at)}
                           </td>
@@ -3616,8 +3804,7 @@ export default function DashboardPage() {
                                 ? customersMap[stripeId] || null
                                 : null;
                               const clerkId =
-                                customer?.clerkUserId ||
-                                customer?.clerk_user_id;
+                                customer?.clerkUserId || customer?.clerk_id;
                               const u = clerkId
                                 ? socialsMap[clerkId] || null
                                 : null;
@@ -3714,75 +3901,6 @@ export default function DashboardPage() {
                           <td className='py-4 px-4 text-gray-700'>
                             {s.weight || '—'}
                           </td>
-
-                          <td className='py-4 px-4'>
-                            <button
-                              onClick={() => handleShippingDocument(s)}
-                              disabled={
-                                !s.document_created ||
-                                docStatus[s.id] === 'loading'
-                              }
-                              className={
-                                'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                              }
-                              title={
-                                s.document_created
-                                  ? 'Créer le bordereau'
-                                  : 'Bordereau indisponible'
-                              }
-                            >
-                              {docStatus[s.id] === 'loading'
-                                ? 'Création...'
-                                : 'Créer le bordereau'}
-                            </button>
-                          </td>
-                          <td className='py-4 px-4'>
-                            <button
-                              onClick={() => handleCancel(s)}
-                              disabled={
-                                !s.shipment_id ||
-                                s.is_final_destination ||
-                                !!s.cancel_requested ||
-                                cancelStatus[s.id] === 'loading'
-                              }
-                              className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 ${
-                                s.cancel_requested ||
-                                cancelStatus[s.id] === 'success'
-                                  ? 'bg-green-50 text-green-700 border-green-200'
-                                  : cancelStatus[s.id] === 'error'
-                                    ? 'bg-red-50 text-red-700 border-red-200'
-                                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                              }`}
-                              title={
-                                !s.shipment_id
-                                  ? 'Annulation indisponible'
-                                  : s.cancel_requested
-                                    ? 'Demande déjà envoyée'
-                                    : "Demander l'annulation"
-                              }
-                            >
-                              {s.cancel_requested}
-                              {cancelStatus[s.id] === 'loading'
-                                ? 'Envoi...'
-                                : s.cancel_requested ||
-                                    cancelStatus[s.id] === 'success'
-                                  ? 'Demande envoyée'
-                                  : cancelStatus[s.id] === 'error'
-                                    ? 'Réessayer'
-                                    : "Demander l'annulation"}
-                            </button>
-                          </td>
-                          <td className='py-4 px-4'>
-                            <button
-                              onClick={() => handleOpenHelp(s)}
-                              className={
-                                'inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                              }
-                              title={"Besoin d'aide"}
-                            >
-                              Besoin d'aide
-                            </button>
-                          </td>
                         </tr>
                       ))
                     )}
@@ -3793,440 +3911,577 @@ export default function DashboardPage() {
           )}
 
           {section === 'clients' && (
-            <div className='bg-white rounded-lg shadow p-6'>
-              <div className='flex items-center justify-between mb-4'>
-                <div className='flex items-center'>
-                  <Users className='w-5 h-5 text-indigo-600 mr-2' />
-                  <h2 className='text-lg font-semibold text-gray-900'>
-                    Clients
-                  </h2>
-                </div>
-                <div className='hidden sm:flex items-center space-x-3'>
-                  <div className='text-sm text-gray-600'>
-                    {customersLoading ? (
-                      <span>Chargement...</span>
-                    ) : (
-                      (() => {
-                        const allIds = Array.from(
+            <>
+              <div className='bg-white rounded-lg shadow p-6'>
+                <div className='flex items-start justify-between mb-4'>
+                  <div className='flex flex-col items-start'>
+                    <div className='flex items-center'>
+                      <Users className='w-5 h-5 text-indigo-600 mr-2' />
+                      <h2 className='text-lg font-semibold text-gray-900'>
+                        Clients
+                      </h2>
+                    </div>
+                    <div className='mt-2'>
+                      <button
+                        ref={drawButtonRef}
+                        onClick={handleDraw}
+                        disabled={selectedIds.size < 2 || drawLoading}
+                        className='flex items-center sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border bg-white text-gray-700 border-gray-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                        title='Lancer le tirage'
+                      >
+                        {drawLoading ? (
+                          <span className='inline-flex items-center'>
+                            <span className='animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 mr-2' />
+                            Tirage…
+                          </span>
+                        ) : (
+                          <span className='inline-flex items-center'>
+                            <Dice5 className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+                            <span>Lancer le tirage</span>
+                          </span>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                  <div className='hidden sm:flex items-center space-x-3'>
+                    <div className='text-sm text-gray-600'>
+                      {customersLoading ? (
+                        <span>Chargement...</span>
+                      ) : (
+                        (() => {
+                          const allIds = Array.from(
+                            new Set(
+                              (shipments || [])
+                                .map(s => s.customer_stripe_id)
+                                .filter(Boolean)
+                            )
+                          ) as string[];
+                          const term = (clientsFilterTerm || '')
+                            .trim()
+                            .toLowerCase();
+                          const filteredIds = allIds.filter(id => {
+                            if (!term) return true;
+                            const idLower = (id || '').toLowerCase();
+                            if (clientsFilterField === 'id') {
+                              return idLower.includes(term);
+                            }
+                            const customer = customersMap[id] || null;
+                            const clerkId =
+                              customer?.clerkUserId || customer?.clerk_id;
+                            const user = clerkId
+                              ? socialsMap[clerkId] || null
+                              : null;
+                            if (clientsFilterField === 'name') {
+                              const name1 = (
+                                customer?.name || ''
+                              ).toLowerCase();
+                              const name2 = [
+                                user?.firstName || '',
+                                user?.lastName || '',
+                              ]
+                                .filter(Boolean)
+                                .join(' ')
+                                .toLowerCase();
+                              return (
+                                name1.includes(term) || name2.includes(term)
+                              );
+                            }
+                            const email = (
+                              customer?.email ||
+                              '' ||
+                              user?.emailAddress ||
+                              ''
+                            )
+                              .toLowerCase()
+                              .trim();
+                            return email.includes(term);
+                          });
+                          const totalClients = filteredIds.length;
+                          const totalPagesClients = Math.max(
+                            1,
+                            Math.ceil(totalClients / clientsPageSize)
+                          );
+                          return (
+                            <>
+                              Page {clientsPage} / {totalPagesClients} —{' '}
+                              {totalClients} clients
+                            </>
+                          );
+                        })()
+                      )}
+                    </div>
+
+                    <button
+                      onClick={handleReloadSales}
+                      disabled={reloadingSales}
+                      className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                    >
+                      <RefreshCw
+                        className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
+                      />
+                      <span>Recharger</span>
+                    </button>
+                    <div className='text-sm text-gray-700'>
+                      {selectedIds.size} sélectionné(s)
+                    </div>
+
+                    <label className='text-sm text-gray-700'>Lignes</label>
+                    <select
+                      value={clientsPageSize}
+                      onChange={e => {
+                        const v = parseInt(e.target.value, 10);
+                        setClientsPageSize(isNaN(v) ? 10 : v);
+                        setClientsPage(1);
+                      }}
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 flex-1 min-w-0 w-full'
+                    >
+                      <option value={5}>5</option>
+                      <option value={10}>10</option>
+                      <option value={25}>25</option>
+                      <option value={50}>50</option>
+                    </select>
+                    <div className='flex items-center space-x-2'>
+                      {(() => {
+                        const uniqueIds = Array.from(
                           new Set(
                             (shipments || [])
                               .map(s => s.customer_stripe_id)
                               .filter(Boolean)
                           )
                         ) as string[];
-                        const term = (clientsFilterTerm || '')
-                          .trim()
-                          .toLowerCase();
-                        const filteredIds = allIds.filter(id => {
-                          if (!term) return true;
-                          const idLower = (id || '').toLowerCase();
-                          if (clientsFilterField === 'id') {
-                            return idLower.includes(term);
-                          }
-                          const customer = customersMap[id] || null;
-                          const clerkId =
-                            customer?.clerkUserId || customer?.clerk_user_id;
-                          const user = clerkId
-                            ? socialsMap[clerkId] || null
-                            : null;
-                          if (clientsFilterField === 'name') {
-                            const name1 = (customer?.name || '').toLowerCase();
-                            const name2 = [
-                              user?.firstName || '',
-                              user?.lastName || '',
-                            ]
-                              .filter(Boolean)
-                              .join(' ')
-                              .toLowerCase();
-                            return name1.includes(term) || name2.includes(term);
-                          }
-                          const email = (
-                            customer?.email ||
-                            '' ||
-                            user?.emailAddress ||
-                            ''
-                          )
-                            .toLowerCase()
-                            .trim();
-                          return email.includes(term);
-                        });
-                        const totalClients = filteredIds.length;
+                        const totalClients = uniqueIds.length;
                         const totalPagesClients = Math.max(
                           1,
                           Math.ceil(totalClients / clientsPageSize)
                         );
                         return (
                           <>
-                            Page {clientsPage} / {totalPagesClients} —{' '}
-                            {totalClients} clients
-                          </>
-                        );
-                      })()
-                    )}
-                  </div>
-
-                  <button
-                    onClick={handleReloadSales}
-                    disabled={reloadingSales}
-                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                  >
-                    <RefreshCw
-                      className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
-                    />
-                    <span>Recharger</span>
-                  </button>
-
-                  <label className='text-sm text-gray-700'>Lignes</label>
-                  <select
-                    value={clientsPageSize}
-                    onChange={e => {
-                      const v = parseInt(e.target.value, 10);
-                      setClientsPageSize(isNaN(v) ? 10 : v);
-                      setClientsPage(1);
-                    }}
-                    className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 flex-1 min-w-0 w-full'
-                  >
-                    <option value={5}>5</option>
-                    <option value={10}>10</option>
-                    <option value={25}>25</option>
-                    <option value={50}>50</option>
-                  </select>
-                  <div className='flex items-center space-x-2'>
-                    {(() => {
-                      const uniqueIds = Array.from(
-                        new Set(
-                          (shipments || [])
-                            .map(s => s.customer_stripe_id)
-                            .filter(Boolean)
-                        )
-                      ) as string[];
-                      const totalClients = uniqueIds.length;
-                      const totalPagesClients = Math.max(
-                        1,
-                        Math.ceil(totalClients / clientsPageSize)
-                      );
-                      return (
-                        <>
-                          <button
-                            onClick={() =>
-                              setClientsPage(p => Math.max(1, p - 1))
-                            }
-                            disabled={clientsPage <= 1}
-                            className={`px-3 py-1 text-sm rounded-md border ${
-                              clientsPage <= 1
-                                ? 'bg-gray-100 text-gray-400 border-gray-200'
-                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                            }`}
-                          >
-                            Précédent
-                          </button>
-                          <button
-                            onClick={() =>
-                              setClientsPage(p =>
-                                Math.min(totalPagesClients, p + 1)
-                              )
-                            }
-                            disabled={clientsPage >= totalPagesClients}
-                            className={`px-3 py-1 text-sm rounded-md border ${
-                              clientsPage >= totalPagesClients
-                                ? 'bg-gray-100 text-gray-400 border-gray-200'
-                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                            }`}
-                          >
-                            Suivant
-                          </button>
-                        </>
-                      );
-                    })()}
-                  </div>
-                  <div className='flex items-center space-x-2'>
-                    <span className='text-sm text-gray-700'>Filtrer par</span>
-                    <select
-                      value={clientsFilterField}
-                      onChange={e => {
-                        const v = e.target.value as 'id' | 'name' | 'email';
-                        setClientsFilterField(v);
-                        setClientsPage(1);
-                      }}
-                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                    >
-                      <option value='id'>Client ID</option>
-                      <option value='name'>Nom</option>
-                      <option value='email'>Email</option>
-                    </select>
-                    <input
-                      type='text'
-                      value={clientsFilterTerm}
-                      onChange={e => {
-                        setClientsFilterTerm(e.target.value);
-                        setClientsPage(1);
-                      }}
-                      placeholder='Saisir…'
-                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                    />
-                  </div>
-                </div>
-                <div className='sm:hidden'>
-                  <button
-                    onClick={handleReloadSales}
-                    disabled={reloadingSales}
-                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                  >
-                    <RefreshCw
-                      className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
-                    />
-                    <span>Recharger</span>
-                  </button>
-                </div>
-              </div>
-
-              {(() => {
-                const allIds = Array.from(
-                  new Set(
-                    (shipments || [])
-                      .map(s => s.customer_stripe_id)
-                      .filter(Boolean)
-                  )
-                ) as string[];
-                if (allIds.length === 0)
-                  return (
-                    <p className='text-gray-600'>
-                      Aucun client pour le moment.
-                    </p>
-                  );
-
-                const term = (clientsFilterTerm || '').trim().toLowerCase();
-                const filteredIds = allIds.filter(id => {
-                  if (!term) return true;
-                  const idLower = (id || '').toLowerCase();
-                  if (clientsFilterField === 'id') {
-                    return idLower.includes(term);
-                  }
-                  const customer = customersMap[id] || null;
-                  const clerkId =
-                    customer?.clerkUserId || customer?.clerk_user_id;
-                  const user = clerkId ? socialsMap[clerkId] || null : null;
-                  if (clientsFilterField === 'name') {
-                    const name1 = (customer?.name || '').toLowerCase();
-                    const name2 = [user?.firstName || '', user?.lastName || '']
-                      .filter(Boolean)
-                      .join(' ')
-                      .toLowerCase();
-                    return name1.includes(term) || name2.includes(term);
-                  }
-                  const email = (
-                    customer?.email ||
-                    '' ||
-                    user?.emailAddress ||
-                    ''
-                  )
-                    .toLowerCase()
-                    .trim();
-                  return email.includes(term);
-                });
-
-                const spentMap: Record<string, number> = {};
-                (shipments || []).forEach(s => {
-                  const id = s.customer_stripe_id || '';
-                  if (!id) return;
-                  const v =
-                    (s.paid_value ?? 0) - (s.estimated_delivery_cost ?? 0);
-                  spentMap[id] = (spentMap[id] || 0) + v;
-                });
-
-                // Tri par "Dépensé"
-                const sortedIds = [...filteredIds].sort((a, b) => {
-                  const sa = spentMap[a] || 0;
-                  const sb = spentMap[b] || 0;
-                  return clientsSortOrder === 'asc' ? sa - sb : sb - sa;
-                });
-
-                // Pagination
-                const startIdx = (clientsPage - 1) * clientsPageSize;
-                const pageIds = sortedIds.slice(
-                  startIdx,
-                  startIdx + clientsPageSize
-                );
-
-                const rows = pageIds.map(id => ({
-                  id,
-                  data: customersMap[id] || null,
-                  spent: spentMap[id] || 0,
-                }));
-
-                return (
-                  <>
-                    <div className='sm:hidden mb-3'>
-                      <div className='flex items-center space-x-2'>
-                        <span className='text-sm text-gray-700'>
-                          Filtrer par
-                        </span>
-                        <select
-                          value={clientsFilterField}
-                          onChange={e => {
-                            const v = e.target.value as 'id' | 'name' | 'email';
-                            setClientsFilterField(v);
-                            setClientsPage(1);
-                          }}
-                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                        >
-                          <option value='id'>Client ID</option>
-                          <option value='name'>Nom</option>
-                          <option value='email'>Email</option>
-                        </select>
-                        <input
-                          type='text'
-                          value={clientsFilterTerm}
-                          onChange={e => {
-                            setClientsFilterTerm(e.target.value);
-                            setClientsPage(1);
-                          }}
-                          placeholder='Saisir…'
-                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                        />
-                      </div>
-                    </div>
-
-                    {/* Vue mobile: cartes dépliables */}
-                    <div className='block sm:hidden space-y-3'>
-                      {rows.map(r => {
-                        const a = r.data?.address || {};
-                        const addr = [
-                          a?.line1,
-                          `${a?.postal_code || ''} ${a?.city || ''}`.trim(),
-                          a?.country,
-                        ]
-                          .filter(Boolean)
-                          .join(', ');
-                        const clerkId =
-                          r.data?.clerkUserId || r.data?.clerk_user_id;
-                        const u = clerkId ? socialsMap[clerkId] || null : null;
-                        const name =
-                          r.data?.name ||
-                          [u?.firstName, u?.lastName]
-                            .filter(Boolean)
-                            .join(' ') ||
-                          '—';
-                        return (
-                          <div
-                            key={r.id}
-                            className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
-                          >
-                            <div className='flex items-start justify-between'>
-                              <div className='flex items-center space-x-2'>
-                                {u?.hasImage && u?.imageUrl ? (
-                                  <img
-                                    src={u.imageUrl}
-                                    alt='avatar'
-                                    className='w-6 h-6 rounded-full object-cover'
-                                  />
-                                ) : (
-                                  <span className='inline-block w-6 h-6 rounded-full bg-gray-200' />
-                                )}
-                                <div>
-                                  <div className='text-sm font-semibold text-gray-900'>
-                                    {name}
-                                  </div>
-                                  <div
-                                    className='text-xs text-gray-600 truncate max-w-[220px]'
-                                    title={r.id}
-                                  >
-                                    {r.id}
-                                  </div>
-                                </div>
-                              </div>
-                              <div className='text-sm font-semibold text-gray-900'>
-                                {formatValue(r.spent)}
-                              </div>
-                            </div>
-
-                            <div className='mt-3 text-sm text-gray-700'>
-                              <div>
-                                <span className='font-medium'>Email:</span>{' '}
-                                {r.data?.email || '—'}
-                              </div>
-                              <div>
-                                <span className='font-medium'>Téléphone:</span>{' '}
-                                {r.data?.phone || '—'}
-                              </div>
-                              <div>
-                                <span className='font-medium'>Adresse:</span>{' '}
-                                {addr || '—'}
-                              </div>
-                            </div>
-
-                            <div className='mt-3 flex items-center justify-end'>
-                              <button
-                                onClick={() =>
-                                  setExpandedClientCardIds(prev => ({
-                                    ...prev,
-                                    [r.id]: !prev[r.id],
-                                  }))
-                                }
-                                className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                                aria-expanded={Boolean(
-                                  expandedClientCardIds[r.id]
-                                )}
-                              >
-                                {expandedClientCardIds[r.id]
-                                  ? 'Voir moins'
-                                  : 'Voir plus'}
-                              </button>
-                            </div>
-
-                            <div
-                              className={`mt-3 space-y-2 text-sm transition-all duration-300 overflow-hidden ${
-                                expandedClientCardIds[r.id]
-                                  ? 'max-h-[1000px] opacity-100'
-                                  : 'max-h-0 opacity-0'
+                            <button
+                              onClick={() =>
+                                setClientsPage(p => Math.max(1, p - 1))
+                              }
+                              disabled={clientsPage <= 1}
+                              className={`px-3 py-1 text-sm rounded-md border ${
+                                clientsPage <= 1
+                                  ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                               }`}
                             >
-                              <div className='font-medium'>Réseaux sociaux</div>
-                              {(() => {
-                                const accounts = u?.externalAccounts || [];
-                                if (!u || !accounts || accounts.length === 0)
-                                  return <div>—</div>;
-                                return (
-                                  <div className='space-y-1'>
-                                    {accounts.map((acc: any) => {
-                                      const providerKey = (
-                                        acc?.provider || ''
-                                      ).toLowerCase();
-                                      const Icon = getProviderIcon(
-                                        acc?.provider
-                                      );
-                                      const isAppleOrTikTok =
-                                        providerKey.includes('apple') ||
-                                        providerKey.includes('tiktok');
+                              Précédent
+                            </button>
+                            <button
+                              onClick={() =>
+                                setClientsPage(p =>
+                                  Math.min(totalPagesClients, p + 1)
+                                )
+                              }
+                              disabled={clientsPage >= totalPagesClients}
+                              className={`px-3 py-1 text-sm rounded-md border ${
+                                clientsPage >= totalPagesClients
+                                  ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                              }`}
+                            >
+                              Suivant
+                            </button>
+                          </>
+                        );
+                      })()}
+                    </div>
+                    <div className='flex items-center space-x-2'>
+                      <span className='text-sm text-gray-700'>Filtrer par</span>
+                      <select
+                        value={clientsFilterField}
+                        onChange={e => {
+                          const v = e.target.value as 'id' | 'name' | 'email';
+                          setClientsFilterField(v);
+                          setClientsPage(1);
+                        }}
+                        className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                      >
+                        <option value='id'>Client ID</option>
+                        <option value='name'>Nom</option>
+                        <option value='email'>Email</option>
+                      </select>
+                      <input
+                        type='text'
+                        value={clientsFilterTerm}
+                        onChange={e => {
+                          setClientsFilterTerm(e.target.value);
+                          setClientsPage(1);
+                        }}
+                        placeholder='Saisir…'
+                        className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                      />
+                    </div>
+                  </div>
+                  <div className='sm:hidden flex items-center flex-wrap gap-2 mt-2 ml-2'>
+                    <button
+                      onClick={handleReloadSales}
+                      disabled={reloadingSales}
+                      className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                    >
+                      <RefreshCw
+                        className={`w-4 h-4 mr-1 ${reloadingSales ? 'animate-spin' : ''}`}
+                      />
+                      <span>Recharger</span>
+                    </button>
+                    <div className='text-sm text-gray-700'>
+                      {selectedIds.size} sélectionné(s)
+                    </div>
+                  </div>
+                </div>
 
-                                      if (isAppleOrTikTok) {
-                                        const email =
+                {(() => {
+                  const allIds = Array.from(
+                    new Set(
+                      (shipments || [])
+                        .map(s => s.customer_stripe_id)
+                        .filter(Boolean)
+                    )
+                  ) as string[];
+                  if (allIds.length === 0)
+                    return (
+                      <p className='text-gray-600'>
+                        Aucun client pour le moment.
+                      </p>
+                    );
+
+                  const term = (clientsFilterTerm || '').trim().toLowerCase();
+                  const filteredIds = allIds.filter(id => {
+                    if (!term) return true;
+                    const idLower = (id || '').toLowerCase();
+                    if (clientsFilterField === 'id') {
+                      return idLower.includes(term);
+                    }
+                    const customer = customersMap[id] || null;
+                    const clerkId = customer?.clerkUserId || customer?.clerk_id;
+                    const user = clerkId ? socialsMap[clerkId] || null : null;
+                    if (clientsFilterField === 'name') {
+                      const name1 = (customer?.name || '').toLowerCase();
+                      const name2 = [
+                        user?.firstName || '',
+                        user?.lastName || '',
+                      ]
+                        .filter(Boolean)
+                        .join(' ')
+                        .toLowerCase();
+                      return name1.includes(term) || name2.includes(term);
+                    }
+                    const email = (
+                      customer?.email ||
+                      '' ||
+                      user?.emailAddress ||
+                      ''
+                    )
+                      .toLowerCase()
+                      .trim();
+                    return email.includes(term);
+                  });
+
+                  const spentMap: Record<string, number> = {};
+                  (shipments || []).forEach(s => {
+                    const id = s.customer_stripe_id || '';
+                    if (!id) return;
+                    const v =
+                      (s.paid_value ?? 0) - (s.estimated_delivery_cost ?? 0);
+                    spentMap[id] = (spentMap[id] || 0) + v;
+                  });
+
+                  // Tri par "Dépensé"
+                  const sortedIds = [...filteredIds].sort((a, b) => {
+                    const sa = spentMap[a] || 0;
+                    const sb = spentMap[b] || 0;
+                    return clientsSortOrder === 'asc' ? sa - sb : sb - sa;
+                  });
+
+                  // Pagination
+                  const startIdx = (clientsPage - 1) * clientsPageSize;
+                  const pageIds = sortedIds.slice(
+                    startIdx,
+                    startIdx + clientsPageSize
+                  );
+
+                  const rows = pageIds.map(id => ({
+                    id,
+                    data: customersMap[id] || null,
+                    spent: spentMap[id] || 0,
+                  }));
+
+                  return (
+                    <>
+                      <div className='sm:hidden mb-3'>
+                        <div className='flex items-center space-x-2'>
+                          <span className='text-sm text-gray-700'>
+                            Filtrer par
+                          </span>
+                          <select
+                            value={clientsFilterField}
+                            onChange={e => {
+                              const v = e.target.value as
+                                | 'id'
+                                | 'name'
+                                | 'email';
+                              setClientsFilterField(v);
+                              setClientsPage(1);
+                            }}
+                            className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                          >
+                            <option value='id'>Client ID</option>
+                            <option value='name'>Nom</option>
+                            <option value='email'>Email</option>
+                          </select>
+                          <input
+                            type='text'
+                            value={clientsFilterTerm}
+                            onChange={e => {
+                              setClientsFilterTerm(e.target.value);
+                              setClientsPage(1);
+                            }}
+                            placeholder='Saisir…'
+                            className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                          />
+                        </div>
+                      </div>
+
+                      {/* Vue mobile: cartes dépliables */}
+                      <div className='block sm:hidden space-y-3'>
+                        {rows.map(r => {
+                          const a = r.data?.address || {};
+                          const addr = [
+                            a?.line1,
+                            `${a?.postal_code || ''} ${a?.city || ''}`.trim(),
+                            a?.country,
+                          ]
+                            .filter(Boolean)
+                            .join(', ');
+                          const clerkId =
+                            r.data?.clerkUserId || r.data?.clerk_id;
+                          const u = clerkId
+                            ? socialsMap[clerkId] || null
+                            : null;
+                          const name =
+                            r.data?.name ||
+                            [u?.firstName, u?.lastName]
+                              .filter(Boolean)
+                              .join(' ') ||
+                            '—';
+                          return (
+                            <div
+                              key={r.id}
+                              className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
+                            >
+                              <div className='flex items-start justify-between'>
+                                <div className='flex items-center space-x-2'>
+                                  <input
+                                    type='checkbox'
+                                    checked={selectedIds.has(r.id)}
+                                    onChange={() => toggleSelectId(r.id)}
+                                    aria-label='Sélectionner'
+                                    className='h-4 w-4'
+                                  />
+                                  {u?.hasImage && u?.imageUrl ? (
+                                    <img
+                                      src={u.imageUrl}
+                                      alt='avatar'
+                                      className='w-6 h-6 rounded-full object-cover'
+                                    />
+                                  ) : (
+                                    <span className='inline-block w-6 h-6 rounded-full bg-gray-200' />
+                                  )}
+                                  <div>
+                                    <div className='text-sm font-semibold text-gray-900'>
+                                      {name}
+                                    </div>
+                                    <div
+                                      className='text-xs text-gray-600 truncate max-w-[220px]'
+                                      title={r.id}
+                                    >
+                                      {r.id}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className='text-sm font-semibold text-gray-900'>
+                                  {formatValue(r.spent)}
+                                </div>
+                              </div>
+
+                              <div className='mt-3 text-sm text-gray-700'>
+                                <div>
+                                  <span className='font-medium'>Email:</span>{' '}
+                                  {r.data?.email || '—'}
+                                </div>
+                                <div>
+                                  <span className='font-medium'>
+                                    Téléphone:
+                                  </span>{' '}
+                                  {r.data?.phone || '—'}
+                                </div>
+                                <div>
+                                  <span className='font-medium'>Adresse:</span>{' '}
+                                  {addr || '—'}
+                                </div>
+                              </div>
+
+                              <div className='mt-3 flex items-center justify-end'>
+                                <button
+                                  onClick={() =>
+                                    setExpandedClientCardIds(prev => ({
+                                      ...prev,
+                                      [r.id]: !prev[r.id],
+                                    }))
+                                  }
+                                  className='px-2 py-1 rounded-md text-xs border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                  aria-expanded={Boolean(
+                                    expandedClientCardIds[r.id]
+                                  )}
+                                >
+                                  {expandedClientCardIds[r.id]
+                                    ? 'Voir moins'
+                                    : 'Voir plus'}
+                                </button>
+                              </div>
+
+                              <div
+                                className={`mt-3 space-y-2 text-sm transition-all duration-300 overflow-hidden ${
+                                  expandedClientCardIds[r.id]
+                                    ? 'max-h-[1000px] opacity-100'
+                                    : 'max-h-0 opacity-0'
+                                }`}
+                              >
+                                <div className='font-medium'>
+                                  Réseaux sociaux
+                                </div>
+                                {(() => {
+                                  const accounts = u?.externalAccounts || [];
+                                  if (!u || !accounts || accounts.length === 0)
+                                    return <div>—</div>;
+                                  return (
+                                    <div className='space-y-1'>
+                                      {accounts.map((acc: any) => {
+                                        const providerKey = (
+                                          acc?.provider || ''
+                                        ).toLowerCase();
+                                        const Icon = getProviderIcon(
+                                          acc?.provider
+                                        );
+                                        const isAppleOrTikTok =
+                                          providerKey.includes('apple') ||
+                                          providerKey.includes('tiktok');
+
+                                        if (isAppleOrTikTok) {
+                                          const email =
+                                            (acc?.emailAddress &&
+                                              acc.emailAddress.trim()) ||
+                                            '';
+                                          const firstName =
+                                            (acc?.firstName &&
+                                              acc.firstName.trim()) ||
+                                            '';
+                                          const lastName =
+                                            (acc?.lastName &&
+                                              acc.lastName.trim()) ||
+                                            '';
+                                          const username =
+                                            (acc?.username &&
+                                              String(acc.username).trim()) ||
+                                            '';
+                                          const phone =
+                                            (acc?.phoneNumber &&
+                                              String(acc.phoneNumber).trim()) ||
+                                            '';
+                                          const name2 = [firstName, lastName]
+                                            .filter(Boolean)
+                                            .join(' ');
+                                          const hasAny = Boolean(
+                                            email || name2 || phone || username
+                                          );
+                                          if (!hasAny) {
+                                            return (
+                                              <div
+                                                key={acc?.id || acc?.provider}
+                                                className='flex items-center space-x-2'
+                                              >
+                                                {Icon ? (
+                                                  <Icon
+                                                    size={14}
+                                                    className='text-gray-600'
+                                                  />
+                                                ) : (
+                                                  <FaShareAlt
+                                                    size={14}
+                                                    className='text-gray-600'
+                                                  />
+                                                )}
+                                              </div>
+                                            );
+                                          }
+                                          return (
+                                            <div
+                                              key={acc?.id || acc?.provider}
+                                              className='flex items-center space-x-2'
+                                            >
+                                              {Icon ? (
+                                                <Icon
+                                                  size={14}
+                                                  className='text-gray-600'
+                                                />
+                                              ) : (
+                                                <FaShareAlt
+                                                  size={14}
+                                                  className='text-gray-600'
+                                                />
+                                              )}
+                                              {email ? (
+                                                <span className='text-xs text-gray-700'>
+                                                  {email}
+                                                </span>
+                                              ) : null}
+                                              {name2 ? (
+                                                <span className='text-xs text-gray-700'>
+                                                  {name2}
+                                                </span>
+                                              ) : null}
+                                              {phone ? (
+                                                <span className='text-xs text-gray-700'>
+                                                  {phone}
+                                                </span>
+                                              ) : null}
+                                              {username ? (
+                                                <span className='text-xs text-gray-700'>
+                                                  @{username}
+                                                </span>
+                                              ) : null}
+                                            </div>
+                                          );
+                                        }
+
+                                        const email2 =
                                           (acc?.emailAddress &&
                                             acc.emailAddress.trim()) ||
+                                          (u?.emailAddress || '').trim() ||
                                           '';
-                                        const firstName =
-                                          (acc?.firstName &&
-                                            acc.firstName.trim()) ||
-                                          '';
-                                        const lastName =
-                                          (acc?.lastName &&
-                                            acc.lastName.trim()) ||
-                                          '';
-                                        const username =
+                                        const username2 =
                                           (acc?.username &&
                                             String(acc.username).trim()) ||
                                           '';
-                                        const phone =
-                                          (acc?.phoneNumber &&
-                                            String(acc.phoneNumber).trim()) ||
-                                          '';
-                                        const name2 = [firstName, lastName]
+                                        const firstName2 =
+                                          (acc?.firstName || '').trim() ||
+                                          (u?.firstName || '').trim();
+                                        const lastName2 =
+                                          (acc?.lastName || '').trim() ||
+                                          (u?.lastName || '').trim();
+                                        const name3 = [firstName2, lastName2]
                                           .filter(Boolean)
                                           .join(' ');
-                                        const hasAny = Boolean(
-                                          email || name2 || phone || username
+                                        const phone2 =
+                                          (acc?.phoneNumber &&
+                                            String(acc.phoneNumber).trim()) ||
+                                          (u?.phoneNumber || '').trim();
+                                        const hasAny2 = Boolean(
+                                          email2 || name3 || phone2 || username2
                                         );
-                                        if (!hasAny) {
+                                        if (!hasAny2) {
                                           return (
                                             <div
                                               key={acc?.id || acc?.provider}
@@ -4262,283 +4517,403 @@ export default function DashboardPage() {
                                                 className='text-gray-600'
                                               />
                                             )}
-                                            {email ? (
+                                            {email2 ? (
                                               <span className='text-xs text-gray-700'>
-                                                {email}
+                                                {email2}
                                               </span>
                                             ) : null}
-                                            {name2 ? (
+                                            {name3 ? (
                                               <span className='text-xs text-gray-700'>
-                                                {name2}
+                                                {name3}
                                               </span>
                                             ) : null}
-                                            {phone ? (
+                                            {phone2 ? (
                                               <span className='text-xs text-gray-700'>
-                                                {phone}
+                                                {phone2}
                                               </span>
                                             ) : null}
-                                            {username ? (
+                                            {username2 ? (
                                               <span className='text-xs text-gray-700'>
-                                                @{username}
+                                                @{username2}
                                               </span>
                                             ) : null}
                                           </div>
                                         );
-                                      }
+                                      })}
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
 
-                                      const email2 =
-                                        (acc?.emailAddress &&
-                                          acc.emailAddress.trim()) ||
-                                        (u?.emailAddress || '').trim() ||
-                                        '';
-                                      const username2 =
-                                        (acc?.username &&
-                                          String(acc.username).trim()) ||
-                                        '';
-                                      const firstName2 =
-                                        (acc?.firstName || '').trim() ||
-                                        (u?.firstName || '').trim();
-                                      const lastName2 =
-                                        (acc?.lastName || '').trim() ||
-                                        (u?.lastName || '').trim();
-                                      const name3 = [firstName2, lastName2]
+                      {/* Vue bureau: tableau */}
+                      <div className='hidden sm:block overflow-x-auto'>
+                        <table className='w-full'>
+                          <thead>
+                            <tr className='border-b border-gray-200'>
+                              <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                                {(() => {
+                                  const allIds = Array.from(
+                                    new Set(
+                                      (shipments || [])
+                                        .map(s => s.customer_stripe_id)
                                         .filter(Boolean)
-                                        .join(' ');
-                                      const phone2 =
-                                        (acc?.phoneNumber &&
-                                          String(acc.phoneNumber).trim()) ||
-                                        (u?.phoneNumber || '').trim();
-                                      const hasAny2 = Boolean(
-                                        email2 || name3 || phone2 || username2
-                                      );
-                                      if (!hasAny2) {
-                                        return (
-                                          <div
-                                            key={acc?.id || acc?.provider}
-                                            className='flex items-center space-x-2'
-                                          >
-                                            {Icon ? (
-                                              <Icon
-                                                size={14}
-                                                className='text-gray-600'
-                                              />
-                                            ) : (
-                                              <FaShareAlt
-                                                size={14}
-                                                className='text-gray-600'
-                                              />
-                                            )}
-                                          </div>
-                                        );
-                                      }
+                                    )
+                                  ) as string[];
+                                  const term = (clientsFilterTerm || '')
+                                    .trim()
+                                    .toLowerCase();
+                                  const filteredIds = allIds.filter(id => {
+                                    if (!term) return true;
+                                    const idLower = (id || '').toLowerCase();
+                                    if (clientsFilterField === 'id') {
+                                      return idLower.includes(term);
+                                    }
+                                    const customer = customersMap[id] || null;
+                                    const clerkId =
+                                      customer?.clerkUserId ||
+                                      customer?.clerk_id;
+                                    const user = clerkId
+                                      ? socialsMap[clerkId] || null
+                                      : null;
+                                    if (clientsFilterField === 'name') {
+                                      const name1 = (
+                                        customer?.name || ''
+                                      ).toLowerCase();
+                                      const name2 = [
+                                        user?.firstName || '',
+                                        user?.lastName || '',
+                                      ]
+                                        .filter(Boolean)
+                                        .join(' ')
+                                        .toLowerCase();
                                       return (
-                                        <div
-                                          key={acc?.id || acc?.provider}
-                                          className='flex items-center space-x-2'
-                                        >
-                                          {Icon ? (
-                                            <Icon
-                                              size={14}
-                                              className='text-gray-600'
+                                        name1.includes(term) ||
+                                        name2.includes(term)
+                                      );
+                                    }
+                                    const email = (
+                                      customer?.email ||
+                                      '' ||
+                                      user?.emailAddress ||
+                                      ''
+                                    )
+                                      .toLowerCase()
+                                      .trim();
+                                    return email.includes(term);
+                                  });
+                                  const spentMap: Record<string, number> = {};
+                                  (shipments || []).forEach(s => {
+                                    const id = s.customer_stripe_id || '';
+                                    if (!id) return;
+                                    const v =
+                                      (s.paid_value ?? 0) -
+                                      (s.estimated_delivery_cost ?? 0);
+                                    spentMap[id] = (spentMap[id] || 0) + v;
+                                  });
+                                  const sortedIds = [...filteredIds].sort(
+                                    (a, b) => {
+                                      const sa = spentMap[a] || 0;
+                                      const sb = spentMap[b] || 0;
+                                      return clientsSortOrder === 'asc'
+                                        ? sa - sb
+                                        : sb - sa;
+                                    }
+                                  );
+                                  const startIdx =
+                                    (clientsPage - 1) * clientsPageSize;
+                                  const pageIds = sortedIds.slice(
+                                    startIdx,
+                                    startIdx + clientsPageSize
+                                  );
+                                  const allSelected = pageIds.every(id =>
+                                    selectedIds.has(id)
+                                  );
+                                  return (
+                                    <input
+                                      type='checkbox'
+                                      checked={allSelected}
+                                      onChange={e => {
+                                        const checked = e.target.checked;
+                                        setSelectedIds(prev => {
+                                          const next = new Set(prev);
+                                          if (checked) {
+                                            pageIds.forEach(id => next.add(id));
+                                          } else {
+                                            pageIds.forEach(id =>
+                                              next.delete(id)
+                                            );
+                                          }
+                                          return next;
+                                        });
+                                      }}
+                                      aria-label='Tout sélectionner'
+                                    />
+                                  );
+                                })()}
+                              </th>
+                              <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                                Client ID
+                              </th>
+                              <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                                Nom
+                              </th>
+                              <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                                Email
+                              </th>
+                              <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                                Téléphone
+                              </th>
+                              <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                                Adresse
+                              </th>
+                              <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                                <div className='flex items-center space-x-2'>
+                                  <span>Dépensé</span>
+                                  <button
+                                    onClick={() =>
+                                      setClientsSortOrder(o =>
+                                        o === 'asc' ? 'desc' : 'asc'
+                                      )
+                                    }
+                                    className='p-1 rounded hover:bg-gray-100'
+                                    title={`Trier ${clientsSortOrder === 'asc' ? '↓' : '↑'}`}
+                                  >
+                                    <ArrowUpDown className='w-4 h-4 text-gray-600' />
+                                  </button>
+                                </div>
+                              </th>
+                              <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                                Réseaux Sociaux
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map(r => {
+                              const a = r.data?.address || {};
+                              const addr = [
+                                a?.line1,
+                                `${a?.postal_code || ''} ${a?.city || ''}`.trim(),
+                                a?.country,
+                              ]
+                                .filter(Boolean)
+                                .join(', ');
+                              return (
+                                <tr
+                                  key={r.id}
+                                  className='border-b border-gray-100 hover:bg-gray-50'
+                                >
+                                  <td className='py-4 px-4'>
+                                    <input
+                                      type='checkbox'
+                                      checked={selectedIds.has(r.id)}
+                                      onChange={() => toggleSelectId(r.id)}
+                                      aria-label='Sélectionner'
+                                    />
+                                  </td>
+                                  <td className='py-4 px-4 text-gray-700'>
+                                    <span
+                                      className='truncate block max-w-[240px]'
+                                      title={r.id}
+                                    >
+                                      {r.id}
+                                    </span>
+                                  </td>
+                                  <td className='py-4 px-4 text-gray-700'>
+                                    {(() => {
+                                      const clerkId =
+                                        r.data?.clerkUserId || r.data?.clerk_id;
+                                      const u = clerkId
+                                        ? socialsMap[clerkId] || null
+                                        : null;
+                                      const name =
+                                        r.data?.name ||
+                                        [u?.firstName, u?.lastName]
+                                          .filter(Boolean)
+                                          .join(' ') ||
+                                        '—';
+                                      return (
+                                        <div className='flex items-center space-x-2'>
+                                          {u?.hasImage && u?.imageUrl ? (
+                                            <img
+                                              src={u.imageUrl}
+                                              alt='avatar'
+                                              className='w-8 h-8 rounded-full object-cover'
                                             />
-                                          ) : (
-                                            <FaShareAlt
-                                              size={14}
-                                              className='text-gray-600'
-                                            />
-                                          )}
-                                          {email2 ? (
-                                            <span className='text-xs text-gray-700'>
-                                              {email2}
-                                            </span>
                                           ) : null}
-                                          {name3 ? (
-                                            <span className='text-xs text-gray-700'>
-                                              {name3}
-                                            </span>
-                                          ) : null}
-                                          {phone2 ? (
-                                            <span className='text-xs text-gray-700'>
-                                              {phone2}
-                                            </span>
-                                          ) : null}
-                                          {username2 ? (
-                                            <span className='text-xs text-gray-700'>
-                                              @{username2}
-                                            </span>
-                                          ) : null}
+                                          <span>{name}</span>
                                         </div>
                                       );
-                                    })}
-                                  </div>
-                                );
-                              })()}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                                    })()}
+                                  </td>
+                                  <td className='py-4 px-4 text-gray-700'>
+                                    {r.data?.email || '—'}
+                                  </td>
+                                  <td className='py-4 px-4 text-gray-700'>
+                                    {r.data?.phone || '—'}
+                                  </td>
+                                  <td className='py-4 px-4 text-gray-700'>
+                                    {addr || '—'}
+                                  </td>
+                                  <td className='py-4 px-4 text-gray-700'>
+                                    {formatValue(r.spent)}
+                                  </td>
+                                  <td className='py-4 px-4 text-gray-700'>
+                                    {(() => {
+                                      const clerkId =
+                                        r.data?.clerkUserId || r.data?.clerk_id;
+                                      const u = clerkId
+                                        ? socialsMap[clerkId] || null
+                                        : null;
+                                      const accounts =
+                                        u?.externalAccounts || [];
+                                      if (
+                                        !u ||
+                                        !accounts ||
+                                        accounts.length === 0
+                                      )
+                                        return '—';
+                                      return (
+                                        <div className='space-y-1'>
+                                          {accounts.map((acc: any) => {
+                                            const providerKey = (
+                                              acc?.provider || ''
+                                            ).toLowerCase();
+                                            const Icon = getProviderIcon(
+                                              acc?.provider
+                                            );
 
-                    {/* Vue bureau: tableau */}
-                    <div className='hidden sm:block overflow-x-auto'>
-                      <table className='w-full'>
-                        <thead>
-                          <tr className='border-b border-gray-200'>
-                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                              Client ID
-                            </th>
-                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                              Nom
-                            </th>
-                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                              Email
-                            </th>
-                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                              Téléphone
-                            </th>
-                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                              Adresse
-                            </th>
-                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                              <div className='flex items-center space-x-2'>
-                                <span>Dépensé</span>
-                                <button
-                                  onClick={() =>
-                                    setClientsSortOrder(o =>
-                                      o === 'asc' ? 'desc' : 'asc'
-                                    )
-                                  }
-                                  className='p-1 rounded hover:bg-gray-100'
-                                  title={`Trier ${clientsSortOrder === 'asc' ? '↓' : '↑'}`}
-                                >
-                                  <ArrowUpDown className='w-4 h-4 text-gray-600' />
-                                </button>
-                              </div>
-                            </th>
-                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                              Réseaux Sociaux
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {rows.map(r => {
-                            const a = r.data?.address || {};
-                            const addr = [
-                              a?.line1,
-                              `${a?.postal_code || ''} ${a?.city || ''}`.trim(),
-                              a?.country,
-                            ]
-                              .filter(Boolean)
-                              .join(', ');
-                            return (
-                              <tr
-                                key={r.id}
-                                className='border-b border-gray-100 hover:bg-gray-50'
-                              >
-                                <td className='py-4 px-4 text-gray-700'>
-                                  <span
-                                    className='truncate block max-w-[240px]'
-                                    title={r.id}
-                                  >
-                                    {r.id}
-                                  </span>
-                                </td>
-                                <td className='py-4 px-4 text-gray-700'>
-                                  {(() => {
-                                    const clerkId =
-                                      r.data?.clerkUserId ||
-                                      r.data?.clerk_user_id;
-                                    const u = clerkId
-                                      ? socialsMap[clerkId] || null
-                                      : null;
-                                    const name =
-                                      r.data?.name ||
-                                      [u?.firstName, u?.lastName]
-                                        .filter(Boolean)
-                                        .join(' ') ||
-                                      '—';
-                                    return (
-                                      <div className='flex items-center space-x-2'>
-                                        {u?.hasImage && u?.imageUrl ? (
-                                          <img
-                                            src={u.imageUrl}
-                                            alt='avatar'
-                                            className='w-8 h-8 rounded-full object-cover'
-                                          />
-                                        ) : null}
-                                        <span>{name}</span>
-                                      </div>
-                                    );
-                                  })()}
-                                </td>
-                                <td className='py-4 px-4 text-gray-700'>
-                                  {r.data?.email || '—'}
-                                </td>
-                                <td className='py-4 px-4 text-gray-700'>
-                                  {r.data?.phone || '—'}
-                                </td>
-                                <td className='py-4 px-4 text-gray-700'>
-                                  {addr || '—'}
-                                </td>
-                                <td className='py-4 px-4 text-gray-700'>
-                                  {formatValue(r.spent)}
-                                </td>
-                                <td className='py-4 px-4 text-gray-700'>
-                                  {(() => {
-                                    const clerkId =
-                                      r.data?.clerkUserId ||
-                                      r.data?.clerk_user_id;
-                                    const u = clerkId
-                                      ? socialsMap[clerkId] || null
-                                      : null;
-                                    const accounts = u?.externalAccounts || [];
-                                    if (
-                                      !u ||
-                                      !accounts ||
-                                      accounts.length === 0
-                                    )
-                                      return '—';
-                                    return (
-                                      <div className='space-y-1'>
-                                        {accounts.map((acc: any) => {
-                                          const providerKey = (
-                                            acc?.provider || ''
-                                          ).toLowerCase();
-                                          const Icon = getProviderIcon(
-                                            acc?.provider
-                                          );
+                                            const isAppleOrTikTok =
+                                              providerKey.includes('apple') ||
+                                              providerKey.includes('tiktok');
 
-                                          const isAppleOrTikTok =
-                                            providerKey.includes('apple') ||
-                                            providerKey.includes('tiktok');
+                                            if (isAppleOrTikTok) {
+                                              // Pour Apple/TikTok: n'afficher que le logo si tous les champs sont vides
+                                              const email =
+                                                (acc?.emailAddress &&
+                                                  acc.emailAddress.trim()) ||
+                                                '';
+                                              const firstName =
+                                                (acc?.firstName &&
+                                                  acc.firstName.trim()) ||
+                                                '';
+                                              const lastName =
+                                                (acc?.lastName &&
+                                                  acc.lastName.trim()) ||
+                                                '';
+                                              const username =
+                                                (acc?.username &&
+                                                  String(
+                                                    acc.username
+                                                  ).trim()) ||
+                                                '';
+                                              const phone =
+                                                (acc?.phoneNumber &&
+                                                  String(
+                                                    acc.phoneNumber
+                                                  ).trim()) ||
+                                                '';
+                                              const name = [firstName, lastName]
+                                                .filter(Boolean)
+                                                .join(' ');
+                                              const hasAny = Boolean(
+                                                email ||
+                                                  name ||
+                                                  phone ||
+                                                  username
+                                              );
 
-                                          if (isAppleOrTikTok) {
-                                            // Pour Apple/TikTok: n'afficher que le logo si tous les champs sont vides
+                                              if (!hasAny) {
+                                                return (
+                                                  <div
+                                                    key={
+                                                      acc?.id || acc?.provider
+                                                    }
+                                                    className='flex items-center space-x-2'
+                                                  >
+                                                    {Icon ? (
+                                                      <Icon
+                                                        size={14}
+                                                        className='text-gray-600'
+                                                      />
+                                                    ) : (
+                                                      <FaShareAlt
+                                                        size={14}
+                                                        className='text-gray-600'
+                                                      />
+                                                    )}
+                                                  </div>
+                                                );
+                                              }
+
+                                              return (
+                                                <div
+                                                  key={acc?.id || acc?.provider}
+                                                  className='flex items-center space-x-2'
+                                                >
+                                                  {Icon ? (
+                                                    <Icon
+                                                      size={14}
+                                                      className='text-gray-600'
+                                                    />
+                                                  ) : (
+                                                    <FaShareAlt
+                                                      size={14}
+                                                      className='text-gray-600'
+                                                    />
+                                                  )}
+                                                  {email ? (
+                                                    <span className='text-xs text-gray-700'>
+                                                      {email}
+                                                    </span>
+                                                  ) : null}
+                                                  {name ? (
+                                                    <span className='text-xs text-gray-700'>
+                                                      {name}
+                                                    </span>
+                                                  ) : null}
+                                                  {phone ? (
+                                                    <span className='text-xs text-gray-700'>
+                                                      {phone}
+                                                    </span>
+                                                  ) : null}
+                                                  {username ? (
+                                                    <span className='text-xs text-gray-700'>
+                                                      @{username}
+                                                    </span>
+                                                  ) : null}
+                                                </div>
+                                              );
+                                            }
+
+                                            // Autres providers : afficher les champs si disponibles, prioriser les infos du compte externe, fallback user
                                             const email =
                                               (acc?.emailAddress &&
                                                 acc.emailAddress.trim()) ||
-                                              '';
-                                            const firstName =
-                                              (acc?.firstName &&
-                                                acc.firstName.trim()) ||
-                                              '';
-                                            const lastName =
-                                              (acc?.lastName &&
-                                                acc.lastName.trim()) ||
+                                              (u?.emailAddress || '').trim() ||
                                               '';
                                             const username =
                                               (acc?.username &&
                                                 String(acc.username).trim()) ||
                                               '';
+                                            const firstName =
+                                              (acc?.firstName || '').trim() ||
+                                              (u?.firstName || '').trim();
+                                            const lastName =
+                                              (acc?.lastName || '').trim() ||
+                                              (u?.lastName || '').trim();
+                                            const name = [firstName, lastName]
+                                              .filter(Boolean)
+                                              .join(' ');
                                             const phone =
                                               (acc?.phoneNumber &&
                                                 String(
                                                   acc.phoneNumber
                                                 ).trim()) ||
-                                              '';
-                                            const name = [firstName, lastName]
-                                              .filter(Boolean)
-                                              .join(' ');
+                                              (u?.phoneNumber || '').trim();
                                             const hasAny = Boolean(
                                               email || name || phone || username
                                             );
@@ -4602,109 +4977,152 @@ export default function DashboardPage() {
                                                 ) : null}
                                               </div>
                                             );
-                                          }
-
-                                          // Autres providers : afficher les champs si disponibles, prioriser les infos du compte externe, fallback user
-                                          const email =
-                                            (acc?.emailAddress &&
-                                              acc.emailAddress.trim()) ||
-                                            (u?.emailAddress || '').trim() ||
-                                            '';
-                                          const username =
-                                            (acc?.username &&
-                                              String(acc.username).trim()) ||
-                                            '';
-                                          const firstName =
-                                            (acc?.firstName || '').trim() ||
-                                            (u?.firstName || '').trim();
-                                          const lastName =
-                                            (acc?.lastName || '').trim() ||
-                                            (u?.lastName || '').trim();
-                                          const name = [firstName, lastName]
-                                            .filter(Boolean)
-                                            .join(' ');
-                                          const phone =
-                                            (acc?.phoneNumber &&
-                                              String(acc.phoneNumber).trim()) ||
-                                            (u?.phoneNumber || '').trim();
-                                          const hasAny = Boolean(
-                                            email || name || phone || username
-                                          );
-
-                                          if (!hasAny) {
-                                            return (
-                                              <div
-                                                key={acc?.id || acc?.provider}
-                                                className='flex items-center space-x-2'
-                                              >
-                                                {Icon ? (
-                                                  <Icon
-                                                    size={14}
-                                                    className='text-gray-600'
-                                                  />
-                                                ) : (
-                                                  <FaShareAlt
-                                                    size={14}
-                                                    className='text-gray-600'
-                                                  />
-                                                )}
-                                              </div>
-                                            );
-                                          }
-
-                                          return (
-                                            <div
-                                              key={acc?.id || acc?.provider}
-                                              className='flex items-center space-x-2'
-                                            >
-                                              {Icon ? (
-                                                <Icon
-                                                  size={14}
-                                                  className='text-gray-600'
-                                                />
-                                              ) : (
-                                                <FaShareAlt
-                                                  size={14}
-                                                  className='text-gray-600'
-                                                />
-                                              )}
-                                              {email ? (
-                                                <span className='text-xs text-gray-700'>
-                                                  {email}
-                                                </span>
-                                              ) : null}
-                                              {name ? (
-                                                <span className='text-xs text-gray-700'>
-                                                  {name}
-                                                </span>
-                                              ) : null}
-                                              {phone ? (
-                                                <span className='text-xs text-gray-700'>
-                                                  {phone}
-                                                </span>
-                                              ) : null}
-                                              {username ? (
-                                                <span className='text-xs text-gray-700'>
-                                                  @{username}
-                                                </span>
-                                              ) : null}
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-                                    );
-                                  })()}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                                          })}
+                                        </div>
+                                      );
+                                    })()}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+              {showWinnerModal && (
+                <div
+                  className='fixed inset-0 bg-black bg-opacity-40 z-50 flex items-center justify-center p-4'
+                  onClick={() => {
+                    setShowWinnerModal(false);
+                    if (drawButtonRef.current) {
+                      try {
+                        drawButtonRef.current.focus();
+                      } catch {}
+                    }
+                  }}
+                >
+                  <div
+                    className='bg-white rounded-lg shadow-xl w-full max-w-lg overflow-hidden'
+                    role='dialog'
+                    aria-modal='true'
+                    aria-label='Résultat du tirage'
+                    onClick={e => e.stopPropagation()}
+                  >
+                    <div className='p-4 border-b border-gray-200 flex items-center justify-between'>
+                      <h3 className='text-lg font-semibold text-gray-900'>
+                        Gagnant du tirage
+                      </h3>
+                      <span className='inline-flex items-center px-2 py-1 text-xs rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200'>
+                        Winner
+                      </span>
                     </div>
-                  </>
-                );
-              })()}
-            </div>
+                    <div className='p-6'>
+                      {winner ? (
+                        <div className='flex items-start space-x-4'>
+                          <div className='w-14 h-14 rounded-full bg-gray-200 overflow-hidden flex items-center justify-center'>
+                            <span className='text-gray-500'>👤</span>
+                          </div>
+                          <div className='flex-1 space-y-1'>
+                            <div className='text-lg font-semibold text-gray-900'>
+                              {winner.name || '—'}
+                            </div>
+                            <div className='text-sm text-gray-700'>
+                              {winner.email || '—'}
+                            </div>
+                            <div className='text-sm text-gray-700'>
+                              {winner.phone || '—'}
+                            </div>
+                            <div className='text-sm text-gray-700'>
+                              {(() => {
+                                const a = winner.address || {};
+                                const addr = [
+                                  a?.line1,
+                                  `${a?.postal_code || ''} ${a?.city || ''}`.trim(),
+                                  a?.country,
+                                ]
+                                  .filter(Boolean)
+                                  .join(', ');
+                                return addr || '—';
+                              })()}
+                            </div>
+                            <div className='text-sm text-gray-700'>
+                              {winner.deliveryNetwork ||
+                                winner.deliveryMethod ||
+                                '—'}
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className='text-center text-gray-600'>—</div>
+                      )}
+                    </div>
+                    <div className='p-4 border-t border-gray-200 flex items-center justify-end gap-2'>
+                      <button
+                        onClick={async () => {
+                          const email = winner?.email || '';
+                          if (!email) {
+                            showToast('Email indisponible', 'error');
+                            return;
+                          }
+                          try {
+                            setSendingCongrats(true);
+                            const token = await getToken();
+                            const resp = await apiPost(
+                              '/api/raffle/notify',
+                              {
+                                email,
+                                name: winner?.name || '',
+                                storeSlug: store?.slug || undefined,
+                                storeName: store?.name || undefined,
+                              },
+                              {
+                                headers: {
+                                  Authorization: token ? `Bearer ${token}` : '',
+                                },
+                              }
+                            );
+                            const json = await resp.json().catch(() => ({}));
+                            if (!resp.ok || !json?.success) {
+                              throw new Error(
+                                json?.error || "Échec de l'envoi"
+                              );
+                            }
+                            showToast('Email envoyé', 'success');
+                          } catch (e: any) {
+                            const msg = (
+                              e?.message || "Erreur lors de l'envoi"
+                            ).replace(/^Error:\s*/, '');
+                            showToast(msg, 'error');
+                          } finally {
+                            setSendingCongrats(false);
+                          }
+                        }}
+                        disabled={!winner?.email || sendingCongrats}
+                        className='px-3 py-2 text-sm rounded-md border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                      >
+                        {sendingCongrats ? 'Envoi…' : 'Envoyer email'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowWinnerModal(false);
+                          if (drawButtonRef.current) {
+                            try {
+                              drawButtonRef.current.focus();
+                            } catch {}
+                          }
+                        }}
+                        className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700'
+                      >
+                        Fermer
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {section === 'promo' && (
@@ -5215,42 +5633,27 @@ export default function DashboardPage() {
                   </p>
                 </div>
                 <div className='p-4 space-y-3'>
-                  {selectedSale && (
+                  {helpSales.length > 0 && (
                     <div className='bg-gray-50 rounded-md p-3 border border-gray-200'>
                       <div className='text-sm font-medium text-gray-800 mb-2'>
-                        Contexte de la vente
+                        Ventes sélectionnées ({helpSales.length})
                       </div>
-                      <div className='text-xs text-gray-700 space-y-1'>
-                        <div>
-                          <span className='font-semibold'>ID expédition:</span>{' '}
-                          {selectedSale.shipment_id || '—'}
-                        </div>
-                        <div>
-                          <span className='font-semibold'>
-                            Référence produit:
-                          </span>{' '}
-                          {selectedSale.product_reference ?? '—'}
-                        </div>
-                        <div>
-                          <span className='font-semibold'>Client ID:</span>{' '}
-                          {selectedSale.customer_stripe_id || '—'}
-                        </div>
-                        <div>
-                          <span className='font-semibold'>Statut:</span>{' '}
-                          {selectedSale.status || '—'}
-                        </div>
-                        <div>
-                          <span className='font-semibold'>Date:</span>{' '}
-                          {formatDate(selectedSale.created_at)}
-                        </div>
-                        <div>
-                          <span className='font-semibold'>Méthode:</span>{' '}
-                          {formatMethod(selectedSale.delivery_method)}
-                        </div>
-                        <div>
-                          <span className='font-semibold'>Réseau:</span>{' '}
-                          {getNetworkDescription(selectedSale.delivery_network)}
-                        </div>
+                      <div className='text-xs text-gray-700 space-y-2 max-h-40 overflow-auto'>
+                        {helpSales.map(s => (
+                          <div key={s.id} className='space-y-1'>
+                            <div className='flex items-center justify-between gap-2'>
+                              <span className='truncate'>
+                                ID: {s.shipment_id || s.id}
+                              </span>
+                              <span className='text-gray-500'>
+                                {s.status || '—'}
+                              </span>
+                            </div>
+                            <div className='text-gray-600 truncate'>
+                              Réf: {s.product_reference ?? '—'}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}

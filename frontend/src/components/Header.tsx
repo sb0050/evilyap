@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useLayoutEffect } from 'react';
+import { useEffect, useState, useLayoutEffect, useRef } from 'react';
 import {
   RedirectToSignUp,
   SignedIn,
@@ -7,33 +7,11 @@ import {
   useUser,
   useAuth,
 } from '@clerk/clerk-react';
-import {
-  LayoutDashboard,
-  Truck,
-  ShoppingCart,
-  Trash2,
-  CreditCard,
-  Store,
-  RefreshCw,
-} from 'lucide-react';
+import { Store } from 'lucide-react';
 import Spinner from './Spinner';
-import { animate } from 'motion';
 import { API_BASE_URL } from '../utils/api';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Protect } from '@clerk/clerk-react';
-
-// Variables de configuration du panier (modifiables)
-const CART_WARN_THRESHOLD_MINUTES = 1; // seuil d’alerte visuelle et animation
-const CART_TICK_MS = 1000; // cadence de mise à jour du timer
-
-// Dérivés en millisecondes
-const CART_WARN_THRESHOLD_MS = CART_WARN_THRESHOLD_MINUTES * 60 * 1000;
-
-// Classes CSS pour les états
-const CART_WARN_TEXT_CLASS = 'text-red-600';
-const CART_NORMAL_TEXT_CLASS = 'text-gray-700';
-const CART_WARN_TIMER_CLASS = 'text-red-600';
-const CART_NORMAL_TIMER_CLASS = 'text-gray-500';
 
 type OwnerStoreInfo = {
   exists: boolean;
@@ -77,148 +55,8 @@ export default function Header() {
     message: string;
   } | null>(null);
   const apiBase = API_BASE_URL;
-  const [cartOpen, setCartOpen] = useState(false);
-  const [cartTotal, setCartTotal] = useState<number>(0);
-  const [cartGroups, setCartGroups] = useState<
-    Array<{
-      store: { id: number; name: string; slug: string } | null;
-      total: number;
-      items: Array<{
-        id: number;
-        product_reference: string;
-        value: number;
-        created_at?: string;
-        time_to_live?: number | null;
-        description?: string | null;
-      }>;
-    }>
-  >([]);
-  const cartIconRef = useRef<HTMLSpanElement | null>(null);
-  const cartRef = useRef<HTMLDivElement | null>(null);
   const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
-  const [now, setNow] = useState<number>(Date.now());
-  const [cartRefreshing, setCartRefreshing] = useState<boolean>(false);
-  // Garde pour éviter les appels multiples en mode Strict et re-renders
   const hasEnsuredStripeCustomerRef = useRef<boolean>(false);
-  const deletingIdsRef = useRef<Set<number>>(new Set());
-
-  // Animation d'avertissement d'expiration du panier (< 1 minute)
-  const warnCartExpiration = () => {
-    if (cartIconRef.current) {
-      animate(
-        cartIconRef.current,
-        {
-          color: ['#000', '#ff4d4d', '#000'],
-          scale: [1, 1.1, 1],
-          x: [0, -2, 2, -2, 2, 0],
-        } as any,
-        {
-          duration: 1.5,
-          easing: 'ease-in-out',
-          repeat: 2,
-        } as any
-      );
-    }
-  };
-
-  const [cartExpiryWarned, setCartExpiryWarned] = useState(false);
-
-  useEffect(() => {
-    let hasUnderMinute = false;
-    for (const group of cartGroups) {
-      for (const it of group.items) {
-        const created = it.created_at
-          ? new Date(it.created_at).getTime()
-          : null;
-        const ttlMsDisplay = Number(it.time_to_live ?? 15) * 60 * 1000;
-        const leftMs = created
-          ? Math.max(0, ttlMsDisplay - (now - created))
-          : ttlMsDisplay;
-        if (leftMs > 0 && leftMs <= CART_WARN_THRESHOLD_MS) {
-          hasUnderMinute = true;
-          break;
-        }
-      }
-      if (hasUnderMinute) break;
-    }
-    if (hasUnderMinute && !cartExpiryWarned) {
-      warnCartExpiration();
-      setCartExpiryWarned(true);
-    } else if (!hasUnderMinute && cartExpiryWarned) {
-      setCartExpiryWarned(false);
-    }
-  }, [cartGroups, now, cartExpiryWarned]);
-
-  useEffect(() => {
-    const interval = setInterval(() => setNow(Date.now()), CART_TICK_MS);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Suppression automatique des items expirés
-  useEffect(() => {
-    for (const group of cartGroups) {
-      for (const it of group.items) {
-        const created = it.created_at
-          ? new Date(it.created_at).getTime()
-          : null;
-        const ttlMs = Number(it.time_to_live ?? 15) * 60 * 1000;
-        const leftMs = created ? ttlMs - (now - created) : ttlMs;
-        if (leftMs <= 0 && !deletingIdsRef.current.has(it.id)) {
-          deletingIdsRef.current.add(it.id);
-          (async () => {
-            try {
-              await handleDeleteItem(it.id, true);
-            } finally {
-              deletingIdsRef.current.delete(it.id);
-            }
-          })();
-        }
-      }
-    }
-  }, [cartGroups, now]);
-
-  // 1) Vérification propriétaire supprimée du Header (slug inutile pour orders/dashboard)
-  // Ancienne logique de récupération des slugs retirée pour simplification
-
-  // Charger le panier lorsqu'on connaît stripeCustomerId
-  const refreshCart = async () => {
-    try {
-      if (!stripeCustomerId) return;
-      setCartRefreshing(true);
-      const cartResp = await fetch(
-        `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(stripeCustomerId)}`
-      );
-      if (cartResp.ok) {
-        const cartJson = await cartResp.json();
-        setCartTotal(Number(cartJson?.grandTotal || 0));
-        setCartGroups(
-          Array.isArray(cartJson?.itemsByStore) ? cartJson.itemsByStore : []
-        );
-      }
-    } catch (_e) {
-    } finally {
-      setCartRefreshing(false);
-    }
-  };
-
-  useEffect(() => {
-    refreshCart();
-
-    const onCartUpdated = () => {
-      refreshCart();
-      if (cartIconRef.current) {
-        animate(cartIconRef.current as any, { scale: [1, 1.2, 1] }, {
-          duration: 0.4,
-          easing: 'ease-out',
-        } as any);
-      }
-    };
-    window.addEventListener('cart:updated', onCartUpdated);
-    return () => {
-      window.removeEventListener('cart:updated', onCartUpdated);
-    };
-  }, [stripeCustomerId]);
-
   // useEffect dédié: assurer l'existence du client Stripe une seule fois
   useEffect(() => {
     const ensureStripeCustomer = async () => {
@@ -279,23 +117,6 @@ export default function Header() {
   }, [user?.primaryEmailAddress?.emailAddress, stripeCustomerId]);
 
   // Suppression de la déduction d’accès au dashboard basée sur des slugs
-
-  // Fermer le panier au clic en dehors
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        cartOpen &&
-        cartRef.current &&
-        !cartRef.current.contains(e.target as Node)
-      ) {
-        setCartOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [cartOpen]);
 
   // Garde centralisée: existence de boutique pour checkout/store, et propriété pour dashboard
   useLayoutEffect(() => {
@@ -494,17 +315,13 @@ export default function Header() {
     // Ici, ne pas forcer de redirection pour éviter de bloquer les nouveaux utilisateurs sans boutique.
   }, [guardStatus, onboardingGuardStatus, location.pathname]);
 
-  const handleDeleteItem = async (
-    cartItemId: number,
-    requireExpired?: boolean
-  ) => {
+  const handleDeleteItem = async (cartItemId: number) => {
     try {
       const resp = await fetch(`${apiBase}/api/carts`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: cartItemId,
-          requireExpired: Boolean(requireExpired),
         }),
       });
       if (!resp.ok) {
@@ -517,9 +334,6 @@ export default function Header() {
       // ignore
     }
   };
-
-  // Déterminer le slug de boutique pour le checkout (première boutique du panier)
-  const checkoutSlug = cartGroups.find(g => g.store?.slug)?.store?.slug || null;
 
   return (
     <>
@@ -550,155 +364,7 @@ export default function Header() {
                 </button>
               </Protect>
 
-              {/* ✅ Nouveau bloc contenant le panier + le bouton utilisateur */}
               <div className='flex items-center gap-2'>
-                {/* Panier */}
-                <div className='relative' ref={cartRef}>
-                  <button
-                    className='px-2 py-2 sm:px-3 sm:py-2 rounded-md text-xs sm:text-sm font-medium bg-slate-100 hover:bg-slate-200 text-gray-700 inline-flex items-center'
-                    onClick={() => setCartOpen(prev => !prev)}
-                  >
-                    <span ref={cartIconRef}>
-                      <ShoppingCart className='w-3 h-3 sm:w-4 sm:h-4 mr-1' />
-                    </span>
-                    <span>{Number(cartTotal || 0).toFixed(2)}€</span>
-                  </button>
-                  {cartOpen && (
-                    <div className='absolute right-0 mt-2 w-80 bg-white border border-gray-200 rounded-md shadow-lg z-50 p-3'>
-                      <div className='flex items-center justify-between mb-2'>
-                        <h3 className='text-sm font-semibold text-gray-900'>
-                          Panier
-                        </h3>
-                        <button
-                          onClick={() => refreshCart()}
-                          disabled={!stripeCustomerId || cartRefreshing}
-                          className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                          title='Rafraîchir le panier'
-                        >
-                          <RefreshCw
-                            className={`w-4 h-4 mr-1 ${cartRefreshing ? 'animate-spin' : ''}`}
-                          />
-                          <span>Rafraîchir</span>
-                        </button>
-                      </div>
-                      {cartGroups.length === 0 ? (
-                        <p className='text-sm text-gray-500'>
-                          Votre panier est vide.
-                        </p>
-                      ) : (
-                        <>
-                          <div className='space-y-3 max-h-80 overflow-auto'>
-                            {cartGroups.map((group, idx) => (
-                              <div
-                                key={idx}
-                                className='border border-gray-100 rounded p-2'
-                              >
-                                <div className='flex justify-between items-center mb-1'>
-                                  <span className='text-sm font-medium text-gray-800 truncate'>
-                                    {group.store?.name || 'Boutique inconnue'}
-                                  </span>
-                                  <span className='text-sm text-gray-600'>
-                                    {group.total.toFixed(2)}€
-                                  </span>
-                                </div>
-                                <ul className='space-y-1'>
-                                  {group.items.map((it, i) => {
-                                    const created = it.created_at
-                                      ? new Date(it.created_at).getTime()
-                                      : null;
-                                    const ttlMs =
-                                      Number(it.time_to_live ?? 15) * 60 * 1000;
-                                    const leftMs = created
-                                      ? Math.max(0, ttlMs - (now - created))
-                                      : ttlMs;
-                                    return (
-                                      <li
-                                        key={i}
-                                        className={`flex justify-between items-center text-sm ${leftMs <= CART_WARN_THRESHOLD_MS ? CART_WARN_TEXT_CLASS : CART_NORMAL_TEXT_CLASS}`}
-                                      >
-                                        <div className='flex-1'>
-                                          <div
-                                            className='truncate max-w-[60%]'
-                                            title={it.product_reference}
-                                          >
-                                            {it.product_reference}
-                                          </div>
-                                          {it.description ? (
-                                            <div
-                                              className='text-xs text-gray-500 truncate max-w-[60%]'
-                                              title={it.description || ''}
-                                            >
-                                              {it.description}
-                                            </div>
-                                          ) : null}
-                                        </div>
-                                        <div className='flex items-center gap-2'>
-                                          {(() => {
-                                            const minutes = Math.floor(
-                                              leftMs / 60000
-                                            );
-                                            const seconds = Math.floor(
-                                              (leftMs % 60000) / 1000
-                                            );
-                                            const label = `${minutes}:${String(seconds).padStart(2, '0')}`;
-                                            return (
-                                              <span
-                                                className={`font-mono text-xs ${leftMs <= CART_WARN_THRESHOLD_MS ? CART_WARN_TIMER_CLASS : CART_NORMAL_TIMER_CLASS}`}
-                                                title='Temps restant'
-                                              >
-                                                {label}
-                                              </span>
-                                            );
-                                          })()}
-                                          <span>
-                                            {Number(it.value || 0).toFixed(2)}€
-                                          </span>
-                                          <button
-                                            className='p-1 rounded hover:bg-red-50 text-red-600'
-                                            title='Supprimer cette référence'
-                                            aria-label='Supprimer'
-                                            onClick={() =>
-                                              handleDeleteItem(it.id)
-                                            }
-                                          >
-                                            <Trash2 className='w-4 h-4' />
-                                          </button>
-                                        </div>
-                                      </li>
-                                    );
-                                  })}
-                                </ul>
-                              </div>
-                            ))}
-                            <div className='flex justify-between items-center pt-2 border-t border-gray-200'>
-                              <span className='text-sm font-semibold text-gray-900'>
-                                Total
-                              </span>
-                              <span className='text-sm font-semibold text-gray-900'>
-                                {Number(cartTotal || 0).toFixed(2)}€
-                              </span>
-                            </div>
-                          </div>
-                          <button
-                            className={`flex items-center justify-center gap-1 mt-4 w-full  px-4 py-1.5 rounded-md bg-emerald-600 text-white font-medium hover:bg-emerald-700 focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-600 ${!checkoutSlug || cartGroups.length === 0 ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
-                            disabled={!checkoutSlug || cartGroups.length === 0}
-                            onClick={() => {
-                              if (checkoutSlug) {
-                                navigate(`/checkout/${checkoutSlug}`);
-                                setCartOpen(false);
-                              }
-                            }}
-                          >
-                            <CreditCard className='w-4 h-4 sm:w-5 sm:h-5' />
-                            <span>Procéder au paiement</span>
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Bouton utilisateur */}
                 <UserButton userProfileMode='modal' />
               </div>
             </SignedIn>

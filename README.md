@@ -112,6 +112,23 @@ PORT=5000
 - **Backend**: http://localhost:5000
 - **API Health**: http://localhost:5000/api/health
 
+## 🌐 Tunnel Cloudflare
+
+- télécharger: Download https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.msi.
+
+- lance: 
+  ```
+  cloudflared.exe service install <VITE_CLOUDFARE_TUNNEL_KEY>
+  ```
+
+- tester: local-server-1.paylive.cc/api/health => tu devrais avoir:
+  ```
+  {
+    "status": "OK",
+    "message": "Server is running"
+  }
+  ```
+
 ## 🧪 Tests
 
 ### Cartes de test Stripe
