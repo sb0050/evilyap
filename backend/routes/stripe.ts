@@ -1309,7 +1309,6 @@ router.get("/coupons", async (req, res) => {
       return;
     }
     const list = await stripe.coupons.list({ limit: 50 });
-    console.log("********************", list);
     const data = (list.data || []).map((c) => ({
       id: c.id,
       name: c.name || null,
