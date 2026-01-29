@@ -518,7 +518,6 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       .map((it) => String(it.reference || "").trim())
       .filter((s) => s.length > 0)
       .join(";");
-    let weightLabel = "";
     let weightKg = 0;
     if (deliveryMethod !== "store_pickup") {
       const weightCalc = calculateParcelWeight(
@@ -537,11 +536,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         totalWeightKg: weightCalc.totalWeightKg,
       });
       const rawKg = Number(weightCalc.rawTotalKg || 0);
-      weightKg = rawKg;
-      if (rawKg <= 0.5) weightLabel = "500g";
-      else if (rawKg <= 1) weightLabel = "1kg";
-      else weightLabel = "2kg";
-      console.log("weight:label", { rawKg, weightKg, weightLabel });
+      weightKg = Number.isFinite(rawKg) && rawKg > 0 ? rawKg : 0;
     }
     let computedDeliveryCost = 0;
     if (deliveryMethod !== "store_pickup") {
@@ -725,7 +720,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         product_reference: joinedRefs || "N/A",
         delivery_method: deliveryMethod || "",
         delivery_network: deliveryNetwork || "",
-        weight: String(weightLabel || ""),
+        weight: String(weightKg || 0),
         pickup_point: JSON.stringify({
           street: parcelPoint?.location?.street,
           city: parcelPoint?.location?.city,

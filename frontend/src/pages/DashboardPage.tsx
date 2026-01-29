@@ -83,8 +83,9 @@ type Shipment = {
   delivery_network: string | null;
   dropoff_point: any | null;
   pickup_point: object | null;
-  weight: string | null;
+  weight: number | null;
   product_reference: string | null;
+  description?: string | null;
   paid_value: number | null;
   created_at?: string | null;
   status?: string | null;
@@ -96,6 +97,13 @@ type Shipment = {
   promo_codes?: string | null;
   product_value?: number | null;
   estimated_delivery_cost?: number | null;
+  facture_id?: number | string | null;
+};
+
+type ProductItem = {
+  reference: string;
+  quantity: number;
+  description?: string | null;
 };
 
 export default function DashboardPage() {
@@ -109,12 +117,13 @@ export default function DashboardPage() {
   const [resolvedSlug, setResolvedSlug] = useState<string | null>(null);
   const [noStore, setNoStore] = useState<boolean>(false);
   // Vérification d’existence et d’accès au dashboard gérées par Header
-  const { toast, showToast, hideToast } = useToast();
+  const { toast, showToast, hideToast, setToast } = useToast();
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [website, setWebsite] = useState('');
   const [siret, setSiret] = useState('');
+  const [tvaApplicable, setTvaApplicable] = useState(false);
   // Validation du nom (aligné sur Onboarding)
   const [isCheckingSlug, setIsCheckingSlug] = useState(false);
   const [slugExists, setSlugExists] = useState(false);
@@ -471,7 +480,31 @@ export default function DashboardPage() {
   // Popup de bienvenue après création de boutique
   const [showWelcome, setShowWelcome] = useState<boolean>(false);
   const location = useLocation();
-  const shareLink = store?.slug ? `paylive.cc/c/${store.slug}` : '';
+  const normalizeBaseUrl = (raw?: string) => {
+    const val = String(raw || '').trim();
+    if (!val) return 'http://localhost:3000';
+    if (/^https?:\/\//i.test(val)) return val.replace(/\/+$/, '');
+    const isLocal = /^(localhost|127\.0\.0\.1)/i.test(val);
+    const defaultScheme = isLocal ? 'http' : 'https';
+    return `${defaultScheme}://${val}`.replace(/\/+$/, '');
+  };
+
+  const getClientBaseUrl = () => {
+    const env = (import.meta as any)?.env || {};
+    const vercelEnv = String(env.VERCEL_ENV || env.VITE_VERCEL_ENV || '')
+      .toLowerCase()
+      .trim();
+    if (vercelEnv === 'prod') return 'https://paylive.cc';
+    if (vercelEnv === 'preview') return 'https://preview-paylive.vercel.app';
+    const fromEnv = String(env.VITE_CLIENT_URL || '').trim();
+    if (fromEnv) return normalizeBaseUrl(fromEnv);
+    if (typeof window !== 'undefined' && window.location?.origin) {
+      return normalizeBaseUrl(window.location.origin);
+    }
+    return 'http://localhost:3000';
+  };
+
+  const shareLink = store?.slug ? `${getClientBaseUrl()}/c/${store.slug}` : '';
   const [aliasCopied, setAliasCopied] = useState(false);
 
   const handleCopyAlias = async () => {
@@ -879,6 +912,9 @@ export default function DashboardPage() {
   const [docStatus, setDocStatus] = useState<
     Record<number, 'idle' | 'loading' | 'success' | 'error'>
   >({});
+  const [invoiceStatus, setInvoiceStatus] = useState<
+    Record<number, 'idle' | 'loading' | 'success' | 'error'>
+  >({});
 
   const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
     const silent = options?.silent;
@@ -928,6 +964,82 @@ export default function DashboardPage() {
       if (!silent) {
         showToast(
           typeof rawMsg === 'string' ? rawMsg : "Demande d'annulation échouée",
+          'error'
+        );
+      }
+      return false;
+    }
+  };
+
+  const handleInvoice = async (s: Shipment, options?: { silent?: boolean }) => {
+    const silent = options?.silent;
+    try {
+      setInvoiceStatus(prev => ({ ...prev, [s.id]: 'loading' }));
+      if (!silent) {
+        setToast({
+          message: 'Génération de la facture…',
+          type: 'info',
+          visible: true,
+        });
+      }
+      const token = await getToken();
+      const url = `${apiBase}/api/shipments/${encodeURIComponent(String(s.id))}/invoice`;
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(text || 'Erreur facture');
+      }
+      const blob = await resp.blob();
+      const objectUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      const dispo = resp.headers.get('Content-Disposition') || '';
+      const m = dispo.match(/filename\*?=(?:UTF-8''|")?([^";]+)"?/i);
+      const filename = (m?.[1] || '').trim();
+      const sanitizeFilenamePart = (raw: string) =>
+        String(raw || '')
+          .trim()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/\s+/g, ' ')
+          .replace(/[^\dA-Za-z _-]+/g, '')
+          .replace(/\s+/g, '_')
+          .slice(0, 60) || 'client';
+      const stripeId = s.customer_stripe_id || '';
+      const customer = stripeId ? customersMap[stripeId] || null : null;
+      const customerName = String(customer?.name || '').trim();
+      const customerEmail = String(customer?.email || '').trim();
+      const customerForFile = sanitizeFilenamePart(
+        customerName || customerEmail || stripeId || 'client'
+      );
+      const factureIdForFile = String(s.facture_id ?? s.id).replace(
+        /[^\dA-Za-z_-]+/g,
+        '_'
+      );
+      a.download =
+        filename || `facture_${factureIdForFile}_${customerForFile}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(objectUrl);
+      setInvoiceStatus(prev => ({ ...prev, [s.id]: 'success' }));
+      if (!silent) {
+        showToast('Facture téléchargée', 'success');
+      }
+      return true;
+    } catch (e: any) {
+      setInvoiceStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      const rawMsg = e?.message || 'Erreur facture';
+      if (!silent) {
+        showToast(
+          typeof rawMsg === 'string'
+            ? rawMsg.replace(/^Error:\s*/, '')
+            : 'Erreur facture',
           'error'
         );
       }
@@ -1060,6 +1172,39 @@ export default function DashboardPage() {
     showToast(msg, 'success');
   };
 
+  const handleBatchInvoice = async () => {
+    const targets = selectedSales;
+    if (targets.length === 0) {
+      showToast('Aucune vente sélectionnée pour la facture', 'error');
+      return;
+    }
+    setToast({
+      message: 'Génération des factures…',
+      type: 'info',
+      visible: true,
+    });
+    const references: string[] = [];
+    for (const s of targets) {
+      const ok = await handleInvoice(s, { silent: true });
+      if (ok) {
+        const formatted = formatProductReferenceForToast(s.product_reference);
+        const fallback = String(s.shipment_id || s.id).trim();
+        references.push(formatted || fallback);
+      }
+    }
+    if (references.length === 0) {
+      showToast('Aucune facture téléchargée', 'error');
+      return;
+    }
+    const msg =
+      references.length <= 3
+        ? `Factures téléchargées pour : ${references.join(', ')}`
+        : `Factures téléchargées pour ${references.length} références (${references
+            .slice(0, 3)
+            .join(', ')}...)`;
+    showToast(msg, 'success');
+  };
+
   const handleReloadSales = async () => {
     try {
       const slug = store?.slug;
@@ -1121,6 +1266,114 @@ export default function DashboardPage() {
     } finally {
       setReloadingBalance(false);
     }
+  };
+
+  const parseProductReferenceItems = (
+    raw: string | null | undefined
+  ): ProductItem[] => {
+    const txt = String(raw || '').trim();
+    if (!txt) return [];
+
+    const parts = txt
+      .split(';')
+      .map(s => String(s || '').trim())
+      .filter(Boolean);
+
+    const m = new Map<string, { quantity: number; description?: string }>();
+    for (const p of parts) {
+      const seg = String(p || '').trim();
+      if (!seg) continue;
+
+      const idx = seg.indexOf('**');
+      const refRaw = idx >= 0 ? seg.slice(0, idx) : seg;
+      const tailRaw = idx >= 0 ? seg.slice(idx + 2) : '';
+
+      let reference = String(refRaw || '').trim();
+      let tail = String(tailRaw || '').trim();
+
+      let quantity = 1;
+      let description = '';
+
+      if (tail) {
+        const mm = tail.match(/^(\d+)?\s*(?:\((.*)\))?$/);
+        if (mm?.[1]) {
+          const q = Number(mm[1]);
+          if (Number.isFinite(q) && q > 0) quantity = Math.floor(q);
+        }
+        if (typeof mm?.[2] === 'string') description = mm[2];
+      } else {
+        const mm = reference.match(/^(.*?)(?:\((.*)\))?$/);
+        if (mm?.[2]) description = mm[2];
+      }
+
+      reference = reference.replace(/\((.*)\)$/, '').trim();
+      description = String(description || '').trim();
+      if (!reference) continue;
+
+      const prev = m.get(reference);
+      const nextQty =
+        (prev?.quantity || 0) + (Number.isFinite(quantity) ? quantity : 1);
+      const nextDesc = description || prev?.description || '';
+      m.set(reference, {
+        quantity: nextQty,
+        description: nextDesc || undefined,
+      });
+    }
+
+    return Array.from(m.entries()).map(([reference, v]) => ({
+      reference,
+      quantity: v.quantity,
+      description: v.description || null,
+    }));
+  };
+
+  const formatProductReferenceForToast = (raw: string | null | undefined) => {
+    const items = parseProductReferenceItems(raw);
+    if (items.length === 0) return '';
+    return items
+      .map(
+        it => `${it.reference} Qté: ${Math.max(1, Number(it.quantity || 1))}`
+      )
+      .join('; ');
+  };
+
+  const getShipmentProductItems = (s: Shipment): ProductItem[] =>
+    parseProductReferenceItems(s.product_reference);
+
+  const formatShipmentProductReference = (s: Shipment) => {
+    const items = getShipmentProductItems(s);
+    if (items.length === 0) return '—';
+    return items.map(it => `${it.reference}(x${it.quantity})`).join(', ');
+  };
+
+  const renderShipmentProductReference = (s: Shipment) => {
+    const items = getShipmentProductItems(s);
+    if (items.length === 0) return '—';
+    return (
+      <div className='space-y-2'>
+        {items.map((it, idx) => {
+          const d = String(it.description || '').trim();
+          return (
+            <div key={`${s.id}-${idx}`} className='space-y-0.5'>
+              <div
+                className='font-medium truncate max-w-[280px]'
+                title={`${it.reference}(x${it.quantity})`}
+              >
+                {it.reference}(x{it.quantity})
+              </div>
+              {d ? (
+                <div
+                  className='text-xs text-gray-500 truncate max-w-[280px]'
+                  title={d}
+                >
+                  {d}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
   };
 
   // Filtre Mes ventes: champ sélectionné + terme de recherche
@@ -1652,6 +1905,7 @@ export default function DashboardPage() {
         setDescription(s?.description || '');
         setWebsite(s?.website || '');
         setSiret((s as any)?.siret || '');
+        setTvaApplicable(Boolean((s as any)?.tva_applicable));
         setPayoutMethod(s?.rib?.type === 'link' ? 'link' : 'database');
         const addr = (s as any)?.address || null;
         if (addr) {
@@ -1760,6 +2014,7 @@ export default function DashboardPage() {
         website,
         phone: formPhone,
         address: billingAddress,
+        tva_applicable: tvaApplicable,
       };
       const isSiretVerified =
         Boolean(siret) &&
@@ -2147,12 +2402,12 @@ export default function DashboardPage() {
                   <p className='text-xs text-gray-500'>
                     Collez ce lien dans la bio de vos réseaux sociaux.
                   </p>
-                  <div className='flex flex-col sm:flex-row items-center sm:items-center space-y-2 sm:space-y-0 sm:space-x-2 p-3 '>
+                  <div className='flex flex-col sm:flex-row items-stretch sm:items-center space-y-2 sm:space-y-0 sm:space-x-2 p-3'>
                     <input
                       type='text'
                       value={shareLink}
                       readOnly
-                      className='mr-5 bg-transparent text-xs sm:text-sm text-gray-700 outline-none min-w-0 text-left truncate sm:text-left'
+                      className='w-full bg-gray-50 border border-gray-200 rounded-md px-3 py-2 text-xs sm:text-sm text-gray-700 outline-none'
                     />
                     <button
                       onClick={handleCopyAlias}
@@ -2235,6 +2490,13 @@ export default function DashboardPage() {
                       <p className='text-sm text-gray-700'>
                         <span className='font-medium mr-1'>SIRET:</span>
                         <span>{(store as any)?.siret || '-'}</span>
+                      </p>
+                      <p className='text-sm text-gray-700'>
+                        <span>
+                          {(store as any)?.tva_applicable
+                            ? 'TVA applicable'
+                            : 'TVA non applicable'}
+                        </span>
                       </p>
                       <p className='text-sm text-gray-700'>
                         <span className='font-medium mr-1'>Adresse:</span>
@@ -2386,6 +2648,19 @@ export default function DashboardPage() {
                             : 'BCE invalide. Entrez exactement 10 chiffres.')}
                       </p>
                     ) : null}
+                    <div className='mt-3'>
+                      <label className='flex items-center space-x-2'>
+                        <input
+                          type='checkbox'
+                          checked={tvaApplicable}
+                          onChange={e => setTvaApplicable(e.target.checked)}
+                          className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
+                        />
+                        <span className='text-sm text-gray-700'>
+                          TVA applicable
+                        </span>
+                      </label>
+                    </div>
 
                     {siret &&
                     normalizeCompanyId(siret) === lastCheckedSiret &&
@@ -3494,6 +3769,18 @@ export default function DashboardPage() {
                   Demander l'annulation
                 </button>
                 <button
+                  onClick={handleBatchInvoice}
+                  disabled={selectedSales.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedSales.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Envoyer la facture'
+                >
+                  Envoyer la facture
+                </button>
+                <button
                   onClick={() => handleOpenHelp(selectedSales)}
                   disabled={selectedSales.length === 0}
                   className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
@@ -3580,7 +3867,7 @@ export default function DashboardPage() {
                       <div className='mt-3 text-sm text-gray-700'>
                         <div>
                           <span className='font-medium'>Référence:</span>{' '}
-                          {s.product_reference ?? '—'}
+                          {renderShipmentProductReference(s)}
                         </div>
                         <div>
                           {(() => {
@@ -3677,7 +3964,7 @@ export default function DashboardPage() {
                           </span>
                         </div>
                         <div>
-                          <span className='font-medium'>Poids:</span>{' '}
+                          <span className='font-medium'>Poids(kg):</span>{' '}
                           {s.weight || '—'}
                         </div>
 
@@ -3747,7 +4034,7 @@ export default function DashboardPage() {
                         Réseau
                       </th>
                       <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Poids
+                        Poids(kg)
                       </th>
                     </tr>
                   </thead>
@@ -3847,7 +4134,7 @@ export default function DashboardPage() {
                             })()}
                           </td>
                           <td className='py-4 px-4 text-gray-700'>
-                            {s.product_reference ?? '—'}
+                            {renderShipmentProductReference(s)}
                           </td>
                           <td className='py-4 px-4 text-gray-900 font-semibold'>
                             {formatValue(s.paid_value)}
@@ -4180,12 +4467,16 @@ export default function DashboardPage() {
                   });
 
                   const spentMap: Record<string, number> = {};
+                  const deliveryDiffMap: Record<string, number> = {};
                   (shipments || []).forEach(s => {
                     const id = s.customer_stripe_id || '';
                     if (!id) return;
                     const v =
                       (s.paid_value ?? 0) - (s.estimated_delivery_cost ?? 0);
                     spentMap[id] = (spentMap[id] || 0) + v;
+                    const diff =
+                      (s.estimated_delivery_cost ?? 0) - (s.delivery_cost ?? 0);
+                    deliveryDiffMap[id] = (deliveryDiffMap[id] || 0) + diff;
                   });
 
                   // Tri par "Dépensé"
@@ -4206,6 +4497,7 @@ export default function DashboardPage() {
                     id,
                     data: customersMap[id] || null,
                     spent: spentMap[id] || 0,
+                    deliveryDiff: deliveryDiffMap[id] || 0,
                   }));
 
                   return (
@@ -4301,8 +4593,26 @@ export default function DashboardPage() {
                                     </div>
                                   </div>
                                 </div>
-                                <div className='text-sm font-semibold text-gray-900'>
-                                  {formatValue(r.spent)}
+                                <div className='text-right'>
+                                  <div className='text-sm font-semibold text-gray-900'>
+                                    {formatValue(r.spent)}
+                                  </div>
+                                  {(() => {
+                                    const diff = Number(r.deliveryDiff || 0);
+                                    const color =
+                                      diff > 0
+                                        ? 'text-green-600'
+                                        : diff < 0
+                                          ? 'text-red-600'
+                                          : 'text-gray-900';
+                                    return (
+                                      <div
+                                        className={`text-xs font-semibold ${color}`}
+                                      >
+                                        {formatValue(diff)}
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                               </div>
 
@@ -4687,6 +4997,9 @@ export default function DashboardPage() {
                                 </div>
                               </th>
                               <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                                Écart Livraison
+                              </th>
+                              <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                                 Réseaux Sociaux
                               </th>
                             </tr>
@@ -4760,6 +5073,22 @@ export default function DashboardPage() {
                                   </td>
                                   <td className='py-4 px-4 text-gray-700'>
                                     {formatValue(r.spent)}
+                                  </td>
+                                  <td className='py-4 px-4 text-gray-700'>
+                                    {(() => {
+                                      const diff = Number(r.deliveryDiff || 0);
+                                      const color =
+                                        diff > 0
+                                          ? 'text-green-600'
+                                          : diff < 0
+                                            ? 'text-red-600'
+                                            : 'text-gray-900';
+                                      return (
+                                        <span className={color}>
+                                          {formatValue(diff)}
+                                        </span>
+                                      );
+                                    })()}
                                   </td>
                                   <td className='py-4 px-4 text-gray-700'>
                                     {(() => {
@@ -5650,7 +5979,7 @@ export default function DashboardPage() {
                               </span>
                             </div>
                             <div className='text-gray-600 truncate'>
-                              Réf: {s.product_reference ?? '—'}
+                              Réf: {formatShipmentProductReference(s)}
                             </div>
                           </div>
                         ))}
