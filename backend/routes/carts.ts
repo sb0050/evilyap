@@ -12,11 +12,11 @@ if (!supabaseUrl || !supabaseKey) {
 }
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-function getSuggestedWeightFromItemCount(itemCount: number): string {
-  if (!Number.isFinite(itemCount) || itemCount <= 0) return "500g";
-  if (itemCount <= 1) return "500g";
-  if (itemCount <= 3) return "1kg";
-  return "2kg";
+function getSuggestedWeightFromItemCount(itemCount: number): number {
+  if (!Number.isFinite(itemCount) || itemCount <= 0) return 0.5;
+  if (itemCount <= 1) return 0.5;
+  if (itemCount <= 3) return 1;
+  return 2;
 }
 
 async function deleteCartInternal(id: number) {
@@ -99,7 +99,7 @@ router.get("/summary", async (req, res) => {
     const { data: cartRows, error } = await supabase
       .from("carts")
       .select(
-        "id,store_id,product_reference,value,quantity,created_at,description,status"
+        "id,store_id,product_reference,value,quantity,created_at,description,status",
       )
       .eq("customer_stripe_id", stripeId)
       .eq("status", "PENDING")
@@ -111,7 +111,7 @@ router.get("/summary", async (req, res) => {
 
     const validRows = cartRows || [];
     const storeIds = Array.from(
-      new Set(validRows.map((r: any) => r.store_id).filter(Boolean))
+      new Set(validRows.map((r: any) => r.store_id).filter(Boolean)),
     );
 
     let storesMap: Record<number, { id: number; name: string; slug: string }> =
@@ -127,19 +127,19 @@ router.get("/summary", async (req, res) => {
       storesMap = (storesData || []).reduce(
         (
           acc: Record<number, { id: number; name: string; slug: string }>,
-          s: any
+          s: any,
         ) => {
           acc[s.id] = { id: s.id, name: s.name, slug: s.slug };
           return acc;
         },
-        {}
+        {},
       );
     }
 
     const itemsByStore: Array<{
       store: { id: number; name: string; slug: string } | null;
       total: number;
-      suggestedWeight: string;
+      suggestedWeight: number;
       items: Array<{
         id: number;
         product_reference: string;
@@ -175,7 +175,7 @@ router.get("/summary", async (req, res) => {
     let grandTotal = 0;
     for (const k of Object.keys(grouped)) {
       const suggestedWeight = getSuggestedWeightFromItemCount(
-        Array.isArray(grouped[k].items) ? grouped[k].items.length : 0
+        Array.isArray(grouped[k].items) ? grouped[k].items.length : 0,
       );
       itemsByStore.push({
         store: grouped[k].store,
@@ -235,7 +235,7 @@ router.put("/:id", async (req, res) => {
       .update({ quantity: qty })
       .eq("id", id)
       .select(
-        "id,store_id,product_reference,value,quantity,created_at,description,status"
+        "id,store_id,product_reference,value,quantity,created_at,description,status",
       )
       .single();
     if (error) {
@@ -270,7 +270,7 @@ router.get("/store/:slug", async (req, res) => {
     const { data: carts, error } = await supabase
       .from("carts")
       .select(
-        "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status"
+        "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status",
       )
       .eq("store_id", storeId)
       .eq("status", "PENDING")

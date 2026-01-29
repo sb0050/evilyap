@@ -269,16 +269,25 @@ router.post("/", async (req, res) => {
 router.put("/:storeSlug", async (req, res) => {
   try {
     const { storeSlug } = req.params as { storeSlug?: string };
-    const { name, description, website, siret, is_verified, address, phone } =
-      req.body as {
-        name?: string;
-        description?: string;
-        website?: string;
-        siret?: string;
-        is_verified?: boolean;
-        address?: any;
-        phone?: string;
-      };
+    const {
+      name,
+      description,
+      website,
+      siret,
+      is_verified,
+      address,
+      phone,
+      tva_applicable,
+    } = req.body as {
+      name?: string;
+      description?: string;
+      website?: string;
+      siret?: string;
+      is_verified?: boolean;
+      address?: any;
+      phone?: string;
+      tva_applicable?: boolean;
+    };
 
     if (!storeSlug)
       return res.status(400).json({ error: "Slug de boutique requis" });
@@ -313,6 +322,9 @@ router.put("/:storeSlug", async (req, res) => {
     if (typeof description === "string") payload.description = description;
     if (typeof website === "string") payload.website = website || null;
     if (typeof siret === "string") payload.siret = siret || null;
+    if (typeof tva_applicable === "boolean") {
+      payload.tva_applicable = tva_applicable;
+    }
     // Autoriser uniquement l'upgrade de vérification côté serveur
     if (is_verified === true) {
       payload.is_verified = true;

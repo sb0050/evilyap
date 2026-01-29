@@ -42,8 +42,9 @@ type Shipment = {
   delivery_network: string | null;
   dropoff_point: any | null;
   pickup_point: any | null;
-  weight: string | null;
+  weight: number | null;
   product_reference: string | null;
+  description?: string | null;
   paid_value: number | null;
   created_at?: string | null;
   status?: string | null;
@@ -364,6 +365,120 @@ export default function OrdersPage() {
     }
   };
 
+  const parseProductReferenceItems = (raw: string | null | undefined) => {
+    const txt = String(raw || '').trim();
+    if (!txt)
+      return [] as Array<{
+        reference: string;
+        quantity: number;
+        description?: string | null;
+      }>;
+    const parts = txt
+      .split(';')
+      .map(s => String(s || '').trim())
+      .filter(Boolean);
+
+    const m = new Map<
+      string,
+      { quantity: number; description?: string | null }
+    >();
+    for (const p of parts) {
+      const seg = String(p || '').trim();
+      if (!seg) continue;
+
+      let reference = '';
+      let quantity = 1;
+      let description: string | null = null;
+
+      if (seg.includes('**')) {
+        const [refRaw, restRaw] = seg.split('**');
+        reference = String(refRaw || '').trim();
+        const rest = String(restRaw || '').trim();
+        const match = rest.match(/^(\d+)\s*(?:\((.*)\))?$/);
+        if (match) {
+          const qNum = Number(match[1]);
+          quantity = Number.isFinite(qNum) && qNum > 0 ? Math.round(qNum) : 1;
+          const d = String(match[2] || '').trim();
+          description = d || null;
+        } else {
+          const qNum = Number(rest);
+          quantity = Number.isFinite(qNum) && qNum > 0 ? Math.round(qNum) : 1;
+        }
+      } else {
+        const match = seg.match(/^(.+?)\s*\((.*)\)\s*$/);
+        if (match) {
+          reference = String(match[1] || '').trim();
+          const d = String(match[2] || '').trim();
+          description = d || null;
+        } else {
+          reference = seg;
+        }
+      }
+
+      if (!reference) continue;
+      const prev = m.get(reference) || { quantity: 0, description: null };
+      m.set(reference, {
+        quantity: prev.quantity + quantity,
+        description: prev.description || description || null,
+      });
+    }
+
+    return Array.from(m.entries()).map(([reference, info]) => ({
+      reference,
+      quantity: info.quantity,
+      description: info.description || null,
+    }));
+  };
+
+  type ProductItem = {
+    reference: string;
+    quantity: number;
+    description?: string | null;
+  };
+
+  const getShipmentProductItems = (s: Shipment): ProductItem[] =>
+    parseProductReferenceItems(s.product_reference).map(it => ({
+      reference: it.reference,
+      quantity: it.quantity,
+      description: it.description || null,
+    }));
+
+  const formatShipmentProductReference = (s: Shipment) => {
+    const items = getShipmentProductItems(s);
+    if (items.length === 0) return '—';
+    return items.map(it => `${it.reference}(x${it.quantity})`).join(', ');
+  };
+
+  const renderShipmentProductReference = (s: Shipment) => {
+    const items = getShipmentProductItems(s);
+    if (items.length === 0) return '—';
+    return (
+      <div className='space-y-2'>
+        {items.map((it, idx) => {
+          const d = String(it.description || '').trim();
+          return (
+            <div key={`${s.id}-${idx}`} className='space-y-0.5'>
+              <div
+                className='font-medium truncate max-w-[280px]'
+                title={`${it.reference}(x${it.quantity})`}
+              >
+                {it.reference}(x{it.quantity})
+              </div>
+              {d ? (
+                <div
+                  className='text-xs text-gray-500 truncate max-w-[280px]'
+                  title={d}
+                >
+                  {d}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   // Tri par date estimée (prochain colis)
   const sortedShipments = (() => {
     const toTime = (d?: string | null) => {
@@ -549,6 +664,35 @@ export default function OrdersPage() {
       STORE_PICKUP: 'Retrait en boutique',
     };
     return map[c] || code || '—';
+  };
+
+  const renderNetwork = (s: Shipment) => {
+    const network = getNetworkDescription(s.delivery_network);
+    if (String(s.delivery_method || '') !== 'pickup_point') return network;
+    const p: any = s.pickup_point || null;
+    const name = String(p?.name || '').trim();
+    const street = String(p?.street || p?.line1 || '').trim();
+    const city = String(p?.city || '').trim();
+    const postal = String(p?.postal_code || p?.postalCode || '').trim();
+    const country = String(p?.country || p?.countryIsoCode || '').trim();
+    const line3 = [city, postal, country].filter(Boolean).join(' ');
+    const lines = [name, street, line3].filter(Boolean);
+    if (lines.length === 0) return network;
+    return (
+      <span>
+        {network}{' '}
+        <span>
+          (
+          {lines.map((l, i) => (
+            <span key={`${s.id}-pp-${i}`}>
+              {l}
+              {i < lines.length - 1 ? <br /> : null}
+            </span>
+          ))}
+          )
+        </span>
+      </span>
+    );
   };
 
   const handleOpenContact = (s?: Shipment | Shipment[]) => {
@@ -966,7 +1110,7 @@ export default function OrdersPage() {
                     <div className='mt-3 text-sm text-gray-700'>
                       <div>
                         <span className='font-medium'>Référence:</span>{' '}
-                        {s.product_reference ?? '—'}
+                        {renderShipmentProductReference(s)}
                       </div>
                       <div>
                         <span className='font-medium'>Statut:</span>{' '}
@@ -975,37 +1119,6 @@ export default function OrdersPage() {
                       <div>
                         <span className='font-medium'>Méthode:</span>{' '}
                         {formatMethod(s.delivery_method)}
-                      </div>
-                      <div>
-                        <span className='font-medium'>Valeur produit:</span>{' '}
-                        {(() => {
-                          const hasPromo = !!s.promo_codes;
-                          const finalValue = hasPromo
-                            ? (s.paid_value ?? 0) -
-                              (s.estimated_delivery_cost ?? 0)
-                            : s.product_value;
-                          return (
-                            <>
-                              {formatValue(finalValue)}
-                              {hasPromo && (
-                                <div className='text-xs text-gray-500'>
-                                  <span className='line-through'>
-                                    {formatValue(s.product_value)}
-                                  </span>{' '}
-                                  (
-                                  {formatValue(
-                                    Math.max(
-                                      0,
-                                      (s.product_value ?? 0) - (finalValue ?? 0)
-                                    )
-                                  )}{' '}
-                                  de remise avec le code:{' '}
-                                  {s.promo_codes!.replace(';', ', ')})
-                                </div>
-                              )}
-                            </>
-                          );
-                        })()}
                       </div>
                     </div>
 
@@ -1046,21 +1159,7 @@ export default function OrdersPage() {
 
                       <div>
                         <span className='font-medium'>Réseau:</span>{' '}
-                        {getNetworkDescription(s.delivery_network)}
-                      </div>
-
-                      <div>
-                        <span className='font-medium'>Point Retrait:</span>{' '}
-                        {s.pickup_point?.code ? (
-                          <span>
-                            <strong>{s.pickup_point?.name}</strong>{' '}
-                            {s.pickup_point?.street}, {s.pickup_point?.city}{' '}
-                            {s.pickup_point?.postal_code}{' '}
-                            {s.pickup_point?.country}
-                          </span>
-                        ) : (
-                          '—'
-                        )}
+                        {renderNetwork(s)}
                       </div>
 
                       <div className='flex items-center gap-2'>
@@ -1104,20 +1203,14 @@ export default function OrdersPage() {
                       Référence Produit
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Valeur Produit
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Payé
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Méthode
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Statut
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       <div className='flex items-center space-x-2'>
-                        <span>Estimée</span>
+                        <span>Livraison</span>
                         <button
                           onClick={() =>
                             setEstimatedSortOrder(o =>
@@ -1132,13 +1225,10 @@ export default function OrdersPage() {
                       </div>
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Écart Livraison
+                      Méthode
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Réseau
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Point Retrait
                     </th>
                   </tr>
                 </thead>
@@ -1187,45 +1277,10 @@ export default function OrdersPage() {
                         />
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
-                        {s.product_reference ?? '—'}
-                      </td>
-                      <td className='py-4 px-4 text-gray-900 font-semibold'>
-                        {(() => {
-                          const hasPromo = !!s.promo_codes;
-                          const finalValue = hasPromo
-                            ? (s.paid_value ?? 0) -
-                              (s.estimated_delivery_cost ?? 0)
-                            : s.product_value;
-                          return (
-                            <>
-                              {formatValue(finalValue)}
-                              {hasPromo && (
-                                <div className='text-xs text-gray-500 mt-1'>
-                                  <span className='line-through'>
-                                    {formatValue(s.product_value)}
-                                  </span>{' '}
-                                  (
-                                  {formatValue(
-                                    Math.max(
-                                      0,
-                                      (s.product_value ?? 0) - (finalValue ?? 0)
-                                    )
-                                  )}{' '}
-                                  de remise avec le code:{' '}
-                                  {s.promo_codes!.replace(';', ', ')})
-                                </div>
-                              )}
-                            </>
-                          );
-                        })()}
+                        {renderShipmentProductReference(s)}
                       </td>
                       <td className='py-4 px-4 text-gray-900 font-semibold'>
                         {formatValue(s.paid_value)}
-                      </td>
-                      <td className='py-4 px-4 text-gray-700'>
-                        <div className='flex items-center space-x-2'>
-                          <span>{formatMethod(s.delivery_method)}</span>
-                        </div>
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
                         <div className='space-y-1'>
@@ -1250,38 +1305,13 @@ export default function OrdersPage() {
                       <td className='py-4 px-4 text-gray-700'>
                         {formatDate(s.estimated_delivery_date)}
                       </td>
-                      <td className='py-4 px-4 text-gray-900 font-semibold'>
-                        {(() => {
-                          const diff =
-                            (s.estimated_delivery_cost ?? 0) -
-                            (s.delivery_cost ?? 0);
-                          const color =
-                            diff > 0
-                              ? 'text-green-600'
-                              : diff < 0
-                                ? 'text-red-600'
-                                : 'text-gray-900';
-                          return (
-                            <span className={color}>{formatValue(diff)}</span>
-                          );
-                        })()}
+                      <td className='py-4 px-4 text-gray-700'>
+                        <div className='flex items-center space-x-2'>
+                          <span>{formatMethod(s.delivery_method)}</span>
+                        </div>
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
-                        {getNetworkDescription(s.delivery_network)}
-                      </td>
-                      <td className='py-4 px-4 text-gray-700'>
-                        {s.pickup_point?.code ? (
-                          <div>
-                            <strong>{s.pickup_point?.name}</strong>
-                            <br />
-                            {s.pickup_point?.street}
-                            <br />
-                            {s.pickup_point?.city} {s.pickup_point?.postal_code}{' '}
-                            {s.pickup_point?.country}
-                          </div>
-                        ) : (
-                          '—'
-                        )}
+                        {renderNetwork(s)}
                       </td>
                     </tr>
                   ))}
@@ -1325,7 +1355,7 @@ export default function OrdersPage() {
                               {s.store?.name || '—'}
                             </div>
                             <div className='text-xs text-gray-600'>
-                              Réf: {s.product_reference || '—'}
+                              Réf: {formatShipmentProductReference(s)}
                             </div>
                             <div className='text-xs text-gray-600'>
                               Shipment: {s.shipment_id || '—'}

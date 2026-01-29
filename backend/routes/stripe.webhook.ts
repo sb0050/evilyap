@@ -10,7 +10,7 @@ const formatWeight = (weight?: string): number => {
     return 0;
   }
   const value = parseFloat(match[1]);
-  const unit = match[2] || "g";
+  const unit = match[2] || "kg";
   if (unit === "kg") {
     return value;
   } else if (unit === "g") {
@@ -777,15 +777,32 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             const _productReference =
               (() => {
                 if (Array.isArray(products) && products.length > 0) {
-                  const m = new Map<string, number>();
+                  const m = new Map<
+                    string,
+                    { quantity: number; description?: string | null }
+                  >();
                   for (const p of products) {
                     const n = String((p as any)?.name || "").trim();
                     if (!n) continue;
                     const q = Number((p as any)?.quantity || 1);
-                    m.set(n, (m.get(n) || 0) + q);
+                    const rawDesc = String(
+                      (p as any)?.description || "",
+                    ).trim();
+                    const desc = rawDesc
+                      ? rawDesc.replace(/[\r\n]+/g, " ").replace(/;+/g, ", ")
+                      : "";
+                    const prev = m.get(n) || { quantity: 0, description: null };
+                    m.set(n, {
+                      quantity: prev.quantity + q,
+                      description: prev.description || desc || null,
+                    });
                   }
                   return Array.from(m.entries())
-                    .map(([n, q]) => `${n}**${q}`)
+                    .map(([n, info]) => {
+                      const q = info.quantity;
+                      const d = String(info.description || "").trim();
+                      return `${n}**${q}${d ? `(${d})` : ""}`;
+                    })
                     .filter((s) => s && s.length > 0)
                     .join(";");
                 }
@@ -803,7 +820,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               delivery_network: deliveryNetwork,
               dropoff_point: dropOffPoint,
               pickup_point: pickupPoint,
-              weight: session.metadata?.weight || null,
+              weight: Number.isFinite(weight) ? weight : null,
               product_reference: _productReference,
               payment_id: paymentIntent?.id || null,
               paid_value: (netAmount || 0) / 100,
