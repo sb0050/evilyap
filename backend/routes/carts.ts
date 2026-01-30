@@ -18,6 +18,16 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
 });
 
+function isMissingColumnError(err: any, column: string): boolean {
+  const msg = String(err?.message || "");
+  return (
+    msg.includes(`column "${column}"`) ||
+    msg.includes(`column '${column}'`) ||
+    msg.includes(`column ${column}`) ||
+    msg.toLowerCase().includes("does not exist")
+  );
+}
+
 function getSuggestedWeightFromItemCount(itemCount: number): number {
   if (!Number.isFinite(itemCount) || itemCount <= 0) return 0.5;
   if (itemCount <= 1) return 0.5;
@@ -46,6 +56,7 @@ router.post("/", async (req, res) => {
       customer_stripe_id,
       description,
       quantity,
+      weight,
     } = req.body || {};
 
     if (!customer_stripe_id) {
@@ -60,28 +71,65 @@ router.post("/", async (req, res) => {
       });
     }
 
-    const { data, error } = await supabase
-      .from("carts")
-      .insert([
-        {
-          store_id,
-          product_reference,
-          value: typeof value === "number" ? value : 0,
-          customer_stripe_id,
-          description: typeof description === "string" ? description : null,
-          status: "PENDING",
-          quantity:
-            typeof quantity === "number" &&
-            Number.isFinite(quantity) &&
-            quantity > 0
-              ? quantity
-              : 1,
-          // Horodatage de création côté serveur (timestamptz)
-          created_at: new Date().toISOString(),
-        },
-      ])
-      .select()
-      .single();
+    const descriptionTrimmed =
+      typeof description === "string" ? description.trim() : "";
+    if (!descriptionTrimmed) {
+      return res
+        .status(400)
+        .json({ error: "description requise pour le panier" });
+    }
+
+    const normalizedQuantity =
+      typeof quantity === "number" && Number.isFinite(quantity) && quantity > 0
+        ? quantity
+        : 1;
+
+    const normalizedWeight = (() => {
+      if (weight === undefined || weight === null || weight === "") {
+        return getSuggestedWeightFromItemCount(normalizedQuantity);
+      }
+      const wRaw =
+        typeof weight === "number"
+          ? weight
+          : typeof weight === "string"
+            ? parseFloat(weight.trim().replace(",", "."))
+            : NaN;
+      if (Number.isFinite(wRaw) && wRaw >= 0) return wRaw;
+      return null;
+    })();
+    if (normalizedWeight === null) {
+      return res.status(400).json({ error: "weight invalide (>= 0)" });
+    }
+
+    const row: any = {
+      store_id,
+      product_reference,
+      value: typeof value === "number" ? value : 0,
+      customer_stripe_id,
+      description: descriptionTrimmed,
+      status: "PENDING",
+      quantity: normalizedQuantity,
+      weight: normalizedWeight,
+      created_at: new Date().toISOString(),
+    };
+
+    let data: any = null;
+    let error: any = null;
+    {
+      const resp = await supabase.from("carts").insert([row]).select().single();
+      data = resp.data;
+      error = resp.error;
+    }
+    if (error && isMissingColumnError(error, "weight")) {
+      const { weight: _w, ...withoutWeight } = row;
+      const resp2 = await supabase
+        .from("carts")
+        .insert([withoutWeight])
+        .select()
+        .single();
+      data = resp2.data;
+      error = resp2.error;
+    }
 
     if (error) {
       return res.status(500).json({ error: error.message });
@@ -102,14 +150,33 @@ router.get("/summary", async (req, res) => {
       return res.status(400).json({ error: "stripeId requis" });
     }
 
-    const { data: cartRows, error } = await supabase
-      .from("carts")
-      .select(
-        "id,store_id,product_reference,value,quantity,created_at,description,status,recap_sent_at",
-      )
-      .eq("customer_stripe_id", stripeId)
-      .eq("status", "PENDING")
-      .order("id", { ascending: false });
+    const selectWithWeight =
+      "id,store_id,product_reference,value,quantity,created_at,description,status,recap_sent_at,weight";
+    const selectWithoutWeight =
+      "id,store_id,product_reference,value,quantity,created_at,description,status,recap_sent_at";
+
+    let cartRows: any[] | null = null;
+    let error: any = null;
+    {
+      const resp = await supabase
+        .from("carts")
+        .select(selectWithWeight)
+        .eq("customer_stripe_id", stripeId)
+        .eq("status", "PENDING")
+        .order("id", { ascending: false });
+      cartRows = resp.data as any;
+      error = resp.error;
+    }
+    if (error && isMissingColumnError(error, "weight")) {
+      const resp2 = await supabase
+        .from("carts")
+        .select(selectWithoutWeight)
+        .eq("customer_stripe_id", stripeId)
+        .eq("status", "PENDING")
+        .order("id", { ascending: false });
+      cartRows = resp2.data as any;
+      error = resp2.error;
+    }
 
     if (error) {
       return res.status(500).json({ error: error.message });
@@ -152,6 +219,9 @@ router.get("/summary", async (req, res) => {
         value: number;
         quantity?: number;
         created_at?: string;
+        description?: string;
+        recap_sent_at?: string;
+        weight?: number | null;
       }>;
     }> = [];
 
@@ -174,6 +244,7 @@ router.get("/summary", async (req, res) => {
         created_at: (r as any).created_at,
         description: (r as any).description,
         recap_sent_at: (r as any).recap_sent_at,
+        weight: (r as any).weight ?? null,
       });
       const qty = Number((r as any).quantity ?? 1);
       grouped[key].total += (r.value || 0) * (Number.isFinite(qty) ? qty : 1);
@@ -242,9 +313,23 @@ router.put("/:id", async (req, res) => {
       .update({ quantity: qty })
       .eq("id", id)
       .select(
-        "id,store_id,product_reference,value,quantity,created_at,description,status",
+        "id,store_id,product_reference,value,quantity,created_at,description,status,weight",
       )
       .single();
+    if (error && isMissingColumnError(error, "weight")) {
+      const { data: data2, error: error2 } = await supabase
+        .from("carts")
+        .update({ quantity: qty })
+        .eq("id", id)
+        .select(
+          "id,store_id,product_reference,value,quantity,created_at,description,status",
+        )
+        .single();
+      if (error2) {
+        return res.status(500).json({ error: error2.message });
+      }
+      return res.json({ success: true, item: data2 });
+    }
     if (error) {
       return res.status(500).json({ error: error.message });
     }
@@ -274,14 +359,33 @@ router.get("/store/:slug", async (req, res) => {
       return res.status(404).json({ error: "Boutique introuvable" });
     }
     const storeId = (storeRow as any)?.id;
-    const { data: carts, error } = await supabase
-      .from("carts")
-      .select(
-      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status, recap_sent_at",
-      )
-      .eq("store_id", storeId)
-      .eq("status", "PENDING")
-      .order("id", { ascending: false });
+    const cartsSelectWithWeight =
+      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status, recap_sent_at, weight";
+    const cartsSelectWithoutWeight =
+      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status, recap_sent_at";
+
+    let carts: any[] | null = null;
+    let error: any = null;
+    {
+      const resp = await supabase
+        .from("carts")
+        .select(cartsSelectWithWeight)
+        .eq("store_id", storeId)
+        .eq("status", "PENDING")
+        .order("id", { ascending: false });
+      carts = resp.data as any;
+      error = resp.error;
+    }
+    if (error && isMissingColumnError(error, "weight")) {
+      const resp2 = await supabase
+        .from("carts")
+        .select(cartsSelectWithoutWeight)
+        .eq("store_id", storeId)
+        .eq("status", "PENDING")
+        .order("id", { ascending: false });
+      carts = resp2.data as any;
+      error = resp2.error;
+    }
     if (error) {
       return res.status(500).json({ error: error.message });
     }
@@ -322,7 +426,7 @@ router.post("/recap", async (req, res) => {
     const storeLogo = cloud ? `${cloud}/images/${storeId}` : "";
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
     const checkoutLink = `${frontendUrl}/checkout/${encodeURIComponent(
-      storeSlug
+      storeSlug,
     )}`;
     const sentStripeIds: string[] = [];
     const failedStripeIds: string[] = [];
@@ -337,17 +441,21 @@ router.post("/recap", async (req, res) => {
         customerName = String((customer as any)?.name || "Client");
       } catch {}
       if (!customerEmail) continue;
-    const { data: carts, error } = await supabase
+      const { data: carts, error } = await supabase
         .from("carts")
-      .select("id, product_reference, value, description")
+        .select("id, product_reference, value, description, quantity")
         .eq("customer_stripe_id", stripeId)
         .eq("store_id", storeId)
         .eq("status", "PENDING");
       if (error) continue;
-    const items = (carts || []).map((c: any) => ({
+      const items = (carts || []).map((c: any) => ({
         product_reference: String(c.product_reference || ""),
         value: Number(c.value || 0),
         description: typeof c.description === "string" ? c.description : "",
+        quantity:
+          typeof c.quantity === "number" && Number.isFinite(c.quantity) && c.quantity > 0
+            ? c.quantity
+            : 1,
       }));
       if (items.length === 0) continue;
       const ok = await emailService.sendCartRecap({
@@ -360,13 +468,13 @@ router.post("/recap", async (req, res) => {
       });
       if (ok) {
         sentStripeIds.push(stripeId);
-      const nowIso = new Date().toISOString();
-      await supabase
-        .from("carts")
-        .update({ recap_sent_at: nowIso })
-        .eq("customer_stripe_id", stripeId)
-        .eq("store_id", storeId)
-        .eq("status", "PENDING");
+        const nowIso = new Date().toISOString();
+        await supabase
+          .from("carts")
+          .update({ recap_sent_at: nowIso })
+          .eq("customer_stripe_id", stripeId)
+          .eq("store_id", storeId)
+          .eq("status", "PENDING");
       } else {
         failedStripeIds.push(stripeId);
       }

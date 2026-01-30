@@ -383,89 +383,129 @@ class EmailService {
     customerName: string;
     storeName: string;
     storeLogo?: string;
-    carts: Array<{ product_reference: string; value: number; description?: string }>;
+    carts: Array<{
+      product_reference: string;
+      value: number;
+      description?: string;
+      quantity?: number;
+    }>;
     checkoutLink: string;
   }): Promise<boolean> {
     try {
-      const total = (data.carts || []).reduce(
-        (acc, c) => acc + (typeof c.value === "number" ? c.value : 0),
-        0
-      );
+      const shouldShowLogo =
+        typeof data.storeLogo === "string" &&
+        data.storeLogo.trim().length > 0 &&
+        !data.storeLogo.trim().toLowerCase().startsWith("data:") &&
+        data.storeLogo.trim().length < 2000;
+
+      const total = (data.carts || []).reduce((acc, c) => {
+        const unit = typeof c.value === "number" ? c.value : 0;
+        const qty =
+          typeof c.quantity === "number" &&
+          Number.isFinite(c.quantity) &&
+          c.quantity > 0
+            ? Math.floor(c.quantity)
+            : 1;
+        return acc + unit * qty;
+      }, 0);
       const formattedTotal = this.formatAmount(total, "EUR") || String(total);
-      const itemsHtml = (data.carts || [])
+
+      const itemsRowsHtml = (data.carts || [])
         .map((c) => {
-          const amount = this.formatAmount(c.value, "EUR") || String(c.value);
-          const desc = (c.description || "").trim();
-          const ref = String(c.product_reference || "");
+          const ref = String(c.product_reference || "").trim();
+          const desc = String(c.description || "").trim();
+          const qty =
+            typeof c.quantity === "number" &&
+            Number.isFinite(c.quantity) &&
+            c.quantity > 0
+              ? Math.floor(c.quantity)
+              : 1;
+          const unit = typeof c.value === "number" ? c.value : 0;
+          const unitFormatted = this.formatAmount(unit, "EUR") || String(unit);
+          const lineTotal = unit * qty;
+          const lineTotalFormatted =
+            this.formatAmount(lineTotal, "EUR") || String(lineTotal);
           return `
-            <div style="background:#f5f4f2; border-radius:8px; margin:10px 0; padding:12px 16px;">
-              <div style="font-size:12px; color:#6b6b6b; text-transform:uppercase; letter-spacing:.3px;">Référence</div>
-              <div style="margin-top:4px; font-weight:600; color:#111;">${ref}</div>
-              ${
-                desc
-                  ? `<div style="margin-top:6px; font-size:13px; color:#555;">${desc}</div>`
-                  : ""
-              }
-              <div style="margin-top:8px; text-align:right; font-weight:700; color:#111;">${amount}</div>
-            </div>
+            <tr>
+              <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                <div style="font-weight:700; color:#111;">${ref || "—"}</div>
+                ${
+                  desc
+                    ? `<div style="margin-top:4px; font-size:13px; color:#555;">${desc}</div>`
+                    : ""
+                }
+              </td>
+              <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                ${unitFormatted}
+              </td>
+              <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                ${qty}
+              </td>
+              <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:800; white-space:nowrap;">
+                ${lineTotalFormatted}
+              </td>
+            </tr>
           `;
         })
         .join("");
+
       const htmlContent = `
         <!DOCTYPE html>
         <html>
         <head>
           <meta charset="utf-8">
           <title>🧾 Récapitulatif de votre panier</title>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-            .card { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #667eea; }
-            .logo { max-width: 100px; margin-bottom: 20px; }
-            .btn { display: block; width: 100%; text-align: center; padding: 16px 0; background: #4f46e5; color: white; border-radius: 8px; text-decoration: none; font-weight: 700; font-size: 18px; }
-            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
-            .section-title { font-size:16px; font-weight:700; color:#111; margin:24px 0 12px 0; }
-            .total-block { background:white; border-radius:8px; padding:22px; margin-top:16px; }
-            .row { display:flex; align-items:center; justify-content:space-between; padding:8px 0; }
-            .row strong { color:#111; font-weight:700; }
-          </style>
         </head>
-        <body>
-          <div class="container">
-            <div class="header">
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin:0; padding:0;">
+          <div style="max-width:600px;margin:0 auto;padding:20px;">
+            <div style="background:linear-gradient(135deg,#28a745 0%,#20c997 100%);color:#ffffff;padding:30px;text-align:center;border-radius:10px 10px 0 0;">
               ${
-                data.storeLogo
-                  ? `<img src="${data.storeLogo}" alt="${data.storeName}" class="logo">`
+                shouldShowLogo
+                  ? `<img src="${data.storeLogo}" alt="${data.storeName}" style="max-width:100px;margin-bottom:20px;">`
                   : ""
               }
               <h1>🧾 Récapitulatif de votre panier</h1>
               <p>${data.storeName}</p>
             </div>
-            <div class="content">
+            <div style="background:#f9f9f9;padding:30px;border-radius:0 0 10px 10px;">
               <h2>Bonjour ${data.customerName},</h2>
               <p>Voici le récapitulatif de votre panier chez <strong>${data.storeName}</strong>.</p>
 
-              <div class="section-title">Détail du panier</div>
-              ${itemsHtml}
-
-              <div class="total-block">
+              <div style="background:#ffffff;padding:20px;border-radius:8px;margin:20px 0;border-left:4px solid #28a745;">
+                <h3>🛍️ Détail du panier</h3>
                 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                  <thead>
+                    <tr>
+                      <th align="left" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Article</th>
+                      <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Prix unitaire</th>
+                      <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Qté</th>
+                      <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${itemsRowsHtml}
+                  </tbody>
+                </table>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse; margin-top:16px;">
                   <tr>
-                    <td align="left" style="font-size:16px;color:#111;font-weight:600;vertical-align:baseline;">Total du panier</td>
-                    <td align="right" style="font-size:22px;color:#111;font-weight:700;vertical-align:baseline;">${formattedTotal}</td>
+                    <td style="padding-top:14px; border-top:2px solid #eee; font-size:14px; color:#333; font-weight:700;">
+                      Total du panier
+                    </td>
+                    <td align="right" style="padding-top:14px; border-top:2px solid #eee; white-space:nowrap;font-size:22px;font-weight:800;color:#28a745;">
+                      ${formattedTotal}
+                    </td>
                   </tr>
                 </table>
               </div>
 
               <div style="margin-top:24px;">
-                <a href="${data.checkoutLink}" class="btn" style="display:block;width:94%;margin:0 auto;color:#ffffff !important;">Procéder au paiement</a>
+                <a href="${data.checkoutLink}" style="display:block;width:94%;margin:0 auto;text-align:center;padding:16px 0;background:#0074d4;background-color:#0074d4;color:#ffffff !important;border-radius:8px;text-decoration:none;font-weight:700;font-size:18px;">Procéder au paiement</a>
               </div>
 
-            </div>
-            <div class="footer">
-              <p>© ${new Date().getFullYear()} ${data.storeName} - Tous droits réservés</p>
+              <div style="text-align:center;margin-top:30px;color:#666;font-size:14px;">
+                © ${new Date().getFullYear()} ${data.storeName} - Tous droits réservés
+              </div>
             </div>
           </div>
         </body>

@@ -22,6 +22,7 @@ import {
   Trash2,
   Coins,
   Dice5,
+  Check,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -248,13 +249,18 @@ export default function DashboardPage() {
   } | null>(null);
   const [cartReference, setCartReference] = useState<string>('');
   const [cartDescription, setCartDescription] = useState<string>('');
+  const [cartWeightKg, setCartWeightKg] = useState<string>('');
   const [cartAmountEuro, setCartAmountEuro] = useState<string>('');
+  const [cartQuantity, setCartQuantity] = useState<string>('1');
   const [cartCreating, setCartCreating] = useState<boolean>(false);
   const [storeCarts, setStoreCarts] = useState<any[]>([]);
   const [cartDeletingIds, setCartDeletingIds] = useState<
     Record<number, boolean>
   >({});
   const [cartReloading, setCartReloading] = useState<boolean>(false);
+  const [cartsFilterField, setCartsFilterField] = useState<
+    'reference' | 'client' | 'description'
+  >('client');
   const [cartSearchTerm, setCartSearchTerm] = useState<string>('');
   const [cartPageSize, setCartPageSize] = useState<number>(10);
   const [cartPage, setCartPage] = useState<number>(1);
@@ -276,9 +282,9 @@ export default function DashboardPage() {
   const [cartGroupPage, setCartGroupPage] = useState<Record<string, number>>(
     {}
   );
-  const [selectedCartGroupIds, setSelectedCartGroupIds] = useState<
-    Set<string>
-  >(new Set());
+  const [selectedCartGroupIds, setSelectedCartGroupIds] = useState<Set<string>>(
+    new Set()
+  );
   const [sendingRecap, setSendingRecap] = useState<boolean>(false);
   const [recapSentByGroup, setRecapSentByGroup] = useState<
     Record<string, boolean>
@@ -1874,7 +1880,18 @@ export default function DashboardPage() {
   const handleCreateCart = async () => {
     try {
       const ref = (cartReference || '').trim();
+      const desc = (cartDescription || '').trim();
       const amt = parseFloat((cartAmountEuro || '').trim().replace(',', '.'));
+      const qtyParsed = parseInt((cartQuantity || '').trim(), 10);
+      const qty =
+        Number.isFinite(qtyParsed) && qtyParsed > 0 ? Math.floor(qtyParsed) : 0;
+      const weightParsed = parseFloat(
+        (cartWeightKg || '').trim().replace(',', '.')
+      );
+      const weight =
+        Number.isFinite(weightParsed) && weightParsed >= 0
+          ? weightParsed
+          : null;
       if (!(amt > 0)) {
         showToast('Veuillez saisir un montant supérieur à 0', 'error');
         return;
@@ -1889,6 +1906,18 @@ export default function DashboardPage() {
       }
       if (!ref) {
         showToast('Veuillez saisir la référence', 'error');
+        return;
+      }
+      if (!desc) {
+        showToast('Veuillez saisir la description', 'error');
+        return;
+      }
+      if (!(qty > 0)) {
+        showToast('Veuillez saisir une quantité valide (>= 1)', 'error');
+        return;
+      }
+      if (weight === null) {
+        showToast('Veuillez saisir un poids valide (>= 0)', 'error');
         return;
       }
       setCartCreating(true);
@@ -1920,7 +1949,9 @@ export default function DashboardPage() {
         product_reference: ref,
         value: amt,
         customer_stripe_id: stripeId,
-        description: (cartDescription || '').trim() || null,
+        description: desc,
+        weight,
+        quantity: qty,
       };
       const resp = await apiPost('/api/carts', payload);
       const json = await resp.json().catch(() => ({}));
@@ -1931,7 +1962,9 @@ export default function DashboardPage() {
       showToast('Panier créé', 'success');
       setCartReference('');
       setCartDescription('');
+      setCartWeightKg('');
       setCartAmountEuro('');
+      setCartQuantity('1');
       if (store?.slug) {
         const r = await apiGet(
           `/api/carts/store/${encodeURIComponent(store.slug)}`
@@ -3218,7 +3251,7 @@ export default function DashboardPage() {
                       setCartCustomerInput(v);
                       searchClerkUsers(v);
                     }}
-                    placeholder='Nom du client (contains)'
+                    placeholder='Nom du client ou e-mail'
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />
                   {cartUsersLoading ? (
@@ -3269,32 +3302,66 @@ export default function DashboardPage() {
                   />
                 </div>
 
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Description
-                  </label>
-                  <input
-                    type='text'
-                    value={cartDescription}
-                    onChange={e => setCartDescription(e.target.value)}
-                    placeholder='Ex: Robe Noire'
-                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                  />
+                <div className='space-y-2'>
+                  <div>
+                    <label className='block text-sm font-medium text-gray-700 mb-1'>
+                      Description
+                    </label>
+                    <input
+                      type='text'
+                      value={cartDescription}
+                      onChange={e => setCartDescription(e.target.value)}
+                      placeholder='Ex: Robe Noire'
+                      required
+                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                    />
+                  </div>
+                  <div>
+                    <label className='block text-sm font-medium text-gray-700 mb-1'>
+                      Poids (kg)
+                    </label>
+                    <input
+                      type='number'
+                      min='0'
+                      step='0.01'
+                      value={cartWeightKg}
+                      onChange={e => setCartWeightKg(e.target.value)}
+                      placeholder='0.5'
+                      required
+                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                    />
+                  </div>
                 </div>
 
                 <div>
                   <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Montant (€)
+                    Prix unitaire (€)
                   </label>
-                  <input
-                    type='number'
-                    min='0.01'
-                    step='0.01'
-                    value={cartAmountEuro}
-                    onChange={e => setCartAmountEuro(e.target.value)}
-                    placeholder='Ex: 49.90'
-                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                  />
+                  <div className='space-y-2'>
+                    <input
+                      type='number'
+                      min='0.01'
+                      step='0.01'
+                      value={cartAmountEuro}
+                      onChange={e => setCartAmountEuro(e.target.value)}
+                      placeholder='Ex: 49.90'
+                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                    />
+                    <div>
+                      <label className='block text-sm font-medium text-gray-700 mb-1'>
+                        Quantité
+                      </label>
+                      <input
+                        type='number'
+                        min='1'
+                        step='1'
+                        value={cartQuantity}
+                        onChange={e => setCartQuantity(e.target.value)}
+                        placeholder='1'
+                        className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -3305,7 +3372,20 @@ export default function DashboardPage() {
                     cartCreating ||
                     !cartSelectedUser ||
                     !(cartReference || '').trim() ||
-                    !(parseFloat((cartAmountEuro || '').replace(',', '.')) > 0)
+                    !(cartDescription || '').trim() ||
+                    !(
+                      parseFloat((cartAmountEuro || '').replace(',', '.')) > 0
+                    ) ||
+                    (() => {
+                      const q = parseInt((cartQuantity || '').trim(), 10);
+                      return !(Number.isFinite(q) && q > 0);
+                    })() ||
+                    (() => {
+                      const w = parseFloat(
+                        (cartWeightKg || '').trim().replace(',', '.')
+                      );
+                      return !(Number.isFinite(w) && w >= 0);
+                    })()
                   }
                   className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                 >
@@ -3334,8 +3414,23 @@ export default function DashboardPage() {
                 const filtered = groups.filter(g => {
                   const term = (cartSearchTerm || '').trim().toLowerCase();
                   if (!term) return true;
-                  const name = (g.user?.fullName || '').toLowerCase();
-                  return name.includes(term);
+                  if (cartsFilterField === 'reference') {
+                    return (g.items || []).some((it: any) =>
+                      String(it?.product_reference || '')
+                        .toLowerCase()
+                        .includes(term)
+                    );
+                  }
+                  if (cartsFilterField === 'description') {
+                    return (g.items || []).some((it: any) =>
+                      String(it?.description || '')
+                        .toLowerCase()
+                        .includes(term)
+                    );
+                  }
+                  const name = String(g.user?.fullName || '').toLowerCase();
+                  const email = String(g.user?.email || '').toLowerCase();
+                  return name.includes(term) || email.includes(term);
                 });
                 const totalGroups = filtered.length;
                 const totalPages = Math.max(
@@ -3351,63 +3446,93 @@ export default function DashboardPage() {
 
                 return (
                   <div className='space-y-6'>
-                    <div className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3'>
-                      <div className='flex flex-col sm:flex-row gap-2 sm:gap-4'>
-                        <div>
-                          <div className='inline-flex items-center gap-2 text-sm text-gray-700 mb-2 sm:mb-0'>
-                            <input
-                              type='checkbox'
-                              className='w-4 h-4 accent-blue-600'
-                              checked={allSelected}
-                              onChange={() => {
-                                if (allSelected) {
-                                  setSelectedCartGroupIds(new Set());
-                                } else {
-                                  setSelectedCartGroupIds(
-                                    new Set(filtered.map(g => g.stripeId))
-                                  );
-                                }
-                              }}
-                            />
-                            <span>Sélectionner tout</span>
-                          </div>
-                          <div className='text-xs text-gray-600 mt-1'>
-                            {selectedCartGroupIds.size}{' '}
-                            {selectedCartGroupIds.size > 1
-                              ? 'paniers sélectionnés'
-                              : 'panier sélectionné'}
-                          </div>
+                    <div className='flex flex-wrap items-center gap-2'>
+                      <div>
+                        <div className='inline-flex items-center gap-2 text-sm text-gray-700'>
+                          <input
+                            type='checkbox'
+                            className='w-4 h-4 accent-blue-600'
+                            checked={allSelected}
+                            onChange={() => {
+                              if (allSelected) {
+                                setSelectedCartGroupIds(new Set());
+                              } else {
+                                setSelectedCartGroupIds(
+                                  new Set(filtered.map(g => g.stripeId))
+                                );
+                              }
+                            }}
+                          />
+                          <span>Sélectionner tout</span>
                         </div>
-                        <input
-                          type='text'
-                          value={cartSearchTerm}
-                          onChange={e => {
-                            setCartSearchTerm(e.target.value);
-                            setCartPage(1);
-                          }}
-                          placeholder='Filtrer par client…'
-                          className='w-full sm:w-64 border border-gray-300 rounded-md px-3 py-2 text-sm'
+                        <div className='text-xs text-gray-600 mt-1'>
+                          {selectedCartGroupIds.size}{' '}
+                          {selectedCartGroupIds.size > 1
+                            ? 'paniers sélectionnés'
+                            : 'panier sélectionné'}
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={handleSendRecap}
+                        disabled={
+                          selectedCartGroupIds.size === 0 || sendingRecap
+                        }
+                        className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                          selectedCartGroupIds.size === 0 || sendingRecap
+                            ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        }`}
+                        title='Envoyer le récapitulatif'
+                      >
+                        {sendingRecap ? (
+                          <span className='inline-flex items-center'>
+                            <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-gray-500 border-t-transparent'></span>
+                            Envoi…
+                          </span>
+                        ) : (
+                          <span>Envoyer le récapitulatif</span>
+                        )}
+                      </button>
+
+                      <span className='text-sm text-gray-700'>Filtrer par</span>
+                      <select
+                        value={cartsFilterField}
+                        onChange={e => {
+                          const v = e.target.value as
+                            | 'reference'
+                            | 'client'
+                            | 'description';
+                          setCartsFilterField(v);
+                          setCartPage(1);
+                        }}
+                        className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                      >
+                        <option value='reference'>Référence</option>
+                        <option value='client'>Client</option>
+                        <option value='description'>Description</option>
+                      </select>
+                      <input
+                        type='text'
+                        value={cartSearchTerm}
+                        onChange={e => {
+                          setCartSearchTerm(e.target.value);
+                          setCartPage(1);
+                        }}
+                        placeholder='Saisir…'
+                        className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-44 sm:w-56'
+                      />
+                      <button
+                        onClick={handleReloadCarts}
+                        disabled={cartReloading}
+                        className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                        title='Recharger'
+                      >
+                        <RefreshCw
+                          className={`w-4 h-4 mr-1 ${cartReloading ? 'animate-spin' : ''}`}
                         />
-                      </div>
-                      <div className='flex items-center gap-2 mt-2 sm:mt-0'>
-                        <button
-                          onClick={handleSendRecap}
-                          disabled={
-                            selectedCartGroupIds.size === 0 || sendingRecap
-                          }
-                          className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                          title='Envoyer le récapitulatif'
-                        >
-                          {sendingRecap ? (
-                            <span className='inline-flex items-center'>
-                              <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
-                              Envoi…
-                            </span>
-                          ) : (
-                            <span>Envoyer le récapitulatif</span>
-                          )}
-                        </button>
-                      </div>
+                        <span>Recharger</span>
+                      </button>
                     </div>
                     {pageGroups.length === 0 ? (
                       <div className='text-sm text-gray-600'>Aucun panier</div>
@@ -3452,12 +3577,14 @@ export default function DashboardPage() {
                                   </span>
                                   {recapSentByGroup[g.stripeId] && (
                                     <span className='inline-flex items-center text-green-600 text-xs font-medium'>
-                                      <BadgeCheck className='w-4 h-4 mr-1' />
+                                      <Check className='w-4 h-4 mr-1' />
                                       {(() => {
                                         const rel = formatRelativeSent(
                                           recapSentAtByGroup[g.stripeId]
                                         );
-                                        return rel ? `recap envoyé · ${rel}` : 'recap envoyé';
+                                        return rel
+                                          ? `recap envoyé · ${rel}`
+                                          : 'recap envoyé';
                                       })()}
                                     </span>
                                   )}
@@ -3479,7 +3606,16 @@ export default function DashboardPage() {
                                     Description
                                   </th>
                                   <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Montant (€)
+                                    Prix unitaire (€)
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Quantité
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Total (€)
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Poids (kg)
                                   </th>
                                   <th className='px-4 py-2 text-left font-medium text-gray-700'>
                                     Créé
@@ -3513,6 +3649,39 @@ export default function DashboardPage() {
                                               minimumFractionDigits: 2,
                                               maximumFractionDigits: 2,
                                             })
+                                          : '—'}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {Number.isFinite(Number(c.quantity))
+                                          ? Number(c.quantity)
+                                          : 1}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {(() => {
+                                          const unit = Number(c.value);
+                                          const qty = Number(c.quantity);
+                                          if (
+                                            !Number.isFinite(unit) ||
+                                            !Number.isFinite(qty)
+                                          ) {
+                                            return '—';
+                                          }
+                                          const total = unit * qty;
+                                          return total.toLocaleString('fr-FR', {
+                                            minimumFractionDigits: 2,
+                                            maximumFractionDigits: 2,
+                                          });
+                                        })()}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {Number.isFinite(Number(c.weight))
+                                          ? Number(c.weight).toLocaleString(
+                                              'fr-FR',
+                                              {
+                                                minimumFractionDigits: 2,
+                                                maximumFractionDigits: 2,
+                                              }
+                                            )
                                           : '—'}
                                       </td>
                                       <td className='px-4 py-3 text-gray-700'>
@@ -4555,16 +4724,16 @@ export default function DashboardPage() {
                         ref={drawButtonRef}
                         onClick={handleDraw}
                         disabled={selectedIds.size < 2 || drawLoading}
-                      className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                        className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                         title='Lancer le tirage'
                       >
                         {drawLoading ? (
                           <span className='inline-flex items-center'>
-                          <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                            <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
                             Tirage…
                           </span>
                         ) : (
-                        <span>Lancer le tirage</span>
+                          <span>Lancer le tirage</span>
                         )}
                       </button>
                     </div>
@@ -4647,7 +4816,7 @@ export default function DashboardPage() {
                       />
                       <span>Recharger</span>
                     </button>
-                  <div className='text-xs text-gray-600 mt-1'>
+                    <div className='text-xs text-gray-600 mt-1'>
                       {selectedIds.size} sélectionné(s)
                     </div>
 
@@ -4752,7 +4921,7 @@ export default function DashboardPage() {
                       />
                       <span>Recharger</span>
                     </button>
-                  <div className='text-xs text-gray-600 mt-1'>
+                    <div className='text-xs text-gray-600 mt-1'>
                       {selectedIds.size} sélectionné(s)
                     </div>
                   </div>
@@ -5282,36 +5451,38 @@ export default function DashboardPage() {
                                     selectedIds.has(id)
                                   );
                                   return (
-                                  <div className='flex flex-col items-start'>
-                                    <div className='inline-flex items-center gap-2 text-sm text-gray-700'>
-                                      <input
-                                        type='checkbox'
-                                        checked={allSelected}
-                                        onChange={e => {
-                                          const checked = e.target.checked;
-                                          setSelectedIds(prev => {
-                                            const next = new Set(prev);
-                                            if (checked) {
-                                              pageIds.forEach(id => next.add(id));
-                                            } else {
-                                            pageIds.forEach(id =>
-                                              next.delete(id)
-                                            );
-                                            }
-                                            return next;
-                                          });
-                                        }}
-                                        aria-label='Sélectionner tout'
-                                      />
-                                      <span>Sélectionner tout</span>
+                                    <div className='flex flex-col items-start'>
+                                      <div className='inline-flex items-center gap-2 text-sm text-gray-700'>
+                                        <input
+                                          type='checkbox'
+                                          checked={allSelected}
+                                          onChange={e => {
+                                            const checked = e.target.checked;
+                                            setSelectedIds(prev => {
+                                              const next = new Set(prev);
+                                              if (checked) {
+                                                pageIds.forEach(id =>
+                                                  next.add(id)
+                                                );
+                                              } else {
+                                                pageIds.forEach(id =>
+                                                  next.delete(id)
+                                                );
+                                              }
+                                              return next;
+                                            });
+                                          }}
+                                          aria-label='Sélectionner tout'
+                                        />
+                                        <span>Sélectionner tout</span>
+                                      </div>
+                                      <div className='text-xs text-gray-600 mt-1 font-normal'>
+                                        {selectedIds.size}{' '}
+                                        {selectedIds.size > 1
+                                          ? 'clients sélectionnés'
+                                          : 'client sélectionné'}
+                                      </div>
                                     </div>
-                                    <div className='text-xs text-gray-600 mt-1 font-normal'>
-                                      {selectedIds.size}{' '}
-                                      {selectedIds.size > 1
-                                        ? 'clients sélectionnés'
-                                        : 'client sélectionné'}
-                                    </div>
-                                  </div>
                                   );
                                 })()}
                               </th>
