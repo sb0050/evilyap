@@ -1876,22 +1876,22 @@ class EmailService {
               <h1>🎉 Félicitations !</h1>
               <p class="sub">✅ Vous avez gagné lors de notre tirage au sort</p>
             </div>
-            
+
             <div class="content">
               <h2>Bonjour ${name || ""},</h2>
-              
+
               <p>Nous avons le plaisir de vous annoncer que vous avez été tiré(e) au sort lors de notre live.</p>
-              
+
               <div class="details">
                 <h3>📬 Prochaine étape</h3>
                 <p>Notre équipe va vous recontacter très vite avec les modalités pour recevoir votre gain.</p>
                 <p>Vous pouvez répondre directement à cet email si vous avez des questions.</p>
-              </div>
-              
+            </div>
+
               <p>🙏 Merci pour votre participation !</p>
               <p><strong>L'équipe ${data.storeName}</strong></p>
             </div>
-            
+
             <div class="footer">
               <p>© ${new Date().getFullYear()} ${data.storeName} - Tous droits réservés</p>
             </div>

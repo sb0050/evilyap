@@ -4733,7 +4733,7 @@ export default function DashboardPage() {
                             Tirage…
                           </span>
                         ) : (
-                          <span>Lancer le tirage</span>
+                        <span>Lancer le tirage</span>
                         )}
                       </button>
                     </div>
