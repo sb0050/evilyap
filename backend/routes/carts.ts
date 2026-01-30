@@ -28,11 +28,25 @@ function isMissingColumnError(err: any, column: string): boolean {
   );
 }
 
-function getSuggestedWeightFromItemCount(itemCount: number): number {
-  if (!Number.isFinite(itemCount) || itemCount <= 0) return 0.5;
-  if (itemCount <= 1) return 0.5;
-  if (itemCount <= 3) return 1;
-  return 2;
+function parseWeightKgFromDescription(description: string): number | null {
+  const s = String(description || "").toLowerCase();
+  if (!s.trim()) return null;
+
+  const m = s.match(
+    /(\d+(?:[.,]\d+)?)\s*(kg|kgs|kilogramme?s?|kilo?s?|g|gr|gramme?s?)\b/i,
+  );
+  if (!m) return null;
+
+  const raw = parseFloat(String(m[1] || "").replace(",", "."));
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+
+  const unit = String(m[2] || "").toLowerCase();
+  const kg = unit.startsWith("g") || unit.startsWith("gr") ? raw / 1000 : raw;
+  return Number.isFinite(kg) && kg > 0 ? kg : null;
+}
+
+function getFallbackWeightKgFromDescription(description: string): number {
+  return parseWeightKgFromDescription(description) ?? 0.5;
 }
 
 async function deleteCartInternal(id: number) {
@@ -86,7 +100,7 @@ router.post("/", async (req, res) => {
 
     const normalizedWeight = (() => {
       if (weight === undefined || weight === null || weight === "") {
-        return getSuggestedWeightFromItemCount(normalizedQuantity);
+        return getFallbackWeightKgFromDescription(descriptionTrimmed);
       }
       const wRaw =
         typeof weight === "number"
@@ -252,9 +266,25 @@ router.get("/summary", async (req, res) => {
 
     let grandTotal = 0;
     for (const k of Object.keys(grouped)) {
-      const suggestedWeight = getSuggestedWeightFromItemCount(
-        Array.isArray(grouped[k].items) ? grouped[k].items.length : 0,
-      );
+      let suggestedWeight = 0;
+      for (const it of grouped[k].items || []) {
+        const qty = Math.max(1, Number((it as any)?.quantity ?? 1));
+        const itemWeightRaw = (it as any)?.weight;
+        const itemWeight =
+          typeof itemWeightRaw === "number" &&
+          Number.isFinite(itemWeightRaw) &&
+          itemWeightRaw > 0
+            ? itemWeightRaw
+            : parseWeightKgFromDescription(
+                String((it as any)?.description || ""),
+              );
+        if (itemWeight != null) {
+          suggestedWeight += itemWeight * (Number.isFinite(qty) ? qty : 1);
+        }
+      }
+      if (!Number.isFinite(suggestedWeight) || suggestedWeight <= 0) {
+        suggestedWeight = 0.5;
+      }
       itemsByStore.push({
         store: grouped[k].store,
         total: grouped[k].total,
@@ -453,7 +483,9 @@ router.post("/recap", async (req, res) => {
         value: Number(c.value || 0),
         description: typeof c.description === "string" ? c.description : "",
         quantity:
-          typeof c.quantity === "number" && Number.isFinite(c.quantity) && c.quantity > 0
+          typeof c.quantity === "number" &&
+          Number.isFinite(c.quantity) &&
+          c.quantity > 0
             ? c.quantity
             : 1,
       }));
