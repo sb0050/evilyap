@@ -109,7 +109,6 @@ export default function CheckoutPage() {
       created_at?: string;
     }>
   >([]);
-  const [cartSelected, setCartSelected] = useState(false);
   const [cartTotalForStore, setCartTotalForStore] = useState<number>(0);
 
   const [storePickupAddress, setStorePickupAddress] = useState<
@@ -192,12 +191,7 @@ export default function CheckoutPage() {
       }
     };
   }, [user, store]);
-
-  useEffect(() => {
-    if ((cartItemsForStore || []).length === 0) {
-      setCartSelected(false);
-    }
-  }, [cartItemsForStore]);
+ 
 
   // Alimente automatiquement la référence avec les références agrégées du panier
   // Désactivé: ne pas écraser la saisie manuelle de la référence
@@ -749,17 +743,6 @@ export default function CheckoutPage() {
                       <h3 className='text-base font-semibold text-gray-900'>
                         Articles du panier
                       </h3>
-                    </div>
-                    <div className='mt-1 mb-2'>
-                      <label className='inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer select-none'>
-                        <input
-                          type='checkbox'
-                          className='w-4 h-4 accent-blue-600'
-                          checked={cartSelected}
-                          onChange={() => setCartSelected(prev => !prev)}
-                        />
-                        <span>Sélectionner ce panier</span>
-                      </label>
                     </div>
                     <ul className='mt-1 space-y-1 max-h-40 overflow-auto text-sm text-gray-700'>
                       {cartItemsForStore.map(it => (
