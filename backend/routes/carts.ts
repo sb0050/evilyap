@@ -1,5 +1,8 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
+import Stripe from "stripe";
+import { emailService } from "../services/emailService";
+import { getAuth } from "@clerk/express";
 
 const router = express.Router();
 
@@ -11,12 +14,39 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error("Missing Supabase environment variables");
 }
 const supabase = createClient(supabaseUrl, supabaseKey);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: "2025-06-30.basil",
+});
 
-function getSuggestedWeightFromItemCount(itemCount: number): number {
-  if (!Number.isFinite(itemCount) || itemCount <= 0) return 0.5;
-  if (itemCount <= 1) return 0.5;
-  if (itemCount <= 3) return 1;
-  return 2;
+function isMissingColumnError(err: any, column: string): boolean {
+  const msg = String(err?.message || "");
+  return (
+    msg.includes(`column "${column}"`) ||
+    msg.includes(`column '${column}'`) ||
+    msg.includes(`column ${column}`) ||
+    msg.toLowerCase().includes("does not exist")
+  );
+}
+
+function parseWeightKgFromDescription(description: string): number | null {
+  const s = String(description || "").toLowerCase();
+  if (!s.trim()) return null;
+
+  const m = s.match(
+    /(\d+(?:[.,]\d+)?)\s*(kg|kgs|kilogramme?s?|kilo?s?|g|gr|gramme?s?)\b/i,
+  );
+  if (!m) return null;
+
+  const raw = parseFloat(String(m[1] || "").replace(",", "."));
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+
+  const unit = String(m[2] || "").toLowerCase();
+  const kg = unit.startsWith("g") || unit.startsWith("gr") ? raw / 1000 : raw;
+  return Number.isFinite(kg) && kg > 0 ? kg : null;
+}
+
+function getFallbackWeightKgFromDescription(description: string): number {
+  return parseWeightKgFromDescription(description) ?? 0.5;
 }
 
 async function deleteCartInternal(id: number) {
@@ -40,6 +70,7 @@ router.post("/", async (req, res) => {
       customer_stripe_id,
       description,
       quantity,
+      weight,
     } = req.body || {};
 
     if (!customer_stripe_id) {
@@ -54,28 +85,65 @@ router.post("/", async (req, res) => {
       });
     }
 
-    const { data, error } = await supabase
-      .from("carts")
-      .insert([
-        {
-          store_id,
-          product_reference,
-          value: typeof value === "number" ? value : 0,
-          customer_stripe_id,
-          description: typeof description === "string" ? description : null,
-          status: "PENDING",
-          quantity:
-            typeof quantity === "number" &&
-            Number.isFinite(quantity) &&
-            quantity > 0
-              ? quantity
-              : 1,
-          // Horodatage de création côté serveur (timestamptz)
-          created_at: new Date().toISOString(),
-        },
-      ])
-      .select()
-      .single();
+    const descriptionTrimmed =
+      typeof description === "string" ? description.trim() : "";
+    if (!descriptionTrimmed) {
+      return res
+        .status(400)
+        .json({ error: "description requise pour le panier" });
+    }
+
+    const normalizedQuantity =
+      typeof quantity === "number" && Number.isFinite(quantity) && quantity > 0
+        ? quantity
+        : 1;
+
+    const normalizedWeight = (() => {
+      if (weight === undefined || weight === null || weight === "") {
+        return getFallbackWeightKgFromDescription(descriptionTrimmed);
+      }
+      const wRaw =
+        typeof weight === "number"
+          ? weight
+          : typeof weight === "string"
+            ? parseFloat(weight.trim().replace(",", "."))
+            : NaN;
+      if (Number.isFinite(wRaw) && wRaw >= 0) return wRaw;
+      return null;
+    })();
+    if (normalizedWeight === null) {
+      return res.status(400).json({ error: "weight invalide (>= 0)" });
+    }
+
+    const row: any = {
+      store_id,
+      product_reference,
+      value: typeof value === "number" ? value : 0,
+      customer_stripe_id,
+      description: descriptionTrimmed,
+      status: "PENDING",
+      quantity: normalizedQuantity,
+      weight: normalizedWeight,
+      created_at: new Date().toISOString(),
+    };
+
+    let data: any = null;
+    let error: any = null;
+    {
+      const resp = await supabase.from("carts").insert([row]).select().single();
+      data = resp.data;
+      error = resp.error;
+    }
+    if (error && isMissingColumnError(error, "weight")) {
+      const { weight: _w, ...withoutWeight } = row;
+      const resp2 = await supabase
+        .from("carts")
+        .insert([withoutWeight])
+        .select()
+        .single();
+      data = resp2.data;
+      error = resp2.error;
+    }
 
     if (error) {
       return res.status(500).json({ error: error.message });
@@ -96,14 +164,33 @@ router.get("/summary", async (req, res) => {
       return res.status(400).json({ error: "stripeId requis" });
     }
 
-    const { data: cartRows, error } = await supabase
-      .from("carts")
-      .select(
-        "id,store_id,product_reference,value,quantity,created_at,description,status",
-      )
-      .eq("customer_stripe_id", stripeId)
-      .eq("status", "PENDING")
-      .order("id", { ascending: false });
+    const selectWithWeight =
+      "id,store_id,product_reference,value,quantity,created_at,description,status,recap_sent_at,weight";
+    const selectWithoutWeight =
+      "id,store_id,product_reference,value,quantity,created_at,description,status,recap_sent_at";
+
+    let cartRows: any[] | null = null;
+    let error: any = null;
+    {
+      const resp = await supabase
+        .from("carts")
+        .select(selectWithWeight)
+        .eq("customer_stripe_id", stripeId)
+        .eq("status", "PENDING")
+        .order("id", { ascending: false });
+      cartRows = resp.data as any;
+      error = resp.error;
+    }
+    if (error && isMissingColumnError(error, "weight")) {
+      const resp2 = await supabase
+        .from("carts")
+        .select(selectWithoutWeight)
+        .eq("customer_stripe_id", stripeId)
+        .eq("status", "PENDING")
+        .order("id", { ascending: false });
+      cartRows = resp2.data as any;
+      error = resp2.error;
+    }
 
     if (error) {
       return res.status(500).json({ error: error.message });
@@ -146,6 +233,9 @@ router.get("/summary", async (req, res) => {
         value: number;
         quantity?: number;
         created_at?: string;
+        description?: string;
+        recap_sent_at?: string;
+        weight?: number | null;
       }>;
     }> = [];
 
@@ -167,6 +257,8 @@ router.get("/summary", async (req, res) => {
         quantity: (r as any).quantity ?? 1,
         created_at: (r as any).created_at,
         description: (r as any).description,
+        recap_sent_at: (r as any).recap_sent_at,
+        weight: (r as any).weight ?? null,
       });
       const qty = Number((r as any).quantity ?? 1);
       grouped[key].total += (r.value || 0) * (Number.isFinite(qty) ? qty : 1);
@@ -174,9 +266,25 @@ router.get("/summary", async (req, res) => {
 
     let grandTotal = 0;
     for (const k of Object.keys(grouped)) {
-      const suggestedWeight = getSuggestedWeightFromItemCount(
-        Array.isArray(grouped[k].items) ? grouped[k].items.length : 0,
-      );
+      let suggestedWeight = 0;
+      for (const it of grouped[k].items || []) {
+        const qty = Math.max(1, Number((it as any)?.quantity ?? 1));
+        const itemWeightRaw = (it as any)?.weight;
+        const itemWeight =
+          typeof itemWeightRaw === "number" &&
+          Number.isFinite(itemWeightRaw) &&
+          itemWeightRaw > 0
+            ? itemWeightRaw
+            : parseWeightKgFromDescription(
+                String((it as any)?.description || ""),
+              );
+        if (itemWeight != null) {
+          suggestedWeight += itemWeight * (Number.isFinite(qty) ? qty : 1);
+        }
+      }
+      if (!Number.isFinite(suggestedWeight) || suggestedWeight <= 0) {
+        suggestedWeight = 0.5;
+      }
       itemsByStore.push({
         store: grouped[k].store,
         total: grouped[k].total,
@@ -235,9 +343,23 @@ router.put("/:id", async (req, res) => {
       .update({ quantity: qty })
       .eq("id", id)
       .select(
-        "id,store_id,product_reference,value,quantity,created_at,description,status",
+        "id,store_id,product_reference,value,quantity,created_at,description,status,weight",
       )
       .single();
+    if (error && isMissingColumnError(error, "weight")) {
+      const { data: data2, error: error2 } = await supabase
+        .from("carts")
+        .update({ quantity: qty })
+        .eq("id", id)
+        .select(
+          "id,store_id,product_reference,value,quantity,created_at,description,status",
+        )
+        .single();
+      if (error2) {
+        return res.status(500).json({ error: error2.message });
+      }
+      return res.json({ success: true, item: data2 });
+    }
     if (error) {
       return res.status(500).json({ error: error.message });
     }
@@ -267,14 +389,33 @@ router.get("/store/:slug", async (req, res) => {
       return res.status(404).json({ error: "Boutique introuvable" });
     }
     const storeId = (storeRow as any)?.id;
-    const { data: carts, error } = await supabase
-      .from("carts")
-      .select(
-        "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status",
-      )
-      .eq("store_id", storeId)
-      .eq("status", "PENDING")
-      .order("id", { ascending: false });
+    const cartsSelectWithWeight =
+      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status, recap_sent_at, weight";
+    const cartsSelectWithoutWeight =
+      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status, recap_sent_at";
+
+    let carts: any[] | null = null;
+    let error: any = null;
+    {
+      const resp = await supabase
+        .from("carts")
+        .select(cartsSelectWithWeight)
+        .eq("store_id", storeId)
+        .eq("status", "PENDING")
+        .order("id", { ascending: false });
+      carts = resp.data as any;
+      error = resp.error;
+    }
+    if (error && isMissingColumnError(error, "weight")) {
+      const resp2 = await supabase
+        .from("carts")
+        .select(cartsSelectWithoutWeight)
+        .eq("store_id", storeId)
+        .eq("status", "PENDING")
+        .order("id", { ascending: false });
+      carts = resp2.data as any;
+      error = resp2.error;
+    }
     if (error) {
       return res.status(500).json({ error: error.message });
     }
@@ -282,6 +423,100 @@ router.get("/store/:slug", async (req, res) => {
   } catch (e) {
     console.error("Error fetching store carts:", e);
     return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+router.post("/recap", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const { stripeIds, storeSlug } = req.body || {};
+    if (!Array.isArray(stripeIds) || stripeIds.length === 0) {
+      return res.status(400).json({ error: "Aucun panier sélectionné" });
+    }
+    if (!storeSlug || typeof storeSlug !== "string") {
+      return res.status(400).json({ error: "Slug de boutique requis" });
+    }
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, name")
+      .eq("slug", storeSlug)
+      .maybeSingle();
+    if (storeErr) {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!storeRow) {
+      return res.status(404).json({ error: "Boutique introuvable" });
+    }
+    const storeId = (storeRow as any)?.id;
+    const storeName = (storeRow as any)?.name;
+    const cloud = (process.env.CLOUDFRONT_URL || "").replace(/\/+$/, "");
+    const storeLogo = cloud ? `${cloud}/images/${storeId}` : "";
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+    const checkoutLink = `${frontendUrl}/checkout/${encodeURIComponent(
+      storeSlug,
+    )}`;
+    const sentStripeIds: string[] = [];
+    const failedStripeIds: string[] = [];
+    for (const sid of stripeIds) {
+      const stripeId = String(sid || "");
+      if (!stripeId) continue;
+      let customerEmail = "";
+      let customerName = "Client";
+      try {
+        const customer = await stripe.customers.retrieve(stripeId);
+        customerEmail = String((customer as any)?.email || "");
+        customerName = String((customer as any)?.name || "Client");
+      } catch {}
+      if (!customerEmail) continue;
+      const { data: carts, error } = await supabase
+        .from("carts")
+        .select("id, product_reference, value, description, quantity")
+        .eq("customer_stripe_id", stripeId)
+        .eq("store_id", storeId)
+        .eq("status", "PENDING");
+      if (error) continue;
+      const items = (carts || []).map((c: any) => ({
+        product_reference: String(c.product_reference || ""),
+        value: Number(c.value || 0),
+        description: typeof c.description === "string" ? c.description : "",
+        quantity:
+          typeof c.quantity === "number" &&
+          Number.isFinite(c.quantity) &&
+          c.quantity > 0
+            ? c.quantity
+            : 1,
+      }));
+      if (items.length === 0) continue;
+      const ok = await emailService.sendCartRecap({
+        customerEmail,
+        customerName,
+        storeName,
+        storeLogo,
+        carts: items,
+        checkoutLink,
+      });
+      if (ok) {
+        sentStripeIds.push(stripeId);
+        const nowIso = new Date().toISOString();
+        await supabase
+          .from("carts")
+          .update({ recap_sent_at: nowIso })
+          .eq("customer_stripe_id", stripeId)
+          .eq("store_id", storeId)
+          .eq("status", "PENDING");
+      } else {
+        failedStripeIds.push(stripeId);
+      }
+    }
+    return res.json({ success: true, sentStripeIds, failedStripeIds });
+  } catch (e) {
+    console.error("Error sending recap:", e);
+    return res
+      .status(500)
+      .json({ error: "Erreur lors de l'envoi du récapitulatif" });
   }
 });
 

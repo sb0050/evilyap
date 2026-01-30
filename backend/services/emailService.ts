@@ -378,6 +378,159 @@ class EmailService {
     }
   }
 
+  async sendCartRecap(data: {
+    customerEmail: string;
+    customerName: string;
+    storeName: string;
+    storeLogo?: string;
+    carts: Array<{
+      product_reference: string;
+      value: number;
+      description?: string;
+      quantity?: number;
+    }>;
+    checkoutLink: string;
+  }): Promise<boolean> {
+    try {
+      const shouldShowLogo =
+        typeof data.storeLogo === "string" &&
+        data.storeLogo.trim().length > 0 &&
+        !data.storeLogo.trim().toLowerCase().startsWith("data:") &&
+        data.storeLogo.trim().length < 2000;
+
+      const total = (data.carts || []).reduce((acc, c) => {
+        const unit = typeof c.value === "number" ? c.value : 0;
+        const qty =
+          typeof c.quantity === "number" &&
+          Number.isFinite(c.quantity) &&
+          c.quantity > 0
+            ? Math.floor(c.quantity)
+            : 1;
+        return acc + unit * qty;
+      }, 0);
+      const formattedTotal = this.formatAmount(total, "EUR") || String(total);
+
+      const itemsRowsHtml = (data.carts || [])
+        .map((c) => {
+          const ref = String(c.product_reference || "").trim();
+          const desc = String(c.description || "").trim();
+          const qty =
+            typeof c.quantity === "number" &&
+            Number.isFinite(c.quantity) &&
+            c.quantity > 0
+              ? Math.floor(c.quantity)
+              : 1;
+          const unit = typeof c.value === "number" ? c.value : 0;
+          const unitFormatted = this.formatAmount(unit, "EUR") || String(unit);
+          const lineTotal = unit * qty;
+          const lineTotalFormatted =
+            this.formatAmount(lineTotal, "EUR") || String(lineTotal);
+          return `
+            <tr>
+              <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                <div style="font-weight:700; color:#111;">${ref || "—"}</div>
+                ${
+                  desc
+                    ? `<div style="margin-top:4px; font-size:13px; color:#555;">${desc}</div>`
+                    : ""
+                }
+              </td>
+              <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                ${unitFormatted}
+              </td>
+              <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                ${qty}
+              </td>
+              <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:800; white-space:nowrap;">
+                ${lineTotalFormatted}
+              </td>
+            </tr>
+          `;
+        })
+        .join("");
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>🧾 Récapitulatif de votre panier</title>
+        </head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin:0; padding:0;">
+          <div style="max-width:600px;margin:0 auto;padding:20px;">
+            <div style="background:linear-gradient(135deg,#28a745 0%,#20c997 100%);color:#ffffff;padding:30px;text-align:center;border-radius:10px 10px 0 0;">
+              ${
+                shouldShowLogo
+                  ? `<img src="${data.storeLogo}" alt="${data.storeName}" style="max-width:100px;margin-bottom:20px;">`
+                  : ""
+              }
+              <h1>🧾 Récapitulatif de votre panier</h1>
+              <p>${data.storeName}</p>
+            </div>
+            <div style="background:#f9f9f9;padding:30px;border-radius:0 0 10px 10px;">
+              <h2>Bonjour ${data.customerName},</h2>
+              <p>Voici le récapitulatif de votre panier chez <strong>${data.storeName}</strong>.</p>
+
+              <div style="background:#ffffff;padding:20px;border-radius:8px;margin:20px 0;border-left:4px solid #28a745;">
+                <h3>🛍️ Détail du panier</h3>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                  <thead>
+                    <tr>
+                      <th align="left" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Article</th>
+                      <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Prix unitaire</th>
+                      <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Qté</th>
+                      <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${itemsRowsHtml}
+                  </tbody>
+                </table>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse; margin-top:16px;">
+                  <tr>
+                    <td style="padding-top:14px; border-top:2px solid #eee; font-size:14px; color:#333; font-weight:700;">
+                      Total du panier
+                    </td>
+                    <td align="right" style="padding-top:14px; border-top:2px solid #eee; white-space:nowrap;font-size:22px;font-weight:800;color:#28a745;">
+                      ${formattedTotal}
+                    </td>
+                  </tr>
+                </table>
+              </div>
+
+              <div style="margin-top:24px;">
+                <a href="${data.checkoutLink}" style="display:block;width:94%;margin:0 auto;text-align:center;padding:16px 0;background:#0074d4;background-color:#0074d4;color:#ffffff !important;border-radius:8px;text-decoration:none;font-weight:700;font-size:18px;">Procéder au paiement</a>
+              </div>
+
+              <div style="text-align:center;margin-top:30px;color:#666;font-size:14px;">
+                © ${new Date().getFullYear()} ${data.storeName} - Tous droits réservés
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+      const mailOptions = {
+        from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
+        to: data.customerEmail,
+        subject: `🧾 Récapitulatif de votre panier - ${data.storeName}`,
+        html: htmlContent,
+      };
+      const info = await this.transporter.sendMail(mailOptions);
+      console.log("cart recap email:", {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        response: info.response,
+      });
+      return true;
+    } catch (error) {
+      console.error("Erreur envoi email recap:", error);
+      return false;
+    }
+  }
+
   // Email de notification pour le propriétaire de la boutique
   async sendStoreOwnerNotification(
     data: StoreOwnerEmailData,
@@ -1701,33 +1854,46 @@ class EmailService {
         <html>
         <head>
           <meta charset="utf-8">
-          <title>Félicitations</title>
+          <title>🎉 Félicitations</title>
           <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #111827; background: #f9fafb; }
-            .container { max-width: 680px; margin: 0 auto; padding: 24px; }
-            .card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
-            .header { padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; gap: 12px; }
-            .brand { font-weight: 700; font-size: 18px; color: #111827; }
-            .content { padding: 20px; }
-            .cta { display:inline-block; margin-top: 16px; background:#4f46e5; color:white; text-decoration:none; padding:10px 14px; border-radius:8px; font-weight:600; }
-            .muted { color:#6b7280; font-size:14px; margin-top:16px; }
-            img.logo { width:36px; height:36px; border-radius:8px; object-fit:cover; border:1px solid #e5e7eb; }
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .brand { font-weight: 700; font-size: 18px; margin-bottom: 8px; }
+            .header h1 { font-size: 36px; font-weight: 800; margin: 4px 0; }
+            .sub { font-size: 20px; margin-top: 8px; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #667eea; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+            .logo { max-width: 100px; margin-bottom: 12px; border-radius: 8px; }
           </style>
         </head>
         <body>
           <div class="container">
-            <div class="card">
-              <div class="header">
-                ${logo ? `<img class="logo" src="${logo}" alt="${data.storeName}" />` : ""}
-                <div class="brand">${data.storeName}</div>
-              </div>
-              <div class="content">
-                <p>Bonjour${name ? ` ${name}` : ""},</p>
-                <p>🎉 Félicitations ! Vous avez été tiré au sort lors de notre live.</p>
-                <p>Nous vous recontactons très vite avec les modalités pour recevoir votre gain.</p>
-                <p class="muted">Si vous avez des questions, vous pouvez répondre directement à cet email.</p>
-                <p>À très vite,<br/>L’équipe ${data.storeName}</p>
-              </div>
+            <div class="header">
+              ${logo ? `<img src="${logo}" alt="${data.storeName}" class="logo">` : ""}
+              <div class="brand">${data.storeName}</div>
+              <h1>🎉 Félicitations !</h1>
+              <p class="sub">✅ Vous avez gagné lors de notre tirage au sort</p>
+            </div>
+
+            <div class="content">
+              <h2>Bonjour ${name || ""},</h2>
+
+              <p>Nous avons le plaisir de vous annoncer que vous avez été tiré(e) au sort lors de notre live.</p>
+
+              <div class="details">
+                <h3>📬 Prochaine étape</h3>
+                <p>Notre équipe va vous recontacter très vite avec les modalités pour recevoir votre gain.</p>
+                <p>Vous pouvez répondre directement à cet email si vous avez des questions.</p>
+            </div>
+
+              <p>🙏 Merci pour votre participation !</p>
+              <p><strong>L'équipe ${data.storeName}</strong></p>
+            </div>
+
+            <div class="footer">
+              <p>© ${new Date().getFullYear()} ${data.storeName} - Tous droits réservés</p>
             </div>
           </div>
         </body>

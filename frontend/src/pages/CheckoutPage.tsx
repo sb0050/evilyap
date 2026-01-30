@@ -178,6 +178,7 @@ export default function CheckoutPage() {
       }
     };
   }, [user, store]);
+ 
 
   // Alimente automatiquement la référence avec les références agrégées du panier
   // Désactivé: ne pas écraser la saisie manuelle de la référence
