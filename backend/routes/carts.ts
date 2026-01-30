@@ -1,5 +1,8 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
+import Stripe from "stripe";
+import { emailService } from "../services/emailService";
+import { getAuth } from "@clerk/express";
 
 const router = express.Router();
 
@@ -11,6 +14,9 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error("Missing Supabase environment variables");
 }
 const supabase = createClient(supabaseUrl, supabaseKey);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: "2025-06-30.basil",
+});
 
 function getSuggestedWeightFromItemCount(itemCount: number): number {
   if (!Number.isFinite(itemCount) || itemCount <= 0) return 0.5;
@@ -99,7 +105,7 @@ router.get("/summary", async (req, res) => {
     const { data: cartRows, error } = await supabase
       .from("carts")
       .select(
-        "id,store_id,product_reference,value,quantity,created_at,description,status",
+        "id,store_id,product_reference,value,quantity,created_at,description,status,recap_sent_at",
       )
       .eq("customer_stripe_id", stripeId)
       .eq("status", "PENDING")
@@ -167,6 +173,7 @@ router.get("/summary", async (req, res) => {
         quantity: (r as any).quantity ?? 1,
         created_at: (r as any).created_at,
         description: (r as any).description,
+        recap_sent_at: (r as any).recap_sent_at,
       });
       const qty = Number((r as any).quantity ?? 1);
       grouped[key].total += (r.value || 0) * (Number.isFinite(qty) ? qty : 1);
@@ -270,7 +277,7 @@ router.get("/store/:slug", async (req, res) => {
     const { data: carts, error } = await supabase
       .from("carts")
       .select(
-        "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status",
+      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status, recap_sent_at",
       )
       .eq("store_id", storeId)
       .eq("status", "PENDING")
@@ -282,6 +289,94 @@ router.get("/store/:slug", async (req, res) => {
   } catch (e) {
     console.error("Error fetching store carts:", e);
     return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+router.post("/recap", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const { stripeIds, storeSlug } = req.body || {};
+    if (!Array.isArray(stripeIds) || stripeIds.length === 0) {
+      return res.status(400).json({ error: "Aucun panier sélectionné" });
+    }
+    if (!storeSlug || typeof storeSlug !== "string") {
+      return res.status(400).json({ error: "Slug de boutique requis" });
+    }
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, name")
+      .eq("slug", storeSlug)
+      .maybeSingle();
+    if (storeErr) {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!storeRow) {
+      return res.status(404).json({ error: "Boutique introuvable" });
+    }
+    const storeId = (storeRow as any)?.id;
+    const storeName = (storeRow as any)?.name;
+    const cloud = (process.env.CLOUDFRONT_URL || "").replace(/\/+$/, "");
+    const storeLogo = cloud ? `${cloud}/images/${storeId}` : "";
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+    const checkoutLink = `${frontendUrl}/checkout/${encodeURIComponent(
+      storeSlug
+    )}`;
+    const sentStripeIds: string[] = [];
+    const failedStripeIds: string[] = [];
+    for (const sid of stripeIds) {
+      const stripeId = String(sid || "");
+      if (!stripeId) continue;
+      let customerEmail = "";
+      let customerName = "Client";
+      try {
+        const customer = await stripe.customers.retrieve(stripeId);
+        customerEmail = String((customer as any)?.email || "");
+        customerName = String((customer as any)?.name || "Client");
+      } catch {}
+      if (!customerEmail) continue;
+    const { data: carts, error } = await supabase
+        .from("carts")
+      .select("id, product_reference, value, description")
+        .eq("customer_stripe_id", stripeId)
+        .eq("store_id", storeId)
+        .eq("status", "PENDING");
+      if (error) continue;
+    const items = (carts || []).map((c: any) => ({
+        product_reference: String(c.product_reference || ""),
+        value: Number(c.value || 0),
+        description: typeof c.description === "string" ? c.description : "",
+      }));
+      if (items.length === 0) continue;
+      const ok = await emailService.sendCartRecap({
+        customerEmail,
+        customerName,
+        storeName,
+        storeLogo,
+        carts: items,
+        checkoutLink,
+      });
+      if (ok) {
+        sentStripeIds.push(stripeId);
+      const nowIso = new Date().toISOString();
+      await supabase
+        .from("carts")
+        .update({ recap_sent_at: nowIso })
+        .eq("customer_stripe_id", stripeId)
+        .eq("store_id", storeId)
+        .eq("status", "PENDING");
+      } else {
+        failedStripeIds.push(stripeId);
+      }
+    }
+    return res.json({ success: true, sentStripeIds, failedStripeIds });
+  } catch (e) {
+    console.error("Error sending recap:", e);
+    return res
+      .status(500)
+      .json({ error: "Erreur lors de l'envoi du récapitulatif" });
   }
 });
 
