@@ -86,15 +86,20 @@ router.post("/notify", async (req, res) => {
       typeof storeName === "string" && storeName.trim()
         ? String(storeName).trim()
         : "Votre Boutique";
+    let finalStoreLogo: string | undefined = undefined;
     if (supabase && typeof storeSlug === "string" && storeSlug.trim()) {
       try {
         const { data, error } = await supabase
           .from("stores")
-          .select("name, slug")
+          .select("id, name, slug")
           .eq("slug", String(storeSlug).trim())
           .single();
         if (!error && data?.name) {
           finalStoreName = data.name;
+          const cloud = (process.env.CLOUDFRONT_URL || "").replace(/\/+$/, "");
+          if ((data as any)?.id && cloud) {
+            finalStoreLogo = `${cloud}/images/${(data as any).id}`;
+          }
         }
       } catch {}
     }
@@ -102,6 +107,7 @@ router.post("/notify", async (req, res) => {
       customerEmail: to,
       customerName: typeof name === "string" ? name : undefined,
       storeName: finalStoreName,
+      storeLogo: finalStoreLogo,
     });
     if (!sent) {
       return res

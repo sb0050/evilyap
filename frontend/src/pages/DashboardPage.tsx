@@ -238,6 +238,99 @@ export default function DashboardPage() {
   const [cartGroupPage, setCartGroupPage] = useState<Record<string, number>>(
     {}
   );
+  const [selectedCartGroupIds, setSelectedCartGroupIds] = useState<
+    Set<string>
+  >(new Set());
+  const [sendingRecap, setSendingRecap] = useState<boolean>(false);
+  const [recapSentByGroup, setRecapSentByGroup] = useState<
+    Record<string, boolean>
+  >({});
+  const [recapSentAtByGroup, setRecapSentAtByGroup] = useState<
+    Record<string, string | null>
+  >({});
+  useEffect(() => {
+    setSelectedCartGroupIds(prev => {
+      const next = new Set<string>();
+      const ids = new Set(
+        (storeCarts || []).map(c => String(c.customer_stripe_id || ''))
+      );
+      prev.forEach(id => {
+        if (ids.has(id)) next.add(id);
+      });
+      return next;
+    });
+  }, [storeCarts]);
+  useEffect(() => {
+    const groupsMap: Record<string, any[]> = {};
+    (storeCarts || []).forEach((c: any) => {
+      const key = String(c.customer_stripe_id || '');
+      if (!groupsMap[key]) groupsMap[key] = [];
+      groupsMap[key].push(c);
+    });
+    setRecapSentByGroup(() => {
+      const next: Record<string, boolean> = {};
+      Object.entries(groupsMap).forEach(([sid, items]) => {
+        next[sid] = (items as any[]).some((it: any) => !!it.recap_sent_at);
+      });
+      return next;
+    });
+    setRecapSentAtByGroup(() => {
+      const next: Record<string, string | null> = {};
+      Object.entries(groupsMap).forEach(([sid, items]) => {
+        const times = (items as any[])
+          .map((it: any) => String(it.recap_sent_at || '').trim())
+          .filter(Boolean)
+          .map(t => Date.parse(t))
+          .filter(n => Number.isFinite(n));
+        if (times.length > 0) {
+          const max = Math.max(...times);
+          next[sid] = new Date(max).toISOString();
+        } else {
+          next[sid] = null;
+        }
+      });
+      return next;
+    });
+  }, [storeCarts]);
+  const formatRelativeSent = (iso?: string | null) => {
+    if (!iso) return '';
+    const t = Date.parse(String(iso));
+    if (!Number.isFinite(t)) return '';
+    const diffMs = Date.now() - t;
+    const s = Math.floor(diffMs / 1000);
+    if (s < 60) return 'il y a 1min';
+    const m = Math.floor(s / 60);
+    if (m < 60) return `il y a ${m}min`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `il y a ${h}h`;
+    const d = Math.floor(h / 24);
+    if (d < 7) return `il y a ${d}j`;
+    const w = Math.floor(d / 7);
+    return `il y a ${w}sem`;
+  };
+  const handleSendRecap = async () => {
+    try {
+      if (selectedCartGroupIds.size === 0) return;
+      setSendingRecap(true);
+      const token = await getToken();
+      const payload = {
+        stripeIds: Array.from(selectedCartGroupIds),
+        storeSlug: store?.slug,
+      };
+      const resp = await apiPost('/api/carts/recap', payload, {
+        headers: { Authorization: token ? `Bearer ${token}` : '' },
+      });
+      await resp.json().catch(() => ({}));
+      await handleReloadCarts();
+      showToast('Récapitulatif envoyé', 'success');
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur lors de l’envoi du récapitulatif';
+      const trimmed = (raw || '').replace(/^Error:\s*/, '');
+      showToast(trimmed, 'error');
+    } finally {
+      setSendingRecap(false);
+    }
+  };
 
   const [promoLoadedOnce, setPromoLoadedOnce] = useState<boolean>(false);
   useEffect(() => {
@@ -2597,15 +2690,9 @@ export default function DashboardPage() {
 
           {section === 'carts' && (
             <div className='bg-white rounded-lg shadow p-6'>
-              <div className='flex items-center justify-between mb-4'>
-                <div className='flex items-center'>
-                  <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
-                  <h2 className='text-lg font-semibold text-gray-900'>
-                    Panier
-                  </h2>
-                </div>
-
-                <div className='sm:hidden'></div>
+              <div className='flex items-center mb-4'>
+                <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
+                <h2 className='text-lg font-semibold text-gray-900'>Panier</h2>
               </div>
 
               <p className='text-sm text-gray-600 mb-4'>
@@ -2723,29 +2810,7 @@ export default function DashboardPage() {
                 </button>
               </div>
 
-              <div className='mb-3 flex items-center justify-between'>
-                <input
-                  type='text'
-                  value={cartSearchTerm}
-                  onChange={e => {
-                    setCartSearchTerm(e.target.value);
-                    setCartPage(1);
-                  }}
-                  placeholder='Nom du client…'
-                  className='w-full md:w-64 border border-gray-300 rounded-md px-3 py-2 text-sm'
-                />
-                <button
-                  onClick={handleReloadCarts}
-                  disabled={cartReloading}
-                  className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                  title='Recharger'
-                >
-                  <RefreshCw
-                    className={`w-4 h-4 mr-1 ${cartReloading ? 'animate-spin' : ''}`}
-                  />
-                  Recharger
-                </button>
-              </div>
+              <div className='mb-3'></div>
 
               {(() => {
                 const groupsMap: Record<string, any[]> = {};
@@ -2774,9 +2839,70 @@ export default function DashboardPage() {
                 const page = Math.min(cartPage, totalPages);
                 const start = (page - 1) * cartPageSize;
                 const pageGroups = filtered.slice(start, start + cartPageSize);
+                const allSelected =
+                  selectedCartGroupIds.size > 0 &&
+                  filtered.every(g => selectedCartGroupIds.has(g.stripeId));
 
                 return (
                   <div className='space-y-6'>
+                    <div className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3'>
+                      <div className='flex flex-col sm:flex-row gap-2 sm:gap-4'>
+                        <div>
+                          <div className='inline-flex items-center gap-2 text-sm text-gray-700 mb-2 sm:mb-0'>
+                            <input
+                              type='checkbox'
+                              className='w-4 h-4 accent-blue-600'
+                              checked={allSelected}
+                              onChange={() => {
+                                if (allSelected) {
+                                  setSelectedCartGroupIds(new Set());
+                                } else {
+                                  setSelectedCartGroupIds(
+                                    new Set(filtered.map(g => g.stripeId))
+                                  );
+                                }
+                              }}
+                            />
+                            <span>Sélectionner tout</span>
+                          </div>
+                          <div className='text-xs text-gray-600 mt-1'>
+                            {selectedCartGroupIds.size}{' '}
+                            {selectedCartGroupIds.size > 1
+                              ? 'paniers sélectionnés'
+                              : 'panier sélectionné'}
+                          </div>
+                        </div>
+                        <input
+                          type='text'
+                          value={cartSearchTerm}
+                          onChange={e => {
+                            setCartSearchTerm(e.target.value);
+                            setCartPage(1);
+                          }}
+                          placeholder='Filtrer par client…'
+                          className='w-full sm:w-64 border border-gray-300 rounded-md px-3 py-2 text-sm'
+                        />
+                      </div>
+                      <div className='flex items-center gap-2 mt-2 sm:mt-0'>
+                        <button
+                          onClick={handleSendRecap}
+                          disabled={
+                            selectedCartGroupIds.size === 0 || sendingRecap
+                          }
+                          className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                          title='Envoyer le récapitulatif'
+                        >
+                          {sendingRecap ? (
+                            <span className='inline-flex items-center'>
+                              <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                              Envoi…
+                            </span>
+                          ) : (
+                            <span>Envoyer le récapitulatif</span>
+                          )}
+                        </button>
+                      </div>
+                    </div>
                     {pageGroups.length === 0 ? (
                       <div className='text-sm text-gray-600'>Aucun panier</div>
                     ) : (
@@ -2785,22 +2911,54 @@ export default function DashboardPage() {
                           key={g.stripeId}
                           className='border border-gray-200 rounded-md'
                         >
-                          <div className='flex items-center gap-3 p-3 bg-gray-50 border-b border-gray-200'>
-                            {g.user?.hasImage && g.user?.imageUrl ? (
-                              <img
-                                src={g.user.imageUrl}
-                                alt={g.user.fullName || 'Client'}
-                                className='w-8 h-8 rounded-full object-cover'
+                          <div className='flex items-center justify-between p-3 bg-gray-50 border-b border-gray-200'>
+                            <div className='flex items-center gap-3'>
+                              <input
+                                type='checkbox'
+                                className='w-4 h-4 accent-blue-600'
+                                checked={selectedCartGroupIds.has(g.stripeId)}
+                                onChange={() => {
+                                  setSelectedCartGroupIds(prev => {
+                                    const next = new Set([...prev]);
+                                    if (next.has(g.stripeId)) {
+                                      next.delete(g.stripeId);
+                                    } else {
+                                      next.add(g.stripeId);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                aria-label='Sélectionner ce panier'
                               />
-                            ) : (
-                              <div className='w-8 h-8 rounded-full bg-gray-300'></div>
-                            )}
-                            <div>
-                              <div className='text-gray-900 font-semibold text-sm'>
-                                {g.user?.fullName || g.stripeId || 'Client'}
-                              </div>
-                              <div className='text-xs text-gray-600'>
-                                {g.user?.email || ''}
+                              {g.user?.hasImage && g.user?.imageUrl ? (
+                                <img
+                                  src={g.user.imageUrl}
+                                  alt={g.user.fullName || 'Client'}
+                                  className='w-8 h-8 rounded-full object-cover'
+                                />
+                              ) : (
+                                <div className='w-8 h-8 rounded-full bg-gray-300'></div>
+                              )}
+                              <div>
+                                <div className='flex items-center gap-2 text-gray-900 font-semibold text-sm'>
+                                  <span>
+                                    {g.user?.fullName || g.stripeId || 'Client'}
+                                  </span>
+                                  {recapSentByGroup[g.stripeId] && (
+                                    <span className='inline-flex items-center text-green-600 text-xs font-medium'>
+                                      <BadgeCheck className='w-4 h-4 mr-1' />
+                                      {(() => {
+                                        const rel = formatRelativeSent(
+                                          recapSentAtByGroup[g.stripeId]
+                                        );
+                                        return rel ? `recap envoyé · ${rel}` : 'recap envoyé';
+                                      })()}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className='text-xs text-gray-600'>
+                                  {g.user?.email || ''}
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -3837,19 +3995,16 @@ export default function DashboardPage() {
                       ref={drawButtonRef}
                       onClick={handleDraw}
                       disabled={selectedIds.size < 2 || drawLoading}
-                      className='flex items-center sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border bg-white text-gray-700 border-gray-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                      className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                       title='Lancer le tirage'
                     >
                       {drawLoading ? (
                         <span className='inline-flex items-center'>
-                          <span className='animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 mr-2' />
+                          <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
                           Tirage…
                         </span>
                       ) : (
-                        <span className='inline-flex items-center'>
-                          <Dice5 className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
-                          <span>Lancer le tirage</span>
-                        </span>
+                        <span>Lancer le tirage</span>
                       )}
                     </button>
                   </div>
@@ -3928,7 +4083,7 @@ export default function DashboardPage() {
                     />
                     <span>Recharger</span>
                   </button>
-                  <div className='text-sm text-gray-700'>
+                  <div className='text-xs text-gray-600 mt-1'>
                     {selectedIds.size} sélectionné(s)
                   </div>
 
@@ -4033,7 +4188,7 @@ export default function DashboardPage() {
                     />
                     <span>Recharger</span>
                   </button>
-                  <div className='text-sm text-gray-700'>
+                  <div className='text-xs text-gray-600 mt-1'>
                     {selectedIds.size} sélectionné(s)
                   </div>
                 </div>
@@ -4510,23 +4665,34 @@ export default function DashboardPage() {
                                 );
                                 const allSelected = pageIds.every(id => selectedIds.has(id));
                                 return (
-                                  <input
-                                    type='checkbox'
-                                    checked={allSelected}
-                                    onChange={e => {
-                                      const checked = e.target.checked;
-                                      setSelectedIds(prev => {
-                                        const next = new Set(prev);
-                                        if (checked) {
-                                          pageIds.forEach(id => next.add(id));
-                                        } else {
-                                          pageIds.forEach(id => next.delete(id));
-                                        }
-                                        return next;
-                                      });
-                                    }}
-                                    aria-label='Tout sélectionner'
-                                  />
+                                  <div className='flex flex-col items-start'>
+                                    <div className='inline-flex items-center gap-2 text-sm text-gray-700'>
+                                      <input
+                                        type='checkbox'
+                                        checked={allSelected}
+                                        onChange={e => {
+                                          const checked = e.target.checked;
+                                          setSelectedIds(prev => {
+                                            const next = new Set(prev);
+                                            if (checked) {
+                                              pageIds.forEach(id => next.add(id));
+                                            } else {
+                                              pageIds.forEach(id => next.delete(id));
+                                            }
+                                            return next;
+                                          });
+                                        }}
+                                        aria-label='Sélectionner tout'
+                                      />
+                                      <span>Sélectionner tout</span>
+                                    </div>
+                                    <div className='text-xs text-gray-600 mt-1 font-normal'>
+                                      {selectedIds.size}{' '}
+                                      {selectedIds.size > 1
+                                        ? 'clients sélectionnés'
+                                        : 'client sélectionné'}
+                                    </div>
+                                  </div>
                                 );
                               })()}
                             </th>
