@@ -51,23 +51,16 @@ import StripeWrapper from '../components/StripeWrapper';
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
 
-type RIBInfo = {
-  type: 'link' | 'database';
-  url?: string | null;
-  iban?: string;
-  bic?: string;
-};
-
 type Store = {
   id: number;
   name: string;
   slug: string;
-  balance?: number | null;
   clerk_id?: string | null;
   description?: string | null;
   website?: string | null;
   siret?: string | null;
-  rib?: RIBInfo | null;
+  iban_bic?: { iban: string; bic: string } | null;
+  payout_created_at?: string | null;
   product_value?: number | null;
   is_verified?: boolean;
 };
@@ -106,6 +99,32 @@ type ProductItem = {
   description?: string | null;
 };
 
+type WalletTransactionItem = {
+  reference: string;
+  description?: string | null;
+  unit_price: number;
+  quantity: number;
+  line_total: number;
+};
+
+type WalletTransaction = {
+  payment_id: string;
+  created: number;
+  currency: string;
+  status?: string;
+  customer?: {
+    name?: string | null;
+    email?: string | null;
+    id?: string | null;
+  };
+  items: WalletTransactionItem[];
+  shipping_fee: number;
+  delivery_gap?: number;
+  total: number;
+  refunded_total: number;
+  net_total: number;
+};
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { getToken } = useAuth();
@@ -133,14 +152,8 @@ export default function DashboardPage() {
   const [lastCheckedSlug, setLastCheckedSlug] = useState('');
   const [showValidationErrors, setShowValidationErrors] = useState(false);
 
-  const [payoutMethod, setPayoutMethod] = useState<'link' | 'database'>('link');
   const [ibanInput, setIbanInput] = useState('');
   const [bicInput, setBicInput] = useState('');
-  // Ajouts pour l'UI de versement
-  const [editingRib, setEditingRib] = useState(false);
-  const [ribFile, setRibFile] = useState<File | null>(null);
-  const [uploadingRib, setUploadingRib] = useState(false);
-  const [ribUploadError, setRibUploadError] = useState<string | null>(null);
   const [ibanError, setIbanError] = useState<string | null>(null);
   const [bicError, setBicError] = useState<string | null>(null);
   const [isSubmittingPayout, setIsSubmittingPayout] = useState(false);
@@ -179,7 +192,20 @@ export default function DashboardPage() {
   >('id');
   const [salesFilterTerm, setSalesFilterTerm] = useState<string>('');
   const [reloadingSales, setReloadingSales] = useState<boolean>(false);
-  const [reloadingBalance, setReloadingBalance] = useState<boolean>(false);
+  const [walletTransactions, setWalletTransactions] = useState<
+    WalletTransaction[]
+  >([]);
+  const [walletTransactionsLoading, setWalletTransactionsLoading] =
+    useState<boolean>(false);
+  const [walletTransactionsSlug, setWalletTransactionsSlug] = useState<
+    string | null
+  >(null);
+  const [walletTransactionsTotalNet, setWalletTransactionsTotalNet] =
+    useState<number>(0);
+  const [walletTransactionsTotalCount, setWalletTransactionsTotalCount] =
+    useState<number>(0);
+  const [walletTablePageSize, setWalletTablePageSize] = useState<number>(10);
+  const [walletTablePage, setWalletTablePage] = useState<number>(1);
   // États Clients (onglet dédié)
   const [clientsPageSize, setClientsPageSize] = useState<number>(10);
   const [clientsPage, setClientsPage] = useState<number>(1);
@@ -848,6 +874,21 @@ export default function DashboardPage() {
     }
   };
 
+  const formatDateEpoch = (sec?: number | null) => {
+    if (!sec) return '—';
+    try {
+      return new Date(Number(sec) * 1000).toLocaleString('fr-FR', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return String(sec);
+    }
+  };
+
   const getNetworkDescription = (code?: string | null) => {
     const c = (code || '').toUpperCase();
     const map: Record<string, string> = {
@@ -1240,33 +1281,90 @@ export default function DashboardPage() {
     }
   };
 
-  const handleReloadBalance = async () => {
+  const fetchWalletTransactions = async (options?: { silent?: boolean }) => {
+    const slug = store?.slug;
+    if (!slug) return;
+
+    const silent = options?.silent;
     try {
-      const slug = store?.slug;
-      if (!slug) return;
-      setReloadingBalance(true);
-      setError(null);
+      setWalletTransactionsLoading(true);
+      const token = await getToken();
+      const qs = new URLSearchParams();
+      qs.set('limit', 'all');
+      const payoutRaw = String(store?.payout_created_at || '').trim();
+      if (payoutRaw) {
+        const ms = new Date(payoutRaw).getTime();
+        if (Number.isFinite(ms)) {
+          qs.set('startTimestamp', String(Math.floor(ms / 1000)));
+        }
+      }
       const resp = await fetch(
-        `${apiBase}/api/stores/${encodeURIComponent(slug)}`
+        `${apiBase}/api/stores/${encodeURIComponent(slug)}/transactions?${qs.toString()}`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
       );
       const json = await resp.json().catch(() => ({}));
-      if (!resp.ok || !json?.store) {
-        const msg = json?.error || 'Erreur lors du rechargement du solde';
-        throw new Error(typeof msg === 'string' ? msg : 'Rechargement échoué');
+      if (!resp.ok) {
+        const msg = json?.error || json?.message || 'Erreur transactions';
+        throw new Error(typeof msg === 'string' ? msg : 'Erreur transactions');
       }
-      const refreshed = json.store as Store;
-      setStore(prev => ({
-        ...(prev || refreshed),
-        balance: refreshed?.balance ?? 0,
-      }));
-      showToast('Solde rechargé', 'success');
+      setWalletTransactions(
+        Array.isArray(json?.transactions) ? json.transactions : []
+      );
+      setWalletTransactionsTotalNet(Number(json?.total_net || 0));
+      setWalletTransactionsTotalCount(Number(json?.total_count || 0));
+      setWalletTransactionsSlug(slug);
+      setWalletTablePage(1);
     } catch (e: any) {
-      const rawMsg = e?.message || 'Erreur inconnue';
-      showToast(rawMsg, 'error');
+      const rawMsg = e?.message || 'Erreur transactions';
+      if (!silent) {
+        showToast(
+          typeof rawMsg === 'string'
+            ? rawMsg.replace(/^Error:\s*/, '')
+            : 'Erreur transactions',
+          'error'
+        );
+      }
+      setWalletTransactions([]);
+      setWalletTransactionsTotalNet(0);
+      setWalletTransactionsTotalCount(0);
+      setWalletTransactionsSlug(slug);
     } finally {
-      setReloadingBalance(false);
+      setWalletTransactionsLoading(false);
     }
   };
+
+  useEffect(() => {
+    const slug = store?.slug;
+    if (section !== 'wallet') return;
+    if (!slug) return;
+    if (walletTransactionsLoading) return;
+    if (walletTransactionsSlug === slug) return;
+    fetchWalletTransactions({ silent: true }).catch(() => {});
+  }, [section, store?.slug, walletTransactionsLoading, walletTransactionsSlug]);
+
+  const walletTableTotalPages = Math.max(
+    1,
+    Math.ceil(walletTransactions.length / walletTablePageSize)
+  );
+  const walletTableStartIndex = (walletTablePage - 1) * walletTablePageSize;
+  const visibleWalletTransactions = walletTransactions.slice(
+    walletTableStartIndex,
+    walletTableStartIndex + walletTablePageSize
+  );
+
+  useEffect(() => {
+    const newTotal = Math.max(
+      1,
+      Math.ceil(walletTransactions.length / walletTablePageSize)
+    );
+    if (walletTablePage > newTotal) setWalletTablePage(newTotal);
+    if (walletTablePage < 1) setWalletTablePage(1);
+  }, [walletTransactions, walletTablePageSize]);
 
   const parseProductReferenceItems = (
     raw: string | null | undefined
@@ -1906,7 +2004,14 @@ export default function DashboardPage() {
         setWebsite(s?.website || '');
         setSiret((s as any)?.siret || '');
         setTvaApplicable(Boolean((s as any)?.tva_applicable));
-        setPayoutMethod(s?.rib?.type === 'link' ? 'link' : 'database');
+        const iban = String((s as any)?.iban_bic?.iban || '').trim();
+        const bic = String((s as any)?.iban_bic?.bic || '').trim();
+        if (!ibanInput.trim() && iban) {
+          setIbanInput(iban);
+        }
+        if (!bicInput.trim() && bic) {
+          setBicInput(bic);
+        }
         const addr = (s as any)?.address || null;
         if (addr) {
           setFormPhone(String(addr?.phone || ''));
@@ -2118,68 +2223,29 @@ export default function DashboardPage() {
     if (!store?.slug) return;
     setIbanError(null);
     setBicError(null);
-    setRibUploadError(null);
     setIsSubmittingPayout(true);
     try {
-      let methodToUse: 'database' | 'link' = payoutMethod;
-      let ibanToUse = '';
-      let bicToUse = '';
-
-      // Si un RIB existe et pas en mode édition, utiliser les coordonnées enregistrées
-      if (store.rib && !editingRib) {
-        methodToUse = store.rib.type;
-        if (methodToUse === 'database') {
-          ibanToUse = store.rib.iban || '';
-          bicToUse = store.rib.bic || '';
-        }
-      } else {
-        // Mode édition ou aucun RIB enregistré
-        if (payoutMethod === 'database') {
-          ibanToUse = ibanInput.trim();
-          bicToUse = bicInput.trim();
-        } else if (payoutMethod === 'link') {
-          // Upload du RIB si un document est sélectionné
-          if (ribFile) {
-            try {
-              const fd = new FormData();
-              fd.append('document', ribFile);
-              fd.append('slug', store.slug);
-              setUploadingRib(true);
-              const uploadResp = await apiPostForm('/api/upload/rib', fd);
-              const uploadJson = await uploadResp.json();
-              if (!uploadJson?.success) {
-                setRibUploadError(uploadJson?.error || 'Upload du RIB échoué');
-                showToast(uploadJson?.error || 'Upload du RIB échoué', 'error');
-                return;
-              }
-              // Mettre à jour le store local pour refléter le nouveau RIB link
-              setStore({
-                ...(store as any),
-                rib: { type: 'link', url: uploadJson.url, iban: '', bic: '' },
-              } as Store);
-            } catch (e) {
-              const msg =
-                e instanceof Error ? e.message : 'Upload du RIB échoué';
-              setRibUploadError(msg);
-              showToast(msg, 'error');
-              return;
-            } finally {
-              setUploadingRib(false);
-            }
-          }
-          methodToUse = 'link';
-        }
+      const ibanToUse = ibanInput.trim();
+      const bicToUse = bicInput.trim();
+      if (!ibanToUse) {
+        setIbanError('IBAN requis');
+        return;
+      }
+      if (!bicToUse) {
+        setBicError('BIC requis');
+        return;
       }
 
-      const payload: any = { method: methodToUse };
-      if (methodToUse === 'database') {
-        payload.iban = ibanToUse;
-        payload.bic = bicToUse;
-      }
-
+      const payload: any = { iban: ibanToUse, bic: bicToUse };
+      const token = await getToken();
       const resp = await apiPost(
         `/api/stores/${encodeURIComponent(store!.slug)}/confirm-payout`,
-        payload
+        payload,
+        {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
       );
       const json = await resp.json();
       if (!json?.success) {
@@ -2198,10 +2264,33 @@ export default function DashboardPage() {
       const updated: Store = json.store;
       // Préserver les champs non renvoyés (ex: clerk_id) pour ne pas casser Protect
       setStore(prev => ({ ...(prev as Store), ...updated }));
-      showToast(
-        'La demande de versement a été envoyée avec succès.',
-        'success'
-      );
+
+      const pdfBase64 =
+        json?.pdf && typeof json.pdf?.base64 === 'string'
+          ? (json.pdf.base64 as string)
+          : '';
+      const pdfFileName =
+        json?.pdf && typeof json.pdf?.fileName === 'string'
+          ? (json.pdf.fileName as string)
+          : 'transactions.pdf';
+      if (pdfBase64) {
+        try {
+          const binary = atob(pdfBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++)
+            bytes[i] = binary.charCodeAt(i);
+          const blob = new Blob([bytes], { type: 'application/pdf' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = pdfFileName;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+        } catch {}
+      }
+      showToast('Versement effectué avec succès.', 'success');
     } catch (err) {
       const rawMsg = err instanceof Error ? err.message : 'Erreur inconnue';
       let parsed: any = null;
@@ -3393,163 +3482,73 @@ export default function DashboardPage() {
                 <h2 className='text-lg font-semibold text-gray-900'>
                   Porte-monnaie
                 </h2>
-                <button
-                  onClick={handleReloadBalance}
-                  disabled={reloadingBalance}
-                  className='inline-flex items-center ml-4 px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                  title='Recharger le solde'
-                >
-                  <RefreshCw
-                    className={`w-4 h-4 mr-1 ${reloadingBalance ? 'animate-spin' : ''}`}
-                  />
-                  <span>Recharger</span>
-                </button>
               </div>
               <p className='text-gray-600 mb-2'>
                 Montant accumulé suite aux achats des clients.
               </p>
-              {store && (
-                <div className='flex items-baseline space-x-2 mb-4'>
-                  <span className='text-2xl font-bold text-gray-900'>
-                    {(store.balance ?? 0).toFixed(2)}
-                  </span>
-                  <span className='text-gray-700'>€ disponibles</span>
-                </div>
-              )}
+              <div className='flex items-baseline space-x-2 mb-4'>
+                <span className='text-2xl font-bold text-gray-900'>
+                  {Number(walletTransactionsTotalNet || 0).toFixed(2)}
+                </span>
+                <span className='text-gray-700'>€ total net</span>
+              </div>
               {/* Bouton qui révèle la section Demande de versement */}
               {store && (
                 <div>
-                  <div>
-                    {store?.rib && !editingRib && (
-                      <div className='mb-4'>
-                        <p className='text-gray-700'>
-                          Les coordonnées bancaires précédemment renseignées
-                          pour le dernier versement seront utilisées.
-                        </p>
-                      </div>
-                    )}
-                    {!(store?.rib && !editingRib) && (
-                      <div>
-                        <div className='flex items-center space-x-4 mb-3'>
-                          <label className='inline-flex items-center'>
-                            <input
-                              type='radio'
-                              className='mr-2'
-                              name='payoutMethod'
-                              value='link'
-                              checked={payoutMethod === 'link'}
-                              onChange={() => setPayoutMethod('link')}
-                            />
-                            Télécharger l'IBAN/RIB
-                          </label>
-                          <label className='inline-flex items-center'>
-                            <input
-                              type='radio'
-                              className='mr-2'
-                              name='payoutMethod'
-                              value='database'
-                              checked={payoutMethod === 'database'}
-                              onChange={() => setPayoutMethod('database')}
-                            />
-                            Saisir IBAN/BIC
-                          </label>
-                        </div>
-                        {payoutMethod === 'link' && (
-                          <div className='mb-3 space-y-2'>
-                            <label className='block text-sm font-medium text-gray-700'>
-                              Pièce jointe (PDF/JPG/PNG)
-                            </label>
-                            <input
-                              type='file'
-                              accept='application/pdf,image/png,image/jpeg'
-                              onChange={e => {
-                                const f = e.target.files?.[0] || null;
-                                setRibFile(f);
-                                setRibUploadError(null);
-                              }}
-                              className='block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100'
-                            />
-                            {uploadingRib && (
-                              <p className='text-xs text-gray-500 mt-1'>
-                                Téléchargement en cours...
-                              </p>
-                            )}
-                            {ribUploadError && (
-                              <p className='text-sm text-red-600 mt-1'>
-                                {ribUploadError}
-                              </p>
-                            )}
-                          </div>
-                        )}
-                        {payoutMethod === 'database' && (
-                          <div className='grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3'>
-                            <div>
-                              <label className='block text-sm text-gray-700 mb-1'>
-                                IBAN
-                              </label>
-                              <input
-                                className={`w-full border rounded px-3 py-2 text-sm ${ibanError ? 'border-red-500' : 'border-gray-300'}`}
-                                value={ibanInput}
-                                onChange={e => {
-                                  setIbanInput(e.target.value);
-                                  if (ibanError) setIbanError(null);
-                                }}
-                                placeholder='FR76 3000 6000 0112 3456 7890 189'
-                              />
-                              {ibanError && (
-                                <p className='mt-1 text-xs text-red-600'>
-                                  {ibanError}
-                                </p>
-                              )}
-                            </div>
-                            <div>
-                              <label className='block text-sm text-gray-700 mb-1'>
-                                BIC
-                              </label>
-                              <input
-                                className={`w-full border rounded px-3 py-2 text-sm ${bicError ? 'border-red-500' : 'border-gray-300'}`}
-                                value={bicInput}
-                                onChange={e => {
-                                  setBicInput(e.target.value);
-                                  if (bicError) setBicError(null);
-                                }}
-                                placeholder='AGRIFRPPXXX'
-                              />
-                              {bicError && (
-                                <p className='mt-1 text-xs text-red-600'>
-                                  {bicError}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                  <div className='grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3'>
+                    <div>
+                      <label className='block text-sm text-gray-700 mb-1'>
+                        IBAN
+                      </label>
+                      <input
+                        className={`w-full border rounded px-3 py-2 text-sm ${ibanError ? 'border-red-500' : 'border-gray-300'}`}
+                        value={ibanInput}
+                        onChange={e => {
+                          setIbanInput(e.target.value);
+                          if (ibanError) setIbanError(null);
+                        }}
+                        placeholder='FR76 3000 6000 0112 3456 7890 189'
+                      />
+                      {ibanError && (
+                        <p className='mt-1 text-xs text-red-600'>{ibanError}</p>
+                      )}
+                    </div>
+                    <div>
+                      <label className='block text-sm text-gray-700 mb-1'>
+                        BIC
+                      </label>
+                      <input
+                        className={`w-full border rounded px-3 py-2 text-sm ${bicError ? 'border-red-500' : 'border-gray-300'}`}
+                        value={bicInput}
+                        onChange={e => {
+                          setBicInput(e.target.value);
+                          if (bicError) setBicError(null);
+                        }}
+                        placeholder='AGRIFRPPXXX'
+                      />
+                      {bicError && (
+                        <p className='mt-1 text-xs text-red-600'>{bicError}</p>
+                      )}
+                    </div>
                   </div>
                   <div className='mt-4 flex items-center space-x-2'>
                     <button
                       onClick={confirmPayout}
                       className={`inline-flex items-center px-4 py-2 rounded-md text-white ${
                         isSubmittingPayout ||
-                        ((store?.rib === null || editingRib) &&
-                          (payoutMethod === 'link'
-                            ? !ribFile
-                            : !ibanInput.trim() || !bicInput.trim())) ||
-                        (payoutMethod === 'database'
-                          ? Boolean(ibanError) || Boolean(bicError)
-                          : Boolean(ribUploadError))
+                        !ibanInput.trim() ||
+                        !bicInput.trim() ||
+                        Boolean(ibanError) ||
+                        Boolean(bicError)
                           ? 'bg-gray-400 cursor-not-allowed'
                           : 'bg-indigo-600 hover:bg-indigo-700'
                       }`}
                       disabled={
                         isSubmittingPayout ||
-                        ((store?.rib === null || editingRib) &&
-                          (payoutMethod === 'link'
-                            ? !ribFile
-                            : !ibanInput.trim() || !bicInput.trim())) ||
-                        (payoutMethod === 'database'
-                          ? Boolean(ibanError) || Boolean(bicError)
-                          : Boolean(ribUploadError))
+                        !ibanInput.trim() ||
+                        !bicInput.trim() ||
+                        Boolean(ibanError) ||
+                        Boolean(bicError)
                       }
                     >
                       {isSubmittingPayout && (
@@ -3558,36 +3557,221 @@ export default function DashboardPage() {
                       <HandCoins className='w-5 h-5 mr-2' />
                       Retirer mes gains
                     </button>
-                    {store?.rib && !editingRib && (
-                      <button
-                        onClick={() => {
-                          setEditingRib(true);
-                          setPayoutMethod(
-                            store?.rib?.type === 'link' ? 'link' : 'database'
-                          );
-                        }}
-                        className='px-3 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
-                      >
-                        Modifier
-                      </button>
-                    )}
-                    {editingRib && (
-                      <button
-                        onClick={() => {
-                          setEditingRib(false);
-                          setRibFile(null);
-                          setIbanError(null);
-                          setBicError(null);
-                          setRibUploadError(null);
-                        }}
-                        className='px-3 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
-                      >
-                        Annuler
-                      </button>
-                    )}
                   </div>
                 </div>
               )}
+
+              <div className='mt-8'>
+                <div className='flex items-center justify-between mb-3'>
+                  <h3 className='text-base font-semibold text-gray-900'>
+                    Transactions
+                  </h3>
+                </div>
+
+                <div className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3'>
+                  <div className='flex items-center gap-2'>
+                    <label className='text-sm text-gray-700'>
+                      Lignes / page
+                    </label>
+                    <select
+                      value={walletTablePageSize}
+                      onChange={e => {
+                        const v = Number(e.target.value);
+                        setWalletTablePageSize(Number.isFinite(v) ? v : 10);
+                        setWalletTablePage(1);
+                      }}
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm'
+                    >
+                      <option value={10}>10</option>
+                      <option value={20}>20</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                    </select>
+                    <button
+                      onClick={() => fetchWalletTransactions().catch(() => {})}
+                      disabled={walletTransactionsLoading}
+                      className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                    >
+                      <RefreshCw
+                        className={`w-4 h-4 mr-1 ${walletTransactionsLoading ? 'animate-spin' : ''}`}
+                      />
+                      <span>Recharger</span>
+                    </button>
+                  </div>
+                </div>
+
+                {walletTransactionsTotalCount > 0 ? (
+                  <div className='text-xs text-gray-500 mb-2'>
+                    Affichage de {walletTransactions.length} sur{' '}
+                    {walletTransactionsTotalCount} transactions
+                  </div>
+                ) : null}
+
+                {walletTransactionsLoading ? (
+                  <div className='flex items-center justify-center py-10'>
+                    <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600'></div>
+                  </div>
+                ) : walletTransactions.length === 0 ? (
+                  <div className='text-sm text-gray-600'>
+                    Aucune transaction trouvée.
+                  </div>
+                ) : (
+                  <>
+                    <div className='overflow-x-auto border border-gray-200 rounded-lg'>
+                      <table className='min-w-full text-sm'>
+                        <thead className='bg-gray-50'>
+                          <tr className='border-b border-gray-200'>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Date
+                            </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Client
+                            </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Articles
+                            </th>
+                            <th className='text-right py-3 px-4 font-semibold text-gray-700'>
+                              Livraison
+                            </th>
+                            <th className='text-right py-3 px-4 font-semibold text-gray-700'>
+                              Total
+                            </th>
+                            <th className='text-right py-3 px-4 font-semibold text-gray-700'>
+                              Remboursé
+                            </th>
+                            <th className='text-right py-3 px-4 font-semibold text-gray-700'>
+                              Écart livraison
+                            </th>
+                            <th className='text-right py-3 px-4 font-semibold text-gray-700'>
+                              Net
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {visibleWalletTransactions.map(tx => {
+                            const customerName = String(
+                              tx?.customer?.name || ''
+                            ).trim();
+                            const customerEmail = String(
+                              tx?.customer?.email || ''
+                            ).trim();
+                            const customerLabel =
+                              customerName || customerEmail || '—';
+
+                            return (
+                              <tr
+                                key={tx.payment_id}
+                                className='border-b border-gray-100 hover:bg-gray-50'
+                              >
+                                <td className='py-3 px-4 text-gray-700 whitespace-nowrap'>
+                                  <div>{formatDateEpoch(tx.created)}</div>
+                                  {tx.status &&
+                                  String(tx.status || '').toLowerCase() !==
+                                    'paid' ? (
+                                    <div className='text-xs text-gray-500'>
+                                      {tx.status}
+                                    </div>
+                                  ) : null}
+                                </td>
+                                <td className='py-3 px-4 text-gray-700'>
+                                  <div className='font-medium text-gray-900'>
+                                    {customerLabel}
+                                  </div>
+                                  {customerName && customerEmail ? (
+                                    <div className='text-xs text-gray-500'>
+                                      {customerEmail}
+                                    </div>
+                                  ) : null}
+                                </td>
+                                <td className='py-3 px-4 text-gray-700'>
+                                  <div className='space-y-1'>
+                                    {(tx.items || []).map((it, idx) => (
+                                      <div key={`${tx.payment_id}-it-${idx}`}>
+                                        <span className='font-medium text-gray-900'>
+                                          {it.reference}
+                                        </span>{' '}
+                                        <span className='text-gray-600'>
+                                          ×{Number(it.quantity || 1)}
+                                        </span>{' '}
+                                        <span className='text-gray-600'>
+                                          ({formatValue(it.unit_price)})
+                                        </span>{' '}
+                                        <span className='text-gray-900'>
+                                          {formatValue(it.line_total)}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </td>
+                                <td className='py-3 px-4 text-right text-gray-900 whitespace-nowrap'>
+                                  {formatValue(tx.shipping_fee)}
+                                </td>
+                                <td className='py-3 px-4 text-right text-gray-900 font-semibold whitespace-nowrap'>
+                                  {formatValue(tx.total)}
+                                </td>
+                                <td className='py-3 px-4 text-right whitespace-nowrap'>
+                                  <span
+                                    className={
+                                      (tx.refunded_total || 0) > 0
+                                        ? 'text-red-600 font-semibold'
+                                        : 'text-gray-900'
+                                    }
+                                  >
+                                    {formatValue(tx.refunded_total)}
+                                  </span>
+                                </td>
+                                <td className='py-3 px-4 text-right text-red-600 font-semibold whitespace-nowrap'>
+                                  {Number(tx.delivery_gap || 0) < 0
+                                    ? formatValue(Number(tx.delivery_gap || 0))
+                                    : '0'}
+                                </td>
+                                <td className='py-3 px-4 text-right text-gray-900 font-semibold whitespace-nowrap'>
+                                  {formatValue(tx.net_total)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className='flex items-center justify-between mt-3'>
+                      <div className='text-xs text-gray-600'>
+                        Page {walletTablePage} / {walletTableTotalPages}
+                      </div>
+                      <div className='flex items-center gap-2'>
+                        <button
+                          onClick={() =>
+                            setWalletTablePage(p => Math.max(1, p - 1))
+                          }
+                          disabled={walletTablePage <= 1}
+                          className={`px-3 py-1 text-sm rounded-md border ${
+                            walletTablePage <= 1
+                              ? 'bg-gray-100 text-gray-400 border-gray-200'
+                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                          }`}
+                        >
+                          Précédent
+                        </button>
+                        <button
+                          onClick={() =>
+                            setWalletTablePage(p =>
+                              Math.min(walletTableTotalPages, p + 1)
+                            )
+                          }
+                          disabled={walletTablePage >= walletTableTotalPages}
+                          className={`px-3 py-1 text-sm rounded-md border ${
+                            walletTablePage >= walletTableTotalPages
+                              ? 'bg-gray-100 text-gray-400 border-gray-200'
+                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                          }`}
+                        >
+                          Suivant
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           )}
 

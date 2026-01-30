@@ -18,7 +18,6 @@ type OwnerStoreInfo = {
   storeName?: string;
   ownerEmail?: string;
   slug?: string;
-  rib?: string | null;
 };
 
 export default function Header() {

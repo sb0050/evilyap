@@ -6,7 +6,6 @@ import {
   CloudFrontClient,
   CreateInvalidationCommand,
 } from "@aws-sdk/client-cloudfront";
-import crypto from "crypto";
 
 const router = express.Router();
 
@@ -24,7 +23,7 @@ const cloudFrontUrl = normalizeCdnBase(process.env.CLOUDFRONT_URL);
 
 if (!awsRegion || !awsAccessKeyId || !awsSecretAccessKey || !awsBucket) {
   console.error(
-    "AWS S3 environment variables are missing (AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET)"
+    "AWS S3 environment variables are missing (AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET)",
   );
 }
 
@@ -69,7 +68,6 @@ async function invalidateCloudFrontCache(filePaths: any) {
   }
 }
 
-// Supabase client (pour mise à jour du champ rib)
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
 if (!supabaseUrl || !supabaseKey) {
@@ -85,23 +83,6 @@ const uploadImages = multer({
     else cb(new Error("Only image files are allowed!"));
   },
 });
-
-const uploadDocs = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB pour RIB
-  fileFilter: (req, file, cb) => {
-    const allowed = ["application/pdf", "image/jpeg", "image/jpg", "image/png"];
-    if (allowed.includes(file.mimetype)) cb(null, true);
-    else cb(new Error("Type de fichier non autorisé (PDF, JPG/JPEG, PNG)"));
-  },
-});
-
-const getExtFromMime = (mime: string) => {
-  if (mime === "application/pdf") return ".pdf";
-  if (mime === "image/jpeg" || mime === "image/jpg") return ".jpg";
-  if (mime === "image/png") return ".png";
-  return "";
-};
 
 // POST /api/upload (images)
 router.post("/", uploadImages.single("image"), async (req, res) => {
@@ -166,87 +147,6 @@ router.post("/", uploadImages.single("image"), async (req, res) => {
   } catch (error) {
     console.error("Upload error:", error);
     return res.status(500).json({ error: "Upload failed" });
-  }
-});
-
-// POST /api/upload/rib (documents)
-router.post("/rib", uploadDocs.single("document"), async (req, res) => {
-  try {
-    const slug = (req.body?.slug as string)?.trim();
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
-    if (!slug) {
-      return res.status(400).json({ error: "Slug requis" });
-    }
-    // Récupérer l'id du store à partir du slug
-    const { data: store, error: storeErr } = await supabase
-      .from("stores")
-      .select("id, slug")
-      .eq("slug", slug)
-      .maybeSingle();
-    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
-      console.error("Erreur Supabase (get store by slug):", storeErr);
-      return res
-        .status(500)
-        .json({ error: "Erreur lors de la récupération de la boutique" });
-    }
-    if (!store) {
-      return res.status(404).json({ error: "Boutique non trouvée" });
-    }
-
-    const baseName = crypto.randomUUID();
-    const key = `documents/${baseName}`;
-
-    const params = {
-      Bucket: awsBucket!,
-      Key: key,
-      Body: req.file.buffer,
-      ContentType: req.file.mimetype,
-      // Forcer le remplacement du cache
-      CacheControl: "no-cache, no-store, must-revalidate",
-      Metadata: {
-        "upload-date": new Date().toISOString(),
-      },
-    };
-
-    const command = new PutObjectCommand(params);
-    await s3Client.send(command);
-
-    // Invalider automatiquement le cache CloudFront
-    try {
-      await invalidateCloudFrontCache([`/${key}`]);
-      console.log(`Cache invalidé pour: /${key}`);
-    } catch (invalidationError) {
-      console.error("Erreur invalidation:", invalidationError);
-      // Continuer même si l'invalidation échoue
-    }
-
-    const url = `${cloudFrontUrl}/${key}`;
-
-    // Mettre à jour la colonne rib dans la table stores avec objet JSON {type:"link", url}
-    const ribValue = { type: "link", url, iban: "", bic: "" };
-    const { error: supError } = await supabase
-      .from("stores")
-      .update({ rib: ribValue })
-      .eq("id", (store as any).id);
-
-    if (supError) {
-      console.error("Erreur Supabase (update rib):", supError);
-      return res
-        .status(500)
-        .json({ error: "RIB uploadé mais mise à jour DB échouée" });
-    }
-
-    return res.json({
-      success: true,
-      message: "RIB uploaded successfully",
-      url,
-      fileName: key,
-    });
-  } catch (error) {
-    console.error("Upload RIB error:", error);
-    return res.status(500).json({ error: "Upload RIB failed" });
   }
 });
 

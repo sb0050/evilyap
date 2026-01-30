@@ -1,11 +1,14 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
+import PDFDocument from "pdfkit";
+import fs from "node:fs";
+import path from "node:path";
 
-import { emailService } from "../services/emailService";
 import { isValidIBAN, isValidBIC } from "ibantools";
 import slugify from "slugify";
-import { clerkClient } from "@clerk/express";
+import { clerkClient, getAuth } from "@clerk/express";
+import { emailService } from "../services/emailService";
 
 const router = express.Router();
 
@@ -24,6 +27,28 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+const getCloudBase = () => {
+  const raw = String(process.env.CLOUDFRONT_URL || "").trim();
+  if (raw) return raw.replace(/\/+$/, "");
+  return "https://d1tmgyvizond6e.cloudfront.net";
+};
+
+const collectPdf = (doc: InstanceType<typeof PDFDocument>) =>
+  new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    doc.on("data", (c: any) =>
+      chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)),
+    );
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+    doc.end();
+  });
+
+const sanitizeOneLine = (raw: string) =>
+  String(raw || "")
+    .replace(/\s+/g, " ")
+    .trim();
 
 // Helper: validation website (TLD domain or full URL with TLD)
 const isValidWebsite = (url?: string | null) => {
@@ -104,7 +129,7 @@ router.get("/check-owner/:email", async (req, res) => {
 
     const { data, error } = await supabase
       .from("stores")
-      .select("name, owner_email, slug, rib")
+      .select("name, owner_email, slug")
       .eq("owner_email", email)
       .single();
 
@@ -124,27 +149,7 @@ router.get("/check-owner/:email", async (req, res) => {
       storeName: data.name,
       ownerEmail: data.owner_email,
       slug: (data as any)?.slug,
-      rib: (data as any)?.rib || null,
     });
-  } catch (error) {
-    console.error("Erreur serveur:", error);
-    return res.status(500).json({ error: "Erreur interne du serveur" });
-  }
-});
-
-// Nouvelle route: GET /api/stores/wallet-balance?ownerEmail=...
-router.get("/wallet-balance", async (req, res) => {
-  try {
-    const ownerEmail = (req.query.ownerEmail as string) || "";
-    if (!ownerEmail) {
-      return res.status(400).json({ error: "ownerEmail requis" });
-    }
-
-    // Placeholder: à remplacer par une vraie logique de calcul
-    // Exemple: agrégation de paiements Stripe ou table des commandes
-    const availableBalance = 0;
-
-    return res.json({ success: true, balance: availableBalance });
   } catch (error) {
     console.error("Erreur serveur:", error);
     return res.status(500).json({ error: "Erreur interne du serveur" });
@@ -445,28 +450,67 @@ router.get("/:storeSlug", async (req, res) => {
 // POST /api/stores/:storeSlug/confirm-payout - Confirmer demande de versement
 router.post("/:storeSlug/confirm-payout", async (req, res) => {
   try {
-    const { storeSlug } = req.params as { storeSlug?: string };
-    const { method, iban, bic } = req.body as {
-      method?: "database" | "link";
-      iban?: string;
-      bic?: string;
-    };
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      console.warn("[confirm-payout] unauthorized", {
+        isAuthenticated: Boolean(auth?.isAuthenticated),
+        hasUserId: Boolean(auth?.userId),
+        authUserId: auth?.userId ? String(auth.userId) : null,
+        authSessionId: (auth as any)?.sessionId
+          ? String((auth as any).sessionId)
+          : null,
+      });
+      return res.status(401).json({ error: "Unauthorized" });
+    }
 
+    const { storeSlug } = req.params as { storeSlug?: string };
     if (!storeSlug) {
+      console.warn("[confirm-payout] missing storeSlug");
       return res.status(400).json({ error: "Slug de boutique requis" });
     }
     const decodedSlug = decodeURIComponent(storeSlug);
+    console.log("[confirm-payout] resolved slug", { decodedSlug });
 
-    if (!method || (method !== "database" && method !== "link")) {
-      return res
-        .status(400)
-        .json({ error: "Méthode invalide: 'database' ou 'link' requis" });
+    const { iban, bic } = req.body as { iban?: string; bic?: string };
+    const ibanTrim = String(iban || "").trim();
+    const bicTrim = String(bic || "").trim();
+    if (!ibanTrim || !bicTrim) {
+      console.warn("[confirm-payout] missing iban/bic", {
+        hasIban: Boolean(ibanTrim),
+        hasBic: Boolean(bicTrim),
+      });
+      return res.status(400).json({ error: "IBAN et BIC requis" });
     }
+    if (!isValidIBAN(ibanTrim)) {
+      console.warn("[confirm-payout] invalid iban");
+      return res.status(400).json({ error: "IBAN invalide" });
+    }
+    if (!isValidBIC(bicTrim)) {
+      console.warn("[confirm-payout] invalid bic");
+      return res.status(400).json({ error: "BIC invalide" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const ownerStripeId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    if (!ownerStripeId) {
+      console.warn("[confirm-payout] missing stripe_id in clerk metadata", {
+        userId: String(auth.userId),
+      });
+      return res.status(400).json({ error: "stripe_id manquant" });
+    }
+    console.log("[confirm-payout] clerk identity", {
+      userId: String(auth.userId),
+      hasStripeId: Boolean(ownerStripeId),
+    });
 
     const { data: store, error: getErr } = await supabase
       .from("stores")
-      .select("id, name, slug, owner_email, rib")
-      .eq("slug", decodedSlug)
+      .select(
+        "id, name, slug, clerk_id, owner_email, stripe_id, iban_bic, payout_created_at, payout_facture_id, siret, address",
+      )
+      .eq("stripe_id", ownerStripeId)
       .maybeSingle();
 
     if (getErr && (getErr as any)?.code !== "PGRST116") {
@@ -476,77 +520,1236 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         .json({ error: "Erreur lors de la récupération de la boutique" });
     }
     if (!store) {
+      console.warn("[confirm-payout] store not found", {
+        ownerStripeId,
+      });
       return res.status(404).json({ error: "Boutique non trouvée" });
     }
 
-    const currentRib = (store as any)?.rib || null;
-
-    let newRib: any = null;
-    if (method === "database") {
-      if (!iban || !bic) {
-        return res
-          .status(400)
-          .json({ error: "IBAN et BIC requis pour la méthode 'database'" });
-      }
-      if (!isValidIBAN(iban)) {
-        return res.status(400).json({ error: "IBAN invalide" });
-      }
-      if (!isValidBIC(bic)) {
-        return res.status(400).json({ error: "BIC invalide" });
-      }
-      newRib = {
-        type: "database",
-        iban,
-        bic,
-        url: currentRib?.type === "link" ? currentRib.url || null : null,
-      };
-    } else {
-      // method === "link"
-      if (!currentRib || currentRib?.type !== "link" || !currentRib?.url) {
-        return res
-          .status(400)
-          .json({ error: "Aucun RIB (lien) enregistré pour cette boutique" });
-      }
-      newRib = {
-        type: "link",
-        url: currentRib.url,
-        iban: currentRib?.iban || "",
-        bic: currentRib?.bic || "",
-      };
+    if (String((store as any)?.slug || "") !== decodedSlug) {
+      console.warn("[confirm-payout] slug mismatch", {
+        decodedSlug,
+        storeSlug: String((store as any)?.slug || ""),
+        storeId: (store as any)?.id ?? null,
+      });
+      return res.status(404).json({ error: "Boutique non trouvée" });
     }
+
+    let authorized = Boolean(
+      (store as any)?.clerk_id && (store as any).clerk_id === auth.userId,
+    );
+    if (!authorized) {
+      try {
+        const emails = (user.emailAddresses || [])
+          .map((e) => String((e as any)?.emailAddress || "").toLowerCase())
+          .filter(Boolean);
+        const ownerEmail = String(
+          (store as any)?.owner_email || "",
+        ).toLowerCase();
+        if (ownerEmail && emails.includes(ownerEmail)) authorized = true;
+      } catch {}
+    }
+    if (!authorized) {
+      console.warn("[confirm-payout] forbidden", {
+        userId: String(auth.userId),
+        storeId: (store as any)?.id ?? null,
+        storeClerkId: String((store as any)?.clerk_id || ""),
+        storeOwnerEmail: String((store as any)?.owner_email || ""),
+      });
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const storeId = (store as any).id as number;
+    console.log("[confirm-payout] authorized", {
+      storeId,
+      storeSlug: String((store as any)?.slug || ""),
+    });
+    const lastPayoutRaw = (store as any)?.payout_created_at as any;
+    const lastPayoutMs = lastPayoutRaw
+      ? new Date(lastPayoutRaw).getTime()
+      : NaN;
+    const lastPayoutTimestamp = Number.isFinite(lastPayoutMs)
+      ? Math.floor(lastPayoutMs / 1000)
+      : undefined;
+
+    const mapWithLimit = async <T, R>(
+      items: T[],
+      maxConcurrent: number,
+      fn: (item: T, idx: number) => Promise<R>,
+    ): Promise<R[]> => {
+      const out: R[] = new Array(items.length);
+      let idx = 0;
+      const workers = new Array(Math.max(1, maxConcurrent))
+        .fill(null)
+        .map(async () => {
+          while (idx < items.length) {
+            const current = idx++;
+            out[current] = await fn(items[current], current);
+          }
+        });
+      await Promise.all(workers);
+      return out;
+    };
+
+    const paymentRows: any[] = [];
+    const pageSizeDb = 1000;
+    for (let from = 0; ; from += pageSizeDb) {
+      const q = supabase
+        .from("shipments")
+        .select("payment_id, estimated_delivery_cost, delivery_cost")
+        .eq("store_id", storeId)
+        .not("payment_id", "is", null)
+        .order("id", { ascending: false })
+        .range(from, from + pageSizeDb - 1);
+
+      const { data, error } = await q;
+      if (error) {
+        console.error("Erreur Supabase (list shipments payment_id):", error);
+        return res.status(500).json({ error: error.message });
+      }
+      paymentRows.push(...(data || []));
+      if (!data || data.length < pageSizeDb) break;
+    }
+
+    const paymentIdsAll = paymentRows
+      .map((r) => String((r as any)?.payment_id || "").trim())
+      .filter(Boolean);
+    const paymentIdSet = new Set(paymentIdsAll);
+
+    const deliveryGapByPaymentId = new Map<string, number>();
+    for (const r of paymentRows) {
+      const pid = String((r as any)?.payment_id || "").trim();
+      if (!pid) continue;
+      const est = Number((r as any)?.estimated_delivery_cost || 0);
+      const act = Number((r as any)?.delivery_cost || 0);
+      const diff = est - act;
+      const gap = Number.isFinite(diff) ? Math.min(0, diff) : 0;
+      deliveryGapByPaymentId.set(pid, gap);
+    }
+
+    const listAllCheckoutSessionsAfter = async (options?: {
+      startTimestamp?: number;
+    }): Promise<any[]> => {
+      const out: any[] = [];
+      let hasMore = true;
+      let startingAfter: string | undefined = undefined;
+
+      const queryParams: any = {
+        limit: 100,
+        expand: ["data.customer", "data.shipping_cost"],
+      };
+      if (options?.startTimestamp) {
+        queryParams.created = { gte: options.startTimestamp };
+      }
+
+      while (hasMore) {
+        if (startingAfter) queryParams.starting_after = startingAfter;
+        const page = await stripe.checkout.sessions.list(queryParams);
+        out.push(...(page.data || []));
+        hasMore = Boolean(page.has_more);
+        if (hasMore && (page.data || []).length > 0) {
+          startingAfter = (page.data || [])[(page.data || []).length - 1]?.id;
+        }
+      }
+
+      return out;
+    };
+
+    const allSessionsAfter = await listAllCheckoutSessionsAfter({
+      startTimestamp: lastPayoutTimestamp,
+    });
+
+    const matchedSessions = allSessionsAfter
+      .map((s) => {
+        const pid =
+          typeof (s as any)?.payment_intent === "string"
+            ? String((s as any).payment_intent)
+            : String((s as any)?.payment_intent?.id || "");
+        const paymentId = pid.trim();
+        if (!paymentId) return null;
+        if (!paymentIdSet.has(paymentId)) return null;
+        return { session: s, paymentId };
+      })
+      .filter(Boolean) as Array<{ session: any; paymentId: string }>;
+
+    const uniqByPaymentId = new Map<
+      string,
+      { session: any; paymentId: string }
+    >();
+    for (const it of matchedSessions) {
+      const existing = uniqByPaymentId.get(it.paymentId);
+      if (!existing) {
+        uniqByPaymentId.set(it.paymentId, it);
+        continue;
+      }
+      const prevCreated = Number((existing.session as any)?.created || 0);
+      const nextCreated = Number((it.session as any)?.created || 0);
+      if (nextCreated > prevCreated) {
+        uniqByPaymentId.set(it.paymentId, it);
+      }
+    }
+    const uniqMatchedSessions = Array.from(uniqByPaymentId.values());
+
+    const refundedByPaymentId = new Map<string, number>();
+    const refundCentsList = await mapWithLimit(
+      uniqMatchedSessions,
+      6,
+      async (it) => {
+        const paymentId = it.paymentId;
+        try {
+          const refunds = await stripe.refunds.list({
+            payment_intent: paymentId,
+            limit: 100,
+          });
+          const refundedCents = (refunds.data || []).reduce(
+            (sum, r) => sum + Number((r as any)?.amount || 0),
+            0,
+          );
+          refundedByPaymentId.set(paymentId, refundedCents);
+          return refundedCents;
+        } catch {
+          refundedByPaymentId.set(paymentId, 0);
+          return 0;
+        }
+      },
+    );
+
+    const grossCents = uniqMatchedSessions.reduce((sum, it, idx) => {
+      const s = it.session as any;
+      const paymentId = it.paymentId;
+      const totalCents = Number(s?.amount_total || 0);
+      const refundedCents =
+        typeof refundCentsList[idx] === "number"
+          ? refundCentsList[idx]
+          : Number(refundedByPaymentId.get(paymentId) || 0);
+      const gapEuro = Number(deliveryGapByPaymentId.get(paymentId) || 0);
+      const gapCents = Math.round(gapEuro * 100);
+      const netCents = totalCents - refundedCents + gapCents;
+      return sum + (Number.isFinite(netCents) ? Math.max(0, netCents) : 0);
+    }, 0);
+
+    if (!Number.isFinite(grossCents) || grossCents <= 0) {
+      return res.status(400).json({ error: "Aucun gain disponible" });
+    }
+
+    const platformFeeCents = Math.round(grossCents * 0.03) + 30;
+    const payoutCents = grossCents - platformFeeCents;
+    if (!Number.isFinite(payoutCents) || payoutCents <= 0) {
+      return res.status(400).json({ error: "Montant insuffisant après frais" });
+    }
+
+    const country = ibanTrim.substring(0, 2).toUpperCase();
+    const idempotencyBase = `payout_${storeId}_${
+      lastPayoutTimestamp ? String(lastPayoutTimestamp) : "first"
+    }_${grossCents}`;
+
+    const account: any = await stripe.accounts.retrieve();
+    const stripeAccountId = String(account?.id || "").trim();
+    if (!stripeAccountId) {
+      return res.status(500).json({ error: "Stripe account indisponible" });
+    }
+
+    const bankAccountName = String((store as any)?.name || "").trim();
+    /*const externalAccount: any = await stripe.accounts.createExternalAccount(
+      stripeAccountId,
+      {
+        external_account: {
+          object: "bank_account",
+          account_number: ibanTrim,
+          country,
+          currency: "eur",
+          account_holder_name: bankAccountName || undefined,
+        } as any,
+        default_for_currency: true,
+      } as any,
+      { idempotencyKey: `${idempotencyBase}_external_account` } as any,
+    );
+
+    const destinationId = String(externalAccount?.id || "").trim();
+    if (!destinationId) {
+      return res.status(500).json({ error: "Destination bancaire invalide" });
+    } */
+
+    /*const payout: any = await stripe.payouts.create(
+      {
+        amount: payoutCents,
+        currency: "eur",
+        method: "standard",
+        destination: destinationId,
+        description: `Payout PayLive - ${String((store as any)?.name || "")}`,
+        metadata: {
+          store_id: String(storeId),
+          store_slug: String(decodedSlug),
+          gross_cents: String(grossCents),
+          fee_cents: String(platformFeeCents),
+        },
+      } as any,
+      {
+        idempotencyKey: `${idempotencyBase}_payout`,
+        stripeAccount: "acct_1SramGC1Oc6JE3hW",
+      } as any,
+    );*/
+
+    const ibanBic = { iban: ibanTrim, bic: bicTrim };
+    const payoutAtIso = new Date().toISOString();
+    const lastFactureIdRaw = Number((store as any)?.payout_facture_id || 0);
+    const nextFactureId =
+      Number.isFinite(lastFactureIdRaw) && lastFactureIdRaw > 0
+        ? Math.floor(lastFactureIdRaw) + 1
+        : 1;
 
     const { data: updated, error: updErr } = await supabase
       .from("stores")
-      .update({ rib: newRib })
-      .eq("slug", decodedSlug)
-      .select("id, name, slug, owner_email, rib, balance")
+      .update({
+        iban_bic: ibanBic,
+        payout_created_at: payoutAtIso,
+        payout_facture_id: nextFactureId,
+      })
+      .eq("id", storeId)
+      .select(
+        "id, name, slug, owner_email, iban_bic, payout_created_at, payout_facture_id, siret, address",
+      )
       .single();
 
     if (updErr) {
-      console.error("Erreur Supabase (update rib):", updErr);
+      console.error("Erreur Supabase (update iban_bic):", updErr);
       return res
         .status(500)
-        .json({ error: "Erreur lors de la mise à jour du RIB" });
+        .json({ error: "Erreur lors de la mise à jour des infos bancaires" });
     }
 
-    // Email SAV de demande de versement
+    uniqMatchedSessions.sort(
+      (a, b) =>
+        Number((b.session as any)?.created || 0) -
+        Number((a.session as any)?.created || 0),
+    );
+
+    const transactions: any[] = await mapWithLimit(
+      uniqMatchedSessions,
+      6,
+      async (it) => {
+        const session = it.session as any;
+        const paymentId = it.paymentId;
+        const created = Number(session?.created || 0);
+        const currency = String(session?.currency || "eur").toLowerCase();
+        const customerObj =
+          session?.customer && typeof session.customer === "object"
+            ? (session.customer as any)
+            : null;
+        const shippingCents = Number(session?.shipping_cost?.amount_total || 0);
+        const totalCents = Number(session?.amount_total || 0);
+        const refundedCents = Number(refundedByPaymentId.get(paymentId) || 0);
+        const deliveryGap = Number(deliveryGapByPaymentId.get(paymentId) || 0);
+        const baseNet = (totalCents - refundedCents) / 100;
+        const netTotal = baseNet + deliveryGap;
+
+        let lineItems: any[] = [];
+        try {
+          const liResp: any = await stripe.checkout.sessions.listLineItems(
+            String(session?.id || ""),
+            { limit: 100, expand: ["data.price.product"] } as any,
+          );
+          lineItems = Array.isArray(liResp?.data) ? liResp.data : [];
+        } catch {}
+
+        const items = lineItems.map((li) => {
+          const price = (li as any)?.price || null;
+          const unit = Number((price as any)?.unit_amount || 0);
+          const qty = Number((li as any)?.quantity || 1);
+          const product = (price as any)?.product || null;
+          const ref = String(
+            (product as any)?.name || (li as any)?.description || "",
+          ).trim();
+          const desc = String((product as any)?.description || "").trim();
+          return {
+            reference: ref || "—",
+            description: desc || null,
+            unit_price: unit / 100,
+            quantity: qty,
+            line_total: (unit * qty) / 100,
+          };
+        });
+
+        return {
+          payment_id: paymentId,
+          created,
+          currency,
+          customer: {
+            name: String(customerObj?.name || "").trim() || null,
+            email: String(customerObj?.email || "").trim() || null,
+            id: String(customerObj?.id || "").trim() || null,
+          },
+          items,
+          shipping_fee: shippingCents / 100,
+          delivery_gap: deliveryGap,
+          total: totalCents / 100,
+          refunded_total: refundedCents / 100,
+          net_total: Number.isFinite(netTotal) ? netTotal : baseNet,
+        };
+      },
+    );
+
+    const storeName = String((store as any)?.name || "").trim() || "—";
+    const storeOwnerEmail = String(
+      (updated as any)?.owner_email || (store as any)?.owner_email || "",
+    ).trim();
+    const createdEpochs = uniqMatchedSessions
+      .map((it) => Number((it.session as any)?.created || 0))
+      .filter((v) => Number.isFinite(v) && v > 0);
+    const minCreated =
+      createdEpochs.length > 0 ? Math.min(...createdEpochs) : NaN;
+    const maxCreated =
+      createdEpochs.length > 0 ? Math.max(...createdEpochs) : NaN;
+    const periodStart = Number.isFinite(minCreated)
+      ? new Date(minCreated * 1000)
+      : null;
+    const periodEnd = Number.isFinite(maxCreated)
+      ? new Date(maxCreated * 1000)
+      : new Date(payoutAtIso);
+    const issueDate = new Date(payoutAtIso);
+
+    const dtShort = new Intl.DateTimeFormat("fr-FR", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const dtLong = new Intl.DateTimeFormat("fr-FR", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const moneyFmt = new Intl.NumberFormat("fr-FR", {
+      style: "currency",
+      currency: "EUR",
+    });
+
+    const invoiceId = `PL-${issueDate.getFullYear()}-${String(nextFactureId).padStart(5, "0")}`;
+
+    let logoBuffer: Buffer | null = null;
     try {
-      await emailService.sendPayoutRequest({
-        ownerEmail: (updated as any).owner_email,
-        storeName: (updated as any).name,
-        storeSlug: (updated as any).slug,
-        method,
-        iban: newRib?.iban,
-        bic: newRib?.bic,
-        ribUrl: newRib?.url,
-        amount: (updated as any)?.balance ?? 0,
-        currency: "EUR",
+      const logoPath = path.join(process.cwd(), "public", "logo_bis.png");
+      if (fs.existsSync(logoPath)) {
+        const buf = fs.readFileSync(logoPath);
+        if (buf.length > 0) logoBuffer = buf;
+      }
+    } catch {}
+
+    const pdfBuffer: Buffer = await (async () => {
+      const doc = new PDFDocument({ size: "A4", margin: 40 });
+      const margin = 40;
+      const x = margin;
+      const tableW = doc.page.width - margin * 2;
+      let y = margin;
+
+      const drawFooter = () => {
+        try {
+          const footerY = doc.page.height - margin - 12;
+          doc.fillColor("#6B7280").fontSize(8);
+          doc.text("© 2026 ", x, footerY, { continued: true });
+          doc.fillColor("#2563EB").text("PayLive", {
+            link: "https://paylive.cc",
+            underline: false,
+            continued: true,
+          });
+          doc.fillColor("#6B7280").text(" - Tous droits réservés");
+        } catch {}
+      };
+
+      const addPage = () => {
+        drawFooter();
+        doc.addPage();
+        y = margin;
+      };
+
+      if (logoBuffer) {
+        try {
+          doc.image(logoBuffer, x, y, { fit: [70, 40] });
+        } catch {}
+      }
+
+      doc.fillColor("#111827");
+      doc.fontSize(16).text(`Facture n° ${invoiceId}`, x, y, {
+        align: "right",
       });
-    } catch (emailErr) {
-      console.error("Erreur envoi email demande de versement:", emailErr);
+      doc
+        .fontSize(10)
+        .fillColor("#374151")
+        .text(`Date d’émission : ${dtLong.format(issueDate)}`, x, y + 20, {
+          align: "right",
+        });
+
+      y += 60;
+      doc.save();
+      doc.lineWidth(1).strokeColor("#E5E7EB");
+      doc
+        .moveTo(x, y)
+        .lineTo(doc.page.width - margin, y)
+        .stroke();
+      doc.restore();
+
+      y += 14;
+      const boxW = (doc.page.width - margin * 2 - 20) / 2;
+      const rightX = x + boxW + 20;
+
+      doc.fillColor("#111827").fontSize(10).text("Émetteur", x, y);
+      doc.fillColor("#111827").fontSize(10).text("Client", rightX, y, {
+        align: "right",
+        width: boxW,
+      });
+
+      y += 14;
+      doc.fillColor("#374151").fontSize(9);
+      const issuerText = [
+        "SAAD BENDAOUD (EI)",
+        "PayLive (by PixSaaS)",
+        "42 Rue Bernard Ortet",
+        "31500 Toulouse, FR",
+        "contact@paylive.cc",
+        "www.paylive.cc",
+        "SIREN : 983 708 637",
+      ].join("\n");
+
+      const storeSiret = sanitizeOneLine(
+        String((updated as any)?.siret || (store as any)?.siret || ""),
+      );
+      const storeAddr =
+        (updated as any)?.address || (store as any)?.address || null;
+      const addrLine1 = sanitizeOneLine(String(storeAddr?.line1 || ""));
+      const addrLine2 = sanitizeOneLine(String(storeAddr?.line2 || ""));
+      const addrPostal = sanitizeOneLine(String(storeAddr?.postal_code || ""));
+      const addrCity = sanitizeOneLine(String(storeAddr?.city || ""));
+      const addrCountry = sanitizeOneLine(String(storeAddr?.country || ""));
+      const storePhone = sanitizeOneLine(String(storeAddr?.phone || ""));
+
+      const clientLines: string[] = [];
+      clientLines.push(storeName);
+      if (storeSiret) clientLines.push(`SIRET : ${storeSiret}`);
+      const addrFirst = [addrLine1, addrLine2].filter(Boolean).join(", ");
+      const addrSecond = [addrPostal, addrCity].filter(Boolean).join(" ");
+      const addrThird = addrCountry || "FR";
+      if (addrFirst) clientLines.push(addrFirst);
+      if (addrSecond || addrThird)
+        clientLines.push([addrSecond, addrThird].filter(Boolean).join(", "));
+      if (storePhone) clientLines.push(`Téléphone : ${storePhone}`);
+      if (storeOwnerEmail) clientLines.push(storeOwnerEmail);
+      const clientText = clientLines.join("\n");
+
+      doc.text(issuerText, x, y, { width: boxW });
+      doc.text(clientText || "—", rightX, y, { width: boxW, align: "right" });
+
+      const leftH = doc.heightOfString(issuerText, { width: boxW });
+      const rightH = doc.heightOfString(clientText || "—", { width: boxW });
+      y += Math.max(leftH, rightH) + 10;
+
+      doc
+        .fillColor("#374151")
+        .fontSize(9)
+        .text(
+          `Période : Du ${periodStart ? dtShort.format(periodStart) : "—"} au ${dtShort.format(periodEnd)}`,
+          x,
+          y,
+          { width: tableW },
+        );
+
+      y += 26;
+
+      const totalsBoxW = 240;
+      const totalsBoxX = doc.page.width - margin - totalsBoxW;
+      const totalsLabelW = 140;
+      const totalsValueX = totalsBoxX + totalsLabelW;
+      const totalsValueW = totalsBoxW - totalsLabelW;
+
+      doc.fillColor("#111827").fontSize(10).text("Total net", totalsBoxX, y, {
+        width: totalsLabelW,
+      });
+      doc
+        .fillColor("#111827")
+        .fontSize(10)
+        .text(moneyFmt.format(grossCents / 100), totalsValueX, y, {
+          width: totalsValueW,
+          align: "right",
+        });
+
+      y += 14;
+      doc
+        .fillColor("#374151")
+        .fontSize(9)
+        .text("Frais PayLive", totalsBoxX, y, { width: totalsLabelW });
+      doc
+        .fillColor("#374151")
+        .fontSize(9)
+        .text(moneyFmt.format(platformFeeCents / 100), totalsValueX, y, {
+          width: totalsValueW,
+          align: "right",
+        });
+
+      y += 16;
+      doc
+        .fillColor("#111827")
+        .fontSize(12)
+        .text("Montant viré", totalsBoxX, y, { width: totalsLabelW });
+      doc
+        .fillColor("#111827")
+        .fontSize(12)
+        .text(moneyFmt.format(payoutCents / 100), totalsValueX, y, {
+          width: totalsValueW,
+          align: "right",
+        });
+
+      y += 26;
+      doc.fillColor("#111827").fontSize(11).text("Transactions", x, y);
+      y += 12;
+
+      const rowH = 18;
+      const colDateW = 72;
+      const colNetW = 90;
+      const colPaymentW = 150;
+      const colClientW = tableW - colDateW - colPaymentW - colNetW;
+
+      const drawSummaryHeader = () => {
+        doc.save();
+        doc.fillColor("#F3F4F6").rect(x, y, tableW, rowH).fill();
+        doc.restore();
+        doc.save();
+        doc
+          .strokeColor("#E5E7EB")
+          .lineWidth(1)
+          .rect(x, y, tableW, rowH)
+          .stroke();
+        doc.restore();
+        doc.fillColor("#111827").fontSize(9);
+        doc.text("Date", x + 6, y + 5, { width: colDateW - 12 });
+        doc.text("Client", x + colDateW + 6, y + 5, {
+          width: colClientW - 12,
+        });
+        doc.text("Payment", x + colDateW + colClientW + 6, y + 5, {
+          width: colPaymentW - 12,
+        });
+        doc.text("Net", x + colDateW + colClientW + colPaymentW, y + 5, {
+          width: colNetW - 6,
+          align: "right",
+        });
+        y += rowH;
+      };
+
+      const drawSummaryRow = (row: {
+        date: string;
+        client: string;
+        payment: string;
+        net: string;
+      }) => {
+        doc.save();
+        doc
+          .strokeColor("#E5E7EB")
+          .lineWidth(1)
+          .rect(x, y, tableW, rowH)
+          .stroke();
+        doc.restore();
+        doc.fillColor("#111827").fontSize(9);
+        doc.text(row.date, x + 6, y + 5, { width: colDateW - 12 });
+        doc.text(row.client, x + colDateW + 6, y + 5, {
+          width: colClientW - 12,
+        });
+        doc.text(row.payment, x + colDateW + colClientW + 6, y + 5, {
+          width: colPaymentW - 12,
+        });
+        doc.text(row.net, x + colDateW + colClientW + colPaymentW, y + 5, {
+          width: colNetW - 6,
+          align: "right",
+        });
+        y += rowH;
+      };
+
+      drawSummaryHeader();
+      for (const tx of transactions) {
+        if (y > doc.page.height - margin - 90) {
+          addPage();
+          doc
+            .fillColor("#111827")
+            .fontSize(11)
+            .text("Transactions (suite)", x, y);
+          y += 12;
+          drawSummaryHeader();
+        }
+
+        const createdTs = Number((tx as any)?.created || 0);
+        const dateText = createdTs
+          ? dtShort.format(new Date(createdTs * 1000))
+          : "—";
+        const customerName =
+          sanitizeOneLine(String((tx as any)?.customer?.name || "")) ||
+          sanitizeOneLine(String((tx as any)?.customer?.email || "")) ||
+          "—";
+        const paymentId =
+          sanitizeOneLine(String((tx as any)?.payment_id || "")) || "—";
+        const netText = moneyFmt.format(Number((tx as any)?.net_total || 0));
+
+        drawSummaryRow({
+          date: dateText,
+          client: customerName.slice(0, 44),
+          payment: paymentId.slice(0, 26),
+          net: netText,
+        });
+      }
+
+      y += 18;
+      doc
+        .fillColor("#374151")
+        .fontSize(9)
+        .text("Détail des lignes par transaction en pages suivantes.", x, y);
+
+      addPage();
+      doc
+        .fillColor("#111827")
+        .fontSize(14)
+        .text("Détail des transactions", x, y);
+      y += 20;
+
+      const itemRowH = 16;
+      const itemQtyW = 44;
+      const itemUnitW = 80;
+      const itemTotalW = 90;
+      const itemRefW = tableW - itemQtyW - itemUnitW - itemTotalW;
+
+      const drawItemsHeader = () => {
+        doc.save();
+        doc.fillColor("#F3F4F6").rect(x, y, tableW, itemRowH).fill();
+        doc.restore();
+        doc.save();
+        doc
+          .strokeColor("#E5E7EB")
+          .lineWidth(1)
+          .rect(x, y, tableW, itemRowH)
+          .stroke();
+        doc.restore();
+        doc.fillColor("#111827").fontSize(9);
+        doc.text("Article", x + 6, y + 4, { width: itemRefW - 12 });
+        doc.text("Qté", x + itemRefW, y + 4, {
+          width: itemQtyW - 6,
+          align: "right",
+        });
+        doc.text("PU", x + itemRefW + itemQtyW, y + 4, {
+          width: itemUnitW - 6,
+          align: "right",
+        });
+        doc.text("Total", x + itemRefW + itemQtyW + itemUnitW, y + 4, {
+          width: itemTotalW - 6,
+          align: "right",
+        });
+        y += itemRowH;
+      };
+
+      const drawItemRow = (row: {
+        ref: string;
+        qty: string;
+        unit: string;
+        total: string;
+      }) => {
+        doc.save();
+        doc
+          .strokeColor("#E5E7EB")
+          .lineWidth(1)
+          .rect(x, y, tableW, itemRowH)
+          .stroke();
+        doc.restore();
+        doc.fillColor("#111827").fontSize(9);
+        doc.text(row.ref, x + 6, y + 4, { width: itemRefW - 12 });
+        doc.text(row.qty, x + itemRefW, y + 4, {
+          width: itemQtyW - 6,
+          align: "right",
+        });
+        doc.text(row.unit, x + itemRefW + itemQtyW, y + 4, {
+          width: itemUnitW - 6,
+          align: "right",
+        });
+        doc.text(row.total, x + itemRefW + itemQtyW + itemUnitW, y + 4, {
+          width: itemTotalW - 6,
+          align: "right",
+        });
+        y += itemRowH;
+      };
+
+      for (const tx of transactions) {
+        if (y > doc.page.height - margin - 160) addPage();
+
+        const createdTs = Number((tx as any)?.created || 0);
+        const createdText = createdTs
+          ? dtLong.format(new Date(createdTs * 1000))
+          : "—";
+        const customerName =
+          sanitizeOneLine(String((tx as any)?.customer?.name || "")) ||
+          sanitizeOneLine(String((tx as any)?.customer?.email || "")) ||
+          "—";
+        const paymentId =
+          sanitizeOneLine(String((tx as any)?.payment_id || "")) || "—";
+
+        doc
+          .fillColor("#111827")
+          .fontSize(11)
+          .text(`${createdText} — ${customerName}`, x, y, {
+            width: tableW,
+          });
+        y += 14;
+        doc
+          .fillColor("#374151")
+          .fontSize(9)
+          .text(`Payment: ${paymentId}`, x, y, {
+            width: tableW,
+          });
+        y += 12;
+
+        drawItemsHeader();
+        const items = Array.isArray((tx as any)?.items)
+          ? (tx as any).items
+          : [];
+        for (const it2 of items) {
+          if (y > doc.page.height - margin - 120) {
+            addPage();
+            drawItemsHeader();
+          }
+          const ref =
+            sanitizeOneLine(String((it2 as any)?.reference || "—")) || "—";
+          const qty = Number((it2 as any)?.quantity || 0);
+          const unit = Number((it2 as any)?.unit_price || 0);
+          const lineTotal = Number((it2 as any)?.line_total || 0);
+          drawItemRow({
+            ref: ref.slice(0, 70),
+            qty: String(qty || 0),
+            unit: moneyFmt.format(unit),
+            total: moneyFmt.format(lineTotal),
+          });
+        }
+
+        y += 10;
+        const totalsLabelW = 170;
+        const totalsValueW = 110;
+        const totalsRightX = doc.page.width - margin - totalsValueW;
+        const kv = [
+          { k: "Total", v: moneyFmt.format(Number((tx as any)?.total || 0)) },
+          {
+            k: "Livraison",
+            v: moneyFmt.format(Number((tx as any)?.shipping_fee || 0)),
+          },
+          {
+            k: "Remboursé",
+            v: moneyFmt.format(Number((tx as any)?.refunded_total || 0)),
+          },
+          {
+            k: "Écart livraison",
+            v: moneyFmt.format(Number((tx as any)?.delivery_gap || 0)),
+          },
+          { k: "Net", v: moneyFmt.format(Number((tx as any)?.net_total || 0)) },
+        ];
+        for (const { k, v } of kv) {
+          if (y > doc.page.height - margin - 60) addPage();
+          doc
+            .fillColor("#374151")
+            .fontSize(9)
+            .text(k, totalsRightX - totalsLabelW, y, {
+              width: totalsLabelW,
+              align: "right",
+            });
+          doc.fillColor("#111827").fontSize(9).text(v, totalsRightX, y, {
+            width: totalsValueW,
+            align: "right",
+          });
+          y += 12;
+        }
+
+        y += 14;
+      }
+
+      drawFooter();
+      return collectPdf(doc);
+    })();
+
+    const pdfBase64 = pdfBuffer.toString("base64");
+    const fileName = `facture_${invoiceId}_${payoutAtIso.slice(0, 10)}.pdf`;
+
+    try {
+      const ownerEmail = String(
+        (updated as any)?.owner_email || storeOwnerEmail || "",
+      ).trim();
+      if (ownerEmail) {
+        await emailService.sendPayoutConfirmationToStoreOwner({
+          ownerEmail,
+          storeName,
+          storeSlug: decodedSlug,
+          periodStart: periodStart ? dtLong.format(periodStart) : null,
+          periodEnd: dtLong.format(periodEnd),
+          storeSiret: sanitizeOneLine(
+            String((updated as any)?.siret || (store as any)?.siret || ""),
+          ),
+          storeAddress:
+            (updated as any)?.address || (store as any)?.address || null,
+          grossAmount: grossCents / 100,
+          feeAmount: platformFeeCents / 100,
+          payoutAmount: payoutCents / 100,
+          currency: "EUR",
+          attachments: [
+            {
+              filename: fileName,
+              content: pdfBuffer,
+              contentType: "application/pdf",
+            },
+          ],
+        });
+      }
+    } catch (e) {
+      console.error("Erreur envoi email versement:", e);
     }
 
-    return res.json({ success: true, store: updated });
+    return res.json({
+      success: true,
+      store: updated,
+      payout: {
+        gross_cents: grossCents,
+        fee_cents: platformFeeCents,
+        payout_cents: payoutCents,
+        currency: "eur",
+        recipient_id: stripeAccountId || null,
+        payment_id: "payout?.id",
+        status: "payout?.status",
+        destination_id: "destinationId",
+      },
+      pdf: { fileName, base64: pdfBase64 },
+    });
+  } catch (err) {
+    console.error("Erreur serveur:", err);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+router.get("/:storeSlug/transactions", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { storeSlug } = req.params as { storeSlug?: string };
+    if (!storeSlug) {
+      return res.status(400).json({ error: "Slug de boutique requis" });
+    }
+    const decodedSlug = decodeURIComponent(storeSlug);
+
+    const maxLimit = 5000;
+    const limitParam = String(req.query.limit ?? "")
+      .trim()
+      .toLowerCase();
+    const limitAll = limitParam === "all";
+    const limitNum = limitAll || limitParam === "" ? NaN : Number(limitParam);
+    const limit = Number.isFinite(limitNum)
+      ? Math.max(1, Math.min(maxLimit, Math.floor(limitNum)))
+      : 50;
+
+    const startDateRaw = String(req.query.startDate || "").trim();
+    let startTimestamp: number | undefined = undefined;
+    if (startDateRaw) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(startDateRaw);
+      if (m) {
+        const iso = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00.000Z`);
+        if (!Number.isNaN(iso.getTime())) {
+          startTimestamp = Math.floor(iso.getTime() / 1000);
+        }
+      }
+    }
+
+    const startTimestampRaw = String(req.query.startTimestamp ?? "").trim();
+    if (startTimestampRaw) {
+      const ts = Number(startTimestampRaw);
+      if (Number.isFinite(ts) && ts > 0) {
+        startTimestamp = Math.floor(ts);
+      }
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const ownerStripeId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    if (!ownerStripeId) {
+      return res.status(400).json({ error: "stripe_id manquant" });
+    }
+
+    const { data: store, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, slug, clerk_id, owner_email, stripe_id")
+      .eq("stripe_id", ownerStripeId)
+      .maybeSingle();
+
+    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
+      console.error("Erreur Supabase (get store):", storeErr);
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la récupération de la boutique" });
+    }
+    if (!store) {
+      return res.status(404).json({ error: "Boutique non trouvée" });
+    }
+
+    if (String((store as any)?.slug || "") !== decodedSlug) {
+      return res.status(404).json({ error: "Boutique non trouvée" });
+    }
+
+    let authorized = Boolean(
+      (store as any)?.clerk_id && (store as any).clerk_id === auth.userId,
+    );
+    if (!authorized) {
+      try {
+        const emails = (user.emailAddresses || [])
+          .map((e) => String((e as any)?.emailAddress || "").toLowerCase())
+          .filter(Boolean);
+        const ownerEmail = String(
+          (store as any)?.owner_email || "",
+        ).toLowerCase();
+        if (ownerEmail && emails.includes(ownerEmail)) authorized = true;
+      } catch {}
+    }
+    if (!authorized) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const storeId = (store as any).id as number;
+    const mapWithLimit = async <T, R>(
+      items: T[],
+      maxConcurrent: number,
+      fn: (item: T, idx: number) => Promise<R>,
+    ): Promise<R[]> => {
+      const out: R[] = new Array(items.length);
+      let idx = 0;
+      const workers = new Array(Math.max(1, maxConcurrent))
+        .fill(null)
+        .map(async () => {
+          while (idx < items.length) {
+            const current = idx++;
+            out[current] = await fn(items[current], current);
+          }
+        });
+      await Promise.all(workers);
+      return out;
+    };
+
+    const paymentRows: any[] = [];
+    const pageSizeDb = 1000;
+    for (let from = 0; ; from += pageSizeDb) {
+      const q = supabase
+        .from("shipments")
+        .select("payment_id, estimated_delivery_cost, delivery_cost")
+        .eq("store_id", storeId)
+        .not("payment_id", "is", null)
+        .order("id", { ascending: false })
+        .range(from, from + pageSizeDb - 1);
+
+      const { data, error } = await q;
+      if (error) {
+        console.error("Erreur Supabase (list shipments payment_id):", error);
+        return res.status(500).json({ error: error.message });
+      }
+      paymentRows.push(...(data || []));
+      if (!data || data.length < pageSizeDb) break;
+    }
+
+    const paymentIdsAll = paymentRows
+      .map((r) => String((r as any)?.payment_id || "").trim())
+      .filter(Boolean);
+
+    const deliveryGapByPaymentId = new Map<string, number>();
+    for (const r of paymentRows) {
+      const pid = String((r as any)?.payment_id || "").trim();
+      if (!pid) continue;
+      const est = Number((r as any)?.estimated_delivery_cost || 0);
+      const act = Number((r as any)?.delivery_cost || 0);
+      const diff = est - act;
+      const gap = Number.isFinite(diff) ? Math.min(0, diff) : 0;
+      deliveryGapByPaymentId.set(pid, gap);
+    }
+
+    const paymentIdSet = new Set(paymentIdsAll);
+
+    const listAllCheckoutSessionsAfter = async (options?: {
+      startTimestamp?: number;
+    }): Promise<any[]> => {
+      const out: any[] = [];
+      let hasMore = true;
+      let startingAfter: string | undefined = undefined;
+
+      const queryParams: any = {
+        limit: 100,
+        expand: ["data.customer", "data.shipping_cost"],
+      };
+      if (options?.startTimestamp) {
+        queryParams.created = { gte: options.startTimestamp };
+      }
+
+      while (hasMore) {
+        if (startingAfter) queryParams.starting_after = startingAfter;
+        const page = await stripe.checkout.sessions.list(queryParams);
+        out.push(...(page.data || []));
+        hasMore = Boolean(page.has_more);
+        if (hasMore && (page.data || []).length > 0) {
+          startingAfter = (page.data || [])[(page.data || []).length - 1]?.id;
+        }
+      }
+
+      return out;
+    };
+
+    const allSessionsAfter = await listAllCheckoutSessionsAfter({
+      startTimestamp,
+    });
+
+    const matchedSessions = allSessionsAfter
+      .map((s) => {
+        const pid =
+          typeof (s as any)?.payment_intent === "string"
+            ? String((s as any).payment_intent)
+            : String((s as any)?.payment_intent?.id || "");
+        const paymentId = pid.trim();
+        if (!paymentId) return null;
+        if (!paymentIdSet.has(paymentId)) return null;
+        return { session: s, paymentId };
+      })
+      .filter(Boolean) as Array<{ session: any; paymentId: string }>;
+
+    const uniqByPaymentId = new Map<
+      string,
+      { session: any; paymentId: string }
+    >();
+    for (const it of matchedSessions) {
+      const existing = uniqByPaymentId.get(it.paymentId);
+      if (!existing) {
+        uniqByPaymentId.set(it.paymentId, it);
+        continue;
+      }
+      const prevCreated = Number((existing.session as any)?.created || 0);
+      const nextCreated = Number((it.session as any)?.created || 0);
+      if (nextCreated > prevCreated) {
+        uniqByPaymentId.set(it.paymentId, it);
+      }
+    }
+    const uniqMatchedSessions = Array.from(uniqByPaymentId.values());
+
+    const refundedByPaymentId = new Map<string, number>();
+    const refundCentsList = await mapWithLimit(
+      uniqMatchedSessions,
+      6,
+      async (it) => {
+        const paymentId = it.paymentId;
+        try {
+          const refunds = await stripe.refunds.list({
+            payment_intent: paymentId,
+            limit: 100,
+          });
+          const refundedCents = (refunds.data || []).reduce(
+            (sum, r) => sum + Number((r as any)?.amount || 0),
+            0,
+          );
+          refundedByPaymentId.set(paymentId, refundedCents);
+          return refundedCents;
+        } catch {
+          refundedByPaymentId.set(paymentId, 0);
+          return 0;
+        }
+      },
+    );
+
+    const totalNetAll = uniqMatchedSessions.reduce((sum, it, idx) => {
+      const s = it.session as any;
+      const paymentId = it.paymentId;
+      const totalCents = Number(s?.amount_total || 0);
+      const refundedCents =
+        typeof refundCentsList[idx] === "number"
+          ? refundCentsList[idx]
+          : Number(refundedByPaymentId.get(paymentId) || 0);
+      const baseNet = (totalCents - refundedCents) / 100;
+      const gap = Number(deliveryGapByPaymentId.get(paymentId) || 0);
+      const net = baseNet + gap;
+      return sum + (Number.isFinite(net) ? net : 0);
+    }, 0);
+
+    uniqMatchedSessions.sort(
+      (a, b) =>
+        Number((b.session as any)?.created || 0) -
+        Number((a.session as any)?.created || 0),
+    );
+
+    const view = limitAll
+      ? uniqMatchedSessions
+      : uniqMatchedSessions.slice(0, limit);
+    const transactions: any[] = await mapWithLimit(view, 6, async (it) => {
+      const session = it.session as any;
+      const paymentId = it.paymentId;
+      const created = Number(session?.created || 0);
+      const currency = String(session?.currency || "eur").toLowerCase();
+      const status = String(session?.payment_status || session?.status || "");
+      const customerObj =
+        session?.customer && typeof session.customer === "object"
+          ? (session.customer as any)
+          : null;
+      const shippingCents = Number(session?.shipping_cost?.amount_total || 0);
+      const totalCents = Number(session?.amount_total || 0);
+      const refundedCents = Number(refundedByPaymentId.get(paymentId) || 0);
+      const deliveryGap = Number(deliveryGapByPaymentId.get(paymentId) || 0);
+      const baseNet = (totalCents - refundedCents) / 100;
+      const netTotal = baseNet + deliveryGap;
+
+      let lineItems: any[] = [];
+      try {
+        const liResp: any = await stripe.checkout.sessions.listLineItems(
+          String(session?.id || ""),
+          { limit: 100, expand: ["data.price.product"] } as any,
+        );
+        lineItems = Array.isArray(liResp?.data) ? liResp.data : [];
+      } catch {}
+
+      const items = lineItems.map((li) => {
+        const price = (li as any)?.price || null;
+        const unit = Number((price as any)?.unit_amount || 0);
+        const qty = Number((li as any)?.quantity || 1);
+        const product = (price as any)?.product || null;
+        const ref = String(
+          (product as any)?.name || (li as any)?.description || "",
+        ).trim();
+        const desc = String((product as any)?.description || "").trim();
+        return {
+          reference: ref || "—",
+          description: desc || null,
+          unit_price: unit / 100,
+          quantity: qty,
+          line_total: (unit * qty) / 100,
+        };
+      });
+
+      return {
+        payment_id: paymentId,
+        created,
+        currency,
+        status,
+        customer: {
+          name: String(customerObj?.name || "").trim() || null,
+          email: String(customerObj?.email || "").trim() || null,
+          id: String(customerObj?.id || "").trim() || null,
+        },
+        items,
+        shipping_fee: shippingCents / 100,
+        delivery_gap: deliveryGap,
+        total: totalCents / 100,
+        refunded_total: refundedCents / 100,
+        net_total: Number.isFinite(netTotal) ? netTotal : baseNet,
+      };
+    });
+
+    return res.json({
+      success: true,
+      storeSlug: decodedSlug,
+      startDate: startDateRaw || null,
+      total_count: uniqMatchedSessions.length,
+      total_net: totalNetAll,
+      count: transactions.length,
+      transactions,
+    });
   } catch (err) {
     console.error("Erreur serveur:", err);
     return res.status(500).json({ error: "Erreur interne du serveur" });
