@@ -1538,6 +1538,151 @@ class EmailService {
       return false;
     }
   }
+
+  async sendPayoutConfirmationToStoreOwner(data: {
+    ownerEmail: string;
+    storeName: string;
+    storeSlug?: string;
+    periodStart?: string | null;
+    periodEnd: string;
+    storeSiret?: string;
+    storeAddress?: any;
+    grossAmount: number;
+    feeAmount: number;
+    payoutAmount: number;
+    currency?: string;
+    attachments?: Array<{
+      filename: string;
+      content: Buffer;
+      contentType?: string;
+    }>;
+  }): Promise<boolean> {
+    try {
+      const to = String(data.ownerEmail || "").trim();
+      if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+        console.warn("sendPayoutConfirmationToStoreOwner: invalid ownerEmail");
+        return false;
+      }
+
+      const currency = (data.currency || "EUR") as string;
+      const formattedGross = this.formatAmount(data.grossAmount, currency);
+      const formattedFee = this.formatAmount(data.feeAmount, currency);
+      const formattedPayout = this.formatAmount(data.payoutAmount, currency);
+
+      const addr =
+        data.storeAddress && typeof data.storeAddress === "object"
+          ? (data.storeAddress as any)
+          : null;
+      const addrLine1 = String(addr?.line1 || "").trim();
+      const addrLine2 = String(addr?.line2 || "").trim();
+      const addrPostal = String(addr?.postal_code || "").trim();
+      const addrCity = String(addr?.city || "").trim();
+      const addrCountry = String(addr?.country || "").trim();
+      const addrPhone = String(addr?.phone || "").trim();
+      const addrOne = [addrLine1, addrLine2].filter(Boolean).join(", ");
+      const addrTwo = [addrPostal, addrCity].filter(Boolean).join(" ");
+      const addrThree = addrCountry || "";
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Versement effectué</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #0d6efd 0%, #6c63ff 100%); color: white; padding: 24px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
+            .section { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #0d6efd; }
+            .kv { margin: 0; }
+            .kv strong { display: inline-block; width: 220px; }
+            .amount-card { background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%); color: white; padding: 16px; border-radius: 10px; text-align: center; margin: 16px 0; }
+            .amount-title { font-size: 14px; opacity: 0.9; margin-bottom: 8px; }
+            .amount-value { font-size: 28px; font-weight: bold; letter-spacing: 0.5px; }
+            .footer { text-align: center; margin-top: 20px; color: #666; font-size: 14px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>💸 Versement effectué</h1>
+              <p>${data.storeName}</p>
+            </div>
+            <div class="content">
+              <p>Bonjour,</p>
+              <p>Votre relevé de versement est prêt. Vous le trouverez en pièce jointe au format PDF.</p>
+
+              <div class="amount-card">
+                <div class="amount-title">Montant viré</div>
+                <div class="amount-value">${formattedPayout || "N/A"}</div>
+              </div>
+
+              <div class="section">
+                <h3>Période</h3>
+                <p class="kv"><strong>Du :</strong> ${data.periodStart || "—"}</p>
+                <p class="kv"><strong>Au :</strong> ${data.periodEnd}</p>
+              </div>
+
+              <div class="section">
+                <h3>Boutique</h3>
+                ${data.storeSiret ? `<p class="kv"><strong>SIRET :</strong> ${data.storeSiret}</p>` : ""}
+                ${
+                  addrOne
+                    ? `<p class="kv"><strong>Adresse :</strong> ${addrOne}</p>`
+                    : ""
+                }
+                ${
+                  addrTwo || addrThree
+                    ? `<p class="kv"><strong>Ville :</strong> ${[addrTwo, addrThree].filter(Boolean).join(", ")}</p>`
+                    : ""
+                }
+                ${addrPhone ? `<p class="kv"><strong>Téléphone :</strong> ${addrPhone}</p>` : ""}
+              </div>
+
+              <div class="section">
+                <h3>Montants</h3>
+                <p class="kv"><strong>Total net (avant frais) :</strong> ${formattedGross || "N/A"}</p>
+                <p class="kv"><strong>Frais PayLive :</strong> ${formattedFee || "N/A"}</p>
+                <p class="kv"><strong>Montant viré :</strong> ${formattedPayout || "N/A"}</p>
+              </div>
+
+              <p><strong>L’équipe PayLive</strong></p>
+            </div>
+            <div class="footer">
+              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
+              <p>© ${new Date().getFullYear()} PayLive - Tous droits réservés</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const mailOptions: any = {
+        from: `"PayLive - ${data.storeName}" <${process.env.SMTP_USER}>`,
+        to,
+        subject: `💸 Versement effectué — ${data.storeName}`,
+        html: htmlContent,
+        attachments:
+          data.attachments && data.attachments.length > 0
+            ? data.attachments
+            : undefined,
+      };
+
+      const info = await this.transporter.sendMail(mailOptions);
+      console.log("✅ Email versement envoyé au propriétaire:", {
+        to,
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email versement propriétaire:", error);
+      return false;
+    }
+  }
+
   async sendRaffleWinnerCongrats(data: {
     customerEmail: string;
     customerName?: string;

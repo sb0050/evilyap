@@ -1021,39 +1021,6 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                     ? "Vous pourrez télécharger votre bordereau d'envoi depuis votre tableau de bord dans quelques minutes."
                     : undefined,
               });
-              if (sentOwner && storeId) {
-                try {
-                  const { data: storeBalanceRow, error: storeBalanceErr } =
-                    await supabase
-                      .from("stores")
-                      .select("balance")
-                      .eq("id", storeId)
-                      .single();
-                  if (!storeBalanceErr) {
-                    const currentBalance = Number(
-                      (storeBalanceRow as any)?.balance || 0,
-                    );
-                    const increment =
-                      ((netAmount || 0) - estimatedDeliveryCost) / 100;
-                    const newBalance = currentBalance + increment;
-                    const { error: balanceUpdateErr } = await supabase
-                      .from("stores")
-                      .update({ balance: newBalance })
-                      .eq("id", storeId);
-                    if (balanceUpdateErr) {
-                      console.error(
-                        "Error updating stores.balance:",
-                        balanceUpdateErr,
-                      );
-                    }
-                  }
-                } catch (balanceEx) {
-                  console.error(
-                    "checkout.session.completed webhook: Exception updating stores.balance:",
-                    balanceEx,
-                  );
-                }
-              }
             }
           } catch (ownerEmailErr) {
             console.error(

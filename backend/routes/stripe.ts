@@ -316,23 +316,6 @@ router.get("/refund/:paymentId", async (req, res) => {
             }
           }
         }
-
-        // mettre à jour la balance de la boutique
-        const { data: store, error: storeErr } = await supabase
-          .from("stores")
-          .select("balance")
-          .eq("id", (shipment as any).store_id)
-          .maybeSingle();
-        if (!storeErr && (store as any)?.balance) {
-          const newBalance =
-            (store as any).balance + refundedAmountNumber / 100 || 0;
-          await supabase
-            .from("stores")
-            .update({
-              balance: newBalance,
-            })
-            .eq("id", (shipment as any).store_id);
-        }
       } catch (shipEx) {
         console.warn("refund: error fetching shipment/store:", shipEx);
       }
