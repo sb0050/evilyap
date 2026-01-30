@@ -1102,7 +1102,8 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       doc.fillColor("#111827").fontSize(11).text("Transactions", x, y);
       y += 12;
 
-      const rowH = 18;
+      const rowH = 28;
+      const rowTextY = 8;
       const colDateW = 72;
       const colNetW = 90;
       const colPaymentW = 150;
@@ -1120,14 +1121,14 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
           .stroke();
         doc.restore();
         doc.fillColor("#111827").fontSize(9);
-        doc.text("Date", x + 6, y + 5, { width: colDateW - 12 });
-        doc.text("Client", x + colDateW + 6, y + 5, {
+        doc.text("Date", x + 6, y + rowTextY, { width: colDateW - 12 });
+        doc.text("Client", x + colDateW + 6, y + rowTextY, {
           width: colClientW - 12,
         });
-        doc.text("Payment", x + colDateW + colClientW + 6, y + 5, {
+        doc.text("Payment", x + colDateW + colClientW + 6, y + rowTextY, {
           width: colPaymentW - 12,
         });
-        doc.text("Net", x + colDateW + colClientW + colPaymentW, y + 5, {
+        doc.text("Net", x + colDateW + colClientW + colPaymentW, y + rowTextY, {
           width: colNetW - 6,
           align: "right",
         });
@@ -1148,17 +1149,22 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
           .stroke();
         doc.restore();
         doc.fillColor("#111827").fontSize(9);
-        doc.text(row.date, x + 6, y + 5, { width: colDateW - 12 });
-        doc.text(row.client, x + colDateW + 6, y + 5, {
+        doc.text(row.date, x + 6, y + rowTextY, { width: colDateW - 12 });
+        doc.text(row.client, x + colDateW + 6, y + rowTextY, {
           width: colClientW - 12,
         });
-        doc.text(row.payment, x + colDateW + colClientW + 6, y + 5, {
+        doc.text(row.payment, x + colDateW + colClientW + 6, y + rowTextY, {
           width: colPaymentW - 12,
         });
-        doc.text(row.net, x + colDateW + colClientW + colPaymentW, y + 5, {
-          width: colNetW - 6,
-          align: "right",
-        });
+        doc.text(
+          row.net,
+          x + colDateW + colClientW + colPaymentW,
+          y + rowTextY,
+          {
+            width: colNetW - 6,
+            align: "right",
+          },
+        );
         y += rowH;
       };
 
