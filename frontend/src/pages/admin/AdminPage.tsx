@@ -7,7 +7,7 @@ import {
   RedirectToSignIn,
   UserButton,
 } from '@clerk/clerk-react';
-import { apiPost } from '../utils/api';
+import { apiPost } from '../../utils/api';
 
 export default function AdminPage() {
   const { user } = useUser();

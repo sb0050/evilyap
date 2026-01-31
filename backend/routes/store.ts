@@ -750,7 +750,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
     }
 
     const bankAccountName = String((store as any)?.name || "").trim();
-    /*const externalAccount: any = await stripe.accounts.createExternalAccount(
+    const externalAccount: any = await stripe.accounts.createExternalAccount(
       stripeAccountId,
       {
         external_account: {
@@ -768,9 +768,9 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
     const destinationId = String(externalAccount?.id || "").trim();
     if (!destinationId) {
       return res.status(500).json({ error: "Destination bancaire invalide" });
-    } */
+    }
 
-    /*const payout: any = await stripe.payouts.create(
+    const payout: any = await stripe.payouts.create(
       {
         amount: payoutCents,
         currency: "eur",
@@ -788,7 +788,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         idempotencyKey: `${idempotencyBase}_payout`,
         stripeAccount: "acct_1SramGC1Oc6JE3hW",
       } as any,
-    );*/
+    );
 
     const ibanBic = { iban: ibanTrim, bic: bicTrim };
     const payoutAtIso = new Date().toISOString();
@@ -1416,9 +1416,9 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         payout_cents: payoutCents,
         currency: "eur",
         recipient_id: stripeAccountId || null,
-        payment_id: "payout?.id",
-        status: "payout?.status",
-        destination_id: "destinationId",
+        payment_id: payout?.id || null,
+        status: payout?.status || null,
+        destination_id: destinationId || null,
       },
       pdf: { fileName, base64: pdfBase64 },
     });
@@ -1759,6 +1759,858 @@ router.get("/:storeSlug/transactions", async (req, res) => {
   } catch (err) {
     console.error("Erreur serveur:", err);
     return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+router.post("/:storeSlug/stock/products", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const { storeSlug } = req.params as { storeSlug?: string };
+    if (!storeSlug) {
+      return res.status(400).json({ error: "Slug de boutique requis" });
+    }
+    const decodedSlug = decodeURIComponent(storeSlug);
+
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, slug, clerk_id, owner_email, name")
+      .eq("slug", decodedSlug)
+      .maybeSingle();
+    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!storeRow) {
+      return res.status(404).json({ error: "Boutique introuvable" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    let authorized = Boolean(
+      (storeRow as any)?.clerk_id && (storeRow as any).clerk_id === auth.userId,
+    );
+    if (!authorized) {
+      try {
+        const emails = (user.emailAddresses || [])
+          .map((e) => String((e as any)?.emailAddress || "").toLowerCase())
+          .filter(Boolean);
+        const ownerEmail = String((storeRow as any)?.owner_email || "")
+          .toLowerCase()
+          .trim();
+        if (ownerEmail && emails.includes(ownerEmail)) authorized = true;
+      } catch {}
+    }
+    if (!authorized) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const {
+      title,
+      reference,
+      description,
+      quantity,
+      weight,
+      image_url,
+      price,
+    }: {
+      title?: string;
+      reference?: string;
+      description?: string;
+      quantity?: number | string;
+      weight?: number | string | null;
+      image_url?: string | null;
+      price?: number | string;
+    } = req.body || {};
+
+    const titleTrim = String(title || "").trim();
+    const referenceTrim = String(reference || "").trim();
+    const descTrim = String(description || "").trim();
+    const imageUrlTrim = String(image_url || "").trim();
+
+    if (!titleTrim) {
+      return res.status(400).json({ error: "Titre requis" });
+    }
+    if (!referenceTrim) {
+      return res.status(400).json({ error: "Référence requise" });
+    }
+    if (!descTrim) {
+      return res.status(400).json({ error: "Description requise" });
+    }
+
+    const qtyRaw =
+      typeof quantity === "number"
+        ? quantity
+        : typeof quantity === "string"
+          ? parseInt(quantity.trim(), 10)
+          : NaN;
+    const normalizedQty =
+      Number.isFinite(qtyRaw) && qtyRaw > 0 ? Math.floor(qtyRaw) : NaN;
+    if (!Number.isFinite(normalizedQty) || normalizedQty <= 0) {
+      return res.status(400).json({ error: "Quantité invalide (>= 1)" });
+    }
+
+    const weightRaw =
+      typeof weight === "number"
+        ? weight
+        : typeof weight === "string"
+          ? parseFloat(weight.trim().replace(",", "."))
+          : weight === null
+            ? null
+            : NaN;
+    if (
+      weightRaw === null ||
+      (typeof weight === "string" && weight.trim() === "")
+    ) {
+      return res.status(400).json({ error: "Poids requis" });
+    }
+    const normalizedWeight =
+      Number.isFinite(weightRaw) && weightRaw >= 0 ? weightRaw : NaN;
+    if (!Number.isFinite(normalizedWeight) || normalizedWeight < 0) {
+      return res.status(400).json({ error: "Poids invalide (>= 0)" });
+    }
+
+    const priceRaw =
+      typeof price === "number"
+        ? price
+        : typeof price === "string"
+          ? parseFloat(price.trim().replace(",", "."))
+          : NaN;
+    const normalizedPrice =
+      Number.isFinite(priceRaw) && priceRaw > 0 ? priceRaw : NaN;
+    if (!Number.isFinite(normalizedPrice) || normalizedPrice <= 0) {
+      return res.status(400).json({ error: "Prix invalide (> 0)" });
+    }
+    const unitAmountCents = Math.round(normalizedPrice * 100);
+    if (!Number.isFinite(unitAmountCents) || unitAmountCents < 1) {
+      return res.status(400).json({ error: "Prix invalide (>= 0,01€)" });
+    }
+
+    const storeId = Number((storeRow as any)?.id);
+    if (!Number.isFinite(storeId) || storeId <= 0) {
+      return res.status(500).json({ error: "store_id invalide" });
+    }
+
+    const imageUrlsRaw = imageUrlTrim
+      ? imageUrlTrim
+          .split(",")
+          .map((u) => String(u || "").trim())
+          .filter(Boolean)
+      : [];
+
+    const normalizedImageUrls: string[] = [];
+    for (const u of imageUrlsRaw) {
+      try {
+        const parsed = new URL(u);
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+          return res.status(400).json({ error: "URL image invalide" });
+        }
+        normalizedImageUrls.push(parsed.toString());
+      } catch {
+        return res.status(400).json({ error: "URL image invalide" });
+      }
+    }
+
+    const imageUrlJoined =
+      normalizedImageUrls.length > 0
+        ? Array.from(new Set(normalizedImageUrls)).join(",")
+        : null;
+
+    const product = await stripe.products.create({
+      name: titleTrim,
+      description: descTrim,
+      active: true,
+      ...(normalizedImageUrls.length > 0
+        ? { images: Array.from(new Set(normalizedImageUrls)).slice(0, 8) }
+        : {}),
+      metadata: {
+        store_id: String(storeId),
+        product_reference: referenceTrim,
+        weight_kg: String(normalizedWeight),
+        quantity: String(normalizedQty),
+        price_eur: String(normalizedPrice),
+      },
+    } as any);
+
+    const stripeProductId = String((product as any)?.id || "").trim();
+    if (!stripeProductId || !stripeProductId.startsWith("prod_")) {
+      return res.status(500).json({ error: "Création Stripe invalide" });
+    }
+
+    let stripePrice: any = null;
+    try {
+      stripePrice = await stripe.prices.create({
+        product: stripeProductId,
+        unit_amount: unitAmountCents,
+        currency: "eur",
+      } as any);
+    } catch {
+      return res.status(500).json({ error: "Création prix Stripe invalide" });
+    }
+    try {
+      await stripe.products.update(stripeProductId, {
+        default_price: String((stripePrice as any)?.id || ""),
+      } as any);
+    } catch {
+      return res.status(500).json({ error: "Mise à jour Stripe invalide" });
+    }
+
+    const isMissingColumnError = (err: any, column: string) => {
+      const code = String(err?.code || "").trim();
+      const msg = String(err?.message || "").toLowerCase();
+      const col = String(column || "").toLowerCase();
+      if (!col) return false;
+      if (code === "42703") return msg.includes(col);
+      return msg.includes(col) && msg.includes("does not exist");
+    };
+
+    const payloadWithPrice: any = {
+      store_id: storeId,
+      product_reference: referenceTrim,
+      quantity: normalizedQty,
+      weight: normalizedWeight,
+      image_url: imageUrlJoined,
+      product_stripe_id: stripeProductId,
+      price: normalizedPrice,
+    };
+
+    let stockInserted: any = null;
+    let stockInsertErr: any = null;
+    {
+      const resp = await supabase
+        .from("stock")
+        .insert([payloadWithPrice])
+        .select("*")
+        .single();
+      stockInserted = resp.data as any;
+      stockInsertErr = resp.error as any;
+    }
+    if (stockInsertErr && isMissingColumnError(stockInsertErr, "price")) {
+      const { price: _omit, ...payloadWithoutPrice } = payloadWithPrice;
+      const resp2 = await supabase
+        .from("stock")
+        .insert([payloadWithoutPrice])
+        .select("*")
+        .single();
+      stockInserted = resp2.data as any;
+      stockInsertErr = resp2.error as any;
+    }
+    if (stockInsertErr) {
+      return res.status(500).json({ error: stockInsertErr.message });
+    }
+
+    return res.status(201).json({
+      success: true,
+      stock: stockInserted,
+      product,
+      price: stripePrice,
+    });
+  } catch (e: any) {
+    const msg = e?.message || "Erreur interne du serveur";
+    console.error("Error creating stock product:", e);
+    return res.status(500).json({
+      error: typeof msg === "string" ? msg : "Erreur interne du serveur",
+    });
+  }
+});
+
+router.get("/:storeSlug/stock/products", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const { storeSlug } = req.params as { storeSlug?: string };
+    if (!storeSlug) {
+      return res.status(400).json({ error: "Slug de boutique requis" });
+    }
+    const decodedSlug = decodeURIComponent(storeSlug);
+
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, slug, clerk_id, owner_email, name")
+      .eq("slug", decodedSlug)
+      .maybeSingle();
+    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!storeRow) {
+      return res.status(404).json({ error: "Boutique introuvable" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    let authorized = Boolean(
+      (storeRow as any)?.clerk_id && (storeRow as any).clerk_id === auth.userId,
+    );
+    if (!authorized) {
+      try {
+        const emails = (user.emailAddresses || [])
+          .map((e) => String((e as any)?.emailAddress || "").toLowerCase())
+          .filter(Boolean);
+        const ownerEmail = String((storeRow as any)?.owner_email || "")
+          .toLowerCase()
+          .trim();
+        if (ownerEmail && emails.includes(ownerEmail)) authorized = true;
+      } catch {}
+    }
+    if (!authorized) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const storeId = Number((storeRow as any)?.id);
+    if (!Number.isFinite(storeId) || storeId <= 0) {
+      return res.status(500).json({ error: "store_id invalide" });
+    }
+
+    const isMissingColumnError = (err: any, column: string) => {
+      const code = String(err?.code || "").trim();
+      const msg = String(err?.message || "").toLowerCase();
+      const col = String(column || "").toLowerCase();
+      if (!col) return false;
+      if (code === "42703") return msg.includes(col);
+      return msg.includes(col) && msg.includes("does not exist");
+    };
+
+    const selectWithPrice =
+      "id, created_at, store_id, product_reference, quantity, weight, image_url, product_stripe_id, bought, price";
+    const selectWithoutPrice =
+      "id, created_at, store_id, product_reference, quantity, weight, image_url, product_stripe_id, bought";
+
+    let stockRows: any[] | null = null;
+    let stockErr: any = null;
+    {
+      const resp = await supabase
+        .from("stock")
+        .select(selectWithPrice)
+        .eq("store_id", storeId)
+        .order("id", { ascending: false });
+      stockRows = resp.data as any;
+      stockErr = resp.error as any;
+    }
+    if (stockErr && isMissingColumnError(stockErr, "price")) {
+      const resp2 = await supabase
+        .from("stock")
+        .select(selectWithoutPrice)
+        .eq("store_id", storeId)
+        .order("id", { ascending: false });
+      stockRows = resp2.data as any;
+      stockErr = resp2.error as any;
+    }
+    if (stockErr) return res.status(500).json({ error: stockErr.message });
+
+    const rows = Array.isArray(stockRows) ? stockRows : [];
+
+    const mapWithLimit = async <T, R>(
+      items: T[],
+      maxConcurrent: number,
+      fn: (item: T, idx: number) => Promise<R>,
+    ): Promise<R[]> => {
+      const out: R[] = new Array(items.length);
+      let idx = 0;
+      const workers = new Array(Math.max(1, maxConcurrent))
+        .fill(null)
+        .map(async () => {
+          while (idx < items.length) {
+            const current = idx++;
+            out[current] = await fn(items[current], current);
+          }
+        });
+      await Promise.all(workers);
+      return out;
+    };
+
+    const items = await mapWithLimit(rows, 6, async (r: any) => {
+      const raw = (r as any)?.product_stripe_id;
+      const asString = String(raw ?? "").trim();
+
+      let product: any = null;
+      try {
+        if (asString && asString.startsWith("prod_")) {
+          product = await stripe.products.retrieve(asString);
+        } else if (asString) {
+          const escaped = asString.replace(/'/g, "\\'");
+          const query = `metadata['store_id']:'${String(storeId)}' AND metadata['internal_product_id']:'${escaped}'`;
+          const found: any = await stripe.products.search({
+            query,
+            limit: 1,
+          } as any);
+          product =
+            Array.isArray(found?.data) && found.data.length > 0
+              ? found.data[0]
+              : null;
+        }
+      } catch {
+        product = null;
+      }
+
+      if (product && (product as any)?.active === false) {
+        return null as any;
+      }
+
+      let prices: any[] = [];
+      if (product?.id) {
+        try {
+          const p = await stripe.prices.list({
+            product: product.id,
+            active: true,
+            limit: 100,
+          });
+          prices = Array.isArray((p as any)?.data) ? (p as any).data : [];
+        } catch {
+          prices = [];
+        }
+      }
+
+      return { stock: r, product, prices };
+    });
+
+    const filteredItems = (items || []).filter(Boolean);
+    return res.json({ success: true, items: filteredItems });
+  } catch (e: any) {
+    const msg = e?.message || "Erreur interne du serveur";
+    console.error("Error listing stock products:", e);
+    return res.status(500).json({
+      error: typeof msg === "string" ? msg : "Erreur interne du serveur",
+    });
+  }
+});
+
+router.put("/:storeSlug/stock/products/:stockId", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { storeSlug, stockId } = req.params as {
+      storeSlug?: string;
+      stockId?: string;
+    };
+    if (!storeSlug) return res.status(400).json({ error: "Slug requis" });
+    const decodedSlug = decodeURIComponent(storeSlug);
+
+    const stockIdNum = Number(stockId);
+    if (!Number.isFinite(stockIdNum) || stockIdNum <= 0) {
+      return res.status(400).json({ error: "id invalide" });
+    }
+
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, slug, clerk_id, owner_email, name")
+      .eq("slug", decodedSlug)
+      .maybeSingle();
+    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!storeRow)
+      return res.status(404).json({ error: "Boutique introuvable" });
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    let authorized = Boolean(
+      (storeRow as any)?.clerk_id && (storeRow as any).clerk_id === auth.userId,
+    );
+    if (!authorized) {
+      try {
+        const emails = (user.emailAddresses || [])
+          .map((e) => String((e as any)?.emailAddress || "").toLowerCase())
+          .filter(Boolean);
+        const ownerEmail = String((storeRow as any)?.owner_email || "")
+          .toLowerCase()
+          .trim();
+        if (ownerEmail && emails.includes(ownerEmail)) authorized = true;
+      } catch {}
+    }
+    if (!authorized) return res.status(403).json({ error: "Forbidden" });
+
+    const storeId = Number((storeRow as any)?.id);
+    if (!Number.isFinite(storeId) || storeId <= 0) {
+      return res.status(500).json({ error: "store_id invalide" });
+    }
+
+    const {
+      title,
+      reference,
+      description,
+      quantity,
+      weight,
+      image_url,
+      price,
+    }: {
+      title?: string;
+      reference?: string;
+      description?: string;
+      quantity?: number | string;
+      weight?: number | string | null;
+      image_url?: string | null;
+      price?: number | string;
+    } = req.body || {};
+
+    const titleTrim = String(title || "").trim();
+    const referenceTrim = String(reference || "").trim();
+    const descTrim = String(description || "").trim();
+    const imageUrlTrim = String(image_url || "").trim();
+
+    if (!titleTrim) return res.status(400).json({ error: "Titre requis" });
+    if (!referenceTrim)
+      return res.status(400).json({ error: "Référence requise" });
+    if (!descTrim)
+      return res.status(400).json({ error: "Description requise" });
+
+    const qtyRaw =
+      typeof quantity === "number"
+        ? quantity
+        : typeof quantity === "string"
+          ? parseInt(quantity.trim(), 10)
+          : NaN;
+    const normalizedQty =
+      Number.isFinite(qtyRaw) && qtyRaw > 0 ? Math.floor(qtyRaw) : NaN;
+    if (!Number.isFinite(normalizedQty) || normalizedQty <= 0) {
+      return res.status(400).json({ error: "Quantité invalide (>= 1)" });
+    }
+
+    const weightRaw =
+      typeof weight === "number"
+        ? weight
+        : typeof weight === "string"
+          ? parseFloat(weight.trim().replace(",", "."))
+          : weight === null
+            ? null
+            : NaN;
+    if (
+      weightRaw === null ||
+      (typeof weight === "string" && weight.trim() === "")
+    ) {
+      return res.status(400).json({ error: "Poids requis" });
+    }
+    const normalizedWeight =
+      Number.isFinite(weightRaw) && weightRaw >= 0 ? weightRaw : NaN;
+    if (!Number.isFinite(normalizedWeight) || normalizedWeight < 0) {
+      return res.status(400).json({ error: "Poids invalide (>= 0)" });
+    }
+
+    const priceRaw =
+      typeof price === "number"
+        ? price
+        : typeof price === "string"
+          ? parseFloat(price.trim().replace(",", "."))
+          : NaN;
+    const normalizedPrice =
+      Number.isFinite(priceRaw) && priceRaw > 0 ? priceRaw : NaN;
+    if (!Number.isFinite(normalizedPrice) || normalizedPrice <= 0) {
+      return res.status(400).json({ error: "Prix invalide (> 0)" });
+    }
+    const unitAmountCents = Math.round(normalizedPrice * 100);
+    if (!Number.isFinite(unitAmountCents) || unitAmountCents < 1) {
+      return res.status(400).json({ error: "Prix invalide (>= 0,01€)" });
+    }
+
+    const imageUrlsRaw = imageUrlTrim
+      ? imageUrlTrim
+          .split(",")
+          .map((u) => String(u || "").trim())
+          .filter(Boolean)
+      : [];
+    const normalizedImageUrls: string[] = [];
+    for (const u of imageUrlsRaw) {
+      try {
+        const parsed = new URL(u);
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+          return res.status(400).json({ error: "URL image invalide" });
+        }
+        normalizedImageUrls.push(parsed.toString());
+      } catch {
+        return res.status(400).json({ error: "URL image invalide" });
+      }
+    }
+
+    const imageUrlJoined =
+      normalizedImageUrls.length > 0
+        ? Array.from(new Set(normalizedImageUrls)).join(",")
+        : null;
+
+    const { data: stockRow, error: stockRowErr } = await supabase
+      .from("stock")
+      .select("id, store_id, product_stripe_id, bought")
+      .eq("id", stockIdNum)
+      .eq("store_id", storeId)
+      .maybeSingle();
+    if (stockRowErr)
+      return res.status(500).json({ error: stockRowErr.message });
+    if (!stockRow)
+      return res.status(404).json({ error: "Produit introuvable" });
+
+    const stripeProductId = String(
+      (stockRow as any)?.product_stripe_id || "",
+    ).trim();
+    if (!stripeProductId || !stripeProductId.startsWith("prod_")) {
+      return res.status(500).json({ error: "product_stripe_id invalide" });
+    }
+
+    const updatedProduct = await stripe.products.update(stripeProductId, {
+      name: titleTrim,
+      description: descTrim,
+      ...(normalizedImageUrls.length > 0
+        ? { images: Array.from(new Set(normalizedImageUrls)).slice(0, 8) }
+        : { images: [] }),
+      metadata: {
+        store_id: String(storeId),
+        product_reference: referenceTrim,
+        weight_kg: String(normalizedWeight),
+        quantity: String(normalizedQty),
+        price_eur: String(normalizedPrice),
+      },
+    } as any);
+
+    let prices: any[] = [];
+    try {
+      const p = await stripe.prices.list({
+        product: stripeProductId,
+        active: true,
+        limit: 100,
+      } as any);
+      prices = Array.isArray((p as any)?.data) ? (p as any).data : [];
+    } catch {
+      prices = [];
+    }
+
+    const same = prices.find(
+      (p: any) =>
+        String(p?.currency || "").toLowerCase() === "eur" &&
+        Number(p?.unit_amount || 0) === unitAmountCents,
+    );
+
+    let activePrice = same || null;
+    if (!activePrice) {
+      for (const p of prices) {
+        try {
+          await stripe.prices.update(String((p as any)?.id || ""), {
+            active: false,
+          } as any);
+        } catch {}
+      }
+      activePrice = await stripe.prices.create({
+        product: stripeProductId,
+        unit_amount: unitAmountCents,
+        currency: "eur",
+      } as any);
+    } else {
+      for (const p of prices) {
+        const pid = String((p as any)?.id || "");
+        if (!pid || pid === String((activePrice as any)?.id || "")) continue;
+        try {
+          await stripe.prices.update(pid, { active: false } as any);
+        } catch {}
+      }
+    }
+
+    try {
+      await stripe.products.update(stripeProductId, {
+        default_price: String((activePrice as any)?.id || ""),
+      } as any);
+    } catch {}
+
+    const isMissingColumnError = (err: any, column: string) => {
+      const code = String(err?.code || "").trim();
+      const msg = String(err?.message || "").toLowerCase();
+      const col = String(column || "").toLowerCase();
+      if (!col) return false;
+      if (code === "42703") return msg.includes(col);
+      return msg.includes(col) && msg.includes("does not exist");
+    };
+
+    const updateWithPrice: any = {
+      product_reference: referenceTrim,
+      quantity: normalizedQty,
+      weight: normalizedWeight,
+      image_url: imageUrlJoined,
+      price: normalizedPrice,
+    };
+
+    let updatedStock: any = null;
+    let updateErr: any = null;
+    {
+      const resp = await supabase
+        .from("stock")
+        .update(updateWithPrice)
+        .eq("id", stockIdNum)
+        .eq("store_id", storeId)
+        .select("*")
+        .single();
+      updatedStock = resp.data as any;
+      updateErr = resp.error as any;
+    }
+    if (updateErr && isMissingColumnError(updateErr, "price")) {
+      const { price: _omit, ...withoutPrice } = updateWithPrice;
+      const resp2 = await supabase
+        .from("stock")
+        .update(withoutPrice)
+        .eq("id", stockIdNum)
+        .eq("store_id", storeId)
+        .select("*")
+        .single();
+      updatedStock = resp2.data as any;
+      updateErr = resp2.error as any;
+    }
+    if (updateErr) return res.status(500).json({ error: updateErr.message });
+
+    return res.json({
+      success: true,
+      stock: updatedStock,
+      product: updatedProduct,
+      price: activePrice,
+    });
+  } catch (e: any) {
+    const msg = e?.message || "Erreur interne du serveur";
+    return res.status(500).json({
+      error: typeof msg === "string" ? msg : "Erreur interne du serveur",
+    });
+  }
+});
+
+router.delete("/:storeSlug/stock/products", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { storeSlug } = req.params as { storeSlug?: string };
+    if (!storeSlug) return res.status(400).json({ error: "Slug requis" });
+    const decodedSlug = decodeURIComponent(storeSlug);
+
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, slug, clerk_id, owner_email, name")
+      .eq("slug", decodedSlug)
+      .maybeSingle();
+    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!storeRow)
+      return res.status(404).json({ error: "Boutique introuvable" });
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    let authorized = Boolean(
+      (storeRow as any)?.clerk_id && (storeRow as any).clerk_id === auth.userId,
+    );
+    if (!authorized) {
+      try {
+        const emails = (user.emailAddresses || [])
+          .map((e) => String((e as any)?.emailAddress || "").toLowerCase())
+          .filter(Boolean);
+        const ownerEmail = String((storeRow as any)?.owner_email || "")
+          .toLowerCase()
+          .trim();
+        if (ownerEmail && emails.includes(ownerEmail)) authorized = true;
+      } catch {}
+    }
+    if (!authorized) return res.status(403).json({ error: "Forbidden" });
+
+    const storeId = Number((storeRow as any)?.id);
+    if (!Number.isFinite(storeId) || storeId <= 0) {
+      return res.status(500).json({ error: "store_id invalide" });
+    }
+
+    const idsRaw = (req.body as any)?.ids;
+    const ids = Array.isArray(idsRaw)
+      ? Array.from(
+          new Set(
+            idsRaw
+              .map((n: any) => Number(n))
+              .filter((n: any) => Number.isFinite(n) && n > 0),
+          ),
+        )
+      : [];
+    if (ids.length === 0) return res.status(400).json({ error: "ids requis" });
+
+    const results: any[] = [];
+    for (const id of ids) {
+      const { data: stockRow, error: stockErr } = await supabase
+        .from("stock")
+        .select("id, store_id, product_stripe_id, bought")
+        .eq("id", id)
+        .eq("store_id", storeId)
+        .maybeSingle();
+      if (stockErr) {
+        results.push({ id, ok: false, error: stockErr.message });
+        continue;
+      }
+      if (!stockRow) {
+        results.push({ id, ok: false, error: "not_found" });
+        continue;
+      }
+
+      const boughtRaw = Number((stockRow as any)?.bought || 0);
+      const bought =
+        Number.isFinite(boughtRaw) && boughtRaw > 0 ? boughtRaw : 0;
+      const stripeProductId = String(
+        (stockRow as any)?.product_stripe_id || "",
+      ).trim();
+
+      if (stripeProductId && stripeProductId.startsWith("prod_")) {
+        try {
+          await stripe.products.update(stripeProductId, {
+            default_price: null as any,
+          });
+          const p = await stripe.prices.list({
+            product: stripeProductId,
+            limit: 100,
+          } as any);
+          const prices = Array.isArray((p as any)?.data) ? (p as any).data : [];
+          for (const pr of prices) {
+            const pid = String((pr as any)?.id || "");
+            if (!pid) continue;
+            await stripe.prices.update(pid, { active: false } as any);
+          }
+
+          await stripe.products.update(stripeProductId, {
+            active: false,
+          } as any);
+        } catch (e: any) {
+          console.log("stripe error", e);
+          const msg = e?.message || "stripe_error";
+          results.push({
+            id,
+            ok: false,
+            error: typeof msg === "string" ? msg : "stripe_error",
+          });
+          continue;
+        }
+      }
+
+      if (bought > 0) {
+        const { error: updErr } = await supabase
+          .from("stock")
+          .update({ quantity: 0 })
+          .eq("id", id)
+          .eq("store_id", storeId);
+        if (updErr) {
+          results.push({ id, ok: false, error: updErr.message });
+          continue;
+        }
+        results.push({ id, ok: true, archived: true });
+        continue;
+      }
+
+      const { error: delErr } = await supabase
+        .from("stock")
+        .delete()
+        .eq("id", id)
+        .eq("store_id", storeId);
+      if (delErr) {
+        results.push({ id, ok: false, error: delErr.message });
+        continue;
+      }
+      results.push({ id, ok: true, deleted: true });
+    }
+
+    return res.json({ success: true, results });
+  } catch (e: any) {
+    console.log("error", e);
+    const msg = e?.message || "Erreur interne du serveur";
+    return res.status(500).json({
+      error: typeof msg === "string" ? msg : "Erreur interne du serveur",
+    });
   }
 });
 
