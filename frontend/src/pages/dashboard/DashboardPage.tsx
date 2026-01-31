@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
-import Header from '../components/Header';
-import Spinner from '../components/Spinner';
+import Header from '../../components/Header';
+import Spinner from '../../components/Spinner';
 import {
   Wallet,
   ShoppingCart,
@@ -32,8 +32,8 @@ import {
   FaShareAlt,
   FaArchive,
 } from 'react-icons/fa';
-import { Toast } from '../components/Toast';
-import { useToast } from '../utils/toast';
+import { Toast } from '../../components/Toast';
+import { useToast } from '../../utils/toast';
 import {
   apiPut,
   apiPost,
@@ -41,13 +41,13 @@ import {
   apiGet,
   apiDelete,
   API_BASE_URL,
-} from '../utils/api';
-import SuccessConfetti from '../components/SuccessConfetti';
+} from '../../utils/api';
+import SuccessConfetti from '../../components/SuccessConfetti';
 import { RiDiscountPercentFill } from 'react-icons/ri';
 import { FR, BE } from 'country-flag-icons/react/3x2';
 import { AddressElement } from '@stripe/react-stripe-js';
 import { Address } from '@stripe/stripe-js';
-import StripeWrapper from '../components/StripeWrapper';
+import StripeWrapper from '../../components/StripeWrapper';
 
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
@@ -126,6 +126,25 @@ type WalletTransaction = {
   net_total: number;
 };
 
+type StockRow = {
+  id: number;
+  created_at: string;
+  store_id: number | null;
+  product_reference: string | null;
+  quantity: number | null;
+  weight: number | null;
+  image_url?: string | null;
+  bought?: number | null;
+  price?: number | null;
+  product_stripe_id: any;
+};
+
+type StockApiItem = {
+  stock: StockRow;
+  product: any | null;
+  prices: any[];
+};
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { getToken } = useAuth();
@@ -168,7 +187,14 @@ export default function DashboardPage() {
   const [showPayout, setShowPayout] = useState(false);
   // Navigation des sections du dashboard
   const [section, setSection] = useState<
-    'infos' | 'wallet' | 'sales' | 'clients' | 'promo' | 'support' | 'carts'
+    | 'infos'
+    | 'wallet'
+    | 'stock'
+    | 'sales'
+    | 'clients'
+    | 'promo'
+    | 'support'
+    | 'carts'
   >('infos');
   // Support: message de contact
   const [supportMessage, setSupportMessage] = useState<string>('');
@@ -207,6 +233,37 @@ export default function DashboardPage() {
     useState<number>(0);
   const [walletTablePageSize, setWalletTablePageSize] = useState<number>(10);
   const [walletTablePage, setWalletTablePage] = useState<number>(1);
+
+  const [stockTitle, setStockTitle] = useState<string>('');
+  const [stockReference, setStockReference] = useState<string>('');
+  const [stockDescription, setStockDescription] = useState<string>('');
+  const [stockQuantity, setStockQuantity] = useState<string>('1');
+  const [stockWeight, setStockWeight] = useState<string>('');
+  const [stockPrice, setStockPrice] = useState<string>('');
+  const [stockImageFile, setStockImageFile] = useState<File | null>(null);
+  const [stockImagePreview, setStockImagePreview] = useState<string | null>(
+    null
+  );
+  const [stockImageUrlInput, setStockImageUrlInput] = useState<string>('');
+  const [stockImageUrls, setStockImageUrls] = useState<string[]>([]);
+  const [stockCreating, setStockCreating] = useState<boolean>(false);
+  const [editingStockId, setEditingStockId] = useState<number | null>(null);
+  const [stockItems, setStockItems] = useState<StockApiItem[]>([]);
+  const [stockLoading, setStockLoading] = useState<boolean>(false);
+  const [stockReloading, setStockReloading] = useState<boolean>(false);
+  const [stockLoadedSlug, setStockLoadedSlug] = useState<string | null>(null);
+  const [stockPageSize, setStockPageSize] = useState<number>(12);
+  const [stockPage, setStockPage] = useState<number>(1);
+  const [stockFilterField, setStockFilterField] = useState<
+    'reference' | 'titre' | 'description'
+  >('reference');
+  const [stockFilterTerm, setStockFilterTerm] = useState<string>('');
+  const [selectedStockIds, setSelectedStockIds] = useState<Set<number>>(
+    new Set()
+  );
+  const [stockCardImageIndex, setStockCardImageIndex] = useState<
+    Record<string, number>
+  >({});
   // États Clients (onglet dédié)
   const [clientsPageSize, setClientsPageSize] = useState<number>(10);
   const [clientsPage, setClientsPage] = useState<number>(1);
@@ -1437,6 +1494,424 @@ export default function DashboardPage() {
     }
   };
 
+  const fetchStockProducts = async (options?: {
+    silent?: boolean;
+    background?: boolean;
+  }) => {
+    const slug = store?.slug;
+    if (!slug) return;
+
+    const silent = options?.silent;
+    const background = Boolean(options?.background);
+    try {
+      if (background) setStockReloading(true);
+      else setStockLoading(true);
+      const token = await getToken();
+      const resp = await apiGet(
+        `/api/stores/${encodeURIComponent(slug)}/stock/products`,
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg =
+          json?.error || json?.message || 'Erreur chargement des stocks';
+        throw new Error(
+          typeof msg === 'string' ? msg : 'Erreur chargement des stocks'
+        );
+      }
+      setStockItems(Array.isArray(json?.items) ? json.items : []);
+      setStockLoadedSlug(slug);
+    } catch (e: any) {
+      const rawMsg = e?.message || 'Erreur chargement des stocks';
+      if (!silent) {
+        showToast(
+          typeof rawMsg === 'string'
+            ? rawMsg.replace(/^Error:\s*/, '')
+            : 'Erreur chargement des stocks',
+          'error'
+        );
+      }
+      setStockItems([]);
+      setStockLoadedSlug(slug);
+    } finally {
+      if (background) setStockReloading(false);
+      else setStockLoading(false);
+    }
+  };
+
+  const resetStockForm = () => {
+    setStockTitle('');
+    setStockReference('');
+    setStockDescription('');
+    setStockQuantity('1');
+    setStockWeight('');
+    setStockPrice('');
+    setStockImageFile(null);
+    setStockImagePreview(null);
+    setStockImageUrlInput('');
+    setStockImageUrls([]);
+  };
+
+  const handleCreateStockProduct = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const slug = store?.slug;
+    if (!slug) return;
+
+    if (!stockImageFile) {
+      showToast('Veuillez uploader une image', 'error');
+      return;
+    }
+
+    const titleTrim = stockTitle.trim();
+    const referenceTrim = stockReference.trim();
+    const descTrim = stockDescription.trim();
+    const priceTxt = String(stockPrice || '').trim();
+
+    if (!titleTrim || !referenceTrim || !descTrim) {
+      showToast(
+        'Veuillez renseigner le titre, la référence et la description',
+        'error'
+      );
+      return;
+    }
+
+    const qtyRaw = parseInt(String(stockQuantity || '').trim(), 10);
+    const quantity = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : NaN;
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      showToast('Quantité invalide (>= 1)', 'error');
+      return;
+    }
+
+    const weightTxt = String(stockWeight || '').trim();
+    if (!weightTxt) {
+      showToast('Veuillez renseigner le poids', 'error');
+      return;
+    }
+    const weight = parseFloat(weightTxt.replace(',', '.'));
+    if (!(Number.isFinite(weight) && weight >= 0)) {
+      showToast('Poids invalide (>= 0)', 'error');
+      return;
+    }
+
+    if (!priceTxt) {
+      showToast('Veuillez renseigner le prix', 'error');
+      return;
+    }
+    const priceEur = parseFloat(priceTxt.replace(',', '.'));
+    if (!(Number.isFinite(priceEur) && priceEur > 0)) {
+      showToast('Prix invalide (> 0)', 'error');
+      return;
+    }
+
+    try {
+      setStockCreating(true);
+      const token = await getToken();
+
+      const normalizedUrls = Array.from(
+        new Set(
+          (stockImageUrls || [])
+            .map(u => String(u || '').trim())
+            .filter(Boolean)
+        )
+      );
+
+      let uploadedUrl: string | null = null;
+      if (stockImageFile) {
+        const fd = new FormData();
+        fd.append('slug', slug);
+        fd.append('image', stockImageFile);
+        const upResp = await apiPostForm('/api/upload/stock-product', fd, {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        });
+        const upJson = await upResp.json().catch(() => ({}));
+        if (!upResp.ok) {
+          const msg = upJson?.error || upJson?.message || 'Upload échoué';
+          throw new Error(typeof msg === 'string' ? msg : 'Upload échoué');
+        }
+        uploadedUrl = String(upJson?.url || '').trim() || null;
+      }
+
+      const allImageUrls = Array.from(
+        new Set([uploadedUrl, ...normalizedUrls].filter(Boolean) as string[])
+      );
+      const imageUrlJoined =
+        allImageUrls.length > 0 ? allImageUrls.join(',') : null;
+
+      const resp = await apiPost(
+        `/api/stores/${encodeURIComponent(slug)}/stock/products`,
+        {
+          title: titleTrim,
+          reference: referenceTrim,
+          description: descTrim,
+          quantity,
+          weight,
+          price: priceEur,
+          image_url: imageUrlJoined,
+        },
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || json?.message || 'Création échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Création échouée');
+      }
+
+      showToast('Produit créé', 'success');
+      setEditingStockId(null);
+      resetStockForm();
+      await fetchStockProducts({ silent: true, background: true });
+    } catch (e: any) {
+      const rawMsg = e?.message || 'Création échouée';
+      showToast(
+        typeof rawMsg === 'string'
+          ? rawMsg.replace(/^Error:\s*/, '')
+          : 'Erreur',
+        'error'
+      );
+    } finally {
+      setStockCreating(false);
+    }
+  };
+
+  const handleUpdateStockProduct = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const slug = store?.slug;
+    if (!slug) return;
+
+    const stockId = Number(editingStockId);
+    if (!Number.isFinite(stockId) || stockId <= 0) return;
+
+    if (!stockImageFile && !stockImagePreview) {
+      showToast('Veuillez uploader une image', 'error');
+      return;
+    }
+
+    const titleTrim = stockTitle.trim();
+    const referenceTrim = stockReference.trim();
+    const descTrim = stockDescription.trim();
+    const priceTxt = String(stockPrice || '').trim();
+
+    if (!titleTrim || !referenceTrim || !descTrim) {
+      showToast(
+        'Veuillez renseigner le titre, la référence et la description',
+        'error'
+      );
+      return;
+    }
+
+    const qtyRaw = parseInt(String(stockQuantity || '').trim(), 10);
+    const quantity = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : NaN;
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      showToast('Quantité invalide (>= 1)', 'error');
+      return;
+    }
+
+    const weightTxt = String(stockWeight || '').trim();
+    if (!weightTxt) {
+      showToast('Veuillez renseigner le poids', 'error');
+      return;
+    }
+    const weight = parseFloat(weightTxt.replace(',', '.'));
+    if (!(Number.isFinite(weight) && weight >= 0)) {
+      showToast('Poids invalide (>= 0)', 'error');
+      return;
+    }
+
+    if (!priceTxt) {
+      showToast('Veuillez renseigner le prix', 'error');
+      return;
+    }
+    const priceEur = parseFloat(priceTxt.replace(',', '.'));
+    if (!(Number.isFinite(priceEur) && priceEur > 0)) {
+      showToast('Prix invalide (> 0)', 'error');
+      return;
+    }
+
+    try {
+      setStockCreating(true);
+      const token = await getToken();
+
+      const normalizedUrls = Array.from(
+        new Set(
+          (stockImageUrls || [])
+            .map(u => String(u || '').trim())
+            .filter(Boolean)
+        )
+      );
+
+      const existingPreviewUrl =
+        !stockImageFile && /^https?:\/\//.test(String(stockImagePreview || ''))
+          ? String(stockImagePreview || '').trim()
+          : null;
+
+      let uploadedUrl: string | null = null;
+      if (stockImageFile) {
+        const fd = new FormData();
+        fd.append('slug', slug);
+        fd.append('image', stockImageFile);
+        const upResp = await apiPostForm('/api/upload/stock-product', fd, {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        });
+        const upJson = await upResp.json().catch(() => ({}));
+        if (!upResp.ok) {
+          const msg = upJson?.error || upJson?.message || 'Upload échoué';
+          throw new Error(typeof msg === 'string' ? msg : 'Upload échoué');
+        }
+        uploadedUrl = String(upJson?.url || '').trim() || null;
+      }
+
+      const allImageUrls = Array.from(
+        new Set(
+          [uploadedUrl, existingPreviewUrl, ...normalizedUrls].filter(
+            Boolean
+          ) as string[]
+        )
+      );
+      const imageUrlJoined =
+        allImageUrls.length > 0 ? allImageUrls.join(',') : null;
+
+      const resp = await apiPut(
+        `/api/stores/${encodeURIComponent(slug)}/stock/products/${stockId}`,
+        {
+          title: titleTrim,
+          reference: referenceTrim,
+          description: descTrim,
+          quantity,
+          weight,
+          price: priceEur,
+          image_url: imageUrlJoined,
+        },
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || json?.message || 'Modification échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Modification échouée');
+      }
+
+      showToast('Produit modifié', 'success');
+      setEditingStockId(null);
+      resetStockForm();
+      await fetchStockProducts({ silent: true, background: true });
+    } catch (e: any) {
+      const rawMsg = e?.message || 'Modification échouée';
+      showToast(
+        typeof rawMsg === 'string'
+          ? rawMsg.replace(/^Error:\s*/, '')
+          : 'Erreur',
+        'error'
+      );
+    } finally {
+      setStockCreating(false);
+    }
+  };
+
+  const handleSubmitStockProduct = async (e: React.FormEvent) => {
+    if (editingStockId) return handleUpdateStockProduct(e);
+    return handleCreateStockProduct(e);
+  };
+
+  const startEditStockProduct = (it: StockApiItem, idx: number) => {
+    const d = getStockDisplay(it, idx);
+    const stock = it?.stock as any;
+    const stockId = Number(d.stockId);
+    if (!Number.isFinite(stockId) || stockId <= 0) return;
+
+    setEditingStockId(stockId);
+    setStockTitle(d.title === '—' ? '' : d.title);
+    setStockReference(d.ref === '—' ? '' : d.ref);
+    setStockDescription(d.description || '');
+
+    const qty = Number(stock?.quantity);
+    setStockQuantity(
+      Number.isFinite(qty) && qty > 0 ? String(Math.floor(qty)) : '1'
+    );
+
+    const w = stock?.weight;
+    setStockWeight(w == null ? '' : String(w));
+
+    setStockPrice(d.priceEur == null ? '' : String(d.priceEur));
+
+    setStockImageFile(null);
+    setStockImageUrlInput('');
+    const urls = Array.from(new Set(d.imageUrls));
+    setStockImagePreview(urls[0] || null);
+    setStockImageUrls(urls.slice(1));
+  };
+
+  const handleStockImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    if (!file) {
+      setStockImageFile(null);
+      setStockImagePreview(null);
+      return;
+    }
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowed.includes(file.type)) {
+      showToast('Image invalide. Formats: JPEG, PNG ou WEBP.', 'error');
+      e.target.value = '';
+      return;
+    }
+    const max = 2 * 1024 * 1024;
+    if (file.size > max) {
+      showToast('Image trop lourde (max 2 Mo).', 'error');
+      e.target.value = '';
+      return;
+    }
+    setStockImageFile(file);
+    const url = URL.createObjectURL(file);
+    setStockImagePreview(url);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (stockImagePreview) {
+        try {
+          URL.revokeObjectURL(stockImagePreview);
+        } catch {}
+      }
+    };
+  }, [stockImagePreview]);
+
+  const addStockImageUrl = () => {
+    const raw = String(stockImageUrlInput || '').trim();
+    if (!raw) return;
+    let normalized = '';
+    try {
+      const url = new URL(raw);
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        showToast('URL invalide (http/https uniquement)', 'error');
+        return;
+      }
+      normalized = url.toString();
+    } catch {
+      showToast('URL invalide', 'error');
+      return;
+    }
+
+    setStockImageUrls(prev => {
+      const next = new Set(
+        (prev || []).map(u => String(u || '').trim()).filter(Boolean)
+      );
+      next.add(normalized);
+      return Array.from(next);
+    });
+    setStockImageUrlInput('');
+  };
+
+  const removeStockImageUrl = (url: string) => {
+    const target = String(url || '').trim();
+    setStockImageUrls(prev =>
+      (prev || []).filter(u => String(u || '').trim() !== target)
+    );
+  };
+
   useEffect(() => {
     const slug = store?.slug;
     if (section !== 'wallet') return;
@@ -1445,6 +1920,15 @@ export default function DashboardPage() {
     if (walletTransactionsSlug === slug) return;
     fetchWalletTransactions({ silent: true }).catch(() => {});
   }, [section, store?.slug, walletTransactionsLoading, walletTransactionsSlug]);
+
+  useEffect(() => {
+    const slug = store?.slug;
+    if (section !== 'stock') return;
+    if (!slug) return;
+    if (stockLoading) return;
+    if (stockLoadedSlug === slug) return;
+    fetchStockProducts({ silent: true }).catch(() => {});
+  }, [section, store?.slug, stockLoading, stockLoadedSlug]);
 
   const walletTableTotalPages = Math.max(
     1,
@@ -1464,6 +1948,204 @@ export default function DashboardPage() {
     if (walletTablePage > newTotal) setWalletTablePage(newTotal);
     if (walletTablePage < 1) setWalletTablePage(1);
   }, [walletTransactions, walletTablePageSize]);
+
+  const getStockDisplay = (it: StockApiItem, idx: number) => {
+    const stock = it?.stock;
+    const product = it?.product;
+    const prices = Array.isArray(it?.prices) ? it.prices : [];
+    const firstPrice = prices[0] || null;
+    const unitAmount = Number(firstPrice?.unit_amount || 0);
+    const priceEur = unitAmount > 0 ? unitAmount / 100 : null;
+
+    const ref =
+      String(stock?.product_reference || '').trim() ||
+      String(product?.metadata?.product_reference || '').trim() ||
+      '—';
+    const title =
+      String(product?.name || '').trim() ||
+      String(product?.metadata?.title || '').trim() ||
+      '—';
+    const description = String(product?.description || '').trim();
+
+    const qty = Number(stock?.quantity || 0);
+    const qtyLabel = Number.isFinite(qty) && qty > 0 ? qty : 0;
+    const w = stock?.weight;
+    const weightLabel =
+      w == null
+        ? ''
+        : `${Number(w)
+            .toFixed(3)
+            .replace(/\.?0+$/, '')} kg`;
+
+    const boughtCount = Math.max(
+      0,
+      Math.floor(Number((stock as any)?.bought || 0))
+    );
+    const stockId = Number(stock?.id);
+    const idKey = `${Number.isFinite(stockId) ? stockId : idx}`;
+
+    const rawStockImages = String((stock as any)?.image_url || '').trim();
+    const stockImageUrls = rawStockImages
+      ? rawStockImages
+          .split(',')
+          .map(s => String(s || '').trim())
+          .filter(Boolean)
+      : [];
+    const productImages = Array.isArray(product?.images)
+      ? (product.images as any[])
+          .map(u => String(u || '').trim())
+          .filter(Boolean)
+      : [];
+    const imageUrls =
+      stockImageUrls.length > 0
+        ? Array.from(new Set(stockImageUrls))
+        : Array.from(new Set(productImages));
+
+    return {
+      stockId,
+      idKey,
+      title,
+      ref,
+      description,
+      qtyLabel,
+      weightLabel,
+      priceEur,
+      boughtCount,
+      imageUrls,
+      hasStockImages: stockImageUrls.length > 0,
+      createdAt: stock?.created_at,
+    };
+  };
+
+  const stockFilterTermTrim = stockFilterTerm.trim().toLowerCase();
+  const filteredStockItems = (stockItems || []).filter((it, idx) => {
+    if (!stockFilterTermTrim) return true;
+    const d = getStockDisplay(it, idx);
+    const hay =
+      stockFilterField === 'reference'
+        ? d.ref
+        : stockFilterField === 'titre'
+          ? d.title
+          : d.description;
+    return String(hay || '')
+      .toLowerCase()
+      .includes(stockFilterTermTrim);
+  });
+
+  const stockTotalPages = Math.max(
+    1,
+    Math.ceil(filteredStockItems.length / stockPageSize)
+  );
+  const stockStartIndex = (stockPage - 1) * stockPageSize;
+  const visibleStockItems = filteredStockItems.slice(
+    stockStartIndex,
+    stockStartIndex + stockPageSize
+  );
+
+  useEffect(() => {
+    setSelectedStockIds(prev => {
+      const next = new Set<number>();
+      const ids = new Set((stockItems || []).map(it => Number(it?.stock?.id)));
+      prev.forEach(id => {
+        if (ids.has(id)) next.add(id);
+      });
+      return next;
+    });
+  }, [stockItems]);
+
+  useEffect(() => {
+    if (stockPage > stockTotalPages) setStockPage(stockTotalPages);
+    if (stockPage < 1) setStockPage(1);
+  }, [stockTotalPages]);
+
+  const visibleStockIds = visibleStockItems
+    .map(it => Number(it?.stock?.id))
+    .filter(n => Number.isFinite(n));
+  const allVisibleStockSelected =
+    visibleStockIds.length > 0 &&
+    visibleStockIds.every(id => selectedStockIds.has(id));
+
+  const toggleSelectAllVisibleStock = () => {
+    setSelectedStockIds(prev => {
+      const next = new Set(prev);
+      if (allVisibleStockSelected) {
+        visibleStockIds.forEach(id => next.delete(id));
+      } else {
+        visibleStockIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const toggleStockSelected = (id: number) => {
+    const n = Number(id);
+    if (!Number.isFinite(n)) return;
+    setSelectedStockIds(prev => {
+      const next = new Set(prev);
+      if (next.has(n)) next.delete(n);
+      else next.add(n);
+      return next;
+    });
+  };
+
+  const handleBulkDeleteSelectedStock = async () => {
+    const slug = store?.slug;
+    if (!slug) return;
+    if (selectedStockIds.size === 0) return;
+
+    const ids = Array.from(selectedStockIds).filter(id => Number.isFinite(id));
+
+    setStockItems(prev =>
+      (prev || []).filter(it => {
+        const id = Number(it?.stock?.id);
+        return !Number.isFinite(id) || !selectedStockIds.has(id);
+      })
+    );
+    setSelectedStockIds(new Set());
+
+    try {
+      const token = await getToken();
+      const resp = await fetch(
+        `${API_BASE_URL}/api/stores/${encodeURIComponent(slug)}/stock/products`,
+        {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+          body: JSON.stringify({ ids }),
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || json?.message || 'Suppression échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Suppression échouée');
+      }
+
+      const results = Array.isArray(json?.results) ? json.results : [];
+      const failed = results.filter((r: any) => r && r.ok === false);
+      if (failed.length > 0) {
+        showToast(
+          `${failed.length} suppression${failed.length > 1 ? 's' : ''} échouée${
+            failed.length > 1 ? 's' : ''
+          }`,
+          'error'
+        );
+      } else {
+        showToast('Suppression effectuée', 'success');
+      }
+    } catch (e: any) {
+      const rawMsg = e?.message || 'Suppression échouée';
+      showToast(
+        typeof rawMsg === 'string'
+          ? rawMsg.replace(/^Error:\s*/, '')
+          : 'Suppression échouée',
+        'error'
+      );
+    } finally {
+      fetchStockProducts({ silent: true, background: true }).catch(() => {});
+    }
+  };
 
   const parseProductReferenceItems = (
     raw: string | null | undefined
@@ -2542,6 +3224,17 @@ export default function DashboardPage() {
               <span className='truncate'>Porte-monnaie</span>
             </button>
             <button
+              onClick={() => setSection('stock')}
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+                section === 'stock'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <FaArchive className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <span className='truncate'>Stock</span>
+            </button>
+            <button
               onClick={() => setSection('sales')}
               className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
                 section === 'sales'
@@ -2869,7 +3562,7 @@ export default function DashboardPage() {
                           type='checkbox'
                           checked={tvaApplicable}
                           onChange={e => setTvaApplicable(e.target.checked)}
-                          className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
+                          className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer'
                         />
                         <span className='text-sm text-gray-700'>
                           TVA applicable
@@ -4102,6 +4795,598 @@ export default function DashboardPage() {
             </div>
           )}
 
+          {section === 'stock' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center mb-4'>
+                <FaArchive className='w-5 h-5 text-indigo-600 mr-2' />
+                <h2 className='text-lg font-semibold text-gray-900'>Stock</h2>
+              </div>
+
+              <form onSubmit={handleSubmitStockProduct} className='space-y-4'>
+                <div className='grid grid-cols-1 lg:grid-cols-2 gap-4'>
+                  <div className='space-y-3'>
+                    <div>
+                      <label className='block text-sm font-medium text-gray-700 mb-1'>
+                        Titre
+                      </label>
+                      <input
+                        type='text'
+                        value={stockTitle}
+                        onChange={e => setStockTitle(e.target.value)}
+                        className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                        required
+                      />
+                    </div>
+
+                    <div className='grid grid-cols-1 sm:grid-cols-2 gap-4'>
+                      <div>
+                        <label className='block text-xs font-medium text-gray-700 mb-1'>
+                          Référence
+                        </label>
+                        <input
+                          type='text'
+                          value={stockReference}
+                          onChange={e => setStockReference(e.target.value)}
+                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className='block text-xs font-medium text-gray-700 mb-1'>
+                          Quantité
+                        </label>
+                        <input
+                          type='number'
+                          min={1}
+                          step={1}
+                          value={stockQuantity}
+                          onChange={e => setStockQuantity(e.target.value)}
+                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className='grid grid-cols-1 sm:grid-cols-2 gap-4'>
+                      <div>
+                        <label className='block text-xs font-medium text-gray-700 mb-1'>
+                          Poids (kg)
+                        </label>
+                        <input
+                          type='number'
+                          step='0.001'
+                          min='0'
+                          value={stockWeight}
+                          onChange={e => setStockWeight(e.target.value)}
+                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                          placeholder='0,5'
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className='block text-xs font-medium text-gray-700 mb-1'>
+                          Prix (€)
+                        </label>
+                        <input
+                          type='number'
+                          value={stockPrice}
+                          onChange={e => setStockPrice(e.target.value)}
+                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                          placeholder='12,90'
+                          step='0.01'
+                          min='0.01'
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className='block text-sm font-medium text-gray-700 mb-1'>
+                        Description
+                      </label>
+                      <textarea
+                        value={stockDescription}
+                        onChange={e => setStockDescription(e.target.value)}
+                        className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                        rows={2}
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className='block text-sm font-medium text-gray-700 mb-1'>
+                      Image
+                    </label>
+                    <div className='flex items-center space-x-4'>
+                      <div className='flex-1'>
+                        <label className='flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100'>
+                          <div className='flex flex-col items-center justify-center pt-5 pb-6'>
+                            <Upload className='w-8 h-8 mb-2 text-gray-400' />
+                            <p className='text-sm text-gray-500'>
+                              Cliquez pour télécharger une image
+                            </p>
+                            <p className='text-xs text-gray-400 mt-1'>
+                              JPEG, PNG ou WEBP — 2 Mo max
+                            </p>
+                          </div>
+                          <input
+                            type='file'
+                            className='hidden'
+                            accept='image/jpeg,image/png,image/webp'
+                            onChange={handleStockImageChange}
+                          />
+                        </label>
+                      </div>
+                      {stockImagePreview ? (
+                        <div className='w-32 h-32 border rounded-lg overflow-hidden relative'>
+                          <img
+                            src={stockImagePreview}
+                            alt='Aperçu'
+                            className='w-full h-full object-cover'
+                          />
+                          <button
+                            type='button'
+                            onClick={() => {
+                              setStockImageFile(null);
+                              setStockImagePreview(null);
+                            }}
+                            className='absolute top-2 right-2 inline-flex items-center px-2 py-1 text-xs rounded-md border border-gray-200 bg-white/90 text-gray-700 hover:bg-white'
+                          >
+                            Retirer
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className='mt-3'>
+                      <label className='block text-sm font-medium text-gray-700 mb-1'>
+                        Images (URL)
+                      </label>
+                      <div className='flex items-center gap-2'>
+                        <input
+                          type='url'
+                          value={stockImageUrlInput}
+                          onChange={e => setStockImageUrlInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              addStockImageUrl();
+                            }
+                          }}
+                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                          placeholder='https://...'
+                        />
+                        <button
+                          type='button'
+                          onClick={addStockImageUrl}
+                          className='inline-flex items-center px-3 py-2 rounded-md text-sm border border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                        >
+                          Ajouter
+                        </button>
+                      </div>
+                      {stockImageUrls.length > 0 ? (
+                        <div className='mt-2 flex flex-wrap gap-2'>
+                          {stockImageUrls.map(url => (
+                            <div
+                              key={url}
+                              className='relative w-14 h-14 rounded-md border border-gray-200 bg-gray-50 overflow-hidden'
+                              title={url}
+                            >
+                              <img
+                                src={url}
+                                alt='Aperçu'
+                                className='w-full h-full object-cover'
+                              />
+                              <button
+                                type='button'
+                                onClick={() => removeStockImageUrl(url)}
+                                className='absolute top-1 right-1 w-5 h-5 rounded-full bg-white/90 border border-gray-200 text-gray-700 text-xs flex items-center justify-center hover:bg-white'
+                                aria-label='Retirer'
+                                title='Retirer'
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className='flex items-center gap-2'>
+                  <button
+                    type='submit'
+                    className='inline-flex items-center px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed'
+                    disabled={
+                      stockCreating ||
+                      (!editingStockId
+                        ? !stockImageFile
+                        : !stockImagePreview) ||
+                      !stockTitle.trim() ||
+                      !stockReference.trim() ||
+                      !stockDescription.trim() ||
+                      !String(stockQuantity || '').trim() ||
+                      !String(stockWeight || '').trim() ||
+                      !String(stockPrice || '').trim()
+                    }
+                  >
+                    {stockCreating && (
+                      <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                    )}
+                    {editingStockId
+                      ? 'Modifier le produit'
+                      : 'Créer le produit'}
+                  </button>
+                  {editingStockId ? (
+                    <button
+                      type='button'
+                      onClick={() => {
+                        setEditingStockId(null);
+                        resetStockForm();
+                      }}
+                      className='inline-flex items-center px-4 py-2 rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                      disabled={stockCreating}
+                    >
+                      Annuler
+                    </button>
+                  ) : null}
+                </div>
+              </form>
+
+              <div className='mt-8'>
+                <h3 className='text-base font-semibold text-gray-900 mb-3'>
+                  Produits en stock
+                </h3>
+
+                {stockLoading ? (
+                  <div className='flex items-center justify-center py-10'>
+                    <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600'></div>
+                  </div>
+                ) : stockItems.length === 0 ? (
+                  <div className='text-sm text-gray-600'>
+                    Aucun produit en stock.
+                  </div>
+                ) : (
+                  <>
+                    <div className='mb-4 flex flex-wrap items-center justify-between gap-3'>
+                      <div className='flex items-center gap-3'>
+                        <input
+                          type='checkbox'
+                          checked={allVisibleStockSelected}
+                          onChange={toggleSelectAllVisibleStock}
+                          className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer'
+                        />
+                        <div className='text-sm text-gray-700'>
+                          Tout sélectionner
+                        </div>
+                        <div className='text-sm text-gray-600'>
+                          — {selectedStockIds.size} sélectionné
+                          {selectedStockIds.size > 1 ? 's' : ''}
+                        </div>
+                        <button
+                          type='button'
+                          onClick={handleBulkDeleteSelectedStock}
+                          disabled={selectedStockIds.size === 0}
+                          className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                        >
+                          <Trash2 className='w-4 h-4 mr-1' />
+                          <span>Supprimer</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className='mb-4 flex flex-wrap items-center gap-2'>
+                      <button
+                        type='button'
+                        onClick={() =>
+                          fetchStockProducts({
+                            silent: true,
+                            background: true,
+                          }).catch(() => {})
+                        }
+                        disabled={stockLoading || stockReloading}
+                        className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                      >
+                        <RefreshCw
+                          className={`w-4 h-4 mr-1 ${
+                            stockReloading ? 'animate-spin' : ''
+                          }`}
+                        />
+                        <span>Recharger</span>
+                      </button>
+                      <div className='flex items-center space-x-2 flex-wrap'>
+                        <span className='text-sm text-gray-700'>
+                          Filtrer par
+                        </span>
+                        <select
+                          value={stockFilterField}
+                          onChange={e => {
+                            const v = e.target.value as
+                              | 'reference'
+                              | 'titre'
+                              | 'description';
+                            setStockFilterField(v);
+                            setStockPage(1);
+                          }}
+                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                        >
+                          <option value='reference'>Référence</option>
+                          <option value='titre'>Titre</option>
+                          <option value='description'>Description</option>
+                        </select>
+                        <input
+                          type='text'
+                          value={stockFilterTerm}
+                          onChange={e => {
+                            setStockFilterTerm(e.target.value);
+                            setStockPage(1);
+                          }}
+                          placeholder='Saisir…'
+                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                        />
+                      </div>
+                    </div>
+
+                    {filteredStockItems.length === 0 ? (
+                      <div className='text-sm text-gray-600'>
+                        Aucun résultat.
+                      </div>
+                    ) : (
+                      <div className='grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4'>
+                        {visibleStockItems.map((it, idx) => {
+                          const stock = it?.stock;
+                          const d = getStockDisplay(it, idx);
+
+                          const activeIndex = Math.max(
+                            0,
+                            stockCardImageIndex[d.idKey] || 0
+                          );
+                          const hasImages = d.imageUrls.length > 0;
+                          const currentImage = hasImages
+                            ? d.imageUrls[activeIndex % d.imageUrls.length]
+                            : '';
+
+                          const isSelected = selectedStockIds.has(
+                            Number(d.stockId)
+                          );
+
+                          return (
+                            <div
+                              key={d.idKey}
+                              className='rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden'
+                            >
+                              <div className='p-4 flex gap-4'>
+                                <div className='w-28 shrink-0'>
+                                  <div className='relative w-full aspect-[3/4] rounded-md bg-gray-50 border border-gray-100 overflow-hidden flex items-center justify-center'>
+                                    {currentImage ? (
+                                      <img
+                                        src={currentImage}
+                                        alt={d.title}
+                                        className='w-full h-full object-cover'
+                                      />
+                                    ) : (
+                                      <FaArchive className='w-10 h-10 text-gray-300' />
+                                    )}
+
+                                    {d.hasStockImages &&
+                                    d.imageUrls.length > 1 ? (
+                                      <>
+                                        <button
+                                          type='button'
+                                          onClick={() => {
+                                            const total = d.imageUrls.length;
+                                            setStockCardImageIndex(prev => ({
+                                              ...prev,
+                                              [d.idKey]:
+                                                (activeIndex - 1 + total) %
+                                                total,
+                                            }));
+                                          }}
+                                          className='absolute left-1 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-white/90 border border-gray-200 flex items-center justify-center hover:bg-white'
+                                          title='Précédent'
+                                        >
+                                          <ArrowRight className='w-4 h-4 text-gray-700 rotate-180' />
+                                        </button>
+                                        <button
+                                          type='button'
+                                          onClick={() => {
+                                            const total = d.imageUrls.length;
+                                            setStockCardImageIndex(prev => ({
+                                              ...prev,
+                                              [d.idKey]:
+                                                (activeIndex + 1) % total,
+                                            }));
+                                          }}
+                                          className='absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-white/90 border border-gray-200 flex items-center justify-center hover:bg-white'
+                                          title='Suivant'
+                                        >
+                                          <ArrowRight className='w-4 h-4 text-gray-700' />
+                                        </button>
+                                        <div className='absolute bottom-1 left-0 right-0 flex items-center justify-center gap-1'>
+                                          {d.imageUrls.map((_, i) => (
+                                            <div
+                                              key={`${d.idKey}-dot-${i}`}
+                                              className={`h-1.5 w-1.5 rounded-full ${
+                                                i ===
+                                                activeIndex % d.imageUrls.length
+                                                  ? 'bg-indigo-600'
+                                                  : 'bg-white/70 border border-gray-200'
+                                              }`}
+                                            />
+                                          ))}
+                                        </div>
+                                      </>
+                                    ) : null}
+                                  </div>
+                                </div>
+
+                                <div className='min-w-0 flex-1'>
+                                  <div className='flex items-start justify-between gap-3'>
+                                    <div className='min-w-0'>
+                                      <div className='flex items-start gap-3'>
+                                        <input
+                                          type='checkbox'
+                                          checked={isSelected}
+                                          onChange={() =>
+                                            toggleStockSelected(
+                                              Number(d.stockId)
+                                            )
+                                          }
+                                          className='mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer'
+                                        />
+                                        <div className='min-w-0'>
+                                          <div className='text-sm font-semibold text-gray-900 truncate'>
+                                            {d.title}
+                                          </div>
+                                          <div className='mt-1 text-xs text-gray-500 truncate'>
+                                            Réf:{' '}
+                                            <span className='text-gray-700'>
+                                              {d.ref}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div className='text-right shrink-0'>
+                                      <div className='text-xs text-gray-500'>
+                                        Qté
+                                      </div>
+                                      <div className='text-sm font-semibold text-gray-900'>
+                                        {d.qtyLabel}
+                                      </div>
+                                      {Number(d.qtyLabel || 0) <= 0 ? (
+                                        <div className='mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200'>
+                                          Épuisé
+                                        </div>
+                                      ) : (
+                                        <div className='mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-50 text-green-700 border border-green-200'>
+                                          Disponible
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {d.description ? (
+                                    <div className='mt-3 text-xs text-gray-600 line-clamp-3'>
+                                      {d.description}
+                                    </div>
+                                  ) : null}
+
+                                  <div className='mt-3 grid grid-cols-3 gap-2 text-xs'>
+                                    <div className='rounded-md bg-gray-50 border border-gray-100 p-2'>
+                                      <div className='text-gray-500'>Poids</div>
+                                      <div className='text-gray-900 font-medium'>
+                                        {d.weightLabel || '—'}
+                                      </div>
+                                    </div>
+                                    <div className='rounded-md bg-gray-50 border border-gray-100 p-2'>
+                                      <div className='text-gray-500'>Prix</div>
+                                      <div className='text-gray-900 font-medium'>
+                                        {d.priceEur == null
+                                          ? '—'
+                                          : formatValue(d.priceEur)}
+                                      </div>
+                                    </div>
+                                    <div className='rounded-md bg-gray-50 border border-gray-100 p-2'>
+                                      <div className='text-gray-500'>
+                                        Acheté
+                                      </div>
+                                      <div className='text-gray-900 font-medium'>
+                                        {d.boughtCount}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className='mt-3 flex items-center justify-between gap-2'>
+                                    <div className='text-xs text-gray-500'>
+                                      Créé: {formatDate(stock?.created_at)}
+                                    </div>
+                                    <div className='flex items-center gap-2'>
+                                      <button
+                                        type='button'
+                                        onClick={() =>
+                                          startEditStockProduct(it, idx)
+                                        }
+                                        className='inline-flex items-center px-3 py-1.5 rounded-md text-xs border border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                                      >
+                                        <Pencil className='w-3.5 h-3.5 mr-1' />
+                                        Modifier
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div className='mt-4 flex flex-wrap items-center justify-between gap-2'>
+                      <div className='flex items-center gap-2'>
+                        <label className='text-sm text-gray-700'>Cartes</label>
+                        <select
+                          value={stockPageSize}
+                          onChange={e => {
+                            const v = parseInt(e.target.value, 10);
+                            setStockPageSize(Number.isFinite(v) ? v : 12);
+                            setStockPage(1);
+                          }}
+                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-28'
+                        >
+                          <option value={6}>6</option>
+                          <option value={12}>12</option>
+                          <option value={24}>24</option>
+                          <option value={48}>48</option>
+                        </select>
+                      </div>
+
+                      <div className='flex flex-wrap items-center gap-2'>
+                        <div className='text-sm text-gray-600'>
+                          Page {stockPage} / {stockTotalPages} —{' '}
+                          {filteredStockItems.length} produit
+                          {filteredStockItems.length > 1 ? 's' : ''}
+                        </div>
+                        <div className='flex items-center space-x-2'>
+                          <button
+                            onClick={() =>
+                              setStockPage(p => Math.max(1, p - 1))
+                            }
+                            disabled={stockPage <= 1}
+                            className={`px-3 py-1 text-sm rounded-md border ${
+                              stockPage <= 1
+                                ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            }`}
+                          >
+                            Précédent
+                          </button>
+                          <button
+                            onClick={() =>
+                              setStockPage(p =>
+                                Math.min(stockTotalPages, p + 1)
+                              )
+                            }
+                            disabled={stockPage >= stockTotalPages}
+                            className={`px-3 py-1 text-sm rounded-md border ${
+                              stockPage >= stockTotalPages
+                                ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            }`}
+                          >
+                            Suivant
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Section Ventes */}
           {section === 'sales' && (
             <div className='bg-white rounded-lg shadow p-6'>
@@ -4733,7 +6018,7 @@ export default function DashboardPage() {
                             Tirage…
                           </span>
                         ) : (
-                        <span>Lancer le tirage</span>
+                          <span>Lancer le tirage</span>
                         )}
                       </button>
                     </div>
