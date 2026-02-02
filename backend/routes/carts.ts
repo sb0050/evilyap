@@ -160,8 +160,13 @@ router.post("/", async (req, res) => {
 router.get("/summary", async (req, res) => {
   try {
     const stripeId = (req.query.stripeId as string) || "";
+    const paymentIdRaw = (req.query.paymentId as string) || "";
+    const paymentId = String(paymentIdRaw || "").trim();
     if (!stripeId) {
       return res.status(400).json({ error: "stripeId requis" });
+    }
+    if (paymentId && /[,()]/.test(paymentId)) {
+      return res.status(400).json({ error: "paymentId invalide" });
     }
 
     const selectWithWeight =
@@ -172,22 +177,52 @@ router.get("/summary", async (req, res) => {
     let cartRows: any[] | null = null;
     let error: any = null;
     {
-      const resp = await supabase
+      let q = supabase
         .from("carts")
         .select(selectWithWeight)
         .eq("customer_stripe_id", stripeId)
         .eq("status", "PENDING")
         .order("id", { ascending: false });
+      if (paymentId) {
+        q = q.or(`payment_id.eq.${paymentId},payment_id.is.null`);
+      }
+      const resp = await q;
+      cartRows = resp.data as any;
+      error = resp.error;
+    }
+    if (error && paymentId && isMissingColumnError(error, "payment_id")) {
+      let q = supabase
+        .from("carts")
+        .select(selectWithWeight)
+        .eq("customer_stripe_id", stripeId)
+        .eq("status", "PENDING")
+        .order("id", { ascending: false });
+      const resp = await q;
       cartRows = resp.data as any;
       error = resp.error;
     }
     if (error && isMissingColumnError(error, "weight")) {
-      const resp2 = await supabase
+      let q2 = supabase
         .from("carts")
         .select(selectWithoutWeight)
         .eq("customer_stripe_id", stripeId)
         .eq("status", "PENDING")
         .order("id", { ascending: false });
+      if (paymentId) {
+        q2 = q2.or(`payment_id.eq.${paymentId},payment_id.is.null`);
+      }
+      const resp2 = await q2;
+      cartRows = resp2.data as any;
+      error = resp2.error;
+    }
+    if (error && paymentId && isMissingColumnError(error, "payment_id")) {
+      let q2 = supabase
+        .from("carts")
+        .select(selectWithoutWeight)
+        .eq("customer_stripe_id", stripeId)
+        .eq("status", "PENDING")
+        .order("id", { ascending: false });
+      const resp2 = await q2;
       cartRows = resp2.data as any;
       error = resp2.error;
     }

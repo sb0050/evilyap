@@ -9,7 +9,7 @@ import {
   EmbeddedCheckoutProvider,
   EmbeddedCheckout,
 } from '@stripe/react-stripe-js';
-import { useUser } from '@clerk/clerk-react';
+import { useAuth, useUser } from '@clerk/clerk-react';
 import {
   ShoppingBag,
   MapPin,
@@ -22,6 +22,7 @@ import {
   ShoppingCart,
   BadgeCheck,
   Trash2,
+  RefreshCw,
 } from 'lucide-react';
 import StripeWrapper from '../components/StripeWrapper';
 import ParcelPointMap from '../components/ParcelPointMap';
@@ -30,6 +31,7 @@ import { apiPost, API_BASE_URL } from '../utils/api';
 import { Address } from '@stripe/stripe-js';
 import Header from '../components/Header';
 import { Toast } from '../components/Toast';
+import Modal from '../components/Modal';
 import { search } from 'fast-fuzzy';
 
 interface Store {
@@ -72,8 +74,9 @@ interface CustomerData {
 
 export default function CheckoutPage() {
   const { storeName } = useParams<{ storeName: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useUser();
+  const { getToken } = useAuth();
   const [store, setStore] = useState<Store | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -124,61 +127,26 @@ export default function CheckoutPage() {
     type: 'error' | 'info' | 'success';
     visible?: boolean;
   } | null>(null);
+  const [shipmentCartRebuilt, setShipmentCartRebuilt] = useState(false);
+  const [reloadingCart, setReloadingCart] = useState(false);
+  const [openShipmentInitHandled, setOpenShipmentInitHandled] = useState(false);
+  const [openShipmentBlockModalOpen, setOpenShipmentBlockModalOpen] =
+    useState(false);
+  const [openShipmentBlockShipmentId, setOpenShipmentBlockShipmentId] =
+    useState('');
+  const [openShipmentBlockPaymentId, setOpenShipmentBlockPaymentId] =
+    useState('');
+  const [openShipmentAttemptPaymentId, setOpenShipmentAttemptPaymentId] =
+    useState('');
+  const [openShipmentEditingShipmentId, setOpenShipmentEditingShipmentId] =
+    useState('');
+  const [openShipmentActionLoading, setOpenShipmentActionLoading] =
+    useState(false);
 
   // useEffect de debug pour surveiller selectedParcelPoint
   useEffect(() => {
     // Debug supprimé
   }, [selectedParcelPoint, deliveryMethod, isFormValid]);
-
-  // Charger le panier pour ce store
-  useEffect(() => {
-    const apiBase = API_BASE_URL;
-    const fetchCartForStore = async () => {
-      try {
-        const userEmail = user?.primaryEmailAddress?.emailAddress;
-        if (!userEmail || !store?.id) return;
-        const resp = await fetch(
-          `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(userEmail)}`
-        );
-        if (!resp.ok) return;
-        const json = await resp.json();
-        const stripeId = json?.customer?.id;
-        if (!stripeId) return;
-        setStripeCustomerId(stripeId);
-        const cartResp = await fetch(
-          `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(stripeId)}`
-        );
-        if (!cartResp.ok) return;
-        const cartJson = await cartResp.json();
-        const groups = Array.isArray(cartJson?.itemsByStore)
-          ? cartJson.itemsByStore
-          : [];
-        const groupForStore = groups.find(
-          (g: any) => g?.store?.id && store?.id && g.store.id === store.id
-        );
-        if (groupForStore) {
-          setCartItemsForStore(groupForStore.items || []);
-          setCartTotalForStore(Number(groupForStore.total || 0));
-        } else {
-          setCartItemsForStore([]);
-          setCartTotalForStore(0);
-        }
-      } catch (_e) {
-        // ignore
-      }
-    };
-    fetchCartForStore();
-    const onCartUpdated = () => fetchCartForStore();
-    if (typeof window !== 'undefined') {
-      window.addEventListener('cart:updated', onCartUpdated);
-    }
-    return () => {
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('cart:updated', onCartUpdated);
-      }
-    };
-  }, [user, store]);
- 
 
   // Alimente automatiquement la référence avec les références agrégées du panier
   // Désactivé: ne pas écraser la saisie manuelle de la référence
@@ -199,11 +167,274 @@ export default function CheckoutPage() {
     }, 4000);
   };
 
+  const refreshCartForStore = async () => {
+    const apiBase = API_BASE_URL;
+    try {
+      setReloadingCart(true);
+      const userEmail = user?.primaryEmailAddress?.emailAddress;
+      if (!userEmail || !store?.id) return;
+      const resp = await fetch(
+        `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(userEmail)}`
+      );
+      if (!resp.ok) return;
+      const json = await resp.json();
+      const stripeId = json?.customer?.id;
+      if (!stripeId) return;
+      setStripeCustomerId(stripeId);
+      const paymentId = String(searchParams.get('payment_id') || '').trim();
+      const cartResp = await fetch(
+        `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(
+          stripeId
+        )}${paymentId ? `&paymentId=${encodeURIComponent(paymentId)}` : ''}`
+      );
+      if (!cartResp.ok) return;
+      const cartJson = await cartResp.json();
+      const groups = Array.isArray(cartJson?.itemsByStore)
+        ? cartJson.itemsByStore
+        : [];
+      const groupForStore = groups.find(
+        (g: any) => g?.store?.id && store?.id && g.store.id === store.id
+      );
+      if (groupForStore) {
+        setCartItemsForStore(groupForStore.items || []);
+        setCartTotalForStore(Number(groupForStore.total || 0));
+      } else {
+        setCartItemsForStore([]);
+        setCartTotalForStore(0);
+      }
+    } catch (_e) {
+    } finally {
+      setReloadingCart(false);
+    }
+  };
+
+  const clearOpenShipmentParams = () => {
+    try {
+      const next = new URLSearchParams(searchParams);
+      next.delete('open_shipment');
+      next.delete('payment_id');
+      setSearchParams(next, { replace: true });
+    } catch {}
+  };
+
+  const openShipmentByPayment = async (paymentId: string, force: boolean) => {
+    const apiBase = API_BASE_URL;
+    const token = await getToken();
+    const resp = await fetch(
+      `${apiBase}/api/shipments/open-shipment-by-payment`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+        body: JSON.stringify({ paymentId, storeId: store?.id, force }),
+      }
+    );
+    const json = await resp.json().catch(() => null as any);
+    return { resp, json };
+  };
+
+  const rebuildCartFromPayment = async (paymentId: string) => {
+    console.log('rebuildCartFromPayment');
+    const apiBase = API_BASE_URL;
+    const token = await getToken();
+    const resp = await fetch(
+      `${apiBase}/api/shipments/rebuild-carts-from-payment`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+        body: JSON.stringify({ paymentId, storeId: store?.id }),
+      }
+    );
+    const json = await resp.json().catch(() => null as any);
+    if (!resp.ok) {
+      const msg =
+        json?.error ||
+        'Erreur lors du chargement de la commande depuis le paiement';
+      showToast(msg, 'error');
+      return false;
+    }
+    await refreshCartForStore();
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('cart:updated'));
+    }
+    return true;
+  };
+
+  const setOpenShipmentParams = (paymentId: string) => {
+    try {
+      setShipmentCartRebuilt(false);
+      setOpenShipmentInitHandled(false);
+      const next = new URLSearchParams(searchParams);
+      next.set('open_shipment', 'true');
+      next.set('payment_id', paymentId);
+      setSearchParams(next, { replace: true });
+    } catch {}
+  };
+
+  const getActiveOpenShipment = async () => {
+    const apiBase = API_BASE_URL;
+    const token = await getToken();
+    const resp = await fetch(
+      `${apiBase}/api/shipments/active-open-shipment?storeId=${encodeURIComponent(
+        String(store?.id || '')
+      )}`,
+      {
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      }
+    );
+    const json = await resp.json().catch(() => null as any);
+    return { resp, json };
+  };
+
+  const cancelOpenShipment = async (paymentId: string) => {
+    const apiBase = API_BASE_URL;
+    const token = await getToken();
+    const resp = await fetch(`${apiBase}/api/shipments/cancel-open-shipment`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: token ? `Bearer ${token}` : '',
+      },
+      body: JSON.stringify({ paymentId, storeId: store?.id }),
+    });
+    const json = await resp.json().catch(() => null as any);
+    return { resp, json };
+  };
+
+  useEffect(() => {
+    refreshCartForStore();
+    const onCartUpdated = () => refreshCartForStore();
+    if (typeof window !== 'undefined') {
+      window.addEventListener('cart:updated', onCartUpdated);
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('cart:updated', onCartUpdated);
+      }
+    };
+  }, [user, store]);
+
   useEffect(() => {
     if (!email && user?.primaryEmailAddress?.emailAddress) {
       setEmail(user.primaryEmailAddress.emailAddress);
     }
   }, [user]);
+
+  useEffect(() => {
+    if (!store?.id || !user) return;
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const openShipment =
+          String(searchParams.get('open_shipment') || '') === 'true';
+        const paymentId = String(searchParams.get('payment_id') || '').trim();
+        const { resp, json } = await getActiveOpenShipment();
+        if (!resp.ok) return;
+        const os = json?.openShipment || null;
+        const openPaymentId = String(os?.payment_id || '').trim();
+        const openShipmentId = String(os?.shipment_id || '').trim();
+        if (!openPaymentId) return;
+
+        if (openShipment && paymentId && paymentId === openPaymentId) {
+          if (!cancelled) setOpenShipmentEditingShipmentId(openShipmentId);
+          return;
+        }
+
+        if (!cancelled) {
+          setOpenShipmentBlockPaymentId(openPaymentId);
+          setOpenShipmentBlockShipmentId(openShipmentId);
+          setOpenShipmentAttemptPaymentId(openShipment ? paymentId : '');
+          setOpenShipmentBlockModalOpen(true);
+        }
+      } catch (_e) {}
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [store?.id, user, searchParams, getToken]);
+
+  useEffect(() => {
+    const openShipment =
+      String(searchParams.get('open_shipment') || '') === 'true';
+    const paymentId = String(searchParams.get('payment_id') || '').trim();
+    if (openShipmentInitHandled || shipmentCartRebuilt) return;
+    if (openShipmentBlockModalOpen) return;
+    if (!openShipment || !paymentId || !store?.id || !user) return;
+
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const { resp, json } = await openShipmentByPayment(paymentId, false);
+        if (!resp.ok && resp.status === 409) {
+          if (cancelled) return;
+          const os = json?.openShipment || null;
+          const openPaymentId = String(os?.payment_id || '').trim();
+          const openShipmentId = String(os?.shipment_id || '').trim();
+          if (openPaymentId) {
+            setOpenShipmentBlockPaymentId(openPaymentId);
+            setOpenShipmentBlockShipmentId(openShipmentId);
+            setOpenShipmentAttemptPaymentId(paymentId);
+            setOpenShipmentBlockModalOpen(true);
+          } else {
+            try {
+              const { resp: r2, json: j2 } = await getActiveOpenShipment();
+              if (r2.ok) {
+                const os2 = j2?.openShipment || null;
+                const op2 = String(os2?.payment_id || '').trim();
+                const sid2 = String(os2?.shipment_id || '').trim();
+                if (op2) {
+                  setOpenShipmentBlockPaymentId(op2);
+                  setOpenShipmentBlockShipmentId(sid2);
+                  setOpenShipmentAttemptPaymentId(paymentId);
+                  setOpenShipmentBlockModalOpen(true);
+                }
+              }
+            } catch (_e) {}
+          }
+          return;
+        }
+        if (!resp.ok) {
+          const msg =
+            json?.error ||
+            'Erreur lors de la préparation de la modification de commande';
+          if (!cancelled) showToast(msg, 'error');
+          return;
+        }
+        if (!cancelled) {
+          const sid = String(json?.shipmentDisplayId || '').trim();
+          if (sid) setOpenShipmentEditingShipmentId(sid);
+        }
+        if (cancelled) return;
+        const ok = await rebuildCartFromPayment(paymentId);
+        if (!cancelled && ok) setShipmentCartRebuilt(true);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+        if (!cancelled) showToast(msg, 'error');
+      } finally {
+        if (!cancelled) setOpenShipmentInitHandled(true);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    searchParams,
+    store?.id,
+    user,
+    getToken,
+    shipmentCartRebuilt,
+    openShipmentInitHandled,
+    openShipmentBlockModalOpen,
+  ]);
 
   // États pour les accordéons
   const [orderAccordionOpen, setOrderAccordionOpen] = useState(true);
@@ -379,7 +610,7 @@ export default function CheckoutPage() {
     setIsProcessingPayment(true);
 
     try {
-      // Vérifier les doublons de références dans la table carts pour ce store et ce client
+      // Vérifier la cohérence du panier en base avant de payer
       try {
         const apiBase = API_BASE_URL;
         const refreshResp = await fetch(
@@ -394,6 +625,24 @@ export default function CheckoutPage() {
             (g: any) => g?.store?.id && store?.id && g.store.id === store.id
           );
           const items = groupForStore?.items || [];
+          if (cartItemsForStore.length > 0) {
+            const freshRefs = new Set(
+              items.map((it: any) => String(it.product_reference || '').trim())
+            );
+            const currentRefs = cartItemsForStore.map(it =>
+              String(it.product_reference || '').trim()
+            );
+            const missingRefs = currentRefs.filter(r => !freshRefs.has(r));
+            if (missingRefs.length > 0) {
+              const msg = 'Certains articles ne sont plus dans votre panier';
+              setPaymentError(msg);
+              showToast(msg, 'error');
+              setCartItemsForStore(items);
+              setCartTotalForStore(Number(groupForStore?.total || 0));
+              setIsProcessingPayment(false);
+              return;
+            }
+          }
           const refs = items.map((it: any) =>
             String(it.product_reference || '').trim()
           );
@@ -411,6 +660,8 @@ export default function CheckoutPage() {
               'Vous avez la même référence plusieurs fois dans le panier';
             setPaymentError(msg);
             showToast(msg, 'error');
+            setCartItemsForStore(items);
+            setCartTotalForStore(Number(groupForStore?.total || 0));
             setIsProcessingPayment(false);
             return;
           }
@@ -672,6 +923,7 @@ export default function CheckoutPage() {
       if (!resp.ok) {
         return;
       }
+      await refreshCartForStore();
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new Event('cart:updated'));
       }
@@ -754,9 +1006,121 @@ export default function CheckoutPage() {
     'https://d1tmgyvizond6e.cloudfront.net'
   ).replace(/\/+$/, '');
   const storeLogo = store?.id ? `${cloudBase}/images/${store.id}` : undefined;
+  const isOpenShipmentMode =
+    String(searchParams.get('open_shipment') || '') === 'true' &&
+    Boolean(String(searchParams.get('payment_id') || '').trim());
+  const currentPaymentId = String(searchParams.get('payment_id') || '').trim();
+
+  const cancelOpenShipmentAndVerify = async (preferredPaymentId?: string) => {
+    if (!store?.id) return false;
+
+    let pidToCancel = String(preferredPaymentId || '').trim();
+    try {
+      const { resp: osResp, json: osJson } = await getActiveOpenShipment();
+      if (osResp.ok) {
+        const os = osJson?.openShipment || null;
+        const openPid = String(os?.payment_id || '').trim();
+        if (openPid) pidToCancel = openPid;
+      }
+    } catch (_e) {}
+
+    if (!pidToCancel) return false;
+
+    const { resp, json } = await cancelOpenShipment(pidToCancel);
+    if (!resp.ok) {
+      const msg =
+        json?.error || 'Erreur lors de l’annulation de la modification';
+      showToast(msg, 'error');
+      return false;
+    }
+
+    try {
+      const { resp: vResp, json: vJson } = await getActiveOpenShipment();
+      if (!vResp.ok) {
+        showToast('Erreur lors de la vérification de l’annulation', 'error');
+        return false;
+      }
+      const os = vJson?.openShipment || null;
+      const stillOpenPid = String(os?.payment_id || '').trim();
+      if (!stillOpenPid) return true;
+
+      if (stillOpenPid !== pidToCancel) {
+        const { resp: r2, json: j2 } = await cancelOpenShipment(stillOpenPid);
+        if (!r2.ok) {
+          const msg =
+            j2?.error || 'Erreur lors de l’annulation de la modification';
+          showToast(msg, 'error');
+          return false;
+        }
+
+        const { resp: v2Resp, json: v2Json } = await getActiveOpenShipment();
+        if (!v2Resp.ok) {
+          showToast('Erreur lors de la vérification de l’annulation', 'error');
+          return false;
+        }
+        const os2 = v2Json?.openShipment || null;
+        const stillOpenPid2 = String(os2?.payment_id || '').trim();
+        if (stillOpenPid2) {
+          showToast('Impossible de fermer la commande', 'error');
+          return false;
+        }
+        return true;
+      }
+
+      showToast('Impossible de fermer la commande', 'error');
+      return false;
+    } catch (_e) {
+      showToast('Erreur lors de la vérification de l’annulation', 'error');
+      return false;
+    }
+  };
 
   return (
     <StripeWrapper>
+      {isOpenShipmentMode ? (
+        <div className='bg-blue-50 border-b border-blue-200'>
+          <div className='max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center justify-between gap-3'>
+            <div className='text-sm text-blue-800 truncate'>
+              Modification de la commande{' '}
+              <span className='font-semibold'>
+                {openShipmentEditingShipmentId}
+              </span>
+              .
+            </div>
+            <button
+              type='button'
+              onClick={async () => {
+                if (!store?.id) return;
+                try {
+                  setOpenShipmentActionLoading(true);
+                  const ok =
+                    await cancelOpenShipmentAndVerify(currentPaymentId);
+                  if (!ok) return;
+                  setOpenShipmentEditingShipmentId('');
+                  setOpenShipmentBlockShipmentId('');
+                  setOpenShipmentBlockPaymentId('');
+                  setOpenShipmentAttemptPaymentId('');
+                  setOpenShipmentBlockModalOpen(false);
+                  clearOpenShipmentParams();
+                  setShipmentCartRebuilt(false);
+                  setOpenShipmentInitHandled(true);
+                  await refreshCartForStore();
+                  if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new Event('cart:updated'));
+                  }
+                  showToast('Modifications annulées', 'success');
+                } finally {
+                  setOpenShipmentActionLoading(false);
+                }
+              }}
+              disabled={openShipmentActionLoading}
+              className='px-3 py-1.5 rounded-md text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600 shrink-0'
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      ) : null}
       <Header />
       <div className='min-h-screen bg-gray-50 py-8'>
         {toast && (
@@ -766,6 +1130,76 @@ export default function CheckoutPage() {
             visible={toast.visible !== false}
           />
         )}
+        <Modal
+          isOpen={openShipmentBlockModalOpen}
+          onClose={() => {}}
+          title='Modification de commande en cours'
+        >
+          <div className='space-y-4'>
+            <div className='text-sm text-gray-700'>
+              Veuillez compléter ou annuler la modification de votre commande :{' '}
+              <span className='font-semibold'>
+                {openShipmentBlockShipmentId || '—'}
+              </span>
+            </div>
+            <div className='flex items-center justify-end gap-2'>
+              <button
+                type='button'
+                onClick={async () => {
+                  const pid = String(openShipmentBlockPaymentId || '').trim();
+                  if (!pid || !store?.id) return;
+                  try {
+                    setOpenShipmentActionLoading(true);
+                    const ok = await cancelOpenShipmentAndVerify(pid);
+                    if (!ok) return;
+                    setOpenShipmentBlockModalOpen(false);
+                    setOpenShipmentBlockShipmentId('');
+                    setOpenShipmentBlockPaymentId('');
+                    const attempted = String(
+                      openShipmentAttemptPaymentId || ''
+                    ).trim();
+                    setOpenShipmentAttemptPaymentId('');
+                    setShipmentCartRebuilt(false);
+                    setOpenShipmentInitHandled(false);
+                    if (attempted) {
+                      setOpenShipmentParams(attempted);
+                    } else {
+                      clearOpenShipmentParams();
+                      await refreshCartForStore();
+                      if (typeof window !== 'undefined') {
+                        window.dispatchEvent(new Event('cart:updated'));
+                      }
+                    }
+                    showToast('Modifications annulées', 'success');
+                  } finally {
+                    setOpenShipmentActionLoading(false);
+                  }
+                }}
+                disabled={openShipmentActionLoading}
+                className='px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+              >
+                Annuler les modifications
+              </button>
+              <button
+                type='button'
+                onClick={async () => {
+                  const pid = String(openShipmentBlockPaymentId || '').trim();
+                  if (!pid) return;
+                  setOpenShipmentBlockModalOpen(false);
+                  setOpenShipmentAttemptPaymentId('');
+                  setShipmentCartRebuilt(false);
+                  setOpenShipmentInitHandled(false);
+                  setOpenShipmentEditingShipmentId(openShipmentBlockShipmentId);
+                  setOpenShipmentParams(pid);
+                }}
+                disabled={openShipmentActionLoading}
+                className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+              >
+                Poursuivre les modifications
+              </button>
+            </div>
+          </div>
+        </Modal>
         <div className='max-w-4xl mx-auto px-4 sm:px-6 lg:px-8'>
           {/* En-tête de la boutique */}
           <div className='bg-white rounded-lg shadow-sm p-6 mb-6'>
@@ -837,9 +1271,22 @@ export default function CheckoutPage() {
                 {cartItemsForStore.length > 0 && !showPayment && (
                   <div className='mb-6 border border-gray-200 rounded-md p-4 bg-gray-50'>
                     <div className='mb-2'>
-                      <h3 className='text-base font-semibold text-gray-900'>
-                        Articles du panier
-                      </h3>
+                      <div className='flex items-center justify-between gap-3'>
+                        <h3 className='text-base font-semibold text-gray-900'>
+                          Articles du panier
+                        </h3>
+                        <button
+                          type='button'
+                          onClick={refreshCartForStore}
+                          disabled={reloadingCart}
+                          className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                        >
+                          <RefreshCw
+                            className={`w-4 h-4 mr-1 ${reloadingCart ? 'animate-spin' : ''}`}
+                          />
+                          <span>Recharger</span>
+                        </button>
+                      </div>
                     </div>
                     <ul className='mt-1 space-y-1 max-h-40 overflow-auto text-sm text-gray-700'>
                       {cartItemsForStore.map(it => (
