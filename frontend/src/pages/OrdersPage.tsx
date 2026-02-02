@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
 import { Toast } from '../components/Toast';
+import Modal from '../components/Modal';
 import {
   Package,
   ArrowUpDown,
@@ -37,6 +38,8 @@ type Shipment = {
   store_id: number | null;
   customer_stripe_id: string | null;
   shipment_id: string | null;
+  payment_id?: string | null;
+  is_open_shipment?: boolean | null;
   document_created: boolean;
   delivery_method: string | null;
   delivery_network: string | null;
@@ -87,6 +90,13 @@ export default function OrdersPage() {
     type: 'error' | 'info' | 'success';
     visible?: boolean;
   } | null>(null);
+  const [openingShipmentId, setOpeningShipmentId] = useState<number | null>(
+    null
+  );
+  const [switchShipmentModalOpen, setSwitchShipmentModalOpen] =
+    useState<boolean>(false);
+  const [switchShipmentTarget, setSwitchShipmentTarget] =
+    useState<Shipment | null>(null);
 
   // État pour la popup de contact propriétaire
   const [contactOpen, setContactOpen] = useState<boolean>(false);
@@ -525,6 +535,16 @@ export default function OrdersPage() {
   const selectedOrders = (shipments || []).filter(s =>
     selectedOrderIds.has(s.id)
   );
+  const canModifySelectedOrder = (() => {
+    if (selectedOrders.length !== 1) return false;
+    const s = selectedOrders[0];
+    const status = String(s.status || '').trim();
+    const okStatus = status === 'PENDING' || status === 'ANNOUNCED';
+    const storeSlug = String(s.store?.slug || '').trim();
+    const paymentId = String(s.payment_id || '').trim();
+    const isOpening = openingShipmentId != null && openingShipmentId !== s.id;
+    return okStatus && Boolean(storeSlug) && Boolean(paymentId) && !isOpening;
+  })();
   const selectedForReturn = selectedOrders.filter(
     s =>
       s.shipment_id &&
@@ -570,6 +590,106 @@ export default function OrdersPage() {
       }
       return next;
     });
+  };
+
+  const handleModifySelectedOrder = async () => {
+    if (selectedOrders.length !== 1) return;
+    const s = selectedOrders[0];
+    const status = String(s.status || '').trim();
+    if (status !== 'PENDING' && status !== 'ANNOUNCED') return;
+    const storeSlug = String(s.store?.slug || '').trim();
+    const paymentId = String(s.payment_id || '').trim();
+    if (!storeSlug || !paymentId) {
+      showToast("Impossible d'ouvrir la commande sélectionnée", 'error');
+      return;
+    }
+    try {
+      showToast('Chargement...', 'info');
+      setOpeningShipmentId(s.id);
+      const apiBase = API_BASE_URL;
+      const token = await getToken();
+      const doOpen = async (force: boolean) => {
+        const r = await fetch(`${apiBase}/api/shipments/open-shipment`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+          body: JSON.stringify({ shipmentId: s.id, force }),
+        });
+        const j = await r.json().catch(() => null as any);
+        return { resp: r, json: j };
+      };
+
+      const { resp, json } = await doOpen(false);
+      if (!resp.ok && resp.status === 409) {
+        setSwitchShipmentTarget(s);
+        setSwitchShipmentModalOpen(true);
+        return;
+      }
+      if (!resp.ok) {
+        const msg =
+          json?.error || "Impossible d'ouvrir la commande sélectionnée";
+        showToast(msg, 'error');
+        return;
+      }
+      const url = `/checkout/${encodeURIComponent(
+        storeSlug
+      )}?open_shipment=true&payment_id=${encodeURIComponent(paymentId)}`;
+      window.open(url, '_blank');
+      await handleRefreshOrders();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+      showToast(msg, 'error');
+    } finally {
+      setOpeningShipmentId(null);
+    }
+  };
+
+  const handleConfirmSwitchShipment = async () => {
+    const s = switchShipmentTarget;
+    if (!s) return;
+    const status = String(s.status || '').trim();
+    if (status !== 'PENDING' && status !== 'ANNOUNCED') return;
+    const storeSlug = String(s.store?.slug || '').trim();
+    const paymentId = String(s.payment_id || '').trim();
+    if (!storeSlug || !paymentId) {
+      showToast("Impossible d'ouvrir la commande sélectionnée", 'error');
+      return;
+    }
+    try {
+      showToast('Chargement...', 'info');
+      setOpeningShipmentId(s.id);
+      const apiBase = API_BASE_URL;
+      const token = await getToken();
+      const resp = await fetch(`${apiBase}/api/shipments/open-shipment`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+        body: JSON.stringify({ shipmentId: s.id, force: true }),
+      });
+      const json = await resp.json().catch(() => null as any);
+      if (!resp.ok) {
+        const msg =
+          json?.error || "Impossible d'ouvrir la commande sélectionnée";
+        showToast(msg, 'error');
+        return;
+      }
+      setSwitchShipmentModalOpen(false);
+      setSwitchShipmentTarget(null);
+      const url = `/checkout/${encodeURIComponent(
+        storeSlug
+      )}?open_shipment=true&payment_id=${encodeURIComponent(paymentId)}`;
+      window.open(url, '_blank');
+      await handleRefreshOrders();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+      showToast(msg, 'error');
+    } finally {
+      setOpeningShipmentId(null);
+    }
   };
 
   useEffect(() => {
@@ -850,6 +970,45 @@ export default function OrdersPage() {
           visible={toast.visible !== false}
         />
       )}
+      <Modal
+        isOpen={switchShipmentModalOpen}
+        onClose={() => {
+          setSwitchShipmentModalOpen(false);
+          setSwitchShipmentTarget(null);
+        }}
+        title='Commande déjà en modification'
+      >
+        <div className='space-y-4'>
+          <div className='text-sm text-gray-700'>
+            Une autre commande est en cours de modification. Voulez-vous
+            modifier cette commande et annuler les modifications de l’autre ?
+          </div>
+          <div className='flex items-center justify-end gap-2'>
+            <button
+              type='button'
+              onClick={() => {
+                setSwitchShipmentModalOpen(false);
+                setSwitchShipmentTarget(null);
+              }}
+              className='px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+            >
+              Annuler
+            </button>
+            <button
+              type='button'
+              onClick={handleConfirmSwitchShipment}
+              disabled={
+                !switchShipmentTarget ||
+                (openingShipmentId != null &&
+                  openingShipmentId !== switchShipmentTarget.id)
+              }
+              className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+            >
+              Modifier
+            </button>
+          </div>
+        </div>
+      </Modal>
       <div className='max-w-fit mx-auto px-4 py-1'>
         <div className='text-center mb-6 sm:m'>
           <Package className='hidden sm:block h-12 w-12 text-amber-600 mx-auto mb-4' />
@@ -1018,6 +1177,18 @@ export default function OrdersPage() {
               </div>
 
               <div className='mb-4 flex flex-wrap items-center gap-2'>
+                <button
+                  onClick={handleModifySelectedOrder}
+                  disabled={!canModifySelectedOrder}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    !canModifySelectedOrder
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Modifier la commande'
+                >
+                  Modifier la commande
+                </button>
                 <button
                   onClick={handleBatchReturn}
                   disabled={selectedForReturn.length === 0}

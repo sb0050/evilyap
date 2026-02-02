@@ -120,6 +120,656 @@ const parseProductReferenceItems = (raw: string): ProductReferenceItem[] => {
   return items;
 };
 
+function isMissingColumnError(err: any, column: string): boolean {
+  const msg = String(err?.message || "");
+  return (
+    msg.includes(`column "${column}"`) ||
+    msg.includes(`column '${column}'`) ||
+    msg.includes(`column ${column}`) ||
+    msg.toLowerCase().includes("does not exist")
+  );
+}
+
+function parseWeightKgFromDescription(description: string): number | null {
+  const s = String(description || "").toLowerCase();
+  if (!s.trim()) return null;
+  const m = s.match(
+    /(\d+(?:[.,]\d+)?)\s*(kg|kgs|kilogramme?s?|kilo?s?|g|gr|gramme?s?)\b/i,
+  );
+  if (!m) return null;
+  const raw = parseFloat(String(m[1] || "").replace(",", "."));
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+  const unit = String(m[2] || "").toLowerCase();
+  const kg = unit.startsWith("g") || unit.startsWith("gr") ? raw / 1000 : raw;
+  return Number.isFinite(kg) && kg > 0 ? kg : null;
+}
+
+function getFallbackWeightKgFromDescription(description: string): number {
+  return parseWeightKgFromDescription(description) ?? 0.5;
+}
+
+router.post("/open-shipment", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { shipmentId, force } = req.body || {};
+    const shipmentIdNum = Number(shipmentId);
+    if (!Number.isFinite(shipmentIdNum) || shipmentIdNum <= 0) {
+      return res.status(400).json({ error: "shipmentId requis" });
+    }
+    const forceSwitch = Boolean(force);
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const stripeCustomerId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    if (!stripeCustomerId) {
+      return res
+        .status(400)
+        .json({ error: "stripe_id manquant dans les metadata du user" });
+    }
+
+    const { data: shipment, error: shipErr } = await supabase
+      .from("shipments")
+      .select("id,store_id,customer_stripe_id,is_open_shipment")
+      .eq("id", shipmentIdNum)
+      .maybeSingle();
+    if (shipErr) {
+      return res.status(500).json({ error: shipErr.message });
+    }
+    if (!shipment) {
+      return res.status(404).json({ error: "Commande introuvable" });
+    }
+    if (
+      String((shipment as any)?.customer_stripe_id || "") !== stripeCustomerId
+    ) {
+      return res.status(403).json({ error: "Accès interdit à cette commande" });
+    }
+
+    const storeIdNum = Number((shipment as any)?.store_id || 0);
+    const { data: otherOpen, error: otherErr } = await supabase
+      .from("shipments")
+      .select("id,shipment_id,payment_id")
+      .eq("customer_stripe_id", stripeCustomerId)
+      .eq("store_id", storeIdNum)
+      .eq("is_open_shipment", true)
+      .neq("id", shipmentIdNum)
+      .limit(1);
+    if (otherErr) {
+      return res.status(500).json({ error: otherErr.message });
+    }
+    if ((otherOpen || []).length > 0) {
+      if (!forceSwitch) {
+        return res.status(409).json({
+          error: "Une autre commande est déjà ouverte en modification",
+          openShipment: (otherOpen || [])[0] || null,
+        });
+      }
+      const paymentIdsToCleanup = (otherOpen || [])
+        .map((r: any) => String(r?.payment_id || "").trim())
+        .filter(Boolean);
+      const { error: closeErr } = await supabase
+        .from("shipments")
+        .update({ is_open_shipment: false })
+        .eq("customer_stripe_id", stripeCustomerId)
+        .eq("store_id", storeIdNum)
+        .eq("is_open_shipment", true)
+        .neq("id", shipmentIdNum);
+      if (closeErr) {
+        return res.status(500).json({ error: closeErr.message });
+      }
+      if (paymentIdsToCleanup.length > 0) {
+        const delResp = await supabase
+          .from("carts")
+          .delete()
+          .eq("customer_stripe_id", stripeCustomerId)
+          .eq("store_id", storeIdNum)
+          .eq("status", "PENDING")
+          .in("payment_id", paymentIdsToCleanup);
+        if (
+          delResp.error &&
+          !isMissingColumnError(delResp.error, "payment_id")
+        ) {
+          return res.status(500).json({ error: delResp.error.message });
+        }
+      }
+    }
+
+    const { error: updErr } = await supabase
+      .from("shipments")
+      .update({ is_open_shipment: true })
+      .eq("id", shipmentIdNum);
+    if (updErr) {
+      return res.status(500).json({ error: updErr.message });
+    }
+
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("Error opening shipment:", e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/open-shipment-by-payment", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { paymentId, storeId, force } = req.body || {};
+    const paymentIdStr = String(paymentId || "").trim();
+    const storeIdNum = Number(storeId);
+    if (!paymentIdStr) {
+      return res.status(400).json({ error: "paymentId requis" });
+    }
+    if (!Number.isFinite(storeIdNum) || storeIdNum <= 0) {
+      return res.status(400).json({ error: "storeId requis" });
+    }
+    const forceSwitch = Boolean(force);
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const stripeCustomerId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    if (!stripeCustomerId) {
+      return res
+        .status(400)
+        .json({ error: "stripe_id manquant dans les metadata du user" });
+    }
+
+    const { data: shipment, error: shipmentErr } = await supabase
+      .from("shipments")
+      .select("id,shipment_id,store_id,customer_stripe_id,payment_id")
+      .eq("payment_id", paymentIdStr)
+      .eq("store_id", storeIdNum)
+      .maybeSingle();
+    if (shipmentErr) {
+      return res.status(500).json({ error: shipmentErr.message });
+    }
+    if (!shipment) {
+      return res.status(404).json({ error: "Commande introuvable" });
+    }
+    if (
+      String((shipment as any)?.customer_stripe_id || "") !== stripeCustomerId
+    ) {
+      return res.status(403).json({ error: "Accès interdit à cette commande" });
+    }
+
+    const shipmentIdNum = Number((shipment as any)?.id || 0);
+    if (!Number.isFinite(shipmentIdNum) || shipmentIdNum <= 0) {
+      return res.status(404).json({ error: "Commande introuvable" });
+    }
+
+    const { data: otherOpen, error: otherErr } = await supabase
+      .from("shipments")
+      .select("id,shipment_id,payment_id")
+      .eq("customer_stripe_id", stripeCustomerId)
+      .eq("store_id", storeIdNum)
+      .eq("is_open_shipment", true)
+      .neq("id", shipmentIdNum)
+      .limit(1);
+    if (otherErr) {
+      return res.status(500).json({ error: otherErr.message });
+    }
+    if ((otherOpen || []).length > 0) {
+      if (!forceSwitch) {
+        return res.status(409).json({
+          error: "Une autre commande est déjà ouverte en modification",
+          openShipment: (otherOpen || [])[0] || null,
+        });
+      }
+      const paymentIdsToCleanup = (otherOpen || [])
+        .map((r: any) => String(r?.payment_id || "").trim())
+        .filter(Boolean);
+      const { error: closeErr } = await supabase
+        .from("shipments")
+        .update({ is_open_shipment: false })
+        .eq("customer_stripe_id", stripeCustomerId)
+        .eq("store_id", storeIdNum)
+        .eq("is_open_shipment", true)
+        .neq("id", shipmentIdNum);
+      if (closeErr) {
+        return res.status(500).json({ error: closeErr.message });
+      }
+      if (paymentIdsToCleanup.length > 0) {
+        const delResp = await supabase
+          .from("carts")
+          .delete()
+          .eq("customer_stripe_id", stripeCustomerId)
+          .eq("store_id", storeIdNum)
+          .eq("status", "PENDING")
+          .in("payment_id", paymentIdsToCleanup);
+        if (
+          delResp.error &&
+          !isMissingColumnError(delResp.error, "payment_id")
+        ) {
+          return res.status(500).json({ error: delResp.error.message });
+        }
+      }
+    }
+
+    const { error: updErr } = await supabase
+      .from("shipments")
+      .update({ is_open_shipment: true })
+      .eq("id", shipmentIdNum);
+    if (updErr) {
+      return res.status(500).json({ error: updErr.message });
+    }
+
+    return res.json({
+      success: true,
+      shipmentId: shipmentIdNum,
+      shipmentDisplayId: String((shipment as any)?.shipment_id || "").trim(),
+    });
+  } catch (e) {
+    console.error("Error opening shipment by payment:", e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/active-open-shipment", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const storeIdNum = Number(req.query.storeId);
+    if (!Number.isFinite(storeIdNum) || storeIdNum <= 0) {
+      return res.status(400).json({ error: "storeId requis" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const stripeCustomerId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    if (!stripeCustomerId) {
+      return res
+        .status(400)
+        .json({ error: "stripe_id manquant dans les metadata du user" });
+    }
+
+    const { data, error } = await supabase
+      .from("shipments")
+      .select("id,shipment_id,payment_id")
+      .eq("customer_stripe_id", stripeCustomerId)
+      .eq("store_id", storeIdNum)
+      .eq("is_open_shipment", true)
+      .limit(1);
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    const row: any = (data || [])[0] || null;
+    if (!row) return res.json({ openShipment: null });
+
+    return res.json({
+      openShipment: {
+        id: Number(row?.id || 0) || null,
+        shipment_id: String(row?.shipment_id || "").trim() || null,
+        payment_id: String(row?.payment_id || "").trim() || null,
+      },
+    });
+  } catch (e) {
+    console.error("Error getting active open shipment:", e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/cancel-open-shipment", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { paymentId, storeId } = req.body || {};
+    const paymentIdStr = String(paymentId || "").trim();
+    const storeIdNum = Number(storeId);
+    if (!paymentIdStr) {
+      return res.status(400).json({ error: "paymentId requis" });
+    }
+    if (!Number.isFinite(storeIdNum) || storeIdNum <= 0) {
+      return res.status(400).json({ error: "storeId requis" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const stripeCustomerId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    if (!stripeCustomerId) {
+      return res
+        .status(400)
+        .json({ error: "stripe_id manquant dans les metadata du user" });
+    }
+
+    const { data: shipmentByPayment, error: shipmentErr } = await supabase
+      .from("shipments")
+      .select("id,shipment_id,customer_stripe_id,payment_id,is_open_shipment")
+      .eq("payment_id", paymentIdStr)
+      .eq("store_id", storeIdNum)
+      .maybeSingle();
+    if (shipmentErr) {
+      return res.status(500).json({ error: shipmentErr.message });
+    }
+    if (
+      shipmentByPayment &&
+      String((shipmentByPayment as any)?.customer_stripe_id || "") !==
+        stripeCustomerId
+    ) {
+      return res.status(403).json({ error: "Accès interdit à cette commande" });
+    }
+
+    const { data: openShipmentRows, error: openErr } = await supabase
+      .from("shipments")
+      .select("id,shipment_id,payment_id,customer_stripe_id,is_open_shipment")
+      .eq("customer_stripe_id", stripeCustomerId)
+      .eq("store_id", storeIdNum)
+      .eq("is_open_shipment", true)
+      .limit(50);
+    if (openErr) {
+      return res.status(500).json({ error: openErr.message });
+    }
+    const openShipments: any[] = Array.isArray(openShipmentRows)
+      ? openShipmentRows
+      : [];
+    const openShipment: any = openShipments[0] || null;
+
+    const shipmentToClose: any = shipmentByPayment || openShipment;
+    if (!shipmentToClose) {
+      return res.status(404).json({ error: "Commande introuvable" });
+    }
+
+    const idsToClose = Array.from(
+      new Set(
+        (openShipments.length > 0
+          ? openShipments
+          : shipmentByPayment
+            ? [shipmentByPayment]
+            : []
+        )
+          .map((s: any) => Number(s?.id || 0))
+          .filter((n: number) => Number.isFinite(n) && n > 0),
+      ),
+    );
+    if (idsToClose.length === 0) {
+      return res
+        .status(500)
+        .json({ error: "Impossible de fermer la commande" });
+    }
+
+    const { data: closedRows, error: updErr } = await supabase
+      .from("shipments")
+      .update({ is_open_shipment: false })
+      .in("id", idsToClose)
+      .eq("store_id", storeIdNum)
+      .eq("customer_stripe_id", stripeCustomerId)
+      .select("id");
+    if (updErr) {
+      return res.status(500).json({ error: updErr.message });
+    }
+    const closedCount = Array.isArray(closedRows) ? closedRows.length : 0;
+    if (closedCount === 0) {
+      return res
+        .status(500)
+        .json({ error: "Impossible de fermer la commande" });
+    }
+
+    const { data: stillOpen, error: stillOpenErr } = await supabase
+      .from("shipments")
+      .select("id")
+      .eq("customer_stripe_id", stripeCustomerId)
+      .eq("store_id", storeIdNum)
+      .eq("is_open_shipment", true)
+      .limit(1);
+    if (stillOpenErr) {
+      return res.status(500).json({ error: stillOpenErr.message });
+    }
+    if (Array.isArray(stillOpen) && stillOpen.length > 0) {
+      return res
+        .status(500)
+        .json({ error: "Impossible de fermer la commande" });
+    }
+
+    const paymentIdsToCleanup = [
+      paymentIdStr,
+      ...openShipments.map((s: any) => String(s?.payment_id || "").trim()),
+      String((shipmentByPayment as any)?.payment_id || "").trim(),
+    ].filter(Boolean);
+
+    if (paymentIdsToCleanup.length > 0) {
+      const delResp = await supabase
+        .from("carts")
+        .delete()
+        .eq("customer_stripe_id", stripeCustomerId)
+        .eq("store_id", storeIdNum)
+        .eq("status", "PENDING")
+        .in("payment_id", Array.from(new Set(paymentIdsToCleanup)));
+      if (delResp.error && !isMissingColumnError(delResp.error, "payment_id")) {
+        return res.status(500).json({ error: delResp.error.message });
+      }
+    }
+
+    return res.json({
+      success: true,
+      shipmentDisplayId: String(
+        (shipmentToClose as any)?.shipment_id || "",
+      ).trim(),
+    });
+  } catch (e) {
+    console.error("Error cancelling open shipment:", e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/rebuild-carts-from-payment", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { paymentId, storeId } = req.body || {};
+    const paymentIdStr = String(paymentId || "").trim();
+    const storeIdNum = Number(storeId);
+    if (!paymentIdStr) {
+      return res.status(400).json({ error: "paymentId requis" });
+    }
+    if (!Number.isFinite(storeIdNum) || storeIdNum <= 0) {
+      return res.status(400).json({ error: "storeId requis" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const stripeCustomerId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    if (!stripeCustomerId) {
+      return res
+        .status(400)
+        .json({ error: "stripe_id manquant dans les metadata du user" });
+    }
+
+    const { data: shipment, error: shipmentErr } = await supabase
+      .from("shipments")
+      .select(
+        "id,store_id,customer_stripe_id,payment_id,product_reference,delivery_method,delivery_network",
+      )
+      .eq("payment_id", paymentIdStr)
+      .eq("store_id", storeIdNum)
+      .maybeSingle();
+    if (shipmentErr) {
+      return res.status(500).json({ error: shipmentErr.message });
+    }
+    if (!shipment) {
+      return res.status(404).json({ error: "Commande introuvable" });
+    }
+    if (
+      String((shipment as any)?.customer_stripe_id || "") !== stripeCustomerId
+    ) {
+      return res.status(403).json({ error: "Accès interdit à cette commande" });
+    }
+
+    const shipmentIdNum = Number((shipment as any)?.id || 0);
+    if (Number.isFinite(shipmentIdNum) && shipmentIdNum > 0) {
+      const { error: updPaymentErr } = await supabase
+        .from("shipments")
+        .update({ payment_id: paymentIdStr })
+        .eq("id", shipmentIdNum)
+        .eq("store_id", storeIdNum)
+        .eq("customer_stripe_id", stripeCustomerId);
+      if (updPaymentErr) {
+        return res.status(500).json({ error: updPaymentErr.message });
+      }
+    }
+
+    let items: Array<{
+      product_reference: string;
+      description: string;
+      value: number;
+      quantity: number;
+      weight: number;
+    }> = [];
+
+    if (stripe) {
+      try {
+        const sessions: any = await stripe.checkout.sessions.list({
+          payment_intent: paymentIdStr,
+          limit: 1,
+        });
+        const sessionId = String(sessions?.data?.[0]?.id || "").trim();
+        if (sessionId) {
+          const lineItemsResp: any =
+            await stripe.checkout.sessions.listLineItems(sessionId, {
+              limit: 100,
+              expand: ["data.price.product"],
+            } as any);
+          const lineItems = Array.isArray(lineItemsResp?.data)
+            ? lineItemsResp.data
+            : [];
+          items = lineItems
+            .map((li: any) => {
+              const qtyRaw = Number(li?.quantity || 1);
+              const quantity =
+                Number.isFinite(qtyRaw) && qtyRaw > 0 ? Math.floor(qtyRaw) : 1;
+              const priceObj: any = li?.price || null;
+              const unitAmount = Number(priceObj?.unit_amount || 0);
+              const value = Number.isFinite(unitAmount)
+                ? Math.max(0, unitAmount / 100)
+                : 0;
+              const prodObj: any = priceObj?.product || null;
+              const ref = String(prodObj?.name || li?.description || "").trim();
+              const description = String(
+                prodObj?.description || li?.description || "",
+              ).trim();
+              const weight =
+                parseWeightKgFromDescription(description) ??
+                getFallbackWeightKgFromDescription(description);
+              return {
+                product_reference: ref,
+                description,
+                value,
+                quantity,
+                weight,
+              };
+            })
+            .filter((it: any) =>
+              Boolean(String(it.product_reference || "").trim()),
+            );
+        }
+        console.log("******************", items);
+      } catch {}
+    }
+
+    if (items.length === 0) {
+      const parsed = parseProductReferenceItems(
+        String((shipment as any)?.product_reference || ""),
+      );
+      items = parsed.map((p) => {
+        const description = String(p.description || "").trim();
+        const weight = getFallbackWeightKgFromDescription(description);
+        return {
+          product_reference: String(p.reference || "").trim(),
+          description,
+          value: 0,
+          quantity: Math.max(1, Number(p.quantity || 1)),
+          weight,
+        };
+      });
+    }
+
+    {
+      const delResp = await supabase
+        .from("carts")
+        .delete()
+        .eq("customer_stripe_id", stripeCustomerId)
+        .eq("store_id", storeIdNum)
+        .eq("status", "PENDING")
+        .eq("payment_id", paymentIdStr);
+      if (delResp.error && !isMissingColumnError(delResp.error, "payment_id")) {
+        return res.status(500).json({ error: delResp.error.message });
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    const rowsWithWeight = items.map((it) => ({
+      store_id: storeIdNum,
+      product_reference: it.product_reference,
+      value: it.value,
+      customer_stripe_id: stripeCustomerId,
+      payment_id: paymentIdStr,
+      description: it.description,
+      status: "PENDING",
+      quantity: it.quantity,
+      weight: it.weight,
+      created_at: nowIso,
+    }));
+
+    let insertErr: any = null;
+    {
+      const resp = await supabase.from("carts").insert(rowsWithWeight);
+      insertErr = resp.error;
+    }
+    if (insertErr && isMissingColumnError(insertErr, "weight")) {
+      const rowsWithoutWeight = rowsWithWeight.map((r: any) => {
+        const { weight: _w, ...rest } = r;
+        return rest;
+      });
+      const resp2 = await supabase.from("carts").insert(rowsWithoutWeight);
+      insertErr = resp2.error;
+    }
+    if (insertErr && isMissingColumnError(insertErr, "payment_id")) {
+      const rowsWithoutPaymentId = rowsWithWeight.map((r: any) => {
+        const { payment_id: _p, ...rest } = r;
+        return rest;
+      });
+      const resp2 = await supabase.from("carts").insert(rowsWithoutPaymentId);
+      insertErr = resp2.error;
+    }
+    if (insertErr && isMissingColumnError(insertErr, "weight")) {
+      const rowsWithoutPaymentIdAndWeight = rowsWithWeight.map((r: any) => {
+        const { payment_id: _p, weight: _w, ...rest } = r;
+        return rest;
+      });
+      const resp2 = await supabase
+        .from("carts")
+        .insert(rowsWithoutPaymentIdAndWeight);
+      insertErr = resp2.error;
+    }
+    if (insertErr) {
+      return res.status(500).json({ error: insertErr.message });
+    }
+
+    return res.json({ success: true, count: items.length });
+  } catch (e) {
+    console.error("Error rebuilding carts from payment:", e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // GET /api/shipments/customer?stripeId=<id>
 router.get("/customer", async (req, res) => {
   try {

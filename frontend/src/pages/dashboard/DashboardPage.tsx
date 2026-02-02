@@ -5071,7 +5071,6 @@ export default function DashboardPage() {
                           disabled={selectedStockIds.size === 0}
                           className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
                         >
-                          <Trash2 className='w-4 h-4 mr-1' />
                           <span>Supprimer</span>
                         </button>
                       </div>

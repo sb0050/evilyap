@@ -110,7 +110,7 @@ const calculateParcelWeight = (
     });
   }
   total += PACKAGING_WEIGHT;
-  const finalWeightKg = Math.ceil(total);
+  const finalWeightKg = Math.round(total * 100) / 100; // Arrondi à 2 décimales
   return { totalWeightKg: finalWeightKg, rawTotalKg: total, breakdown };
 };
 
