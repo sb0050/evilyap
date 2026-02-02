@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type Dispatch, type SetStateAction } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import {
   useStripe,
@@ -72,6 +72,16 @@ interface CustomerData {
   metadata?: any;
 }
 
+type CartItem = {
+  id: number;
+  product_reference: string;
+  value: number;
+  quantity?: number;
+  created_at?: string;
+  description?: string;
+  payment_id?: string | null;
+};
+
 export default function CheckoutPage() {
   const { storeName } = useParams<{ storeName: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -104,15 +114,7 @@ export default function CheckoutPage() {
   const [email, setEmail] = useState('');
   const [showDelivery, setShowDelivery] = useState(false);
   const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
-  const [cartItemsForStore, setCartItemsForStore] = useState<
-    Array<{
-      id: number;
-      product_reference: string;
-      value: number;
-      quantity?: number;
-      created_at?: string;
-    }>
-  >([]);
+  const [cartItemsForStore, setCartItemsForStore] = useState<CartItem[]>([]);
   const [cartTotalForStore, setCartTotalForStore] = useState<number>(0);
 
   const [storePickupAddress, setStorePickupAddress] = useState<
@@ -236,9 +238,76 @@ export default function CheckoutPage() {
   };
 
   const rebuildCartFromPayment = async (paymentId: string) => {
-    console.log('rebuildCartFromPayment');
     const apiBase = API_BASE_URL;
     const token = await getToken();
+
+    const computeTotal = (items: any[]) =>
+      (items || []).reduce(
+        (sum: number, it: any) =>
+          sum + Number(it?.value || 0) * Math.max(1, Number(it?.quantity || 1)),
+        0
+      );
+
+    const resolveStripeId = async (): Promise<string> => {
+      const existing = String(stripeCustomerId || '').trim();
+      if (existing) return existing;
+      const userEmail = user?.primaryEmailAddress?.emailAddress;
+      if (!userEmail) return '';
+      try {
+        const resp = await fetch(
+          `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(
+            userEmail
+          )}`
+        );
+        if (!resp.ok) return '';
+        const json = await resp.json().catch(() => null as any);
+        const sid = String(json?.customer?.id || '').trim();
+        if (sid) setStripeCustomerId(sid);
+        return sid;
+      } catch (_e) {
+        return '';
+      }
+    };
+
+    const stripeId = await resolveStripeId();
+    if (stripeId && store?.id) {
+      try {
+        const existingResp = await fetch(
+          `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(
+            stripeId
+          )}&paymentId=${encodeURIComponent(String(paymentId || '').trim())}`
+        );
+        if (existingResp.ok) {
+          const existingJson = await existingResp
+            .json()
+            .catch(() => null as any);
+          const groups = Array.isArray(existingJson?.itemsByStore)
+            ? existingJson.itemsByStore
+            : [];
+          const groupForStore = groups.find(
+            (g: any) => g?.store?.id && store?.id && g.store.id === store.id
+          );
+          const rawItems = Array.isArray(groupForStore?.items)
+            ? groupForStore.items
+            : [];
+          const hasExistingPaymentItems = rawItems.some(
+            (it: any) =>
+              String(it?.payment_id || '').trim() === String(paymentId).trim()
+          );
+          if (hasExistingPaymentItems) {
+            setCartItemsForStore(rawItems);
+            setCartTotalForStore(
+              Number(groupForStore?.total || 0) || computeTotal(rawItems)
+            );
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new Event('cart:updated'));
+            }
+            return true;
+          }
+        }
+      } catch (_e) {}
+    }
+
     const resp = await fetch(
       `${apiBase}/api/shipments/rebuild-carts-from-payment`,
       {
@@ -310,15 +379,6 @@ export default function CheckoutPage() {
 
   useEffect(() => {
     refreshCartForStore();
-    const onCartUpdated = () => refreshCartForStore();
-    if (typeof window !== 'undefined') {
-      window.addEventListener('cart:updated', onCartUpdated);
-    }
-    return () => {
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('cart:updated', onCartUpdated);
-      }
-    };
   }, [user, store]);
 
   useEffect(() => {
@@ -923,7 +983,6 @@ export default function CheckoutPage() {
       if (!resp.ok) {
         return;
       }
-      await refreshCartForStore();
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new Event('cart:updated'));
       }
@@ -1387,6 +1446,8 @@ export default function CheckoutPage() {
                   showDelivery={showDelivery}
                   setShowDelivery={setShowDelivery}
                   showToast={showToast}
+                  setCartItemsForStore={setCartItemsForStore}
+                  setCartTotalForStore={setCartTotalForStore}
                   shippingHasBeenModified={shippingHasBeenModified}
                   setShippingHasBeenModified={setShippingHasBeenModified}
                   isEditingDelivery={isEditingDelivery}
@@ -1672,6 +1733,8 @@ function CheckoutForm({
   showDelivery,
   setShowDelivery,
   showToast,
+  setCartItemsForStore,
+  setCartTotalForStore,
   isEditingDelivery,
   shippingHasBeenModified,
   setShippingHasBeenModified,
@@ -1714,6 +1777,8 @@ function CheckoutForm({
   showDelivery: boolean;
   setShowDelivery: (val: boolean) => void;
   showToast: (message: string, type?: 'error' | 'info' | 'success') => void;
+  setCartItemsForStore: Dispatch<SetStateAction<CartItem[]>>;
+  setCartTotalForStore: Dispatch<SetStateAction<number>>;
   isEditingDelivery: boolean;
   shippingHasBeenModified: boolean;
   setShippingHasBeenModified: (val: boolean) => void;
@@ -1923,6 +1988,29 @@ function CheckoutForm({
       }
       setPaymentError(null);
       showToast('Ajouté au panier', 'success');
+      const created = (json as any)?.item || null;
+      if (created && Number(created?.store_id || 0) === store.id) {
+        const createdItem: CartItem = {
+          id: Number(created?.id || 0),
+          product_reference: String(created?.product_reference || '').trim(),
+          value: Number(created?.value || 0),
+          quantity: Math.max(1, Number(created?.quantity || 1)),
+          created_at: String(created?.created_at || '').trim() || undefined,
+          description:
+            String(created?.description || '').trim() || normalizedDescription,
+          payment_id:
+            created?.payment_id === null || created?.payment_id === undefined
+              ? null
+              : String(created?.payment_id),
+        };
+        if (createdItem.id && createdItem.product_reference) {
+          setCartItemsForStore(prev => [createdItem, ...prev]);
+          setCartTotalForStore(prevTotal => {
+            const qty = Math.max(1, Number(createdItem.quantity ?? 1));
+            return prevTotal + createdItem.value * qty;
+          });
+        }
+      }
       // Notifier le header de rafraîchir le panier
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('cart:updated'));
