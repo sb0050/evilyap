@@ -361,6 +361,63 @@ router.get("/refund/:paymentId", async (req, res) => {
   }
 });
 
+router.post("/delete-coupon", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { couponId } = req.body as { couponId?: string };
+    const cid = String(couponId || "").trim();
+    if (!cid) {
+      return res.status(400).json({ error: "couponId requis" });
+    }
+
+    try {
+      const coupon = await stripe.coupons.retrieve(cid);
+      const promotionCodes = await stripe.promotionCodes.list({
+        coupon: cid,
+        limit: 100,
+      });
+
+      const deactivatedPromotionCodes: string[] = [];
+      for (const pc of promotionCodes.data) {
+        try {
+          if (pc.active) {
+            await stripe.promotionCodes.update(pc.id, { active: false });
+          }
+          deactivatedPromotionCodes.push(pc.id);
+        } catch (_e) {}
+      }
+
+      await stripe.coupons.del(cid);
+
+      return res.json({
+        success: true,
+        action: "delete",
+        couponId: cid,
+        couponName: (coupon as any)?.name || null,
+        associatedCodes: promotionCodes.data.map((pc) => pc.code),
+        deactivatedPromotionCodeIds: deactivatedPromotionCodes,
+      });
+    } catch (error: any) {
+      if (error?.code === "resource_missing") {
+        return res.status(404).json({
+          success: false,
+          error: `Le coupon ${cid} n'existe pas ou a déjà été supprimé`,
+        });
+      }
+      throw error;
+    }
+  } catch (error) {
+    console.error("Erreur lors de la suppression du coupon:", error);
+    return res
+      .status(500)
+      .json({ error: error instanceof Error ? error.message : "Erreur" });
+  }
+});
+
 // Route pour créer une session de checkout intégrée
 router.post("/create-checkout-session", async (req, res): Promise<void> => {
   try {
@@ -379,6 +436,8 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       deliveryNetwork,
       cartItemIds,
       shippingHasBeenModified,
+      tempCreditBalanceCents,
+      openShipmentPaymentId,
     } = req.body;
 
     const pickupPointCode = parcelPoint?.code || "";
@@ -403,6 +462,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     }
 
     let customerId: string | undefined;
+    let customer: Stripe.Customer | null = null;
 
     try {
       // Vérifier si le client existe déjà
@@ -411,11 +471,15 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         limit: 1,
       });
 
-      let customer: Stripe.Customer;
       console.log("Existing customers:", existingCustomers.data);
 
       if (existingCustomers.data.length > 0) {
         // Mettre à jour le client existant
+        const existingCustomer = existingCustomers.data[0];
+        const existingMetadata =
+          existingCustomer && !("deleted" in existingCustomer)
+            ? (existingCustomer.metadata as Record<string, string>)
+            : {};
         customer = await stripe.customers.update(existingCustomers.data[0].id, {
           name: customerName,
           phone: phone,
@@ -442,6 +506,44 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
                   },
                 }
               : ({} as Stripe.CustomerUpdateParams.Shipping),
+          metadata: {
+            ...existingMetadata,
+            clerk_id: clerkUserId || "",
+            delivery_method: deliveryMethod || "",
+            delivery_network: deliveryNetwork || "",
+            store_name: storeName || "",
+            parcel_point: pickupPointCode || "",
+          },
+        });
+        customerId = customer.id;
+      } else {
+        customer = await stripe.customers.create({
+          name: customerName,
+          email: customerEmail,
+          phone: phone,
+          address: {
+            line1: address.line1,
+            line2: address.line2 || "",
+            city: address.city,
+            state: address.state || "",
+            postal_code: address.postal_code,
+            country: address.country || "FR",
+          },
+          shipping:
+            deliveryMethod === "pickup_point" && parcelPoint
+              ? {
+                  name: `${parcelPoint.name || ""} - ${parcelPoint.network}`,
+                  phone: phone,
+                  address: {
+                    line1: parcelPoint.location.street,
+                    line2: parcelPoint.location.number || "",
+                    city: parcelPoint.location.city,
+                    state: parcelPoint.location.state || "",
+                    postal_code: parcelPoint.location.postalCode,
+                    country: parcelPoint.location.countryIsoCode || "FR",
+                  },
+                }
+              : undefined,
           metadata: {
             clerk_id: clerkUserId || "",
             delivery_method: deliveryMethod || "",
@@ -678,6 +780,83 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     const finalLineItems =
       orderLineItems.length > 0 ? orderLineItems : undefined;
 
+    const currencyLower = String(currency || "eur").toLowerCase();
+    const subtotalExclShippingCents = incomingItems.reduce((sum, it) => {
+      const unitCents = Math.max(0, Math.round(Number(it.price || 0) * 100));
+      const qty = Math.max(0, Math.round(Number(it.quantity || 1)));
+      return sum + unitCents * qty;
+    }, 0);
+
+    const tempCentsParsed = Number.parseInt(
+      String(tempCreditBalanceCents ?? "0"),
+      10,
+    );
+    const tempBalanceCents =
+      Number.isFinite(tempCentsParsed) && tempCentsParsed > 0
+        ? tempCentsParsed
+        : 0;
+    const tempAppliedCents = Math.min(
+      subtotalExclShippingCents,
+      tempBalanceCents,
+    );
+    const tempTopupCents = Math.max(
+      0,
+      tempBalanceCents - subtotalExclShippingCents,
+    );
+
+    let creditAppliedCents = 0;
+    let creditBalanceBeforeCents: number | null = null;
+    let creditBalanceAfterCents: number | null = null;
+    let creditCouponId: string | null = null;
+    let creditPromotionCodeId: string | null = null;
+
+    if (customerId && customer) {
+      const rawCredit = (customer.metadata as any)?.credit_balance;
+      const parsedCredit = Number.parseInt(String(rawCredit || "0"), 10);
+      const creditBalanceCents =
+        Number.isFinite(parsedCredit) && parsedCredit > 0 ? parsedCredit : 0;
+
+      const remainingAfterTemp = Math.max(
+        0,
+        subtotalExclShippingCents - tempAppliedCents,
+      );
+
+      if (creditBalanceCents > 0 && remainingAfterTemp > 0) {
+        creditBalanceBeforeCents = creditBalanceCents;
+        creditAppliedCents = Math.min(creditBalanceCents, remainingAfterTemp);
+        creditBalanceAfterCents = Math.max(
+          0,
+          creditBalanceCents - creditAppliedCents,
+        );
+      }
+    }
+
+    const totalDiscountCents = tempAppliedCents + creditAppliedCents;
+
+    if (customerId && totalDiscountCents > 0) {
+      const coupon = await stripe.coupons.create({
+        amount_off: totalDiscountCents,
+        currency: currencyLower,
+        name: `Crédit personnalisé pour client`,
+        duration: "once",
+      });
+      creditCouponId = coupon.id;
+
+      const codeSeed = customerId.substring(4, 12).toUpperCase();
+      const codeSuffix = Date.now().toString(36).toUpperCase();
+      const promotionCode = await stripe.promotionCodes.create({
+        coupon: coupon.id,
+        customer: customerId,
+        max_redemptions: 1,
+        code: `CREDIT-${codeSeed}-${codeSuffix}`,
+        metadata: {
+          modified_order_items_amount_cents: String(tempAppliedCents || 0),
+          customer_credit_balance_amount_cents: String(creditAppliedCents || 0),
+        },
+      });
+      creditPromotionCodeId = promotionCode.id;
+    }
+
     // Créer la session de checkout intégrée
     const session = await stripe.checkout.sessions.create({
       ui_mode: "embedded",
@@ -695,6 +874,21 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
             : typeof cartItemIds === "string"
               ? cartItemIds
               : "",
+          temp_credit_balance_cents: String(tempBalanceCents || 0),
+          temp_credit_applied_cents: String(tempAppliedCents || 0),
+          temp_credit_topup_cents: String(tempTopupCents || 0),
+          credit_applied_cents: String(creditAppliedCents || 0),
+          credit_balance_before_cents:
+            creditBalanceBeforeCents === null
+              ? ""
+              : String(creditBalanceBeforeCents),
+          credit_balance_after_cents:
+            creditBalanceAfterCents === null
+              ? ""
+              : String(creditBalanceAfterCents),
+          credit_coupon_id: creditCouponId || "",
+          credit_promo_code_id: creditPromotionCodeId || "",
+          open_shipment_payment_id: String(openShipmentPaymentId || "").trim(),
         },
       },
       // Duplicate useful metadata at the session level for easier retrieval
@@ -731,6 +925,21 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           : typeof cartItemIds === "string"
             ? cartItemIds
             : "",
+        temp_credit_balance_cents: String(tempBalanceCents || 0),
+        temp_credit_applied_cents: String(tempAppliedCents || 0),
+        temp_credit_topup_cents: String(tempTopupCents || 0),
+        credit_applied_cents: String(creditAppliedCents || 0),
+        credit_balance_before_cents:
+          creditBalanceBeforeCents === null
+            ? ""
+            : String(creditBalanceBeforeCents),
+        credit_balance_after_cents:
+          creditBalanceAfterCents === null
+            ? ""
+            : String(creditBalanceAfterCents),
+        credit_coupon_id: creditCouponId || "",
+        credit_promo_code_id: creditPromotionCodeId || "",
+        open_shipment_payment_id: String(openShipmentPaymentId || "").trim(),
       },
       line_items: finalLineItems as any,
       mode: "payment",
@@ -739,7 +948,10 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       }/payment/return?session_id={CHECKOUT_SESSION_ID}&store_name=${encodeURIComponent(
         slugify(storeName, { lower: true, strict: true }) || "default",
       )}`,
-      allow_promotion_codes: true,
+      //allow_promotion_codes: true,
+      discounts: creditPromotionCodeId
+        ? ([{ promotion_code: creditPromotionCodeId }] as any)
+        : undefined,
       // Ajouter la collecte de consentement
       consent_collection: {
         terms_of_service: "required", // Rend la case à cocher obligatoire
@@ -785,6 +997,8 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       clientSecret: session.client_secret,
       sessionId: session.id,
       customerId: customerId,
+      creditCouponId: creditCouponId,
+      creditPromotionCodeId: creditPromotionCodeId,
     });
   } catch (error) {
     console.error("Erreur lors de la création de la session:", error);

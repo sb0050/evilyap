@@ -283,7 +283,7 @@ router.post("/open-shipment-by-payment", async (req, res) => {
 
     const { data: shipment, error: shipmentErr } = await supabase
       .from("shipments")
-      .select("id,shipment_id,store_id,customer_stripe_id,payment_id")
+      .select("id,shipment_id,store_id,customer_stripe_id,payment_id,paid_value")
       .eq("payment_id", paymentIdStr)
       .eq("store_id", storeIdNum)
       .maybeSingle();
@@ -364,6 +364,7 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       success: true,
       shipmentId: shipmentIdNum,
       shipmentDisplayId: String((shipment as any)?.shipment_id || "").trim(),
+      paidValue: Number((shipment as any)?.paid_value || 0) || 0,
     });
   } catch (e) {
     console.error("Error opening shipment by payment:", e);
