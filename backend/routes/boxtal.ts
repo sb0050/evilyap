@@ -729,9 +729,14 @@ router.delete("/shipping-orders/:id", async (req, res) => {
       console.error("DB update exception:", dbErr);
     }
 
+    const skipAdminRefundEmail =
+      String((req.query as any)?.skipAdminRefundEmail || "").toLowerCase() ===
+        "true" ||
+      String((req.query as any)?.silent || "").toLowerCase() === "true";
+
     // Envoi d'un email à l'admin avec les infos nécessaires pour remboursement
     try {
-      if (supabase) {
+      if (!skipAdminRefundEmail && supabase) {
         const { data: shipment, error: shipErr } = await supabase
           .from("shipments")
           .select("*")

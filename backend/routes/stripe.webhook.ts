@@ -364,6 +364,74 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
           const customerEmail = customer.email || null;
           const customerName = customer.name || "Client";
           const customerBillingAddress: any = customer.address;
+          const creditAppliedCentsParsed = Number.parseInt(
+            String(session.metadata?.credit_applied_cents || "0"),
+            10,
+          );
+          const tempTopupCentsParsed = Number.parseInt(
+            String(session.metadata?.temp_credit_topup_cents || "0"),
+            10,
+          );
+
+          let promoCreditBalanceAppliedCents = 0;
+          const creditPromoCodeId = String(
+            session.metadata?.credit_promo_code_id || "",
+          ).trim();
+          if (creditPromoCodeId) {
+            try {
+              const promoCode =
+                await stripe.promotionCodes.retrieve(creditPromoCodeId);
+              const rawPromoCredit = (promoCode.metadata as any)
+                ?.customer_credit_balance_amount_cents;
+              const parsedPromoCredit = Number.parseInt(
+                String(rawPromoCredit || "0"),
+                10,
+              );
+              promoCreditBalanceAppliedCents =
+                Number.isFinite(parsedPromoCredit) && parsedPromoCredit > 0
+                  ? parsedPromoCredit
+                  : 0;
+            } catch (_e) {}
+          }
+
+          const currentBalanceParsed = Number.parseInt(
+            String((customer.metadata as any)?.credit_balance || "0"),
+            10,
+          );
+          const currentBalanceCents =
+            Number.isFinite(currentBalanceParsed) && currentBalanceParsed > 0
+              ? currentBalanceParsed
+              : 0;
+
+          const stripeCreditAppliedCents =
+            promoCreditBalanceAppliedCents > 0
+              ? promoCreditBalanceAppliedCents
+              : Number.isFinite(creditAppliedCentsParsed) &&
+                  creditAppliedCentsParsed > 0
+                ? creditAppliedCentsParsed
+                : 0;
+          const tempTopupCents =
+            Number.isFinite(tempTopupCentsParsed) && tempTopupCentsParsed > 0
+              ? tempTopupCentsParsed
+              : 0;
+
+          if (stripeCreditAppliedCents > 0 || tempTopupCents > 0) {
+            const nextBalanceCents =
+              Math.max(0, currentBalanceCents - stripeCreditAppliedCents) +
+              tempTopupCents;
+            try {
+              await stripe.customers.update(
+                customerId,
+                { metadata: { credit_balance: String(nextBalanceCents) } },
+                { idempotencyKey: `credit-balance-${session.id}` },
+              );
+            } catch (e) {
+              console.warn(
+                "checkout.session.completed webhook: unable to update credit_balance:",
+                (e as any)?.message || e,
+              );
+            }
+          }
           const deliveryMethod =
             (session.metadata?.delivery_method as any) ||
             customer.metadata?.delivery_method ||
@@ -519,6 +587,90 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 return;
               }
             } catch (_e) {}
+          }
+
+          const openShipmentPaymentId = String(
+            session.metadata?.open_shipment_payment_id || "",
+          ).trim();
+          if (openShipmentPaymentId) {
+            try {
+              const openShipmentQuery = supabase
+                .from("shipments")
+                .select("id,shipment_id,payment_id,is_open_shipment")
+                .eq("payment_id", openShipmentPaymentId)
+                .eq("is_open_shipment", true)
+                .limit(1);
+              const { data: openShipments, error: openShipErr } =
+                await openShipmentQuery;
+              if (openShipErr) {
+                await emailService.sendAdminError({
+                  subject: "Lecture shipment open_shipment échouée",
+                  message: `Impossible de lire la commande ouverte (payment_id=${openShipmentPaymentId}) avant création de la nouvelle commande.`,
+                  context: JSON.stringify(openShipErr),
+                });
+                res.json({ received: true });
+                return;
+              }
+              const openShipmentRow: any =
+                Array.isArray(openShipments) && openShipments.length > 0
+                  ? openShipments[0]
+                  : null;
+              const oldBoxtalShipmentId = String(
+                openShipmentRow?.shipment_id || "",
+              ).trim();
+              if (openShipmentRow && oldBoxtalShipmentId) {
+                const apiBase = getInternalBase();
+                const cancelResp = await fetch(
+                  `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
+                    oldBoxtalShipmentId,
+                  )}?skipAdminRefundEmail=true`,
+                  { method: "DELETE" },
+                );
+                if (!cancelResp.ok) {
+                  const body = await cancelResp.text().catch(() => "");
+                  await emailService.sendAdminError({
+                    subject: "Annulation Boxtal échouée (modification)",
+                    message: `Echec annulation Boxtal shipment_id=${oldBoxtalShipmentId} (payment_id=${openShipmentPaymentId}). 
+                    Statut=${cancelResp.status}.`,
+                    context: body,
+                  });
+                  res.json({ received: true });
+                  return;
+                }
+
+                const { error: delErr } = await supabase
+                  .from("shipments")
+                  .delete()
+                  .eq("id", openShipmentRow.id);
+                if (delErr) {
+                  await emailService.sendAdminError({
+                    subject: "Suppression shipment open_shipment échouée",
+                    message: `Boxtal annulé mais suppression shipments échouée (id=${openShipmentRow.id}, payment_id=${openShipmentPaymentId}).`,
+                    context: JSON.stringify(delErr),
+                  });
+                }
+              } else if (openShipmentRow && !oldBoxtalShipmentId) {
+                const { error: delErr } = await supabase
+                  .from("shipments")
+                  .delete()
+                  .eq("id", openShipmentRow.id);
+                if (delErr) {
+                  await emailService.sendAdminError({
+                    subject: "Suppression shipment open_shipment échouée",
+                    message: `Suppression shipments échouée (id=${openShipmentRow.id}, payment_id=${openShipmentPaymentId}).`,
+                    context: JSON.stringify(delErr),
+                  });
+                }
+              }
+            } catch (e) {
+              await emailService.sendAdminError({
+                subject: "Annulation Boxtal exception (modification)",
+                message: `Exception lors de l'annulation Boxtal pour payment_id=${openShipmentPaymentId}.`,
+                context: JSON.stringify(e),
+              });
+              res.json({ received: true });
+              return;
+            }
           }
 
           if (!storeId) {

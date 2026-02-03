@@ -144,6 +144,10 @@ export default function CheckoutPage() {
     useState('');
   const [openShipmentActionLoading, setOpenShipmentActionLoading] =
     useState(false);
+  const [tempCreditBalanceCents, setTempCreditBalanceCents] = useState(0);
+  const [createdCreditCouponId, setCreatedCreditCouponId] = useState('');
+  const [createdCreditPromotionCodeId, setCreatedCreditPromotionCodeId] =
+    useState('');
 
   // useEffect de debug pour surveiller selectedParcelPoint
   useEffect(() => {
@@ -233,6 +237,23 @@ export default function CheckoutPage() {
         body: JSON.stringify({ paymentId, storeId: store?.id, force }),
       }
     );
+    const json = await resp.json().catch(() => null as any);
+    return { resp, json };
+  };
+
+  const deleteCreditCoupon = async (couponId: string) => {
+    const cid = String(couponId || '').trim();
+    if (!cid) return { resp: null as any, json: null as any };
+    const apiBase = API_BASE_URL;
+    const token = await getToken();
+    const resp = await fetch(`${apiBase}/api/stripe/delete-coupon`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: token ? `Bearer ${token}` : '',
+      },
+      body: JSON.stringify({ couponId: cid }),
+    });
     const json = await resp.json().catch(() => null as any);
     return { resp, json };
   };
@@ -471,6 +492,8 @@ export default function CheckoutPage() {
         if (!cancelled) {
           const sid = String(json?.shipmentDisplayId || '').trim();
           if (sid) setOpenShipmentEditingShipmentId(sid);
+          const paidValue = Number(json?.paidValue || 0);
+          setTempCreditBalanceCents(Math.max(0, Math.round(paidValue * 100)));
         }
         if (cancelled) return;
         const ok = await rebuildCartFromPayment(paymentId);
@@ -783,6 +806,24 @@ export default function CheckoutPage() {
             : null,
       };
 
+      const openShipmentMode =
+        String(searchParams.get('open_shipment') || '') === 'true' &&
+        Boolean(String(searchParams.get('payment_id') || '').trim());
+
+      if (openShipmentMode && createdCreditCouponId) {
+        const { resp } = await deleteCreditCoupon(createdCreditCouponId);
+        if (!resp?.ok) {
+          const msg =
+            'Erreur lors de la suppression du coupon de crédit précédent';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+        setCreatedCreditCouponId('');
+        setCreatedCreditPromotionCodeId('');
+      }
+
       const payloadItems = (cartItemsForStore || []).map(it => ({
         reference: String(it.product_reference || '').trim(),
         description: String((it as any).description || '').trim(),
@@ -792,6 +833,7 @@ export default function CheckoutPage() {
 
       const payloadData = {
         shippingHasBeenModified: shippingHasBeenModified,
+        openShipmentPaymentId: openShipmentMode ? currentPaymentId : '',
         amount: cartTotalForStore,
         currency: 'eur',
         customerName: customerInfo.name,
@@ -799,6 +841,7 @@ export default function CheckoutPage() {
         clerkUserId: user.id,
         storeName: store?.name ?? storeName,
         items: payloadItems,
+        tempCreditBalanceCents: openShipmentMode ? tempCreditBalanceCents : 0,
         address: address ||
           customerInfo.address ||
           (customerData?.address as any) || {
@@ -857,6 +900,10 @@ export default function CheckoutPage() {
       }
 
       setDeliveryMethod(effectiveDeliveryMethod);
+      setCreatedCreditCouponId(String(data?.creditCouponId || '').trim());
+      setCreatedCreditPromotionCodeId(
+        String(data?.creditPromotionCodeId || '').trim()
+      );
       if (effectiveDeliveryMethod === 'home_delivery' && address) {
         setCustomerData(prev => ({
           ...(prev || {}),
@@ -1152,6 +1199,18 @@ export default function CheckoutPage() {
                 if (!store?.id) return;
                 try {
                   setOpenShipmentActionLoading(true);
+                  if (createdCreditCouponId) {
+                    const { resp } = await deleteCreditCoupon(
+                      createdCreditCouponId
+                    );
+                    if (!resp?.ok) {
+                      showToast(
+                        'Erreur lors de la suppression du coupon de crédit',
+                        'error'
+                      );
+                      return;
+                    }
+                  }
                   const ok =
                     await cancelOpenShipmentAndVerify(currentPaymentId);
                   if (!ok) return;
@@ -1163,6 +1222,9 @@ export default function CheckoutPage() {
                   clearOpenShipmentParams();
                   setShipmentCartRebuilt(false);
                   setOpenShipmentInitHandled(true);
+                  setTempCreditBalanceCents(0);
+                  setCreatedCreditCouponId('');
+                  setCreatedCreditPromotionCodeId('');
                   await refreshCartForStore();
                   if (typeof window !== 'undefined') {
                     window.dispatchEvent(new Event('cart:updated'));
@@ -1209,6 +1271,18 @@ export default function CheckoutPage() {
                   if (!pid || !store?.id) return;
                   try {
                     setOpenShipmentActionLoading(true);
+                    if (createdCreditCouponId) {
+                      const { resp } = await deleteCreditCoupon(
+                        createdCreditCouponId
+                      );
+                      if (!resp?.ok) {
+                        showToast(
+                          'Erreur lors de la suppression du coupon de crédit',
+                          'error'
+                        );
+                        return;
+                      }
+                    }
                     const ok = await cancelOpenShipmentAndVerify(pid);
                     if (!ok) return;
                     setOpenShipmentBlockModalOpen(false);
@@ -1229,6 +1303,9 @@ export default function CheckoutPage() {
                         window.dispatchEvent(new Event('cart:updated'));
                       }
                     }
+                    setTempCreditBalanceCents(0);
+                    setCreatedCreditCouponId('');
+                    setCreatedCreditPromotionCodeId('');
                     showToast('Modifications annulées', 'success');
                   } finally {
                     setOpenShipmentActionLoading(false);
