@@ -2014,6 +2014,100 @@ router.post("/:storeSlug/stock/products", async (req, res) => {
   }
 });
 
+router.get("/:storeSlug/stock/search", async (req, res) => {
+  try {
+    const { storeSlug } = req.params as { storeSlug?: string };
+    if (!storeSlug) {
+      return res.status(400).json({ error: "Slug de boutique requis" });
+    }
+    const decodedSlug = decodeURIComponent(storeSlug);
+    const qRaw = (req.query.q as string) || (req.query.query as string) || "";
+    const q = String(qRaw || "").trim();
+    if (q.length < 2) {
+      return res.json({ success: true, items: [] });
+    }
+
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, slug")
+      .eq("slug", decodedSlug)
+      .maybeSingle();
+    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!storeRow) {
+      return res.status(404).json({ error: "Boutique introuvable" });
+    }
+
+    const storeId = Number((storeRow as any)?.id);
+    if (!Number.isFinite(storeId) || storeId <= 0) {
+      return res.status(500).json({ error: "store_id invalide" });
+    }
+
+    const selectWithPrice =
+      "id, created_at, store_id, product_reference, quantity, weight, image_url, product_stripe_id, bought, price";
+    const selectWithoutPrice =
+      "id, created_at, store_id, product_reference, quantity, weight, image_url, product_stripe_id, bought";
+
+    let stockRows: any[] | null = null;
+    let stockErr: any = null;
+    {
+      const resp = await supabase
+        .from("stock")
+        .select(selectWithPrice)
+        .eq("store_id", storeId)
+        .ilike("product_reference", `%${q}%`)
+        .order("product_reference", { ascending: true })
+        .limit(10);
+      stockRows = resp.data as any;
+      stockErr = resp.error as any;
+    }
+    if (stockErr && String(stockErr?.code || "").trim() === "42703") {
+      const msg = String(stockErr?.message || "").toLowerCase();
+      if (msg.includes("price") && msg.includes("does not exist")) {
+        const resp2 = await supabase
+          .from("stock")
+          .select(selectWithoutPrice)
+          .eq("store_id", storeId)
+          .ilike("product_reference", `%${q}%`)
+          .order("product_reference", { ascending: true })
+          .limit(10);
+        stockRows = resp2.data as any;
+        stockErr = resp2.error as any;
+      }
+    }
+    if (stockErr) return res.status(500).json({ error: stockErr.message });
+
+    const rows = Array.isArray(stockRows) ? stockRows : [];
+
+    const items = await Promise.all(
+      rows.map(async (r: any) => {
+        const raw = (r as any)?.product_stripe_id;
+        const asString = String(raw ?? "").trim();
+        let product: any = null;
+        try {
+          if (asString && asString.startsWith("prod_")) {
+            product = await stripe.products.retrieve(asString);
+          }
+        } catch {
+          product = null;
+        }
+        if (product && (product as any)?.active === false) {
+          product = null;
+        }
+        return { stock: r, product };
+      }),
+    );
+
+    return res.json({ success: true, items });
+  } catch (e: any) {
+    const msg = e?.message || "Erreur interne du serveur";
+    return res.status(500).json({
+      error: typeof msg === "string" ? msg : "Erreur interne du serveur",
+    });
+  }
+});
+
 router.get("/:storeSlug/stock/products", async (req, res) => {
   try {
     const auth = getAuth(req);

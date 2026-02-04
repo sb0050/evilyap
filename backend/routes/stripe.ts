@@ -594,6 +594,8 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       description: string;
       price: number;
       quantity: number;
+      product_stripe_id?: string;
+      weight?: number;
     }> = Array.isArray(items) ? items : [];
     const refsForCheck = incomingItems
       .map((it) => String(it.reference || "").trim())
@@ -603,25 +605,162 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       .map((it) => String(it.reference || "").trim())
       .filter((s) => s.length > 0)
       .join(";");
+
+    let storeIdForCheck: number | null = null;
+    if (storeName) {
+      const { data: storeRowForCheck, error: storeRowForCheckErr } =
+        await supabase
+          .from("stores")
+          .select("id")
+          .eq("name", storeName)
+          .maybeSingle();
+      if (storeRowForCheckErr) {
+        res.status(500).json({ error: storeRowForCheckErr.message });
+        return;
+      }
+      storeIdForCheck = (storeRowForCheck as any)?.id ?? null;
+    }
+    if (!storeIdForCheck) {
+      res.status(400).json({ error: "Boutique introuvable" });
+      return;
+    }
+
+    const stockByRef = new Map<
+      string,
+      { product_stripe_id?: string; weight?: number }
+    >();
+    if (uniqueRefsForCheck.length > 0) {
+      try {
+        const { data: stockRows, error: stockErr } = await supabase
+          .from("stock")
+          .select("product_reference, product_stripe_id, weight")
+          .eq("store_id", storeIdForCheck as number)
+          .in("product_reference", uniqueRefsForCheck as any);
+        if (!stockErr && Array.isArray(stockRows)) {
+          for (const r of stockRows as any[]) {
+            const ref = String(r?.product_reference || "").trim();
+            if (!ref) continue;
+            stockByRef.set(ref, {
+              product_stripe_id: String(r?.product_stripe_id || "").trim(),
+              weight: Number(r?.weight),
+            });
+          }
+        }
+      } catch (_e) {}
+    }
+
+    let itemsValidationError = "";
+    const resolvedItems = incomingItems.map((it) => {
+      const ref = String(it.reference || "").trim();
+      const fromBody = String((it as any)?.product_stripe_id || "").trim();
+      const fromProductId = String(
+        (it as any)?.product_id || (it as any)?.productId || "",
+      ).trim();
+      const stockRow = ref ? stockByRef.get(ref) : undefined;
+      const fromStock = String(stockRow?.product_stripe_id || "").trim();
+
+      if (
+        fromBody &&
+        fromBody.startsWith("prod_") &&
+        fromProductId &&
+        fromProductId.startsWith("prod_") &&
+        fromBody !== fromProductId
+      ) {
+        if (!itemsValidationError) {
+          itemsValidationError = `product_stripe_id et product_id différents pour la référence ${ref || "N/A"}`;
+        }
+      }
+
+      const productStripeId = (
+        fromBody && fromBody.startsWith("prod_")
+          ? fromBody
+          : fromProductId && fromProductId.startsWith("prod_")
+            ? fromProductId
+            : fromStock && fromStock.startsWith("prod_")
+              ? fromStock
+              : ""
+      ).trim();
+
+      const wStockRaw = Number(stockRow?.weight);
+      const stockWeightKg =
+        Number.isFinite(wStockRaw) && wStockRaw >= 0 ? wStockRaw : null;
+
+      const weightFromItemRaw = Number((it as any)?.weight);
+      const weightFromItemKg =
+        Number.isFinite(weightFromItemRaw) && weightFromItemRaw >= 0
+          ? weightFromItemRaw
+          : null;
+
+      return {
+        ...it,
+        reference: ref,
+        product_stripe_id: productStripeId,
+        _stock_weight_kg: stockWeightKg,
+        _item_weight_kg: weightFromItemKg,
+      };
+    });
+    if (itemsValidationError) {
+      res.status(400).json({ error: itemsValidationError });
+      return;
+    }
+
+    const uniqueStripeProductIds = Array.from(
+      new Set(
+        resolvedItems
+          .map((it: any) => String(it.product_stripe_id || "").trim())
+          .filter((id) => id.startsWith("prod_")),
+      ),
+    );
+    const stripeProductsById = new Map<string, Stripe.Product>();
+    await Promise.all(
+      uniqueStripeProductIds.map(async (pid) => {
+        try {
+          const p = (await stripe.products.retrieve(pid)) as Stripe.Product;
+          if (p && !(p as any)?.deleted) {
+            stripeProductsById.set(pid, p);
+          }
+        } catch (_e) {}
+      }),
+    );
+
     let weightKg = 0;
     if (deliveryMethod !== "store_pickup") {
-      const weightCalc = calculateParcelWeight(
-        incomingItems.map((it) => ({
-          description: String(it.description || ""),
-          quantity: Number(it.quantity || 1),
-        })),
-      );
-      console.log("weight:calculation", {
-        items: incomingItems.map((it) => ({
-          description: String(it.description || ""),
-          quantity: Number(it.quantity || 1),
-        })),
-        breakdown: weightCalc.breakdown,
-        rawTotalKg: weightCalc.rawTotalKg,
-        totalWeightKg: weightCalc.totalWeightKg,
-      });
-      const rawKg = Number(weightCalc.rawTotalKg || 0);
-      weightKg = Number.isFinite(rawKg) && rawKg > 0 ? rawKg : 0;
+      let explicitWeightKg = 0;
+
+      for (const it of resolvedItems as any[]) {
+        const qty = Math.max(1, Math.round(Number(it.quantity || 1)));
+        const pid = String(it.product_stripe_id || "").trim();
+        const stockUnitKg =
+          Number.isFinite(it._stock_weight_kg) && it._stock_weight_kg >= 0
+            ? Number(it._stock_weight_kg)
+            : NaN;
+        const itemUnitKg =
+          Number.isFinite(it._item_weight_kg) && it._item_weight_kg >= 0
+            ? Number(it._item_weight_kg)
+            : NaN;
+        const stripeMetaUnitKg = (() => {
+          if (!(pid && pid.startsWith("prod_"))) return NaN;
+          const p = stripeProductsById.get(pid);
+          const rawMeta = (p?.metadata as any)?.weight_kg;
+          const parsedMeta = rawMeta
+            ? Number(String(rawMeta).replace(",", "."))
+            : NaN;
+          return Number.isFinite(parsedMeta) && parsedMeta >= 0
+            ? parsedMeta
+            : NaN;
+        })();
+
+        const unitKg = Number.isFinite(stockUnitKg)
+          ? stockUnitKg
+          : Number.isFinite(itemUnitKg)
+            ? itemUnitKg
+            : Number.isFinite(stripeMetaUnitKg)
+              ? stripeMetaUnitKg
+              : 0;
+
+        explicitWeightKg += unitKg * qty;
+      }
+      weightKg = Math.max(0, explicitWeightKg);
     }
     let computedDeliveryCost = 0;
     if (deliveryMethod !== "store_pickup") {
@@ -691,25 +830,6 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       computedDeliveryCost = 0;
     }
 
-    let storeIdForCheck: number | null = null;
-    if (storeName) {
-      const { data: storeRowForCheck, error: storeRowForCheckErr } =
-        await supabase
-          .from("stores")
-          .select("id")
-          .eq("name", storeName)
-          .maybeSingle();
-      if (storeRowForCheckErr) {
-        res.status(500).json({ error: storeRowForCheckErr.message });
-        return;
-      }
-      storeIdForCheck = (storeRowForCheck as any)?.id ?? null;
-    }
-    if (!storeIdForCheck) {
-      res.status(400).json({ error: "Boutique introuvable" });
-      return;
-    }
-
     for (const ref of uniqueRefsForCheck) {
       const { data: failedCartRows, error: failedCartErr } = await supabase
         .from("carts")
@@ -760,10 +880,43 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     }
 
     const orderLineItems: Array<{ price: string; quantity: number }> = [];
-    for (const it of incomingItems) {
+    const defaultPriceByStripeProductId = new Map<string, string>();
+    for (const it of resolvedItems as any[]) {
+      const pid = String(it.product_stripe_id || "").trim();
+      const qty = Math.max(1, Math.round(Number(it.quantity || 1)));
+      if (pid && pid.startsWith("prod_")) {
+        let priceId = defaultPriceByStripeProductId.get(pid) || "";
+        if (!priceId) {
+          const p = stripeProductsById.get(pid);
+          const candidate =
+            typeof (p as any)?.default_price === "string"
+              ? String((p as any).default_price)
+              : String(((p as any)?.default_price as any)?.id || "").trim();
+          if (candidate) {
+            priceId = candidate;
+          } else {
+            try {
+              const list = await stripe.prices.list({
+                product: pid,
+                active: true,
+                limit: 1,
+              });
+              const first = Array.isArray(list?.data) ? list.data[0] : null;
+              priceId = String(first?.id || "").trim();
+            } catch (_e) {}
+          }
+          if (priceId) {
+            defaultPriceByStripeProductId.set(pid, priceId);
+          }
+        }
+        if (priceId) {
+          orderLineItems.push({ price: priceId, quantity: qty });
+          continue;
+        }
+      }
+
       const p = await stripe.products.create({
         name: `${String(it.reference || "N/A")}`,
-        description: `${String(it.description || "")}`,
         type: "good",
         shippable: true,
       });
@@ -772,10 +925,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         unit_amount: Math.round(Number(it.price || 0) * 100),
         currency: "eur",
       });
-      orderLineItems.push({
-        price: pr.id,
-        quantity: Number(it.quantity || 1),
-      });
+      orderLineItems.push({ price: pr.id, quantity: qty });
     }
     const finalLineItems =
       orderLineItems.length > 0 ? orderLineItems : undefined;
