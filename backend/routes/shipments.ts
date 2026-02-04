@@ -666,9 +666,16 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
               const description = String(
                 prodObj?.description || li?.description || "",
               ).trim();
-              const weight =
-                parseWeightKgFromDescription(description) ??
-                getFallbackWeightKgFromDescription(description);
+              const rawMetaWeight =
+                (prodObj?.metadata as any)?.weight ??
+                (prodObj?.metadata as any)?.weight_kg;
+              const parsedMetaWeight = rawMetaWeight
+                ? Number(String(rawMetaWeight).replace(",", "."))
+                : NaN;
+              const weight = Number.isFinite(parsedMetaWeight)
+                ? Math.max(0, parsedMetaWeight)
+                : parseWeightKgFromDescription(description) ??
+                  getFallbackWeightKgFromDescription(description);
               return {
                 product_reference: ref,
                 description,

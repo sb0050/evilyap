@@ -109,8 +109,7 @@ const calculateParcelWeight = (
       confidence,
     });
   }
-  total += PACKAGING_WEIGHT;
-  const finalWeightKg = Math.round(total * 100) / 100; // Arrondi à 2 décimales
+  const finalWeightKg = Math.round(total * 100) / 100;
   return { totalWeightKg: finalWeightKg, rawTotalKg: total, breakdown };
 };
 
@@ -725,42 +724,36 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
 
     let weightKg = 0;
     if (deliveryMethod !== "store_pickup") {
-      let explicitWeightKg = 0;
+      let itemsWeightKg = 0;
+      const missingWeights: Array<{ description: string; quantity: number }> =
+        [];
 
       for (const it of resolvedItems as any[]) {
         const qty = Math.max(1, Math.round(Number(it.quantity || 1)));
-        const pid = String(it.product_stripe_id || "").trim();
-        const stockUnitKg =
-          Number.isFinite(it._stock_weight_kg) && it._stock_weight_kg >= 0
-            ? Number(it._stock_weight_kg)
-            : NaN;
         const itemUnitKg =
           Number.isFinite(it._item_weight_kg) && it._item_weight_kg >= 0
             ? Number(it._item_weight_kg)
             : NaN;
-        const stripeMetaUnitKg = (() => {
-          if (!(pid && pid.startsWith("prod_"))) return NaN;
-          const p = stripeProductsById.get(pid);
-          const rawMeta = (p?.metadata as any)?.weight_kg;
-          const parsedMeta = rawMeta
-            ? Number(String(rawMeta).replace(",", "."))
-            : NaN;
-          return Number.isFinite(parsedMeta) && parsedMeta >= 0
-            ? parsedMeta
-            : NaN;
-        })();
-
-        const unitKg = Number.isFinite(stockUnitKg)
-          ? stockUnitKg
-          : Number.isFinite(itemUnitKg)
-            ? itemUnitKg
-            : Number.isFinite(stripeMetaUnitKg)
-              ? stripeMetaUnitKg
-              : 0;
-
-        explicitWeightKg += unitKg * qty;
+        if (Number.isFinite(itemUnitKg)) {
+          itemsWeightKg += itemUnitKg * qty;
+        } else {
+          missingWeights.push({
+            description: String(it.description || ""),
+            quantity: qty,
+          });
+        }
       }
-      weightKg = Math.max(0, explicitWeightKg);
+
+      if (missingWeights.length > 0) {
+        const calc = calculateParcelWeight(missingWeights);
+        const raw = Number(calc?.rawTotalKg ?? 0);
+        if (Number.isFinite(raw) && raw >= 0) {
+          itemsWeightKg += raw;
+        }
+      }
+
+      weightKg =
+        Math.round(Math.max(0, itemsWeightKg + PACKAGING_WEIGHT) * 100) / 100;
     }
     let computedDeliveryCost = 0;
     if (deliveryMethod !== "store_pickup") {
@@ -915,10 +908,26 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         }
       }
 
+      const itemUnitKg =
+        Number.isFinite(it._item_weight_kg) && it._item_weight_kg >= 0
+          ? Number(it._item_weight_kg)
+          : NaN;
+      const computedUnitKg = (() => {
+        if (Number.isFinite(itemUnitKg)) return itemUnitKg;
+        const desc = String(it.description || "");
+        const { unitWeight } = computeUnitWeight(desc);
+        return Number.isFinite(unitWeight) && unitWeight >= 0
+          ? unitWeight
+          : NaN;
+      })();
+
       const p = await stripe.products.create({
         name: `${String(it.reference || "N/A")}`,
         type: "good",
         shippable: true,
+        ...(Number.isFinite(computedUnitKg)
+          ? { metadata: { weight: String(computedUnitKg) } }
+          : {}),
       });
       const pr = await stripe.prices.create({
         product: p.id,
