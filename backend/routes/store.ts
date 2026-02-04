@@ -1926,6 +1926,7 @@ router.post("/:storeSlug/stock/products", async (req, res) => {
       metadata: {
         store_id: String(storeId),
         product_reference: referenceTrim,
+        weight: String(normalizedWeight),
         weight_kg: String(normalizedWeight),
         quantity: String(normalizedQty),
         price_eur: String(normalizedPrice),
@@ -2449,6 +2450,7 @@ router.put("/:storeSlug/stock/products/:stockId", async (req, res) => {
       metadata: {
         store_id: String(storeId),
         product_reference: referenceTrim,
+        weight: String(normalizedWeight),
         weight_kg: String(normalizedWeight),
         quantity: String(normalizedQty),
         price_eur: String(normalizedPrice),
