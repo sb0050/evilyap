@@ -309,6 +309,14 @@ export default function DashboardPage() {
   const [cartWeightKg, setCartWeightKg] = useState<string>('');
   const [cartAmountEuro, setCartAmountEuro] = useState<string>('');
   const [cartQuantity, setCartQuantity] = useState<string>('1');
+  const [cartStockSuggestions, setCartStockSuggestions] = useState<any[]>([]);
+  const [cartStockSuggestionsOpen, setCartStockSuggestionsOpen] =
+    useState<boolean>(false);
+  const [cartStockSuggestionsLoading, setCartStockSuggestionsLoading] =
+    useState<boolean>(false);
+  const [cartSelectedStockItem, setCartSelectedStockItem] = useState<
+    any | null
+  >(null);
   const [cartCreating, setCartCreating] = useState<boolean>(false);
   const [storeCarts, setStoreCarts] = useState<any[]>([]);
   const [cartDeletingIds, setCartDeletingIds] = useState<
@@ -2559,6 +2567,99 @@ export default function DashboardPage() {
     }
   };
 
+  useEffect(() => {
+    if (section !== 'carts') return;
+    const storeSlug = String(store?.slug || '').trim();
+    const q = String(cartReference || '').trim();
+    const selectedRef = String(
+      (cartSelectedStockItem as any)?.stock?.product_reference || ''
+    )
+      .trim()
+      .toLowerCase();
+    if (selectedRef && selectedRef === q.toLowerCase()) {
+      setCartStockSuggestions([]);
+      setCartStockSuggestionsOpen(false);
+      return;
+    }
+    if (!storeSlug || q.length < 2) {
+      setCartStockSuggestions([]);
+      setCartStockSuggestionsOpen(false);
+      if (!q) setCartSelectedStockItem(null);
+      return;
+    }
+
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setCartStockSuggestionsLoading(true);
+      try {
+        const resp = await fetch(
+          `${API_BASE_URL}/api/stores/${encodeURIComponent(
+            storeSlug
+          )}/stock/search?q=${encodeURIComponent(q)}`
+        );
+        const json = await resp.json().catch(() => null as any);
+        if (cancelled) return;
+        if (!resp.ok) {
+          setCartStockSuggestions([]);
+          setCartStockSuggestionsOpen(false);
+          return;
+        }
+        const items = Array.isArray(json?.items) ? json.items : [];
+        setCartStockSuggestions(items);
+        setCartStockSuggestionsOpen(true);
+      } finally {
+        if (!cancelled) setCartStockSuggestionsLoading(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [section, store?.slug, cartReference, cartSelectedStockItem]);
+
+  const applyCartSuggestion = (s: any) => {
+    const stock = s?.stock || {};
+    const product = s?.product || null;
+
+    const ref = String(stock?.product_reference || '').trim();
+    const qtyRaw = Number(stock?.quantity ?? 0);
+    const qtyAvailable =
+      Number.isFinite(qtyRaw) && qtyRaw > 0 ? Math.floor(qtyRaw) : 0;
+    if (!ref || qtyAvailable <= 0) return;
+
+    const title = String(product?.name || ref || '').trim() || ref;
+    const priceRaw = Number(stock?.price);
+    const price = Number.isFinite(priceRaw) && priceRaw > 0 ? priceRaw : null;
+
+    const stripeWeightRaw = (product as any)?.metadata?.weight_kg;
+    const stripeWeightParsed = stripeWeightRaw
+      ? Number(String(stripeWeightRaw).replace(',', '.'))
+      : NaN;
+    const stockWeightRaw = Number(stock?.weight);
+    const weight =
+      Number.isFinite(stripeWeightParsed) && stripeWeightParsed >= 0
+        ? stripeWeightParsed
+        : Number.isFinite(stockWeightRaw) && stockWeightRaw >= 0
+          ? stockWeightRaw
+          : null;
+
+    setCartSelectedStockItem(s);
+    setCartReference(ref);
+    setCartDescription(title);
+    setCartAmountEuro(prev =>
+      price !== null
+        ? String(price.toFixed(2))
+        : String(prev || '').trim()
+          ? prev
+          : ''
+    );
+    setCartWeightKg(prev =>
+      weight !== null ? String(weight) : String(prev || '').trim() ? prev : ''
+    );
+    setCartQuantity(String(qtyAvailable));
+    setCartStockSuggestionsOpen(false);
+  };
+
   const handleCreateCart = async () => {
     try {
       const ref = (cartReference || '').trim();
@@ -3986,13 +4087,110 @@ export default function DashboardPage() {
                   <label className='block text-sm font-medium text-gray-700 mb-1'>
                     Référence
                   </label>
-                  <input
-                    type='text'
-                    value={cartReference}
-                    onChange={e => setCartReference(e.target.value)}
-                    placeholder='Ex: REF-001'
-                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                  />
+                  <div className='relative'>
+                    <input
+                      type='text'
+                      value={cartReference}
+                      onChange={e => {
+                        const v = e.target.value;
+                        setCartSelectedStockItem(null);
+                        setCartReference(v);
+                        setCartDescription('');
+                        setCartWeightKg('');
+                        setCartAmountEuro('');
+                        setCartQuantity('1');
+                        setCartStockSuggestionsOpen(
+                          Boolean(String(v || '').trim())
+                        );
+                      }}
+                      onFocus={() => {
+                        if (cartStockSuggestions.length > 0)
+                          setCartStockSuggestionsOpen(true);
+                      }}
+                      onBlur={() => {
+                        setTimeout(
+                          () => setCartStockSuggestionsOpen(false),
+                          150
+                        );
+                      }}
+                      placeholder='Ex: REF-001'
+                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                    />
+                    {cartStockSuggestionsOpen &&
+                    (cartStockSuggestionsLoading ||
+                      cartStockSuggestions.length > 0) ? (
+                      <div className='absolute z-20 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg overflow-hidden'>
+                        {cartStockSuggestionsLoading ? (
+                          <div className='px-3 py-2 text-sm text-gray-500'>
+                            Recherche…
+                          </div>
+                        ) : null}
+                        {cartStockSuggestions.map((s: any, idx: number) => {
+                          const stock = s?.stock || {};
+                          const product = s?.product || null;
+                          const ref = String(
+                            stock?.product_reference || ''
+                          ).trim();
+                          const qty = Number(stock?.quantity ?? 0);
+                          const disabled = Number.isFinite(qty) && qty <= 0;
+                          const title = String(
+                            product?.name || ref || ''
+                          ).trim();
+                          const priceRaw = Number(stock?.price);
+                          const price =
+                            Number.isFinite(priceRaw) && priceRaw > 0
+                              ? priceRaw
+                              : null;
+                          const imgRaw =
+                            Array.isArray(product?.images) &&
+                            product.images.length > 0
+                              ? String(product.images[0] || '').trim()
+                              : String(stock?.image_url || '')
+                                  .split(',')[0]
+                                  ?.trim() || '';
+
+                          return (
+                            <button
+                              key={String(stock?.id || ref || idx)}
+                              type='button'
+                              disabled={disabled}
+                              onMouseDown={e => e.preventDefault()}
+                              onClick={() => {
+                                if (disabled) return;
+                                applyCartSuggestion(s);
+                              }}
+                              className={`w-full px-3 py-2 text-left flex items-center gap-3 ${
+                                disabled
+                                  ? 'bg-gray-50 text-gray-400 cursor-not-allowed'
+                                  : 'hover:bg-gray-50'
+                              }`}
+                            >
+                              {imgRaw ? (
+                                <img
+                                  src={imgRaw}
+                                  alt={title || ref}
+                                  className='w-10 h-10 rounded object-cover bg-gray-100 shrink-0'
+                                />
+                              ) : (
+                                <div className='w-10 h-10 rounded bg-gray-100 shrink-0' />
+                              )}
+                              <div className='min-w-0 flex-1'>
+                                <div className='text-sm font-medium truncate'>
+                                  {ref || '—'}
+                                </div>
+                                <div className='text-xs text-gray-600 truncate'>
+                                  {title || '—'}
+                                  {price !== null
+                                    ? ` • ${price.toFixed(2)} €`
+                                    : ''}
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div className='space-y-2'>
@@ -4006,7 +4204,8 @@ export default function DashboardPage() {
                       onChange={e => setCartDescription(e.target.value)}
                       placeholder='Ex: Robe Noire'
                       required
-                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                      disabled={Boolean(cartSelectedStockItem)}
+                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
                     />
                   </div>
                   <div>
@@ -4021,7 +4220,8 @@ export default function DashboardPage() {
                       onChange={e => setCartWeightKg(e.target.value)}
                       placeholder='0.5'
                       required
-                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                      disabled={Boolean(cartSelectedStockItem)}
+                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
                     />
                   </div>
                 </div>
@@ -4038,7 +4238,8 @@ export default function DashboardPage() {
                       value={cartAmountEuro}
                       onChange={e => setCartAmountEuro(e.target.value)}
                       placeholder='Ex: 49.90'
-                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                      disabled={Boolean(cartSelectedStockItem)}
+                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
                     />
                     <div>
                       <label className='block text-sm font-medium text-gray-700 mb-1'>
@@ -4051,7 +4252,8 @@ export default function DashboardPage() {
                         value={cartQuantity}
                         onChange={e => setCartQuantity(e.target.value)}
                         placeholder='1'
-                        className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                        disabled={Boolean(cartSelectedStockItem)}
+                        className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
                       />
                     </div>
                   </div>
