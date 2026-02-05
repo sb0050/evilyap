@@ -10,18 +10,12 @@ interface PaymentSession {
   currency: string;
   success?: boolean;
   failed?: boolean;
-  refunded?: boolean;
-  refund_details?: {
-    refunded: boolean;
-    amount_refunded: number;
-    is_partial: boolean;
-    refunds: any[];
-  } | null;
+  credited?: boolean;
   payment_intent_id?: string | null;
   blocked_references?: string[];
-  refunded_references?: string[];
+  credited_references?: string[];
   purchased_references?: string[];
-  refund_amount?: number | null;
+  credit_amount_cents?: number | null;
   customer_details?: {
     email?: string;
     name?: string;
@@ -37,7 +31,7 @@ const PaymentReturnPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [status, setStatus] = useState<
-    'loading' | 'complete' | 'failed' | 'error' | 'refunded'
+    'loading' | 'complete' | 'failed' | 'error' | 'credited'
   >('loading');
   const [session, setSession] = useState<PaymentSession | null>(null);
 
@@ -70,7 +64,7 @@ const PaymentReturnPage: React.FC = () => {
       .then(data => {
         setSession(data);
         const piStatus = String(data?.status || '');
-        const refunded = !!data?.refunded;
+        const credited = !!data?.credited;
         const success = !!data?.success;
         const failed =
           typeof data?.failed === 'boolean'
@@ -79,8 +73,8 @@ const PaymentReturnPage: React.FC = () => {
                 piStatus
               );
 
-        if (refunded) {
-          setStatus('refunded');
+        if (credited) {
+          setStatus('credited');
           return;
         }
         if (
@@ -245,26 +239,27 @@ const PaymentReturnPage: React.FC = () => {
     );
   }
 
-  if (status === 'refunded') {
+  if (status === 'credited') {
     const blockedList: string[] = Array.isArray(
       (session as any)?.blocked_references
     )
       ? ((session as any)?.blocked_references as string[])
       : [];
-    const refundedRefs: string[] = Array.isArray(
-      (session as any)?.refunded_references
+    const creditedRefs: string[] = Array.isArray(
+      (session as any)?.credited_references
     )
-      ? ((session as any)?.refunded_references as string[])
-      : [];
+      ? ((session as any)?.credited_references as string[])
+      : Array.isArray((session as any)?.refunded_references)
+        ? ((session as any)?.refunded_references as string[])
+        : [];
     const purchasedRefs: string[] = Array.isArray(
       (session as any)?.purchased_references
     )
       ? ((session as any)?.purchased_references as string[])
       : [];
-    const refundDetails = (session as any)?.refund_details || null;
-    const isPartial = !!refundDetails?.is_partial;
+    const isPartial = creditedRefs.length > 0 && purchasedRefs.length > 0;
     const amt =
-      refundDetails?.amount_refunded ??
+      (session as any)?.credit_amount_cents ??
       (session as any)?.refund_amount ??
       (session as any)?.amount ??
       (session as any)?.amount_total ??
@@ -274,18 +269,18 @@ const PaymentReturnPage: React.FC = () => {
         <div className='max-w-md w-full bg-white rounded-lg shadow-lg p-8 text-center'>
           <XCircleIcon className='h-16 w-16 text-red-500 mx-auto mb-4' />
           <h1 className='text-2xl font-bold text-gray-900 mb-2'>
-            Paiement remboursé
+            Montant ajouté à votre avoir
           </h1>
           <p className='text-gray-600 mb-6'>
             {isPartial
-              ? 'Certaines références n’étaient plus disponibles. Vous avez été partiellement remboursé.'
+              ? 'Certaines références n’étaient plus disponibles. Le montant correspondant a été ajouté à votre avoir.'
               : blockedList.length > 0
-                ? `Certaines références de votre panier ont déjà été achetées. Vous avez été remboursé.`
-                : 'Une ou plusieurs références ont déjà été achetées. Vous avez été remboursé.'}
+                ? `Certaines références de votre panier ont déjà été achetées. Le montant correspondant a été ajouté à votre avoir.`
+                : 'Une ou plusieurs références ont déjà été achetées. Le montant correspondant a été ajouté à votre avoir.'}
           </p>
           <div className='text-left space-y-2'>
             <p>
-              <strong>Montant remboursé:</strong>{' '}
+              <strong>Montant ajouté à votre avoir:</strong>{' '}
               {formatAmount(
                 Number(amt || 0),
                 (session as any)?.currency || 'EUR'
@@ -301,17 +296,17 @@ const PaymentReturnPage: React.FC = () => {
                 </ul>
               </div>
             )}
-            {refundedRefs.length > 0 && (
+            {creditedRefs.length > 0 && (
               <div>
-                <strong>Références remboursées:</strong>
+                <strong>Références créditées:</strong>
                 <ul className='mt-1 list-disc list-inside text-gray-700'>
-                  {refundedRefs.map(ref => (
+                  {creditedRefs.map(ref => (
                     <li key={ref}>{ref}</li>
                   ))}
                 </ul>
               </div>
             )}
-            {blockedList.length > 0 && refundedRefs.length === 0 && (
+            {blockedList.length > 0 && creditedRefs.length === 0 && (
               <div>
                 <strong>Références déjà achetées:</strong>
                 <ul className='mt-1 list-disc list-inside text-gray-700'>

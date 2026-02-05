@@ -71,6 +71,7 @@ router.post("/", async (req, res) => {
       description,
       quantity,
       weight,
+      product_stripe_id,
     } = req.body || {};
 
     if (!customer_stripe_id) {
@@ -126,23 +127,100 @@ router.post("/", async (req, res) => {
       weight: normalizedWeight,
       created_at: new Date().toISOString(),
     };
+    const productStripeId =
+      typeof product_stripe_id === "string" ? product_stripe_id.trim() : "";
+    if (productStripeId && productStripeId.startsWith("prod_")) {
+      const storeIdNum =
+        typeof store_id === "number"
+          ? store_id
+          : typeof store_id === "string"
+            ? Number(store_id)
+            : NaN;
+      if (Number.isFinite(storeIdNum) && storeIdNum > 0) {
+        const resp = await supabase
+          .from("stock")
+          .select("id")
+          .eq("store_id", storeIdNum)
+          .eq("product_stripe_id", productStripeId)
+          .limit(1);
+        if (!resp.error && Array.isArray(resp.data) && resp.data.length > 0) {
+          row.stripe_product_id = productStripeId;
+        }
+      }
+    }
 
     let data: any = null;
     let error: any = null;
-    {
-      const resp = await supabase.from("carts").insert([row]).select().single();
-      data = resp.data;
-      error = resp.error;
+    const candidates: any[] = [];
+    const pushCandidate = (c: any) => {
+      const key = JSON.stringify(
+        Object.keys(c)
+          .sort()
+          .reduce((acc: any, k) => {
+            acc[k] = c[k];
+            return acc;
+          }, {}),
+      );
+      if (!candidates.some((x) => (x as any).__key === key)) {
+        (c as any).__key = key;
+        candidates.push(c);
+      }
+    };
+
+    pushCandidate({ ...row });
+    pushCandidate(
+      (() => {
+        const { weight: _w, ...withoutWeight } = row;
+        return { ...withoutWeight };
+      })(),
+    );
+    if (row.stripe_product_id) {
+      pushCandidate(
+        (() => {
+          const { stripe_product_id: _spid, ...withoutStripeProductId } = row;
+          return { ...withoutStripeProductId };
+        })(),
+      );
+      pushCandidate(
+        (() => {
+          const { stripe_product_id: _spid, ...withoutStripeProductId } = row;
+          (withoutStripeProductId as any).product_stripe_id =
+            row.stripe_product_id;
+          return { ...withoutStripeProductId };
+        })(),
+      );
+      pushCandidate(
+        (() => {
+          const { weight: _w, stripe_product_id: _spid, ...withoutBoth } = row;
+          return { ...withoutBoth };
+        })(),
+      );
+      pushCandidate(
+        (() => {
+          const { weight: _w, stripe_product_id: _spid, ...withoutBoth } = row;
+          (withoutBoth as any).product_stripe_id = row.stripe_product_id;
+          return { ...withoutBoth };
+        })(),
+      );
     }
-    if (error && isMissingColumnError(error, "weight")) {
-      const { weight: _w, ...withoutWeight } = row;
-      const resp2 = await supabase
+
+    for (const cand of candidates) {
+      const { __key: _k, ...payload } = cand as any;
+      const resp = await supabase
         .from("carts")
-        .insert([withoutWeight])
+        .insert([payload])
         .select()
         .single();
-      data = resp2.data;
-      error = resp2.error;
+      data = resp.data;
+      error = resp.error;
+      if (!error) break;
+      if (
+        !isMissingColumnError(error, "weight") &&
+        !isMissingColumnError(error, "stripe_product_id") &&
+        !isMissingColumnError(error, "product_stripe_id")
+      ) {
+        break;
+      }
     }
 
     if (error) {
@@ -213,7 +291,9 @@ router.get("/summary", async (req, res) => {
     if (error && isMissingColumnError(error, "weight")) {
       let q2 = supabase
         .from("carts")
-        .select(paymentIdColumnOk ? selectWithoutWeight : selectWithoutWeightBase)
+        .select(
+          paymentIdColumnOk ? selectWithoutWeight : selectWithoutWeightBase,
+        )
         .eq("customer_stripe_id", stripeId)
         .eq("status", "PENDING")
         .order("id", { ascending: false });
@@ -224,7 +304,12 @@ router.get("/summary", async (req, res) => {
       cartRows = resp2.data as any;
       error = resp2.error;
     }
-    if (error && paymentId && paymentIdColumnOk && isMissingColumnError(error, "payment_id")) {
+    if (
+      error &&
+      paymentId &&
+      paymentIdColumnOk &&
+      isMissingColumnError(error, "payment_id")
+    ) {
       paymentIdColumnOk = false;
       let q2 = supabase
         .from("carts")

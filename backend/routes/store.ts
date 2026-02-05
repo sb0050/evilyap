@@ -679,40 +679,10 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
     }
     const uniqMatchedSessions = Array.from(uniqByPaymentId.values());
 
-    const refundedByPaymentId = new Map<string, number>();
-    const refundCentsList = await mapWithLimit(
-      uniqMatchedSessions,
-      6,
-      async (it) => {
-        const paymentId = it.paymentId;
-        try {
-          const refunds = await stripe.refunds.list({
-            payment_intent: paymentId,
-            limit: 100,
-          });
-          const refundedCents = (refunds.data || []).reduce(
-            (sum, r) => sum + Number((r as any)?.amount || 0),
-            0,
-          );
-          refundedByPaymentId.set(paymentId, refundedCents);
-          return refundedCents;
-        } catch {
-          refundedByPaymentId.set(paymentId, 0);
-          return 0;
-        }
-      },
-    );
-
-    const grossCents = uniqMatchedSessions.reduce((sum, it, idx) => {
+    const grossCents = uniqMatchedSessions.reduce((sum, it) => {
       const s = it.session as any;
-      const paymentId = it.paymentId;
       const totalCents = Number(s?.amount_total || 0);
-      const refundedCents =
-        typeof refundCentsList[idx] === "number"
-          ? refundCentsList[idx]
-          : Number(refundedByPaymentId.get(paymentId) || 0);
-      const netCents = totalCents - refundedCents;
-      return sum + (Number.isFinite(netCents) ? Math.max(0, netCents) : 0);
+      return sum + (Number.isFinite(totalCents) ? Math.max(0, totalCents) : 0);
     }, 0);
 
     if (!Number.isFinite(grossCents) || grossCents <= 0) {
@@ -825,8 +795,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
             : null;
         const shippingCents = Number(session?.shipping_cost?.amount_total || 0);
         const totalCents = Number(session?.amount_total || 0);
-        const refundedCents = Number(refundedByPaymentId.get(paymentId) || 0);
-        const baseNet = (totalCents - refundedCents) / 100;
+        const baseNet = totalCents / 100;
 
         let lineItems: any[] = [];
         try {
@@ -867,7 +836,6 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
           items,
           shipping_fee: shippingCents / 100,
           total: totalCents / 100,
-          refunded_total: refundedCents / 100,
           net_total: baseNet,
         };
       },
@@ -1322,10 +1290,6 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
             k: "Livraison",
             v: moneyFmt.format(Number((tx as any)?.shipping_fee || 0)),
           },
-          {
-            k: "Remboursé",
-            v: moneyFmt.format(Number((tx as any)?.refunded_total || 0)),
-          },
           { k: "Net", v: moneyFmt.format(Number((tx as any)?.net_total || 0)) },
         ];
         for (const { k, v } of kv) {
@@ -1606,39 +1570,10 @@ router.get("/:storeSlug/transactions", async (req, res) => {
     }
     const uniqMatchedSessions = Array.from(uniqByPaymentId.values());
 
-    const refundedByPaymentId = new Map<string, number>();
-    const refundCentsList = await mapWithLimit(
-      uniqMatchedSessions,
-      6,
-      async (it) => {
-        const paymentId = it.paymentId;
-        try {
-          const refunds = await stripe.refunds.list({
-            payment_intent: paymentId,
-            limit: 100,
-          });
-          const refundedCents = (refunds.data || []).reduce(
-            (sum, r) => sum + Number((r as any)?.amount || 0),
-            0,
-          );
-          refundedByPaymentId.set(paymentId, refundedCents);
-          return refundedCents;
-        } catch {
-          refundedByPaymentId.set(paymentId, 0);
-          return 0;
-        }
-      },
-    );
-
-    const totalNetAll = uniqMatchedSessions.reduce((sum, it, idx) => {
+    const totalNetAll = uniqMatchedSessions.reduce((sum, it) => {
       const s = it.session as any;
-      const paymentId = it.paymentId;
       const totalCents = Number(s?.amount_total || 0);
-      const refundedCents =
-        typeof refundCentsList[idx] === "number"
-          ? refundCentsList[idx]
-          : Number(refundedByPaymentId.get(paymentId) || 0);
-      const baseNet = (totalCents - refundedCents) / 100;
+      const baseNet = totalCents / 100;
       return sum + (Number.isFinite(baseNet) ? baseNet : 0);
     }, 0);
 
@@ -1663,8 +1598,7 @@ router.get("/:storeSlug/transactions", async (req, res) => {
           : null;
       const shippingCents = Number(session?.shipping_cost?.amount_total || 0);
       const totalCents = Number(session?.amount_total || 0);
-      const refundedCents = Number(refundedByPaymentId.get(paymentId) || 0);
-      const baseNet = (totalCents - refundedCents) / 100;
+      const baseNet = totalCents / 100;
 
       let lineItems: any[] = [];
       try {
@@ -1706,7 +1640,6 @@ router.get("/:storeSlug/transactions", async (req, res) => {
         items,
         shipping_fee: shippingCents / 100,
         total: totalCents / 100,
-        refunded_total: refundedCents / 100,
         net_total: baseNet,
       };
     });

@@ -121,7 +121,6 @@ type WalletTransaction = {
   items: WalletTransactionItem[];
   shipping_fee: number;
   total: number;
-  refunded_total: number;
   net_total: number;
 };
 
@@ -454,7 +453,6 @@ export default function DashboardPage() {
     useState<string>('');
   const [promoCodeName, setPromoCodeName] = useState<string>('');
   const [promoMinAmountEuro, setPromoMinAmountEuro] = useState<string>('');
-  const [promoFirstTime, setPromoFirstTime] = useState<boolean>(true);
   const [promoExpiresDate, setPromoExpiresDate] = useState<string>('');
   const [promoExpiresTime, setPromoExpiresTime] = useState<string>('');
   const [promoActive, setPromoActive] = useState<boolean>(true);
@@ -637,12 +635,8 @@ export default function DashboardPage() {
         active: !!promoActive,
         storeSlug: store?.slug,
       };
-      if (
-        typeof minimum_amount === 'number' ||
-        typeof promoFirstTime === 'boolean'
-      ) {
+      if (typeof minimum_amount === 'number') {
         body.minimum_amount = minimum_amount;
-        body.first_time_transaction = !!promoFirstTime;
       }
       if (typeof expires_at === 'number') body.expires_at = expires_at;
       if (typeof max_redemptions === 'number')
@@ -662,7 +656,6 @@ export default function DashboardPage() {
       // Reset partiel
       setPromoCodeName('');
       setPromoMinAmountEuro('');
-      setPromoFirstTime(false);
       setPromoExpiresDate('');
       setPromoActive(true);
       setPromoMaxRedemptions('');
@@ -4877,9 +4870,6 @@ export default function DashboardPage() {
                               Total
                             </th>
                             <th className='text-right py-3 px-4 font-semibold text-gray-700'>
-                              Remboursé
-                            </th>
-                            <th className='text-right py-3 px-4 font-semibold text-gray-700'>
                               Net
                             </th>
                           </tr>
@@ -4945,17 +4935,6 @@ export default function DashboardPage() {
                                 </td>
                                 <td className='py-3 px-4 text-right text-gray-900 font-semibold whitespace-nowrap'>
                                   {formatValue(tx.total)}
-                                </td>
-                                <td className='py-3 px-4 text-right whitespace-nowrap'>
-                                  <span
-                                    className={
-                                      (tx.refunded_total || 0) > 0
-                                        ? 'text-red-600 font-semibold'
-                                        : 'text-gray-900'
-                                    }
-                                  >
-                                    {formatValue(tx.refunded_total)}
-                                  </span>
                                 </td>
                                 <td className='py-3 px-4 text-right text-gray-900 font-semibold whitespace-nowrap'>
                                   {formatValue(tx.net_total)}
@@ -7481,7 +7460,7 @@ export default function DashboardPage() {
                     type='text'
                     value={promoCodeName}
                     onChange={e => setPromoCodeName(e.target.value)}
-                    placeholder='Ex: SUMMER20'
+                    placeholder='Ex: STORE20'
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />
                 </div>
@@ -7499,29 +7478,6 @@ export default function DashboardPage() {
                     placeholder='Ex: 50'
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />
-                </div>
-
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Restriction premiers achats
-                  </label>
-                  <div className='flex items-center gap-3'>
-                    <input
-                      id='promo-first-time'
-                      type='checkbox'
-                      checked={promoFirstTime}
-                      onChange={e => setPromoFirstTime(e.target.checked)}
-                      className='h-4 w-4'
-                      disabled
-                    />
-                    <label
-                      htmlFor='promo-first-time'
-                      className='text-sm text-gray-700'
-                    >
-                      Ce code ne sera valable que pour les clients qui n’ont
-                      jamais effectué d’achat auparavant.
-                    </label>
-                  </div>
                 </div>
 
                 <div>
@@ -7694,9 +7650,6 @@ export default function DashboardPage() {
                                   `${(r.minimum_amount / 100).toFixed(2)}€ min.`
                                 );
                               }
-                              if (r.first_time_transaction) {
-                                parts.push('premier achat');
-                              }
                               return parts.length ? parts.join(' • ') : '—';
                             })()}
                           </div>
@@ -7826,15 +7779,6 @@ export default function DashboardPage() {
                                     maximumFractionDigits: 2,
                                   });
                                   parts.push(`Min: ${eur} €`);
-                                }
-                                if (
-                                  typeof r.first_time_transaction === 'boolean'
-                                ) {
-                                  parts.push(
-                                    r.first_time_transaction
-                                      ? 'Premiers achats uniquement'
-                                      : 'Tous achats'
-                                  );
                                 }
                                 return parts.length ? parts.join(' • ') : '—';
                               })()}

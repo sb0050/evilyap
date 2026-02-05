@@ -1,6 +1,5 @@
 import express from "express";
 import Stripe from "stripe";
-import { emailService } from "../services/emailService";
 import { createClient } from "@supabase/supabase-js";
 
 import slugify from "slugify";
@@ -243,123 +242,6 @@ router.post("/create-customer", async (req, res) => {
   }
 });
 
-router.get("/refund/:paymentId", async (req, res) => {
-  try {
-    const { paymentId } = req.params;
-    if (!paymentId) {
-      return res.status(400).json({ error: "Payment ID is required" });
-    }
-
-    const refund = await stripe.refunds.create({
-      payment_intent: paymentId,
-      reason: "requested_by_customer",
-    });
-    // envoyer mail au client pour confirmer le remboursement
-    try {
-      const paymentIntent = await stripe.paymentIntents.retrieve(paymentId);
-      let customerEmail: string | undefined =
-        paymentIntent?.receipt_email || undefined;
-      let customerName: string | undefined = undefined;
-      let storeName: string = "PayLive";
-      let productReference: string | number | undefined = undefined;
-      let shipmentId: string | undefined = undefined;
-      const currency: string = (paymentIntent?.currency || "eur").toUpperCase();
-      const refundedAmountNumber: number =
-        typeof (refund as any)?.amount === "number"
-          ? Math.round((refund as any).amount)
-          : 0;
-
-      if (paymentIntent?.customer) {
-        try {
-          const cust = await stripe.customers.retrieve(
-            paymentIntent.customer as string,
-          );
-          customerEmail = customerEmail || (cust as any)?.email || undefined;
-          customerName = (cust as any)?.name || customerName;
-        } catch (cErr) {
-          console.warn("refund: unable to retrieve Stripe customer:", cErr);
-        }
-      }
-
-      try {
-        const { data: shipment, error: shipErr } = await supabase
-          .from("shipments")
-          .select("*")
-          .eq("payment_id", paymentId)
-          .maybeSingle();
-        if (!shipErr && shipment) {
-          productReference = (shipment as any)?.product_reference || undefined;
-          shipmentId = (shipment as any)?.shipment_id || undefined;
-          if ((shipment as any)?.store_id) {
-            const { data: store, error: storeErr } = await supabase
-              .from("stores")
-              .select("name")
-              .eq("id", (shipment as any).store_id)
-              .maybeSingle();
-            if (!storeErr && (store as any)?.name) {
-              storeName = (store as any).name as string;
-            }
-          }
-          if (!customerEmail && (shipment as any)?.customer_stripe_id) {
-            try {
-              const cust2 = await stripe.customers.retrieve(
-                (shipment as any).customer_stripe_id as string,
-              );
-              customerEmail = (cust2 as any)?.email || customerEmail;
-              customerName = (cust2 as any)?.name || customerName;
-            } catch (c2Err) {
-              console.warn(
-                "refund: fallback retrieve Stripe customer failed:",
-                c2Err,
-              );
-            }
-          }
-        }
-      } catch (shipEx) {
-        console.warn("refund: error fetching shipment/store:", shipEx);
-      }
-
-      if (customerEmail) {
-        await emailService.sendCustomerRefundConfirmation({
-          customerEmail,
-          customerName: customerName || "Client",
-          storeName,
-          paymentId,
-          refundId: refund.id,
-          amount: refundedAmountNumber / 100,
-          currency,
-          productReference,
-          shipmentId,
-        });
-      } else {
-        console.log(
-          "refund: no customer email available to send refund confirmation",
-          paymentId,
-        );
-      }
-    } catch (emailEx) {
-      console.error(
-        "refund: error while preparing/sending customer refund email:",
-        emailEx,
-      );
-    }
-
-    //mettre a jour la colonne refund de shipments
-    await supabase
-      .from("shipments")
-      .update({
-        refund: refund.id,
-      })
-      .eq("payment_id", paymentId);
-
-    return res.json({ success: true, refund });
-  } catch (error) {
-    return res
-      .status(500)
-      .json({ error: error instanceof Error ? error.message : "Erreur" });
-  }
-});
-
 router.post("/delete-coupon", async (req, res) => {
   try {
     const auth = getAuth(req);
@@ -437,6 +319,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       shippingHasBeenModified,
       tempCreditBalanceCents,
       openShipmentPaymentId,
+      promotionCodeId,
     } = req.body;
 
     const pickupPointCode = parcelPoint?.code || "";
@@ -605,12 +488,14 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       .filter((s) => s.length > 0)
       .join(";");
 
+    const promotionCodeIdTrim = String(promotionCodeId || "").trim();
     let storeIdForCheck: number | null = null;
+    let storePromoCodeIds: string[] = [];
     if (storeName) {
       const { data: storeRowForCheck, error: storeRowForCheckErr } =
         await supabase
           .from("stores")
-          .select("id")
+          .select("id,promo_code_id")
           .eq("name", storeName)
           .maybeSingle();
       if (storeRowForCheckErr) {
@@ -618,10 +503,39 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         return;
       }
       storeIdForCheck = (storeRowForCheck as any)?.id ?? null;
+      const rawPromoIds = String((storeRowForCheck as any)?.promo_code_id || "")
+        .trim()
+        .split(";;")
+        .map((s: any) => String(s || "").trim())
+        .filter(Boolean);
+      storePromoCodeIds = Array.from(
+        new Set(rawPromoIds.filter((id: string) => id.startsWith("promo_"))),
+      );
     }
     if (!storeIdForCheck) {
       res.status(400).json({ error: "Boutique introuvable" });
       return;
+    }
+    if (promotionCodeIdTrim) {
+      if (!promotionCodeIdTrim.startsWith("promo_")) {
+        res.status(400).json({ error: "Code promo invalide" });
+        return;
+      }
+      if (!storePromoCodeIds.includes(promotionCodeIdTrim)) {
+        res.status(400).json({ error: "Code promo non autorisé" });
+        return;
+      }
+      const rawCredit = (customer as any)?.metadata?.credit_balance;
+      const parsedCredit = Number.parseInt(String(rawCredit || "0"), 10);
+      const creditBalanceCents = Number.isFinite(parsedCredit)
+        ? parsedCredit
+        : 0;
+      if (creditBalanceCents > 0) {
+        res
+          .status(400)
+          .json({ error: "Code promo interdit avec un solde positif" });
+        return;
+      }
     }
 
     const stockByRef = new Map<
@@ -1132,10 +1046,14 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       }/payment/return?session_id={CHECKOUT_SESSION_ID}&store_name=${encodeURIComponent(
         slugify(storeName, { lower: true, strict: true }) || "default",
       )}`,
-      allow_promotion_codes: creditPromotionCodeId ? undefined : true,
-      discounts: creditPromotionCodeId
-        ? ([{ promotion_code: creditPromotionCodeId }] as any)
-        : undefined,
+      discounts:
+        creditPromotionCodeId || promotionCodeIdTrim
+          ? ([
+              {
+                promotion_code: creditPromotionCodeId || promotionCodeIdTrim,
+              },
+            ] as any)
+          : undefined,
       // Ajouter la collecte de consentement
       consent_collection: {
         terms_of_service: "required", // Rend la case à cocher obligatoire
@@ -1261,31 +1179,6 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
         : null;
     const paymentStatus =
       (paymentIntentObj?.status as any) || (session.payment_status as any);
-    let amountRefunded = 0;
-    const totalAmount = Number(
-      paymentIntentObj?.amount || session.amount_total || 0,
-    );
-    let refundDetails: any = null;
-    if (paymentStatus === "succeeded" && paymentIntentId) {
-      try {
-        const refunds = await stripe.refunds.list({
-          payment_intent: paymentIntentId,
-          limit: 20,
-        });
-        if ((refunds.data || []).length > 0) {
-          amountRefunded = (refunds.data || []).reduce((sum, r) => {
-            const amt = typeof (r as any)?.amount === "number" ? r.amount : 0;
-            return sum + amt;
-          }, 0);
-          refundDetails = {
-            refunded: true,
-            amount_refunded: amountRefunded,
-            is_partial: amountRefunded > 0 && amountRefunded < totalAmount,
-            refunds: refunds.data,
-          };
-        }
-      } catch (_e) {}
-    }
     const blockedReferencesRaw =
       (paymentIntentObj?.metadata as any)?.blocked_references ||
       (session.metadata as any)?.blocked_references ||
@@ -1297,11 +1190,13 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
             .map((s: string) => String(s || "").trim())
             .filter((s: string) => s.length > 0)
         : [];
-    const refundedReferencesRaw =
-      (paymentIntentObj?.metadata as any)?.refunded_references || null;
-    const refundedReferences =
-      typeof refundedReferencesRaw === "string" && refundedReferencesRaw
-        ? refundedReferencesRaw
+    const creditedReferencesRaw =
+      (paymentIntentObj?.metadata as any)?.credited_references ||
+      (paymentIntentObj?.metadata as any)?.refunded_references ||
+      null;
+    const creditedReferences =
+      typeof creditedReferencesRaw === "string" && creditedReferencesRaw
+        ? creditedReferencesRaw
             .split(";")
             .map((s: string) => String(s || "").trim())
             .filter((s: string) => s.length > 0)
@@ -1315,11 +1210,13 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
             .map((s: string) => String(s || "").trim())
             .filter((s: string) => s.length > 0)
         : [];
-    const refundAmountRaw =
-      (paymentIntentObj?.metadata as any)?.refund_amount || null;
-    const refundAmountMetadata =
-      typeof refundAmountRaw === "string" && refundAmountRaw
-        ? Number(refundAmountRaw)
+    const creditAmountRaw =
+      (paymentIntentObj?.metadata as any)?.credit_amount_cents ||
+      (paymentIntentObj?.metadata as any)?.refund_amount ||
+      null;
+    const creditAmountCents =
+      typeof creditAmountRaw === "string" && creditAmountRaw
+        ? Number(creditAmountRaw)
         : null;
 
     const storeNameFromSession = (session as any)?.metadata?.store_name;
@@ -1363,9 +1260,9 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
       session_status: session.payment_status,
       payment_intent_id: paymentIntentId,
       blocked_references: blockedReferences,
-      refunded_references: refundedReferences,
+      credited_references: creditedReferences,
       purchased_references: purchasedReferences,
-      refund_amount: refundAmountMetadata,
+      credit_amount_cents: creditAmountCents,
       deliveryMethod: deliveryMethodFromSession || undefined,
       parcelPointCode: parcelPointCodeFromSession || undefined,
       parcelPointName: parcelPointNameFromSession || undefined,
@@ -1433,12 +1330,12 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
     const result = {
       ...paymentDetails,
       businessStatus,
-      success: paymentStatus === "succeeded" && !refundDetails,
+      success: paymentStatus === "succeeded",
       failed: ["requires_payment_method", "canceled", "failed"].includes(
         String(paymentStatus || ""),
       ),
-      refunded: !!refundDetails,
-      refund_details: refundDetails,
+      credited:
+        Array.isArray(creditedReferences) && creditedReferences.length > 0,
     };
 
     res.json(result);
@@ -1634,6 +1531,37 @@ router.post("/promotion-codes", async (req, res) => {
     }
 
     const promotionCode = await stripe.promotionCodes.create(params);
+    const promoId = String((promotionCode as any)?.id || "").trim();
+    const storeSlugTrim = String(storeSlug || "").trim();
+    if (storeSlugTrim && promoId.startsWith("promo_")) {
+      const { data: storeRow, error: storeErr } = await supabase
+        .from("stores")
+        .select("id,promo_code_id")
+        .eq("slug", storeSlugTrim)
+        .maybeSingle();
+      if (storeErr) {
+        return res.status(500).json({ error: storeErr.message });
+      }
+      if (storeRow) {
+        const currentRaw = String(
+          (storeRow as any)?.promo_code_id || "",
+        ).trim();
+        const ids = currentRaw
+          ? currentRaw
+              .split(";;")
+              .map((s: any) => String(s || "").trim())
+              .filter(Boolean)
+          : [];
+        const next = Array.from(new Set([...ids, promoId])).join(";;");
+        const { error: updErr } = await supabase
+          .from("stores")
+          .update({ promo_code_id: next })
+          .eq("id", (storeRow as any).id);
+        if (updErr) {
+          return res.status(500).json({ error: updErr.message });
+        }
+      }
+    }
     return res.json({ promotionCode });
   } catch (error) {
     console.error("Erreur lors de la création du code promo:", error);
@@ -1704,6 +1632,41 @@ router.delete("/promotion-codes/:id", async (req, res) => {
     const promotionCode = await stripe.promotionCodes.update(String(id), {
       active: false,
     } as Stripe.PromotionCodeUpdateParams);
+
+    const promoId = String((promotionCode as any)?.id || "").trim();
+    const storeSlug = String(
+      (promotionCode as any)?.metadata?.storeSlug || "",
+    ).trim();
+    if (storeSlug && promoId.startsWith("promo_")) {
+      const { data: storeRow, error: storeErr } = await supabase
+        .from("stores")
+        .select("id,promo_code_id")
+        .eq("slug", storeSlug)
+        .maybeSingle();
+      if (storeErr) {
+        return res.status(500).json({ error: storeErr.message });
+      }
+      if (storeRow) {
+        const currentRaw = String(
+          (storeRow as any)?.promo_code_id || "",
+        ).trim();
+        const ids = currentRaw
+          ? currentRaw
+              .split(";;")
+              .map((s: any) => String(s || "").trim())
+              .filter(Boolean)
+          : [];
+        const filtered = ids.filter((pid: string) => pid !== promoId);
+        const next = filtered.join(";;");
+        const { error: updErr } = await supabase
+          .from("stores")
+          .update({ promo_code_id: next })
+          .eq("id", (storeRow as any).id);
+        if (updErr) {
+          return res.status(500).json({ error: updErr.message });
+        }
+      }
+    }
 
     return res.json({ success: true, promotionCode });
   } catch (error) {
