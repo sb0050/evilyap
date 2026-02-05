@@ -123,7 +123,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
         }
 
         let blockedFlowTriggered = false;
-        let refundAmountForMissingRefs = 0;
+        let creditAmountForMissingRefs = 0;
         let refsToProcessOverride: string[] | null = null;
         let productReferenceOverride: string | null = null;
         const sessionId = event.data.object.id;
@@ -275,7 +275,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                         const paymentTotal = Number(
                           pi.amount ?? session.amount_total ?? 0,
                         );
-                        let refundAmount = 0;
+                        let creditAmount = 0;
                         if (lineItemsResp?.data?.length) {
                           for (const item of lineItemsResp.data as any[]) {
                             const name = String(
@@ -284,28 +284,30 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                             if (name && missingRefs.includes(name)) {
                               const itemTotal = Number(item?.amount_total || 0);
                               if (Number.isFinite(itemTotal)) {
-                                refundAmount += itemTotal;
+                                creditAmount += itemTotal;
                               }
                             }
                           }
                         }
                         if (availableRefs.length === 0) {
-                          refundAmount = paymentTotal;
+                          creditAmount = paymentTotal;
                         }
-                        if (refundAmount > paymentTotal) {
-                          refundAmount = paymentTotal;
+                        if (creditAmount > paymentTotal) {
+                          creditAmount = paymentTotal;
                         }
                         console.log(
-                          "checkout.session.completed: refundAmount",
-                          refundAmount,
+                          "checkout.session.completed: creditAmount",
+                          creditAmount,
                         );
                         try {
                           await stripe.paymentIntents.update(pi.id, {
                             metadata: {
                               ...(pi.metadata || {}),
-                              refunded_references: missingRefs.join(";"),
+                              credited_references: missingRefs.join(";"),
                               purchased_references: availableRefs.join(";"),
-                              refund_amount: String(Math.round(refundAmount)),
+                              credit_amount_cents: String(
+                                Math.round(creditAmount),
+                              ),
                             },
                           });
                         } catch (metaErr: any) {
@@ -314,22 +316,79 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                             metaErr?.message || metaErr,
                           );
                         }
-                        if (refundAmount > 0) {
+                        const creditAmountCents = Math.round(creditAmount);
+                        if (creditAmountCents > 0 && resolvedCustomerId) {
                           try {
-                            const refund = await stripe.refunds.create({
-                              payment_intent: pi.id,
-                              amount: Math.round(refundAmount),
-                              reason: "requested_by_customer",
-                            } as any);
-                            console.log(
-                              "checkout.session.completed: Refund created:",
-                              refund.id,
+                            const existingCreditIssuedParsed = Number.parseInt(
+                              String(
+                                (pi.metadata as any)?.credit_issued_cents ||
+                                  "0",
+                              ),
+                              10,
                             );
-                            refundAmountForMissingRefs = refundAmount;
-                          } catch (refundErr: any) {
+                            const existingCreditIssuedCents =
+                              Number.isFinite(existingCreditIssuedParsed) &&
+                              existingCreditIssuedParsed > 0
+                                ? existingCreditIssuedParsed
+                                : 0;
+                            if (
+                              existingCreditIssuedCents === creditAmountCents
+                            ) {
+                              creditAmountForMissingRefs = creditAmountCents;
+                            } else if (existingCreditIssuedCents > 0) {
+                              console.warn(
+                                "checkout.session.completed: credit already issued with different amount",
+                                {
+                                  paymentIntentId: pi.id,
+                                  existingCreditIssuedCents,
+                                  creditAmountCents,
+                                },
+                              );
+                            } else {
+                              const cust = (await stripe.customers.retrieve(
+                                resolvedCustomerId,
+                              )) as Stripe.Customer;
+                              if (cust && !("deleted" in cust)) {
+                                const meta = (cust as any)?.metadata || {};
+                                const prevBalanceParsed = Number.parseInt(
+                                  String(meta?.credit_balance || "0"),
+                                  10,
+                                );
+                                const prevBalanceCents = Number.isFinite(
+                                  prevBalanceParsed,
+                                )
+                                  ? prevBalanceParsed
+                                  : 0;
+                                const nextBalanceCents =
+                                  prevBalanceCents + creditAmountCents;
+                                await stripe.customers.update(
+                                  resolvedCustomerId,
+                                  {
+                                    metadata: {
+                                      ...meta,
+                                      credit_balance: String(nextBalanceCents),
+                                    },
+                                  } as any,
+                                  {
+                                    idempotencyKey: `credit-missingrefs-${pi.id}`,
+                                  } as any,
+                                );
+                                try {
+                                  await stripe.paymentIntents.update(pi.id, {
+                                    metadata: {
+                                      ...(pi.metadata || {}),
+                                      credit_issued_cents:
+                                        String(creditAmountCents),
+                                    },
+                                  });
+                                } catch (_e) {}
+                                creditAmountForMissingRefs = creditAmountCents;
+                              }
+                            }
+                          } catch (creditErr: any) {
                             console.warn(
-                              "checkout.session.completed: Create refund failed:",
-                              refundErr?.message || refundErr,
+                              "checkout.session.completed: credit issue failed:",
+                              creditErr?.message || creditErr,
                             );
                           }
                         }
@@ -526,7 +585,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             session.metadata?.product_reference ||
             "N/A";
           const amount = paymentIntent?.amount ?? session.amount_total ?? 0;
-          const netAmount = Math.max(0, amount - refundAmountForMissingRefs);
+          const netAmount = Math.max(0, amount - creditAmountForMissingRefs);
           const currency = paymentIntent?.currency ?? session.currency ?? "eur";
           const paymentId = paymentIntent?.id ?? session.id;
           const weight = formatWeight(session.metadata?.weight);

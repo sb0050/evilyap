@@ -794,26 +794,68 @@ router.delete("/shipping-orders/:id", async (req, res) => {
             ? amountRaw + deliveryCostRaw
             : amountRaw;
 
-        await emailService.sendAdminRefundRequest({
-          storeName,
-          storeOwnerEmail,
-          storeSlug,
-          shippingOrderId: id,
-          boxtalStatus: String(payload?.content?.status || ""),
-          shipmentId: shipment ? String(shipment.id) : undefined,
-          customerName,
-          customerEmail,
-          customerStripeId,
-          productReference: shipment?.product_reference || undefined,
-          amount: amountRaw,
-          deliveryCost: deliveryCostRaw,
-          total: totalRaw,
-          currency: "EUR",
-          paymentId: shipment?.payment_id,
-        });
+        const paymentId = String(shipment?.payment_id || "").trim();
+        const creditCents =
+          typeof totalRaw === "number" && Number.isFinite(totalRaw) && totalRaw > 0
+            ? Math.round(totalRaw * 100)
+            : 0;
+
+        if (stripe && customerStripeId && creditCents > 0) {
+          let alreadyIssued = false;
+          if (paymentId) {
+            try {
+              const pi = await stripe.paymentIntents.retrieve(paymentId);
+              const issuedParsed = Number.parseInt(
+                String(
+                  (pi.metadata as any)?.boxtal_cancel_credit_cents || "0",
+                ),
+                10,
+              );
+              alreadyIssued =
+                Number.isFinite(issuedParsed) && issuedParsed === creditCents;
+            } catch (_e) {}
+          }
+
+          if (!alreadyIssued) {
+            const cust = (await stripe.customers.retrieve(
+              customerStripeId,
+            )) as Stripe.Customer;
+            if (cust && !("deleted" in cust)) {
+              const meta = (cust as any)?.metadata || {};
+              const prevBalanceParsed = Number.parseInt(
+                String(meta?.credit_balance || "0"),
+                10,
+              );
+              const prevBalanceCents = Number.isFinite(prevBalanceParsed)
+                ? prevBalanceParsed
+                : 0;
+              const nextBalanceCents = prevBalanceCents + creditCents;
+              await stripe.customers.update(
+                customerStripeId,
+                {
+                  metadata: {
+                    ...meta,
+                    credit_balance: String(nextBalanceCents),
+                  },
+                } as any,
+                { idempotencyKey: `credit-boxtal-cancel-${id}` } as any,
+              );
+              if (paymentId) {
+                try {
+                  await stripe.paymentIntents.update(paymentId, {
+                    metadata: {
+                      boxtal_cancel_credit_cents: String(creditCents),
+                      boxtal_cancel_shipping_order_id: String(id),
+                    },
+                  });
+                } catch (_e) {}
+              }
+            }
+          }
+        }
       }
-    } catch (emailErr) {
-      console.error("Failed to send admin refund email:", emailErr);
+    } catch (creditErr) {
+      console.error("Failed to issue credit after Boxtal cancel:", creditErr);
     }
 
     return res.status(200).json(payload);

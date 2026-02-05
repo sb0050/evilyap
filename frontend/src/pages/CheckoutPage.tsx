@@ -44,6 +44,7 @@ interface Store {
   stripe_id?: string;
   website?: string;
   is_verified?: boolean;
+  promo_code_id?: string | null;
   address?: {
     city?: string;
     line1?: string;
@@ -102,6 +103,8 @@ export default function CheckoutPage() {
     reference: '',
     description: '',
   });
+  const [promoCodeId, setPromoCodeId] = useState<string>('');
+  const [promoCodeError, setPromoCodeError] = useState<string | null>(null);
   const [address, setAddress] = useState<Address>();
   const [selectedParcelPoint, setSelectedParcelPoint] =
     useState<ParcelPointData | null>(null);
@@ -831,6 +834,28 @@ export default function CheckoutPage() {
     }
   };
 
+  const allowedPromoCodeIds = (() => {
+    const raw = String((store as any)?.promo_code_id || '').trim();
+    if (!raw) return [];
+    return Array.from(
+      new Set(
+        raw
+          .split(';;')
+          .map(s => String(s || '').trim())
+          .filter(Boolean)
+          .filter(id => id.startsWith('promo_'))
+      )
+    );
+  })();
+
+  const creditBalanceCents = (() => {
+    const raw = (customerData as any)?.metadata?.credit_balance;
+    const parsed = Number.parseInt(String(raw || '0'), 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  })();
+
+  const canEnterPromoCode = customerDetailsLoaded && creditBalanceCents <= 0;
+
   const handleProceedToPayment = async () => {
     if (
       (!isFormComplete() && cartItemsForStore.length === 0) ||
@@ -957,6 +982,39 @@ export default function CheckoutPage() {
             : null,
       };
 
+      const enteredPromoCodeId = String(promoCodeId || '').trim();
+      if (enteredPromoCodeId) {
+        if (!customerDetailsLoaded) {
+          const msg = 'Chargement des informations client…';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+        if (!canEnterPromoCode) {
+          const msg =
+            'Vous ne pouvez pas utiliser de code promo avec un solde positif.';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+        if (promoCodeError) {
+          const msg = promoCodeError;
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+        if (!allowedPromoCodeIds.includes(enteredPromoCodeId)) {
+          const msg = 'Code promo non autorisé pour cette boutique.';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+      }
+
       const openShipmentMode =
         String(searchParams.get('open_shipment') || '') === 'true' &&
         Boolean(String(searchParams.get('payment_id') || '').trim());
@@ -1021,6 +1079,7 @@ export default function CheckoutPage() {
               (md.deliveryNetwork as any) ||
               ((md.metadata || {})?.delivery_network as any) ||
               '',
+        promotionCodeId: enteredPromoCodeId || '',
       };
 
       const response = await fetch(
@@ -1721,6 +1780,50 @@ export default function CheckoutPage() {
                       <span>Total</span>
                       <span>{Number(cartTotalForStore || 0).toFixed(2)} €</span>
                     </div>
+                    {canEnterPromoCode && allowedPromoCodeIds.length > 0 ? (
+                      <div className='mt-3'>
+                        <label
+                          htmlFor='cart-promo-code'
+                          className='block text-sm font-medium text-gray-700 mb-1'
+                        >
+                          Code promo
+                        </label>
+                        <input
+                          id='cart-promo-code'
+                          value={promoCodeId}
+                          onChange={e => {
+                            const next = String(e.target.value || '').trim();
+                            setPromoCodeId(next);
+                            if (!next) {
+                              setPromoCodeError(null);
+                              return;
+                            }
+                            if (!next.startsWith('promo_')) {
+                              setPromoCodeError('Code promo invalide.');
+                              return;
+                            }
+                            if (!allowedPromoCodeIds.includes(next)) {
+                              setPromoCodeError(
+                                'Code promo non autorisé pour cette boutique.'
+                              );
+                              return;
+                            }
+                            setPromoCodeError(null);
+                          }}
+                          placeholder='promo_...'
+                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                        />
+                        {promoCodeError ? (
+                          <p className='text-xs text-red-600 mt-1'>
+                            {promoCodeError}
+                          </p>
+                        ) : (
+                          <p className='text-xs text-gray-500 mt-1'>
+                            Un seul code promo (optionnel).
+                          </p>
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 )}
 
