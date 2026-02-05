@@ -58,7 +58,7 @@ type Shipment = {
   tracking_url?: string | null;
   store?: StoreInfo | null;
   is_final_destination?: boolean | null;
-  promo_codes?: string | null;
+  promo_code_id?: string | null;
   product_value?: number | null;
   estimated_delivery_cost?: number | null;
 };
@@ -69,6 +69,10 @@ export default function OrdersPage() {
   const [shipments, setShipments] = useState<Shipment[]>([]);
   const [loading, setLoading] = useState(true);
   const [reloadingOrders, setReloadingOrders] = useState(false);
+  const [creditBalanceCents, setCreditBalanceCents] = useState<number | null>(
+    null
+  );
+  const [reloadingBalance, setReloadingBalance] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [returnStatus, setReturnStatus] = useState<
     Record<number, 'idle' | 'loading' | 'success' | 'error'>
@@ -266,6 +270,23 @@ export default function OrdersPage() {
 
   // Popover Headless UI gère la fermeture extérieure et via Esc
 
+  const loadCreditBalance = async (stripeId: string, token: string | null) => {
+    const url = `${apiBase}/api/stripe/customer-credit-balance?customerId=${encodeURIComponent(
+      stripeId
+    )}`;
+    const resp = await fetch(url, {
+      headers: {
+        Authorization: token ? `Bearer ${token}` : '',
+      },
+    });
+    const json = await resp.json();
+    if (!resp.ok) {
+      throw new Error(json?.error || 'Erreur lors du chargement du solde');
+    }
+    const cents = Number(json?.credit_balance_cents ?? 0);
+    setCreditBalanceCents(Number.isFinite(cents) ? cents : 0);
+  };
+
   useEffect(() => {
     const run = async () => {
       try {
@@ -294,6 +315,7 @@ export default function OrdersPage() {
           );
         }
         setShipments(Array.isArray(json?.shipments) ? json.shipments : []);
+        await loadCreditBalance(stripeId, token || null);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Erreur inconnue');
       } finally {
@@ -306,6 +328,7 @@ export default function OrdersPage() {
   const handleRefreshOrders = async () => {
     try {
       setReloadingOrders(true);
+      setReloadingBalance(true);
       setError(null);
       const token = await getToken();
       await (user as any).reload();
@@ -330,11 +353,13 @@ export default function OrdersPage() {
         );
       }
       setShipments(Array.isArray(json?.shipments) ? json.shipments : []);
+      await loadCreditBalance(stripeId, token || null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Erreur inconnue';
       setError(msg);
     } finally {
       setReloadingOrders(false);
+      setReloadingBalance(false);
     }
   };
 
@@ -1015,6 +1040,29 @@ export default function OrdersPage() {
           <h1 className='hidden sm:block text-xl sm:text-3xl font-bold text-gray-900 mb-2'>
             Suivi de mes commandes
           </h1>
+        </div>
+        <div className='text-center mb-4'>
+          <div className='inline-flex items-center gap-2 rounded-md bg-gray-100 px-3 py-2 text-sm font-semibold text-gray-900'>
+            <span>Solde</span>
+            <span className='text-gray-400'>—</span>
+            {creditBalanceCents === null ? (
+              <span className='text-gray-700'>
+                {reloadingBalance ? 'Chargement…' : '—'}
+              </span>
+            ) : (
+              <span
+                className={
+                  creditBalanceCents < 0
+                    ? 'text-red-600'
+                    : creditBalanceCents > 0
+                      ? 'text-green-600'
+                      : 'text-gray-700'
+                }
+              >
+                {formatValue(creditBalanceCents / 100)}
+              </span>
+            )}
+          </div>
         </div>
 
         <div className='bg-white rounded-lg shadow-md p-6'>
