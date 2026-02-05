@@ -872,7 +872,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       }
     }
 
-    const orderLineItems: Array<{ price: string; quantity: number }> = [];
+    const orderLineItems: any[] = [];
     const defaultPriceByStripeProductId = new Map<string, string>();
     for (const it of resolvedItems as any[]) {
       const pid = String(it.product_stripe_id || "").trim();
@@ -936,10 +936,32 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       });
       orderLineItems.push({ price: pr.id, quantity: qty });
     }
+    const currencyLower = String(currency || "eur").toLowerCase();
+
+    let deliveryDebtPaidCents = 0;
+    if (customerId && customer) {
+      const rawCredit = (customer.metadata as any)?.credit_balance;
+      const parsedCredit = Number.parseInt(String(rawCredit || "0"), 10);
+      if (Number.isFinite(parsedCredit) && parsedCredit < 0) {
+        deliveryDebtPaidCents = Math.abs(parsedCredit);
+      }
+    }
+
+    if (deliveryDebtPaidCents > 0) {
+      orderLineItems.push({
+        price_data: {
+          currency: currencyLower,
+          product_data: {
+            name: "Régularisation livraison",
+          },
+          unit_amount: deliveryDebtPaidCents,
+        },
+        quantity: 1,
+      });
+    }
+
     const finalLineItems =
       orderLineItems.length > 0 ? orderLineItems : undefined;
-
-    const currencyLower = String(currency || "eur").toLowerCase();
     const subtotalExclShippingCents = incomingItems.reduce((sum, it) => {
       const unitCents = Math.max(0, Math.round(Number(it.price || 0) * 100));
       const qty = Math.max(0, Math.round(Number(it.quantity || 1)));
@@ -991,12 +1013,13 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     }
 
     const totalDiscountCents = tempAppliedCents + creditAppliedCents;
+    const totalDiscount = Math.ceil(totalDiscountCents / 100);
 
     if (customerId && totalDiscountCents > 0) {
       const coupon = await stripe.coupons.create({
         amount_off: totalDiscountCents,
         currency: currencyLower,
-        name: `Crédit personnalisé pour client`,
+        name: `CREDIT-${totalDiscount}`,
         duration: "once",
       });
       creditCouponId = coupon.id;
@@ -1036,6 +1059,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           temp_credit_balance_cents: String(tempBalanceCents || 0),
           temp_credit_applied_cents: String(tempAppliedCents || 0),
           temp_credit_topup_cents: String(tempTopupCents || 0),
+          delivery_debt_paid_cents: String(deliveryDebtPaidCents || 0),
           credit_applied_cents: String(creditAppliedCents || 0),
           credit_balance_before_cents:
             creditBalanceBeforeCents === null
@@ -1087,6 +1111,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         temp_credit_balance_cents: String(tempBalanceCents || 0),
         temp_credit_applied_cents: String(tempAppliedCents || 0),
         temp_credit_topup_cents: String(tempTopupCents || 0),
+        delivery_debt_paid_cents: String(deliveryDebtPaidCents || 0),
         credit_applied_cents: String(creditAppliedCents || 0),
         credit_balance_before_cents:
           creditBalanceBeforeCents === null
@@ -1107,7 +1132,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       }/payment/return?session_id={CHECKOUT_SESSION_ID}&store_name=${encodeURIComponent(
         slugify(storeName, { lower: true, strict: true }) || "default",
       )}`,
-      //allow_promotion_codes: true,
+      allow_promotion_codes: creditPromotionCodeId ? undefined : true,
       discounts: creditPromotionCodeId
         ? ([{ promotion_code: creditPromotionCodeId }] as any)
         : undefined,
@@ -1453,6 +1478,44 @@ router.get("/get-customer-by-id", async (req, res) => {
   } catch (error) {
     console.error("Error retrieving customer by ID:", error);
     res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+router.get("/customer-credit-balance", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth?.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const customerId = String((req.query.customerId as any) || "").trim();
+    if (!customerId) {
+      return res.status(400).json({ error: "Customer ID is required" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const expectedCustomerId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    if (!expectedCustomerId || expectedCustomerId !== customerId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const customer = await stripe.customers.retrieve(customerId);
+    if (!customer || (customer as any).deleted) {
+      return res.status(404).json({ error: "Customer not found" });
+    }
+
+    const rawCredit = ((customer as any)?.metadata as any)?.credit_balance;
+    const parsed = Number.parseInt(String(rawCredit || "0"), 10);
+    const cents = Number.isFinite(parsed) ? parsed : 0;
+    return res.json({
+      credit_balance_cents: cents,
+      credit_balance_eur: cents / 100,
+    });
+  } catch (error) {
+    console.error("Error retrieving customer credit balance:", error);
+    return res.status(500).json({ error: (error as Error).message });
   }
 });
 

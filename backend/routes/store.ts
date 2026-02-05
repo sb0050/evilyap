@@ -596,7 +596,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
     for (let from = 0; ; from += pageSizeDb) {
       const q = supabase
         .from("shipments")
-        .select("payment_id, estimated_delivery_cost, delivery_cost")
+        .select("payment_id")
         .eq("store_id", storeId)
         .not("payment_id", "is", null)
         .order("id", { ascending: false })
@@ -615,17 +615,6 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       .map((r) => String((r as any)?.payment_id || "").trim())
       .filter(Boolean);
     const paymentIdSet = new Set(paymentIdsAll);
-
-    const deliveryGapByPaymentId = new Map<string, number>();
-    for (const r of paymentRows) {
-      const pid = String((r as any)?.payment_id || "").trim();
-      if (!pid) continue;
-      const est = Number((r as any)?.estimated_delivery_cost || 0);
-      const act = Number((r as any)?.delivery_cost || 0);
-      const diff = est - act;
-      const gap = Number.isFinite(diff) ? Math.min(0, diff) : 0;
-      deliveryGapByPaymentId.set(pid, gap);
-    }
 
     const listAllCheckoutSessionsAfter = async (options?: {
       startTimestamp?: number;
@@ -722,9 +711,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         typeof refundCentsList[idx] === "number"
           ? refundCentsList[idx]
           : Number(refundedByPaymentId.get(paymentId) || 0);
-      const gapEuro = Number(deliveryGapByPaymentId.get(paymentId) || 0);
-      const gapCents = Math.round(gapEuro * 100);
-      const netCents = totalCents - refundedCents + gapCents;
+      const netCents = totalCents - refundedCents;
       return sum + (Number.isFinite(netCents) ? Math.max(0, netCents) : 0);
     }, 0);
 
@@ -839,9 +826,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         const shippingCents = Number(session?.shipping_cost?.amount_total || 0);
         const totalCents = Number(session?.amount_total || 0);
         const refundedCents = Number(refundedByPaymentId.get(paymentId) || 0);
-        const deliveryGap = Number(deliveryGapByPaymentId.get(paymentId) || 0);
         const baseNet = (totalCents - refundedCents) / 100;
-        const netTotal = baseNet + deliveryGap;
 
         let lineItems: any[] = [];
         try {
@@ -881,10 +866,9 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
           },
           items,
           shipping_fee: shippingCents / 100,
-          delivery_gap: deliveryGap,
           total: totalCents / 100,
           refunded_total: refundedCents / 100,
-          net_total: Number.isFinite(netTotal) ? netTotal : baseNet,
+          net_total: baseNet,
         };
       },
     );
@@ -1342,10 +1326,6 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
             k: "Remboursé",
             v: moneyFmt.format(Number((tx as any)?.refunded_total || 0)),
           },
-          {
-            k: "Écart livraison",
-            v: moneyFmt.format(Number((tx as any)?.delivery_gap || 0)),
-          },
           { k: "Net", v: moneyFmt.format(Number((tx as any)?.net_total || 0)) },
         ];
         for (const { k, v } of kv) {
@@ -1542,7 +1522,7 @@ router.get("/:storeSlug/transactions", async (req, res) => {
     for (let from = 0; ; from += pageSizeDb) {
       const q = supabase
         .from("shipments")
-        .select("payment_id, estimated_delivery_cost, delivery_cost")
+        .select("payment_id")
         .eq("store_id", storeId)
         .not("payment_id", "is", null)
         .order("id", { ascending: false })
@@ -1560,17 +1540,6 @@ router.get("/:storeSlug/transactions", async (req, res) => {
     const paymentIdsAll = paymentRows
       .map((r) => String((r as any)?.payment_id || "").trim())
       .filter(Boolean);
-
-    const deliveryGapByPaymentId = new Map<string, number>();
-    for (const r of paymentRows) {
-      const pid = String((r as any)?.payment_id || "").trim();
-      if (!pid) continue;
-      const est = Number((r as any)?.estimated_delivery_cost || 0);
-      const act = Number((r as any)?.delivery_cost || 0);
-      const diff = est - act;
-      const gap = Number.isFinite(diff) ? Math.min(0, diff) : 0;
-      deliveryGapByPaymentId.set(pid, gap);
-    }
 
     const paymentIdSet = new Set(paymentIdsAll);
 
@@ -1670,9 +1639,7 @@ router.get("/:storeSlug/transactions", async (req, res) => {
           ? refundCentsList[idx]
           : Number(refundedByPaymentId.get(paymentId) || 0);
       const baseNet = (totalCents - refundedCents) / 100;
-      const gap = Number(deliveryGapByPaymentId.get(paymentId) || 0);
-      const net = baseNet + gap;
-      return sum + (Number.isFinite(net) ? net : 0);
+      return sum + (Number.isFinite(baseNet) ? baseNet : 0);
     }, 0);
 
     uniqMatchedSessions.sort(
@@ -1697,9 +1664,7 @@ router.get("/:storeSlug/transactions", async (req, res) => {
       const shippingCents = Number(session?.shipping_cost?.amount_total || 0);
       const totalCents = Number(session?.amount_total || 0);
       const refundedCents = Number(refundedByPaymentId.get(paymentId) || 0);
-      const deliveryGap = Number(deliveryGapByPaymentId.get(paymentId) || 0);
       const baseNet = (totalCents - refundedCents) / 100;
-      const netTotal = baseNet + deliveryGap;
 
       let lineItems: any[] = [];
       try {
@@ -1740,10 +1705,9 @@ router.get("/:storeSlug/transactions", async (req, res) => {
         },
         items,
         shipping_fee: shippingCents / 100,
-        delivery_gap: deliveryGap,
         total: totalCents / 100,
         refunded_total: refundedCents / 100,
-        net_total: Number.isFinite(netTotal) ? netTotal : baseNet,
+        net_total: baseNet,
       };
     });
 

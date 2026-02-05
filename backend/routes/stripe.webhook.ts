@@ -398,10 +398,11 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             String((customer.metadata as any)?.credit_balance || "0"),
             10,
           );
-          const currentBalanceCents =
-            Number.isFinite(currentBalanceParsed) && currentBalanceParsed > 0
-              ? currentBalanceParsed
-              : 0;
+          const currentBalanceCents = Number.isFinite(currentBalanceParsed)
+            ? currentBalanceParsed
+            : 0;
+          const expectedDeliveryDebtCents =
+            currentBalanceCents < 0 ? Math.abs(currentBalanceCents) : 0;
 
           const stripeCreditAppliedCents =
             promoCreditBalanceAppliedCents > 0
@@ -415,7 +416,69 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               ? tempTopupCentsParsed
               : 0;
 
-          if (stripeCreditAppliedCents > 0 || tempTopupCents > 0) {
+          const deliveryDebtPaidCentsParsed = Number.parseInt(
+            String(session.metadata?.delivery_debt_paid_cents || "0"),
+            10,
+          );
+          const deliveryDebtPaidCents =
+            Number.isFinite(deliveryDebtPaidCentsParsed) &&
+            deliveryDebtPaidCentsParsed > 0
+              ? deliveryDebtPaidCentsParsed
+              : 0;
+
+          let deliveryDebtLineItemAmountCents = 0;
+          if (expectedDeliveryDebtCents > 0 && lineItemsResp?.data) {
+            const items: any[] = Array.isArray(lineItemsResp.data)
+              ? lineItemsResp.data
+              : [];
+            const debtItem = items.find((it: any) => {
+              const desc = String(it?.description || "").trim();
+              const pname = String(it?.price?.product?.name || "").trim();
+              const name = (desc || pname).toLowerCase();
+              return name === "régularisation livraison";
+            });
+            if (debtItem) {
+              const raw = Number(
+                debtItem?.amount_total ??
+                  debtItem?.price?.unit_amount ??
+                  debtItem?.amount_subtotal ??
+                  0,
+              );
+              deliveryDebtLineItemAmountCents = Number.isFinite(raw) ? raw : 0;
+            }
+          }
+
+          const shouldResetDebtBalance =
+            expectedDeliveryDebtCents > 0 &&
+            deliveryDebtLineItemAmountCents === expectedDeliveryDebtCents;
+
+          if (expectedDeliveryDebtCents > 0 && !shouldResetDebtBalance) {
+            console.warn(
+              "checkout.session.completed: delivery debt mismatch, skipping credit_balance reset",
+              {
+                sessionId: session.id,
+                customerId,
+                expectedDeliveryDebtCents,
+                deliveryDebtPaidCents,
+                deliveryDebtLineItemAmountCents,
+              },
+            );
+          }
+
+          if (shouldResetDebtBalance) {
+            try {
+              await stripe.customers.update(
+                customerId,
+                { metadata: { credit_balance: "0" } },
+                { idempotencyKey: `credit-debt-${session.id}` },
+              );
+            } catch (e) {
+              console.warn(
+                "checkout.session.completed webhook: unable to reset credit_balance:",
+                (e as any)?.message || e,
+              );
+            }
+          } else if (stripeCreditAppliedCents > 0 || tempTopupCents > 0) {
             const nextBalanceCents =
               Math.max(0, currentBalanceCents - stripeCreditAppliedCents) +
               tempTopupCents;
@@ -507,6 +570,17 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               }
             }
           }
+          const vendorPromoCodeId =
+            promoCodeDetails.find((d: any) => {
+              const code = String(d?.code || "")
+                .trim()
+                .toUpperCase();
+              if (!code) return false;
+              if (code.startsWith("CREDIT-")) return false;
+              if (code.startsWith("PAYLIVE-")) return false;
+              const id = String(d?.id || "").trim();
+              return id.startsWith("promo_") || id.startsWith("promo-");
+            })?.id || null;
 
           const products = (lineItemsResp?.data || [])
             .map((item: any) => ({
@@ -981,11 +1055,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 : null,
               delivery_cost:
                 (dataBoxtal?.content?.deliveryPriceExclTax?.value || 0) * 1.2,
-              promo_codes:
-                promoCodeDetails
-                  .map((d: any) => d?.code || d?.id || "")
-                  .filter(Boolean)
-                  .join(";") || null,
+              promo_code_id: vendorPromoCodeId,
               product_value: (products?.[0]?.unit_price || 0) / 100,
               estimated_delivery_cost: (estimatedDeliveryCost || 0) / 100,
             };

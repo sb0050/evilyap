@@ -88,7 +88,7 @@ type Shipment = {
   is_final_destination?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
-  promo_codes?: string | null;
+  promo_code_id?: string | null;
   product_value?: number | null;
   estimated_delivery_cost?: number | null;
   facture_id?: number | string | null;
@@ -120,7 +120,6 @@ type WalletTransaction = {
   };
   items: WalletTransactionItem[];
   shipping_fee: number;
-  delivery_gap?: number;
   total: number;
   refunded_total: number;
   net_total: number;
@@ -483,9 +482,23 @@ export default function DashboardPage() {
       });
       const json = await resp.json().catch(() => ({}));
       const list = Array.isArray(json?.data) ? json.data : [];
-      setCouponOptions(list);
-      if (!promoSelectedCouponId && list.length > 0) {
-        setPromoSelectedCouponId(list[0].id);
+      const filtered = list.filter((opt: any) => {
+        const label = String(opt?.name || opt?.id || '')
+          .trim()
+          .toUpperCase();
+        if (!label) return false;
+        if (label.startsWith('CREDIT-')) return false;
+        if (label.startsWith('PAYLIVE-')) return false;
+        return true;
+      });
+      setCouponOptions(filtered);
+      if (filtered.length === 0) {
+        setPromoSelectedCouponId('');
+      } else if (
+        !promoSelectedCouponId ||
+        !filtered.some((c: any) => c?.id === promoSelectedCouponId)
+      ) {
+        setPromoSelectedCouponId(filtered[0].id);
       }
     } catch (e: any) {
       const raw = e?.message || 'Erreur lors du chargement des coupons';
@@ -551,6 +564,11 @@ export default function DashboardPage() {
       const code = (promoCodeName || '').trim();
       if (!promoSelectedCouponId || !code) {
         showToast('Veuillez choisir un coupon et saisir un code', 'error');
+        return;
+      }
+      const codeUpper = code.toUpperCase();
+      if (codeUpper.startsWith('CREDIT-') || codeUpper.startsWith('PAYLIVE-')) {
+        showToast('Ce préfixe est réservé (CREDIT- / PAYLIVE-)', 'error');
         return;
       }
       // Validation date d'expiration
@@ -4862,9 +4880,6 @@ export default function DashboardPage() {
                               Remboursé
                             </th>
                             <th className='text-right py-3 px-4 font-semibold text-gray-700'>
-                              Écart livraison
-                            </th>
-                            <th className='text-right py-3 px-4 font-semibold text-gray-700'>
                               Net
                             </th>
                           </tr>
@@ -4941,11 +4956,6 @@ export default function DashboardPage() {
                                   >
                                     {formatValue(tx.refunded_total)}
                                   </span>
-                                </td>
-                                <td className='py-3 px-4 text-right text-red-600 font-semibold whitespace-nowrap'>
-                                  {Number(tx.delivery_gap || 0) < 0
-                                    ? formatValue(Number(tx.delivery_gap || 0))
-                                    : '0'}
                                 </td>
                                 <td className='py-3 px-4 text-right text-gray-900 font-semibold whitespace-nowrap'>
                                   {formatValue(tx.net_total)}
@@ -5840,7 +5850,7 @@ export default function DashboardPage() {
                                 (s.estimated_delivery_cost ?? 0)
                             )}
                           </div>
-                          {s.promo_codes && (
+                          {s.promo_code_id && (
                             <div className='text-xs text-gray-500'>
                               <span className='line-through'>
                                 {formatValue(s.product_value)}
@@ -5855,7 +5865,7 @@ export default function DashboardPage() {
                                 )
                               )}{' '}
                               de remise avec le code :
-                              {s.promo_codes?.replace(/;/g, ', ')})
+                              {String(s.promo_code_id || '')})
                             </div>
                           )}
                         </div>
@@ -6138,7 +6148,7 @@ export default function DashboardPage() {
                           </td>
                           <td className='py-4 px-4 text-gray-900 font-semibold'>
                             {(() => {
-                              const hasPromo = !!s.promo_codes;
+                              const hasPromo = !!s.promo_code_id;
                               const finalValue =
                                 (s.paid_value ?? 0) -
                                 (s.estimated_delivery_cost ?? 0);
@@ -6159,7 +6169,7 @@ export default function DashboardPage() {
                                         )
                                       )}{' '}
                                       de remise avec le code:{' '}
-                                      {s.promo_codes!.replace(';', ', ')})
+                                      {String(s.promo_code_id || '')})
                                     </div>
                                   )}
                                 </>
@@ -6461,16 +6471,12 @@ export default function DashboardPage() {
                   });
 
                   const spentMap: Record<string, number> = {};
-                  const deliveryDiffMap: Record<string, number> = {};
                   (shipments || []).forEach(s => {
                     const id = s.customer_stripe_id || '';
                     if (!id) return;
                     const v =
                       (s.paid_value ?? 0) - (s.estimated_delivery_cost ?? 0);
                     spentMap[id] = (spentMap[id] || 0) + v;
-                    const diff =
-                      (s.estimated_delivery_cost ?? 0) - (s.delivery_cost ?? 0);
-                    deliveryDiffMap[id] = (deliveryDiffMap[id] || 0) + diff;
                   });
 
                   // Tri par "Dépensé"
@@ -6491,7 +6497,6 @@ export default function DashboardPage() {
                     id,
                     data: customersMap[id] || null,
                     spent: spentMap[id] || 0,
-                    deliveryDiff: deliveryDiffMap[id] || 0,
                   }));
 
                   return (
@@ -6591,22 +6596,6 @@ export default function DashboardPage() {
                                   <div className='text-sm font-semibold text-gray-900'>
                                     {formatValue(r.spent)}
                                   </div>
-                                  {(() => {
-                                    const diff = Number(r.deliveryDiff || 0);
-                                    const color =
-                                      diff > 0
-                                        ? 'text-green-600'
-                                        : diff < 0
-                                          ? 'text-red-600'
-                                          : 'text-gray-900';
-                                    return (
-                                      <div
-                                        className={`text-xs font-semibold ${color}`}
-                                      >
-                                        {formatValue(diff)}
-                                      </div>
-                                    );
-                                  })()}
                                 </div>
                               </div>
 
@@ -7004,9 +6993,6 @@ export default function DashboardPage() {
                                 </div>
                               </th>
                               <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                                Écart Livraison
-                              </th>
-                              <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                                 Réseaux Sociaux
                               </th>
                             </tr>
@@ -7080,22 +7066,6 @@ export default function DashboardPage() {
                                   </td>
                                   <td className='py-4 px-4 text-gray-700'>
                                     {formatValue(r.spent)}
-                                  </td>
-                                  <td className='py-4 px-4 text-gray-700'>
-                                    {(() => {
-                                      const diff = Number(r.deliveryDiff || 0);
-                                      const color =
-                                        diff > 0
-                                          ? 'text-green-600'
-                                          : diff < 0
-                                            ? 'text-red-600'
-                                            : 'text-gray-900';
-                                      return (
-                                        <span className={color}>
-                                          {formatValue(diff)}
-                                        </span>
-                                      );
-                                    })()}
                                   </td>
                                   <td className='py-4 px-4 text-gray-700'>
                                     {(() => {
