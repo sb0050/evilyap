@@ -597,8 +597,71 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
           const estimatedDeliveryCost =
             session.shipping_cost?.amount_total || 0;
 
-          if (session.discounts?.length) {
-            for (const discount of session.discounts) {
+          let expandedSession: any = session;
+          try {
+            expandedSession = await stripe.checkout.sessions.retrieve(
+              sessionId,
+              {
+                expand: [
+                  "total_details.breakdown.discounts.discount",
+                  "total_details.breakdown.discounts.discount.promotion_code",
+                  "total_details.breakdown.discounts.discount.coupon",
+                ],
+              } as any,
+            );
+          } catch (_e) {
+            expandedSession = session;
+          }
+
+          const breakdownDiscounts: any[] = Array.isArray(
+            (expandedSession as any)?.total_details?.breakdown?.discounts,
+          )
+            ? ((expandedSession as any).total_details.breakdown
+                .discounts as any[])
+            : [];
+
+          if (breakdownDiscounts.length > 0) {
+            for (const d of breakdownDiscounts) {
+              const amountOff = Math.max(0, Math.round(Number(d?.amount || 0)));
+              const discountObj: any = d?.discount || {};
+              try {
+                const promo = discountObj?.promotion_code;
+                if (promo) {
+                  let promoCode: any = promo;
+                  if (typeof promo === "string") {
+                    promoCode = await stripe.promotionCodes.retrieve(promo);
+                  }
+                  promoCodeDetails.push({
+                    code: promoCode?.code || null,
+                    id: promoCode?.id || null,
+                    amount_off: amountOff,
+                    coupon: promoCode?.coupon || null,
+                  });
+                  continue;
+                }
+                const coupon = discountObj?.coupon;
+                if (coupon) {
+                  let couponObj: any = coupon;
+                  if (typeof coupon === "string") {
+                    couponObj = await stripe.coupons.retrieve(coupon);
+                  }
+                  promoCodeDetails.push({
+                    code: null,
+                    id: couponObj?.id || null,
+                    amount_off: amountOff,
+                    coupon: couponObj || null,
+                  });
+                  continue;
+                }
+              } catch (error) {
+                console.error(
+                  "checkout.session.completed webhook: Erreur lors de la récupération du code promo :",
+                  error,
+                );
+              }
+            }
+          } else if ((session as any).discounts?.length) {
+            for (const discount of (session as any).discounts) {
               try {
                 if (discount.promotion_code) {
                   const promoCode = await stripe.promotionCodes.retrieve(
@@ -629,17 +692,22 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               }
             }
           }
-          const vendorPromoCodeId =
-            promoCodeDetails.find((d: any) => {
-              const code = String(d?.code || "")
-                .trim()
-                .toUpperCase();
-              if (!code) return false;
-              if (code.startsWith("CREDIT-")) return false;
-              if (code.startsWith("PAYLIVE-")) return false;
-              const id = String(d?.id || "").trim();
-              return id.startsWith("promo_") || id.startsWith("promo-");
-            })?.id || null;
+
+          const appliedPromoCodes =
+            Array.from(
+              new Set(
+                promoCodeDetails
+                  .map((d: any) =>
+                    String(d?.code || "")
+                      .trim()
+                      .toUpperCase(),
+                  )
+                  .filter(Boolean)
+                  .filter((c: string) => !c.startsWith("CREDIT-")),
+              ),
+            ).join(";;") || null;
+
+          const regulationName = "Régularisation livraison";
 
           const products = (lineItemsResp?.data || [])
             .map((item: any) => ({
@@ -649,10 +717,12 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               image: item.price.product.images?.[0],
               quantity: item.quantity,
               amount_total: item.amount_total,
+              amount_subtotal: item.amount_subtotal,
               currency: item.currency,
               unit_price: item.price.unit_amount,
               price_id: item.price.id,
             }))
+            .filter((p: any) => String(p?.name || "").trim() !== regulationName)
             .filter((p: any) => {
               if (
                 !refsToProcessOverride ||
@@ -663,6 +733,58 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               const name = String(p?.name || "").trim();
               return name && refsToProcessOverride.includes(name);
             });
+          const nonRegItemsSubtotalCents = (lineItemsResp?.data || []).reduce(
+            (sum: number, item: any) => {
+              const name = String(item?.price?.product?.name || "").trim();
+              if (name === regulationName) return sum;
+              const vRaw =
+                item?.amount_subtotal ??
+                item?.amount_total ??
+                item?.amount ??
+                0;
+              const v = Math.max(0, Math.round(Number(vRaw || 0)));
+              return sum + v;
+            },
+            0,
+          );
+          const shippingCostCents = Math.max(
+            0,
+            Math.round(
+              Number(
+                (expandedSession as any)?.shipping_cost?.amount_total || 0,
+              ),
+            ),
+          );
+
+          let storePromoDiscountCents = 0;
+          let paylivePromoDiscountCents = 0;
+          for (const d of promoCodeDetails) {
+            const code = String(d?.code || "")
+              .trim()
+              .toUpperCase();
+            const amountOff = Math.max(
+              0,
+              Math.round(Number(d?.amount_off || 0)),
+            );
+            if (!code || amountOff <= 0) continue;
+            if (code.startsWith("CREDIT-")) continue;
+            if (code.startsWith("PAYLIVE-")) {
+              paylivePromoDiscountCents += amountOff;
+              continue;
+            }
+            storePromoDiscountCents += amountOff;
+          }
+
+          const storeEarningsAmountCents = Math.max(
+            0,
+            nonRegItemsSubtotalCents - storePromoDiscountCents,
+          );
+          const customerSpentAmountCents = Math.max(
+            0,
+            nonRegItemsSubtotalCents +
+              shippingCostCents -
+              (storePromoDiscountCents + paylivePromoDiscountCents),
+          );
 
           let storeOwnerEmail = null;
           let storeDescription = null;
@@ -1062,34 +1184,31 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             const _productReference =
               (() => {
                 if (Array.isArray(products) && products.length > 0) {
-                  const m = new Map<
-                    string,
-                    { quantity: number; description?: string | null }
-                  >();
+                  const ids: string[] = [];
                   for (const p of products) {
-                    const n = String((p as any)?.name || "").trim();
-                    if (!n) continue;
-                    const q = Number((p as any)?.quantity || 1);
-                    const rawDesc = String(
-                      (p as any)?.description || "",
-                    ).trim();
-                    const desc = rawDesc
-                      ? rawDesc.replace(/[\r\n]+/g, " ").replace(/;+/g, ", ")
-                      : "";
-                    const prev = m.get(n) || { quantity: 0, description: null };
-                    m.set(n, {
-                      quantity: prev.quantity + q,
-                      description: prev.description || desc || null,
-                    });
+                    const pid = String((p as any)?.id || "").trim();
+                    if (!pid || !pid.startsWith("prod_")) continue;
+                    const qRaw = Number((p as any)?.quantity || 1);
+                    const q =
+                      Number.isFinite(qRaw) && qRaw > 0 ? Math.floor(qRaw) : 1;
+                    for (let i = 0; i < q; i++) ids.push(pid);
                   }
-                  return Array.from(m.entries())
-                    .map(([n, info]) => {
-                      const q = info.quantity;
-                      const d = String(info.description || "").trim();
-                      return `${n}**${q}${d ? `(${d})` : ""}`;
-                    })
-                    .filter((s) => s && s.length > 0)
+                  const joined = ids.filter(Boolean).join(";");
+                  if (joined) return joined;
+                }
+                const metaRaw =
+                  String(
+                    (session as any)?.metadata?.stripe_product_ids ||
+                      (paymentIntent as any)?.metadata?.stripe_product_ids ||
+                      "",
+                  ).trim() || "";
+                if (metaRaw) {
+                  const joined = metaRaw
+                    .split(";")
+                    .map((s) => String(s || "").trim())
+                    .filter((s) => s.startsWith("prod_"))
                     .join(";");
+                  if (joined) return joined;
                 }
                 return productReference;
               })() || null;
@@ -1108,14 +1227,14 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               weight: Number.isFinite(weight) ? weight : null,
               product_reference: _productReference,
               payment_id: paymentIntent?.id || null,
-              paid_value: (netAmount || 0) / 100,
+              store_earnings_amount: storeEarningsAmountCents,
+              customer_spent_amount: customerSpentAmountCents,
               boxtal_shipping_json: boxtalOrderFailed
                 ? JSON.stringify(createOrderPayload)
                 : null,
               delivery_cost:
                 (dataBoxtal?.content?.deliveryPriceExclTax?.value || 0) * 1.2,
-              promo_code_id: vendorPromoCodeId,
-              product_value: (products?.[0]?.unit_price || 0) / 100,
+              promo_code: appliedPromoCodes,
               estimated_delivery_cost: (estimatedDeliveryCost || 0) / 100,
             };
 

@@ -155,6 +155,63 @@ router.get("/get-customer-details", async (req, res) => {
   }
 });
 
+router.post("/products/by-ids", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const idsRaw = (req.body as any)?.ids;
+    const ids = Array.isArray(idsRaw)
+      ? idsRaw
+          .map((v: any) => String(v || "").trim())
+          .filter((s: string) => s.startsWith("prod_"))
+      : [];
+
+    const uniqueIds = Array.from(new Set(ids)).slice(0, 200);
+    if (uniqueIds.length === 0) {
+      return res.json({ success: true, products: [] });
+    }
+
+    const results: any[] = [];
+    let idx = 0;
+    const maxConcurrent = 10;
+    const workers = new Array(maxConcurrent).fill(null).map(async () => {
+      while (idx < uniqueIds.length) {
+        const i = idx++;
+        const pid = uniqueIds[i];
+        try {
+          const p = (await stripe.products.retrieve(pid, {
+            expand: ["default_price"],
+          } as any)) as any;
+          if (!p || p.deleted) continue;
+          const dp: any = p.default_price;
+          const unitAmount =
+            dp && typeof dp === "object" ? Number(dp.unit_amount || 0) : null;
+          results.push({
+            id: String(p.id || pid),
+            name: String(p.name || "").trim() || null,
+            description: String(p.description || "").trim() || null,
+            unit_amount_cents:
+              typeof unitAmount === "number" && Number.isFinite(unitAmount)
+                ? unitAmount
+                : null,
+          });
+        } catch (_e) {}
+      }
+    });
+    await Promise.all(workers);
+
+    return res.json({ success: true, products: results });
+  } catch (e: any) {
+    const msg = e?.message || "Erreur interne du serveur";
+    return res.status(500).json({
+      error: typeof msg === "string" ? msg : "Erreur interne du serveur",
+    });
+  }
+});
+
 // Endpoint dédié pour créer un client Stripe (sans adresse/phone/shipping)
 router.post("/create-customer", async (req, res) => {
   try {
@@ -272,11 +329,21 @@ router.post("/delete-coupon", async (req, res) => {
         } catch (_e) {}
       }
 
-      await stripe.coupons.del(cid);
+      const existingMetadata =
+        coupon && !("deleted" in coupon)
+          ? ((coupon as any)?.metadata as Record<string, string>) || {}
+          : {};
+      await stripe.coupons.update(cid, {
+        metadata: {
+          ...existingMetadata,
+          archived: "true",
+          archived_at: String(Date.now()),
+        },
+      } as any);
 
       return res.json({
         success: true,
-        action: "delete",
+        action: "archive",
         couponId: cid,
         couponName: (coupon as any)?.name || null,
         associatedCodes: promotionCodes.data.map((pc) => pc.code),
@@ -479,6 +546,14 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       product_stripe_id?: string;
       weight?: number;
     }> = Array.isArray(items) ? items : [];
+    const refToStripeProductId = new Map<string, string>();
+    for (const it of incomingItems) {
+      const ref = String(it.reference || "").trim();
+      const pid = String((it as any)?.product_stripe_id || "").trim();
+      if (ref && pid && pid.startsWith("prod_")) {
+        if (!refToStripeProductId.has(ref)) refToStripeProductId.set(ref, pid);
+      }
+    }
     const refsForCheck = incomingItems
       .map((it) => String(it.reference || "").trim())
       .filter((s) => s.length > 0);
@@ -488,14 +563,16 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       .filter((s) => s.length > 0)
       .join(";");
 
-    const promotionCodeIdTrim = String(promotionCodeId || "").trim();
+    const promotionInputTrim = String(promotionCodeId || "").trim();
+    const promotionInputUpper = promotionInputTrim.toUpperCase();
+    let promotionCodeIdTrim = "";
     let storeIdForCheck: number | null = null;
-    let storePromoCodeIds: string[] = [];
+    let storePromoCodesUpper: string[] = [];
     if (storeName) {
       const { data: storeRowForCheck, error: storeRowForCheckErr } =
         await supabase
           .from("stores")
-          .select("id,promo_code_id")
+          .select("id,promo_code")
           .eq("name", storeName)
           .maybeSingle();
       if (storeRowForCheckErr) {
@@ -503,28 +580,65 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         return;
       }
       storeIdForCheck = (storeRowForCheck as any)?.id ?? null;
-      const rawPromoIds = String((storeRowForCheck as any)?.promo_code_id || "")
+      const rawPromoCodes = String((storeRowForCheck as any)?.promo_code || "")
         .trim()
         .split(";;")
         .map((s: any) => String(s || "").trim())
         .filter(Boolean);
-      storePromoCodeIds = Array.from(
-        new Set(rawPromoIds.filter((id: string) => id.startsWith("promo_"))),
+      storePromoCodesUpper = Array.from(
+        new Set(
+          rawPromoCodes
+            .map((c: string) => c.trim().toUpperCase())
+            .filter(Boolean)
+            .filter((c: string) => !c.startsWith("CREDIT-")),
+        ),
       );
     }
     if (!storeIdForCheck) {
       res.status(400).json({ error: "Boutique introuvable" });
       return;
     }
-    if (promotionCodeIdTrim) {
-      if (!promotionCodeIdTrim.startsWith("promo_")) {
+    if (promotionInputTrim) {
+      try {
+        let resolvedPromo: any = null;
+        if (promotionInputTrim.startsWith("promo_")) {
+          resolvedPromo =
+            await stripe.promotionCodes.retrieve(promotionInputTrim);
+        } else {
+          const promoList = await stripe.promotionCodes.list({
+            code: promotionInputUpper,
+            active: true,
+            limit: 1,
+          } as any);
+          resolvedPromo = Array.isArray((promoList as any)?.data)
+            ? (promoList as any).data[0]
+            : null;
+        }
+
+        const resolvedId = String(resolvedPromo?.id || "").trim();
+        const resolvedCodeUpper = String(resolvedPromo?.code || "")
+          .trim()
+          .toUpperCase();
+        if (!resolvedId || !resolvedCodeUpper) {
+          res.status(400).json({ error: "Code promo invalide" });
+          return;
+        }
+
+        const resolvedIsPaylive = resolvedCodeUpper.startsWith("PAYLIVE-");
+        if (
+          !resolvedIsPaylive &&
+          !storePromoCodesUpper.includes(resolvedCodeUpper)
+        ) {
+          res.status(400).json({ error: "Code promo non autorisé" });
+          return;
+        }
+
+        promotionCodeIdTrim = resolvedId;
+      } catch (_e) {
         res.status(400).json({ error: "Code promo invalide" });
         return;
       }
-      if (!storePromoCodeIds.includes(promotionCodeIdTrim)) {
-        res.status(400).json({ error: "Code promo non autorisé" });
-        return;
-      }
+
       const rawCredit = (customer as any)?.metadata?.credit_balance;
       const parsedCredit = Number.parseInt(String(rawCredit || "0"), 10);
       const creditBalanceCents = Number.isFinite(parsedCredit)
@@ -766,7 +880,14 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         .from("shipments")
         .select("id")
         .eq("store_id", storeIdForCheck)
-        .or(buildProductReferenceOrFilter(ref))
+        .or(
+          (() => {
+            const pid = String(refToStripeProductId.get(ref) || "").trim();
+            return pid && pid.startsWith("prod_")
+              ? buildProductReferenceOrFilter(pid)
+              : buildProductReferenceOrFilter(ref);
+          })(),
+        )
         .not("payment_id", "is", null)
         .limit(1);
 
@@ -787,12 +908,19 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     }
 
     const orderLineItems: any[] = [];
-    const defaultPriceByStripeProductId = new Map<string, string>();
+    const stripeProductIdsForShipment: string[] = [];
+    const defaultPriceByStripeProductId = new Map<
+      string,
+      { priceId: string; unitAmountCents: number }
+    >();
+    let subtotalExclShippingCents = 0;
     for (const it of resolvedItems as any[]) {
       const pid = String(it.product_stripe_id || "").trim();
       const qty = Math.max(1, Math.round(Number(it.quantity || 1)));
       if (pid && pid.startsWith("prod_")) {
-        let priceId = defaultPriceByStripeProductId.get(pid) || "";
+        const cached = defaultPriceByStripeProductId.get(pid) || null;
+        let priceId = String(cached?.priceId || "").trim();
+        let unitAmountCents = Number(cached?.unitAmountCents || 0);
         if (!priceId) {
           const p = stripeProductsById.get(pid);
           const candidate =
@@ -800,24 +928,59 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
               ? String((p as any).default_price)
               : String(((p as any)?.default_price as any)?.id || "").trim();
           if (candidate) {
-            priceId = candidate;
-          } else {
+            try {
+              const pr = (await stripe.prices.retrieve(candidate)) as any;
+              const prId = String(pr?.id || "").trim();
+              const prUnit = Number(pr?.unit_amount || 0);
+              if (prId && Number.isFinite(prUnit) && prUnit > 0) {
+                priceId = prId;
+                unitAmountCents = prUnit;
+              }
+            } catch (_e) {}
+          }
+          if (!priceId) {
             try {
               const list = await stripe.prices.list({
                 product: pid,
                 active: true,
-                limit: 1,
+                limit: 100,
               });
-              const first = Array.isArray(list?.data) ? list.data[0] : null;
-              priceId = String(first?.id || "").trim();
+              const prices = Array.isArray((list as any)?.data)
+                ? (list as any).data
+                : [];
+              const eur = prices.find(
+                (pr: any) =>
+                  String(pr?.currency || "").toLowerCase() === "eur" &&
+                  Number(pr?.unit_amount || 0) > 0,
+              );
+              const anyActive = prices.find(
+                (pr: any) => Number(pr?.unit_amount || 0) > 0,
+              );
+              const picked = eur || anyActive || null;
+              priceId = String((picked as any)?.id || "").trim();
+              unitAmountCents = Number((picked as any)?.unit_amount || 0);
             } catch (_e) {}
           }
           if (priceId) {
-            defaultPriceByStripeProductId.set(pid, priceId);
+            defaultPriceByStripeProductId.set(pid, {
+              priceId,
+              unitAmountCents:
+                Number.isFinite(unitAmountCents) && unitAmountCents > 0
+                  ? unitAmountCents
+                  : 0,
+            });
           }
         }
         if (priceId) {
           orderLineItems.push({ price: priceId, quantity: qty });
+          for (let i = 0; i < qty; i++) stripeProductIdsForShipment.push(pid);
+          if (
+            Number.isFinite(unitAmountCents) &&
+            unitAmountCents > 0 &&
+            qty > 0
+          ) {
+            subtotalExclShippingCents += unitAmountCents * qty;
+          }
           continue;
         }
       }
@@ -843,6 +1006,51 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           ? { metadata: { weight: String(computedUnitKg) } }
           : {}),
       });
+      {
+        const pid = String((p as any)?.id || "").trim();
+        if (pid && pid.startsWith("prod_")) {
+          for (let i = 0; i < qty; i++) stripeProductIdsForShipment.push(pid);
+        }
+      }
+      try {
+        const ref = String(it.reference || "").trim();
+        if (storeIdForCheck && ref) {
+          const unitWeight =
+            Number.isFinite(computedUnitKg) && computedUnitKg >= 0
+              ? computedUnitKg
+              : 0;
+          const payload: any = {
+            store_id: storeIdForCheck,
+            product_reference: ref,
+            quantity: 1,
+            weight: unitWeight,
+            product_stripe_id: p.id,
+          };
+
+          let insertErr: any = null;
+          {
+            const resp = await supabase.from("stock").insert([payload]);
+            insertErr = resp.error as any;
+          }
+          if (insertErr && String(insertErr?.code || "") === "23505") {
+            const updatePayload: any = {
+              product_stripe_id: p.id,
+              weight: unitWeight,
+            };
+            await supabase
+              .from("stock")
+              .update(updatePayload)
+              .eq("store_id", storeIdForCheck)
+              .eq("product_reference", ref);
+          }
+        }
+      } catch (e) {
+        console.error("Erreur insertion stock (produit Stripe dynamique):", e);
+      }
+      {
+        const unitCents = Math.max(0, Math.round(Number(it.price || 0) * 100));
+        subtotalExclShippingCents += unitCents * qty;
+      }
       const pr = await stripe.prices.create({
         product: p.id,
         unit_amount: Math.round(Number(it.price || 0) * 100),
@@ -876,12 +1084,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
 
     const finalLineItems =
       orderLineItems.length > 0 ? orderLineItems : undefined;
-    const subtotalExclShippingCents = incomingItems.reduce((sum, it) => {
-      const unitCents = Math.max(0, Math.round(Number(it.price || 0) * 100));
-      const qty = Math.max(0, Math.round(Number(it.quantity || 1)));
-      return sum + unitCents * qty;
-    }, 0);
-
+    const stripeProductIdsJoined =
+      stripeProductIdsForShipment
+        .map((s) => String(s || "").trim())
+        .filter((s) => s.startsWith("prod_"))
+        .join(";") || "";
     const tempCentsParsed = Number.parseInt(
       String(tempCreditBalanceCents ?? "0"),
       10,
@@ -965,6 +1172,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         metadata: {
           store_name: storeName || "PayLive",
           product_reference: joinedRefs || "N/A",
+          stripe_product_ids: stripeProductIdsJoined,
           cart_item_ids: Array.isArray(cartItemIds)
             ? (cartItemIds as any[]).join(",")
             : typeof cartItemIds === "string"
@@ -992,6 +1200,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       metadata: {
         store_name: storeName || "PayLive",
         product_reference: joinedRefs || "N/A",
+        stripe_product_ids: stripeProductIdsJoined,
         delivery_method: deliveryMethod || "",
         delivery_network: deliveryNetwork || "",
         weight: String(weightKg || 0),
@@ -1289,6 +1498,22 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
         if (!storeErr) {
           const storeId = (storeRow as any)?.id ?? null;
           if (storeId) {
+            const refToPid = new Map<string, string>();
+            try {
+              const { data: stockRows } = await supabase
+                .from("stock")
+                .select("product_reference,product_stripe_id")
+                .eq("store_id", storeId)
+                .in("product_reference", uniqueRefs as any);
+              for (const r of Array.isArray(stockRows) ? stockRows : []) {
+                const ref = String((r as any)?.product_reference || "").trim();
+                const pid = String((r as any)?.product_stripe_id || "").trim();
+                if (ref && pid && pid.startsWith("prod_")) {
+                  if (!refToPid.has(ref)) refToPid.set(ref, pid);
+                }
+              }
+            } catch (_e) {}
+
             for (const ref of uniqueRefs) {
               const { data: failedCart, error: failedErr } = await supabase
                 .from("carts")
@@ -1309,7 +1534,14 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
                   .from("shipments")
                   .select("id")
                   .eq("store_id", storeId)
-                  .or(buildProductReferenceOrFilter(ref))
+                  .or(
+                    (() => {
+                      const pid = String(refToPid.get(ref) || "").trim();
+                      return pid && pid.startsWith("prod_")
+                        ? buildProductReferenceOrFilter(pid)
+                        : buildProductReferenceOrFilter(ref);
+                    })(),
+                  )
                   .not("payment_id", "is", null)
                   .limit(1);
                 if (!shippedErr && (shippedRows || []).length > 0) {
@@ -1531,31 +1763,38 @@ router.post("/promotion-codes", async (req, res) => {
     }
 
     const promotionCode = await stripe.promotionCodes.create(params);
-    const promoId = String((promotionCode as any)?.id || "").trim();
     const storeSlugTrim = String(storeSlug || "").trim();
-    if (storeSlugTrim && promoId.startsWith("promo_")) {
+    const promoCodeUpper = String((promotionCode as any)?.code || "")
+      .trim()
+      .toUpperCase();
+    if (storeSlugTrim && promoCodeUpper) {
       const { data: storeRow, error: storeErr } = await supabase
         .from("stores")
-        .select("id,promo_code_id")
+        .select("id,promo_code")
         .eq("slug", storeSlugTrim)
         .maybeSingle();
       if (storeErr) {
         return res.status(500).json({ error: storeErr.message });
       }
       if (storeRow) {
-        const currentRaw = String(
-          (storeRow as any)?.promo_code_id || "",
-        ).trim();
-        const ids = currentRaw
+        const currentRaw = String((storeRow as any)?.promo_code || "").trim();
+        const codes = currentRaw
           ? currentRaw
               .split(";;")
               .map((s: any) => String(s || "").trim())
               .filter(Boolean)
           : [];
-        const next = Array.from(new Set([...ids, promoId])).join(";;");
+        const next = Array.from(
+          new Set(
+            [...codes, promoCodeUpper].map((c) => c.trim().toUpperCase()),
+          ),
+        )
+          .filter(Boolean)
+          .filter((c) => !c.startsWith("CREDIT-"))
+          .join(";;");
         const { error: updErr } = await supabase
           .from("stores")
-          .update({ promo_code_id: next })
+          .update({ promo_code: next })
           .eq("id", (storeRow as any).id);
         if (updErr) {
           return res.status(500).json({ error: updErr.message });
@@ -1565,6 +1804,14 @@ router.post("/promotion-codes", async (req, res) => {
     return res.json({ promotionCode });
   } catch (error) {
     console.error("Erreur lors de la création du code promo:", error);
+    const msg = String((error as any)?.message || "");
+    const normalized = msg.toLowerCase();
+    if (
+      normalized.includes("promotion code") &&
+      normalized.includes("already exists")
+    ) {
+      return res.status(409).json({ error: "Ce nom de code existe déjà" });
+    }
     return res
       .status(500)
       .json({ error: error instanceof Error ? error.message : "Erreur" });
@@ -1633,34 +1880,40 @@ router.delete("/promotion-codes/:id", async (req, res) => {
       active: false,
     } as Stripe.PromotionCodeUpdateParams);
 
-    const promoId = String((promotionCode as any)?.id || "").trim();
     const storeSlug = String(
       (promotionCode as any)?.metadata?.storeSlug || "",
     ).trim();
-    if (storeSlug && promoId.startsWith("promo_")) {
+    const promoCodeUpper = String((promotionCode as any)?.code || "")
+      .trim()
+      .toUpperCase();
+    if (storeSlug && promoCodeUpper) {
       const { data: storeRow, error: storeErr } = await supabase
         .from("stores")
-        .select("id,promo_code_id")
+        .select("id,promo_code")
         .eq("slug", storeSlug)
         .maybeSingle();
       if (storeErr) {
         return res.status(500).json({ error: storeErr.message });
       }
       if (storeRow) {
-        const currentRaw = String(
-          (storeRow as any)?.promo_code_id || "",
-        ).trim();
-        const ids = currentRaw
+        const currentRaw = String((storeRow as any)?.promo_code || "").trim();
+        const codes = currentRaw
           ? currentRaw
               .split(";;")
               .map((s: any) => String(s || "").trim())
               .filter(Boolean)
           : [];
-        const filtered = ids.filter((pid: string) => pid !== promoId);
-        const next = filtered.join(";;");
+        const filtered = codes.filter(
+          (c: string) => c.trim().toUpperCase() !== promoCodeUpper,
+        );
+        const next = filtered
+          .map((c: string) => c.trim().toUpperCase())
+          .filter(Boolean)
+          .filter((c: string) => !c.startsWith("CREDIT-"))
+          .join(";;");
         const { error: updErr } = await supabase
           .from("stores")
-          .update({ promo_code_id: next })
+          .update({ promo_code: next })
           .eq("id", (storeRow as any).id);
         if (updErr) {
           return res.status(500).json({ error: updErr.message });

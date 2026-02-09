@@ -591,98 +591,37 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       return out;
     };
 
-    const paymentRows: any[] = [];
+    const payoutsSinceIso = Number.isFinite(lastPayoutMs)
+      ? new Date(lastPayoutMs).toISOString()
+      : null;
+
+    const payoutShipments: any[] = [];
     const pageSizeDb = 1000;
     for (let from = 0; ; from += pageSizeDb) {
-      const q = supabase
+      let q = supabase
         .from("shipments")
-        .select("payment_id")
+        .select(
+          "id, payment_id, created_at, customer_stripe_id, product_reference, promo_code, store_earnings_amount",
+        )
         .eq("store_id", storeId)
         .not("payment_id", "is", null)
-        .order("id", { ascending: false })
+        .order("created_at", { ascending: false })
         .range(from, from + pageSizeDb - 1);
+
+      if (payoutsSinceIso) q = q.gt("created_at", payoutsSinceIso);
 
       const { data, error } = await q;
       if (error) {
-        console.error("Erreur Supabase (list shipments payment_id):", error);
+        console.error("Erreur Supabase (list shipments for payout):", error);
         return res.status(500).json({ error: error.message });
       }
-      paymentRows.push(...(data || []));
+      payoutShipments.push(...(data || []));
       if (!data || data.length < pageSizeDb) break;
     }
 
-    const paymentIdsAll = paymentRows
-      .map((r) => String((r as any)?.payment_id || "").trim())
-      .filter(Boolean);
-    const paymentIdSet = new Set(paymentIdsAll);
-
-    const listAllCheckoutSessionsAfter = async (options?: {
-      startTimestamp?: number;
-    }): Promise<any[]> => {
-      const out: any[] = [];
-      let hasMore = true;
-      let startingAfter: string | undefined = undefined;
-
-      const queryParams: any = {
-        limit: 100,
-        expand: ["data.customer", "data.shipping_cost"],
-      };
-      if (options?.startTimestamp) {
-        queryParams.created = { gte: options.startTimestamp };
-      }
-
-      while (hasMore) {
-        if (startingAfter) queryParams.starting_after = startingAfter;
-        const page = await stripe.checkout.sessions.list(queryParams);
-        out.push(...(page.data || []));
-        hasMore = Boolean(page.has_more);
-        if (hasMore && (page.data || []).length > 0) {
-          startingAfter = (page.data || [])[(page.data || []).length - 1]?.id;
-        }
-      }
-
-      return out;
-    };
-
-    const allSessionsAfter = await listAllCheckoutSessionsAfter({
-      startTimestamp: lastPayoutTimestamp,
-    });
-
-    const matchedSessions = allSessionsAfter
-      .map((s) => {
-        const pid =
-          typeof (s as any)?.payment_intent === "string"
-            ? String((s as any).payment_intent)
-            : String((s as any)?.payment_intent?.id || "");
-        const paymentId = pid.trim();
-        if (!paymentId) return null;
-        if (!paymentIdSet.has(paymentId)) return null;
-        return { session: s, paymentId };
-      })
-      .filter(Boolean) as Array<{ session: any; paymentId: string }>;
-
-    const uniqByPaymentId = new Map<
-      string,
-      { session: any; paymentId: string }
-    >();
-    for (const it of matchedSessions) {
-      const existing = uniqByPaymentId.get(it.paymentId);
-      if (!existing) {
-        uniqByPaymentId.set(it.paymentId, it);
-        continue;
-      }
-      const prevCreated = Number((existing.session as any)?.created || 0);
-      const nextCreated = Number((it.session as any)?.created || 0);
-      if (nextCreated > prevCreated) {
-        uniqByPaymentId.set(it.paymentId, it);
-      }
-    }
-    const uniqMatchedSessions = Array.from(uniqByPaymentId.values());
-
-    const grossCents = uniqMatchedSessions.reduce((sum, it) => {
-      const s = it.session as any;
-      const totalCents = Number(s?.amount_total || 0);
-      return sum + (Number.isFinite(totalCents) ? Math.max(0, totalCents) : 0);
+    const grossCents = payoutShipments.reduce((sum, r) => {
+      const v = Number((r as any)?.store_earnings_amount || 0);
+      return sum + (Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0);
     }, 0);
 
     if (!Number.isFinite(grossCents) || grossCents <= 0) {
@@ -775,88 +714,143 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         .json({ error: "Erreur lors de la mise à jour des infos bancaires" });
     }
 
-    uniqMatchedSessions.sort(
-      (a, b) =>
-        Number((b.session as any)?.created || 0) -
-        Number((a.session as any)?.created || 0),
-    );
+    const formatPromoCodeForStore = (raw: any): string | null => {
+      const tokens = String(raw || "")
+        .split(";;")
+        .map((s) => String(s || "").trim())
+        .filter(Boolean)
+        .filter((s) => !s.toUpperCase().startsWith("PAYLIVE-"));
+      return tokens.length > 0 ? tokens.join(", ") : null;
+    };
 
-    const transactions: any[] = await mapWithLimit(
-      uniqMatchedSessions,
-      6,
-      async (it) => {
-        const session = it.session as any;
-        const paymentId = it.paymentId;
-        const created = Number(session?.created || 0);
-        const currency = String(session?.currency || "eur").toLowerCase();
-        const customerObj =
-          session?.customer && typeof session.customer === "object"
-            ? (session.customer as any)
+    const transactions: any[] = payoutShipments.map((r) => {
+      const createdAt = String((r as any)?.created_at || "").trim();
+      const createdMs = createdAt ? new Date(createdAt).getTime() : NaN;
+      const created = Number.isFinite(createdMs)
+        ? Math.floor(createdMs / 1000)
+        : 0;
+      const paymentId = String((r as any)?.payment_id || "").trim() || "—";
+      const customerId =
+        String((r as any)?.customer_stripe_id || "").trim() || null;
+      const netCentsRaw = Number((r as any)?.store_earnings_amount || 0);
+      const netCents =
+        Number.isFinite(netCentsRaw) && netCentsRaw > 0
+          ? Math.round(netCentsRaw)
+          : 0;
+      return {
+        payment_id: paymentId,
+        created,
+        currency: "eur",
+        customer: { id: customerId },
+        product_reference:
+          String((r as any)?.product_reference || "").trim() || null,
+        promo_code: formatPromoCodeForStore((r as any)?.promo_code),
+        net_total: netCents / 100,
+      };
+    });
+
+    const extractStripeProductIds = (raw: any): string[] =>
+      String(raw || "")
+        .split(";")
+        .map((s) => String(s || "").trim())
+        .filter((s) => s.startsWith("prod_"));
+
+    const formatArticlesFromIds = (
+      raw: any,
+      productsById: Map<
+        string,
+        { id: string; name?: string | null; unit_amount_cents?: number | null }
+      >,
+    ): string | null => {
+      const ids = extractStripeProductIds(raw);
+      if (ids.length === 0) return null;
+      const counts = new Map<string, number>();
+      for (const id of ids) counts.set(id, (counts.get(id) || 0) + 1);
+      const parts: string[] = [];
+      for (const [id, qty] of counts.entries()) {
+        const p = productsById.get(id) || null;
+        const label = String(p?.name || "").trim() || id;
+        const base = qty > 1 ? `${label}(x${qty})` : label;
+        const unit =
+          typeof p?.unit_amount_cents === "number" &&
+          Number.isFinite(p.unit_amount_cents) &&
+          p.unit_amount_cents > 0
+            ? p.unit_amount_cents
             : null;
-        const shippingCents = Number(session?.shipping_cost?.amount_total || 0);
-        const totalCents = Number(session?.amount_total || 0);
-        const baseNet = totalCents / 100;
+        parts.push(
+          unit != null ? `${base} — ${(unit / 100).toFixed(2)}€` : base,
+        );
+      }
+      return parts.length > 0 ? parts.join(", ") : null;
+    };
 
-        let lineItems: any[] = [];
-        try {
-          const liResp: any = await stripe.checkout.sessions.listLineItems(
-            String(session?.id || ""),
-            { limit: 100, expand: ["data.price.product"] } as any,
-          );
-          lineItems = Array.isArray(liResp?.data) ? liResp.data : [];
-        } catch {}
-
-        const items = lineItems.map((li) => {
-          const price = (li as any)?.price || null;
-          const unit = Number((price as any)?.unit_amount || 0);
-          const qty = Number((li as any)?.quantity || 1);
-          const product = (price as any)?.product || null;
-          const ref = String(
-            (product as any)?.name || (li as any)?.description || "",
-          ).trim();
-          const desc = String((product as any)?.description || "").trim();
-          return {
-            reference: ref || "—",
-            description: desc || null,
-            unit_price: unit / 100,
-            quantity: qty,
-            line_total: (unit * qty) / 100,
-          };
-        });
-
-        return {
-          payment_id: paymentId,
-          created,
-          currency,
-          customer: {
-            name: String(customerObj?.name || "").trim() || null,
-            email: String(customerObj?.email || "").trim() || null,
-            id: String(customerObj?.id || "").trim() || null,
-          },
-          items,
-          shipping_fee: shippingCents / 100,
-          total: totalCents / 100,
-          net_total: baseNet,
-        };
-      },
+    const uniqueStripeProductIds = Array.from(
+      new Set(
+        transactions.flatMap((t) =>
+          extractStripeProductIds(t.product_reference),
+        ),
+      ),
     );
+    const stripeProductsById = new Map<
+      string,
+      { id: string; name?: string | null; unit_amount_cents?: number | null }
+    >();
+    if (uniqueStripeProductIds.length > 0) {
+      let idx = 0;
+      const maxConcurrent = 10;
+      const workers = new Array(maxConcurrent).fill(null).map(async () => {
+        while (idx < uniqueStripeProductIds.length) {
+          const i = idx++;
+          const pid = uniqueStripeProductIds[i];
+          try {
+            const p = (await stripe.products.retrieve(pid, {
+              expand: ["default_price"],
+            } as any)) as any;
+            if (!p || p.deleted) continue;
+            const dp: any = p.default_price;
+            const unitAmount =
+              dp && typeof dp === "object" ? Number(dp.unit_amount || 0) : null;
+            stripeProductsById.set(pid, {
+              id: String(p.id || pid),
+              name: String(p.name || "").trim() || null,
+              unit_amount_cents:
+                typeof unitAmount === "number" && Number.isFinite(unitAmount)
+                  ? unitAmount
+                  : null,
+            });
+          } catch (_e) {}
+        }
+      });
+      await Promise.all(workers);
+    }
+
+    for (const t of transactions) {
+      (t as any).articles = formatArticlesFromIds(
+        (t as any)?.product_reference,
+        stripeProductsById,
+      );
+    }
 
     const storeName = String((store as any)?.name || "").trim() || "—";
     const storeOwnerEmail = String(
       (updated as any)?.owner_email || (store as any)?.owner_email || "",
     ).trim();
-    const createdEpochs = uniqMatchedSessions
-      .map((it) => Number((it.session as any)?.created || 0))
-      .filter((v) => Number.isFinite(v) && v > 0);
-    const minCreated =
-      createdEpochs.length > 0 ? Math.min(...createdEpochs) : NaN;
-    const maxCreated =
-      createdEpochs.length > 0 ? Math.max(...createdEpochs) : NaN;
-    const periodStart = Number.isFinite(minCreated)
-      ? new Date(minCreated * 1000)
+    const createdMsValues = payoutShipments
+      .map((r) => {
+        const createdAt = String((r as any)?.created_at || "").trim();
+        const ms = createdAt ? new Date(createdAt).getTime() : NaN;
+        return Number.isFinite(ms) && ms > 0 ? ms : NaN;
+      })
+      .filter((v) => Number.isFinite(v) && v > 0) as number[];
+    const minCreatedMs =
+      createdMsValues.length > 0 ? Math.min(...createdMsValues) : NaN;
+    const maxCreatedMs =
+      createdMsValues.length > 0 ? Math.max(...createdMsValues) : NaN;
+    const periodStart = Number.isFinite(minCreatedMs)
+      ? new Date(minCreatedMs)
       : null;
-    const periodEnd = Number.isFinite(maxCreated)
-      ? new Date(maxCreated * 1000)
+    const periodEnd = Number.isFinite(maxCreatedMs)
+      ? new Date(maxCreatedMs)
       : new Date(payoutAtIso);
     const issueDate = new Date(payoutAtIso);
 
@@ -1057,9 +1051,10 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       const rowH = 28;
       const rowTextY = 8;
       const colDateW = 72;
-      const colNetW = 90;
-      const colPaymentW = 150;
-      const colClientW = tableW - colDateW - colPaymentW - colNetW;
+      const colNetW = 80;
+      const colPromoW = 90;
+      const colClientW = 130;
+      const colArticlesW = tableW - colDateW - colClientW - colPromoW - colNetW;
 
       const drawSummaryHeader = () => {
         doc.save();
@@ -1077,20 +1072,29 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         doc.text("Client", x + colDateW + 6, y + rowTextY, {
           width: colClientW - 12,
         });
-        doc.text("Payment", x + colDateW + colClientW + 6, y + rowTextY, {
-          width: colPaymentW - 12,
+        doc.text("Articles", x + colDateW + colClientW + 6, y + rowTextY, {
+          width: colArticlesW - 12,
         });
-        doc.text("Net", x + colDateW + colClientW + colPaymentW, y + rowTextY, {
-          width: colNetW - 6,
-          align: "right",
-        });
+        doc.text(
+          "Code",
+          x + colDateW + colClientW + colArticlesW + 6,
+          y + rowTextY,
+          { width: colPromoW - 12 },
+        );
+        doc.text(
+          "Net",
+          x + colDateW + colClientW + colArticlesW + colPromoW,
+          y + rowTextY,
+          { width: colNetW - 6, align: "right" },
+        );
         y += rowH;
       };
 
       const drawSummaryRow = (row: {
         date: string;
         client: string;
-        payment: string;
+        articles: string;
+        promo: string;
         net: string;
       }) => {
         doc.save();
@@ -1105,12 +1109,18 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         doc.text(row.client, x + colDateW + 6, y + rowTextY, {
           width: colClientW - 12,
         });
-        doc.text(row.payment, x + colDateW + colClientW + 6, y + rowTextY, {
-          width: colPaymentW - 12,
+        doc.text(row.articles, x + colDateW + colClientW + 6, y + rowTextY, {
+          width: colArticlesW - 12,
         });
         doc.text(
+          row.promo,
+          x + colDateW + colClientW + colArticlesW + 6,
+          y + rowTextY,
+          { width: colPromoW - 12 },
+        );
+        doc.text(
           row.net,
-          x + colDateW + colClientW + colPaymentW,
+          x + colDateW + colClientW + colArticlesW + colPromoW,
           y + rowTextY,
           {
             width: colNetW - 6,
@@ -1136,18 +1146,21 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         const dateText = createdTs
           ? dtShort.format(new Date(createdTs * 1000))
           : "—";
-        const customerName =
-          sanitizeOneLine(String((tx as any)?.customer?.name || "")) ||
-          sanitizeOneLine(String((tx as any)?.customer?.email || "")) ||
-          "—";
-        const paymentId =
-          sanitizeOneLine(String((tx as any)?.payment_id || "")) || "—";
+        const customerId =
+          sanitizeOneLine(String((tx as any)?.customer?.id || "")) || "—";
+        const articles = sanitizeOneLine(
+          String(
+            (tx as any)?.articles || (tx as any)?.product_reference || "—",
+          ),
+        );
+        const promo = sanitizeOneLine(String((tx as any)?.promo_code || "—"));
         const netText = moneyFmt.format(Number((tx as any)?.net_total || 0));
 
         drawSummaryRow({
           date: dateText,
-          client: customerName.slice(0, 44),
-          payment: paymentId.slice(0, 26),
+          client: customerId.slice(0, 28),
+          articles: articles.slice(0, 60),
+          promo: promo.slice(0, 14),
           net: netText,
         });
       }
@@ -1156,7 +1169,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       doc
         .fillColor("#374151")
         .fontSize(9)
-        .text("Détail des lignes par transaction en pages suivantes.", x, y);
+        .text("Détail des transactions en pages suivantes.", x, y);
 
       addPage();
       doc
@@ -1165,88 +1178,29 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         .text("Détail des transactions", x, y);
       y += 20;
 
-      const itemRowH = 16;
-      const itemQtyW = 44;
-      const itemUnitW = 80;
-      const itemTotalW = 90;
-      const itemRefW = tableW - itemQtyW - itemUnitW - itemTotalW;
-
-      const drawItemsHeader = () => {
-        doc.save();
-        doc.fillColor("#F3F4F6").rect(x, y, tableW, itemRowH).fill();
-        doc.restore();
-        doc.save();
-        doc
-          .strokeColor("#E5E7EB")
-          .lineWidth(1)
-          .rect(x, y, tableW, itemRowH)
-          .stroke();
-        doc.restore();
-        doc.fillColor("#111827").fontSize(9);
-        doc.text("Article", x + 6, y + 4, { width: itemRefW - 12 });
-        doc.text("Qté", x + itemRefW, y + 4, {
-          width: itemQtyW - 6,
-          align: "right",
-        });
-        doc.text("PU", x + itemRefW + itemQtyW, y + 4, {
-          width: itemUnitW - 6,
-          align: "right",
-        });
-        doc.text("Total", x + itemRefW + itemQtyW + itemUnitW, y + 4, {
-          width: itemTotalW - 6,
-          align: "right",
-        });
-        y += itemRowH;
-      };
-
-      const drawItemRow = (row: {
-        ref: string;
-        qty: string;
-        unit: string;
-        total: string;
-      }) => {
-        doc.save();
-        doc
-          .strokeColor("#E5E7EB")
-          .lineWidth(1)
-          .rect(x, y, tableW, itemRowH)
-          .stroke();
-        doc.restore();
-        doc.fillColor("#111827").fontSize(9);
-        doc.text(row.ref, x + 6, y + 4, { width: itemRefW - 12 });
-        doc.text(row.qty, x + itemRefW, y + 4, {
-          width: itemQtyW - 6,
-          align: "right",
-        });
-        doc.text(row.unit, x + itemRefW + itemQtyW, y + 4, {
-          width: itemUnitW - 6,
-          align: "right",
-        });
-        doc.text(row.total, x + itemRefW + itemQtyW + itemUnitW, y + 4, {
-          width: itemTotalW - 6,
-          align: "right",
-        });
-        y += itemRowH;
-      };
-
       for (const tx of transactions) {
-        if (y > doc.page.height - margin - 160) addPage();
+        if (y > doc.page.height - margin - 140) addPage();
 
         const createdTs = Number((tx as any)?.created || 0);
         const createdText = createdTs
           ? dtLong.format(new Date(createdTs * 1000))
           : "—";
-        const customerName =
-          sanitizeOneLine(String((tx as any)?.customer?.name || "")) ||
-          sanitizeOneLine(String((tx as any)?.customer?.email || "")) ||
-          "—";
+        const customerId =
+          sanitizeOneLine(String((tx as any)?.customer?.id || "")) || "—";
         const paymentId =
           sanitizeOneLine(String((tx as any)?.payment_id || "")) || "—";
+        const articles = sanitizeOneLine(
+          String(
+            (tx as any)?.articles || (tx as any)?.product_reference || "—",
+          ),
+        );
+        const promo = sanitizeOneLine(String((tx as any)?.promo_code || ""));
+        const netText = moneyFmt.format(Number((tx as any)?.net_total || 0));
 
         doc
           .fillColor("#111827")
           .fontSize(11)
-          .text(`${createdText} — ${customerName}`, x, y, {
+          .text(`${createdText} — ${customerId}`, x, y, {
             width: tableW,
           });
         y += 14;
@@ -1258,55 +1212,27 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
           });
         y += 12;
 
-        drawItemsHeader();
-        const items = Array.isArray((tx as any)?.items)
-          ? (tx as any).items
-          : [];
-        for (const it2 of items) {
-          if (y > doc.page.height - margin - 120) {
-            addPage();
-            drawItemsHeader();
-          }
-          const ref =
-            sanitizeOneLine(String((it2 as any)?.reference || "—")) || "—";
-          const qty = Number((it2 as any)?.quantity || 0);
-          const unit = Number((it2 as any)?.unit_price || 0);
-          const lineTotal = Number((it2 as any)?.line_total || 0);
-          drawItemRow({
-            ref: ref.slice(0, 70),
-            qty: String(qty || 0),
-            unit: moneyFmt.format(unit),
-            total: moneyFmt.format(lineTotal),
+        if (y > doc.page.height - margin - 80) addPage();
+        doc
+          .fillColor("#111827")
+          .fontSize(9)
+          .text(`Articles: ${articles}`, x, y, {
+            width: tableW,
           });
-        }
-
-        y += 10;
-        const totalsLabelW = 170;
-        const totalsValueW = 110;
-        const totalsRightX = doc.page.width - margin - totalsValueW;
-        const kv = [
-          { k: "Total", v: moneyFmt.format(Number((tx as any)?.total || 0)) },
-          {
-            k: "Livraison",
-            v: moneyFmt.format(Number((tx as any)?.shipping_fee || 0)),
-          },
-          { k: "Net", v: moneyFmt.format(Number((tx as any)?.net_total || 0)) },
-        ];
-        for (const { k, v } of kv) {
-          if (y > doc.page.height - margin - 60) addPage();
+        y += 12;
+        if (promo) {
+          if (y > doc.page.height - margin - 80) addPage();
           doc
-            .fillColor("#374151")
+            .fillColor("#111827")
             .fontSize(9)
-            .text(k, totalsRightX - totalsLabelW, y, {
-              width: totalsLabelW,
-              align: "right",
-            });
-          doc.fillColor("#111827").fontSize(9).text(v, totalsRightX, y, {
-            width: totalsValueW,
-            align: "right",
-          });
+            .text(`Code promo: ${promo}`, x, y, { width: tableW });
           y += 12;
         }
+        if (y > doc.page.height - margin - 80) addPage();
+        doc.fillColor("#111827").fontSize(9).text(`Net: ${netText}`, x, y, {
+          width: tableW,
+        });
+        y += 14;
 
         y += 14;
       }
@@ -1462,194 +1388,167 @@ router.get("/:storeSlug/transactions", async (req, res) => {
     }
 
     const storeId = (store as any).id as number;
-    const mapWithLimit = async <T, R>(
-      items: T[],
-      maxConcurrent: number,
-      fn: (item: T, idx: number) => Promise<R>,
-    ): Promise<R[]> => {
-      const out: R[] = new Array(items.length);
-      let idx = 0;
-      const workers = new Array(Math.max(1, maxConcurrent))
-        .fill(null)
-        .map(async () => {
-          while (idx < items.length) {
-            const current = idx++;
-            out[current] = await fn(items[current], current);
-          }
-        });
-      await Promise.all(workers);
-      return out;
+    const formatPromoCodeForStore = (raw: any): string | null => {
+      const tokens = String(raw || "")
+        .split(";;")
+        .map((s) => String(s || "").trim())
+        .filter(Boolean)
+        .filter((s) => !s.toUpperCase().startsWith("PAYLIVE-"));
+      return tokens.length > 0 ? tokens.join(", ") : null;
     };
 
-    const paymentRows: any[] = [];
+    const startIso =
+      typeof startTimestamp === "number" &&
+      Number.isFinite(startTimestamp) &&
+      startTimestamp > 0
+        ? new Date(startTimestamp * 1000).toISOString()
+        : null;
+
+    const transactions: any[] = [];
+    let totalCount = 0;
+    let totalNet = 0;
     const pageSizeDb = 1000;
     for (let from = 0; ; from += pageSizeDb) {
-      const q = supabase
+      let q = supabase
         .from("shipments")
-        .select("payment_id")
+        .select(
+          "payment_id, created_at, customer_stripe_id, product_reference, promo_code, store_earnings_amount",
+        )
         .eq("store_id", storeId)
         .not("payment_id", "is", null)
-        .order("id", { ascending: false })
+        .order("created_at", { ascending: false })
         .range(from, from + pageSizeDb - 1);
+
+      if (startIso) q = q.gte("created_at", startIso);
 
       const { data, error } = await q;
       if (error) {
-        console.error("Erreur Supabase (list shipments payment_id):", error);
+        console.error("Erreur Supabase (list shipments transactions):", error);
         return res.status(500).json({ error: error.message });
       }
-      paymentRows.push(...(data || []));
-      if (!data || data.length < pageSizeDb) break;
-    }
 
-    const paymentIdsAll = paymentRows
-      .map((r) => String((r as any)?.payment_id || "").trim())
-      .filter(Boolean);
+      const rows = Array.isArray(data) ? data : [];
+      for (const r of rows) {
+        totalCount += 1;
+        const netCentsRaw = Number((r as any)?.store_earnings_amount || 0);
+        const netEur =
+          Number.isFinite(netCentsRaw) && netCentsRaw > 0
+            ? netCentsRaw / 100
+            : 0;
+        totalNet += netEur;
 
-    const paymentIdSet = new Set(paymentIdsAll);
-
-    const listAllCheckoutSessionsAfter = async (options?: {
-      startTimestamp?: number;
-    }): Promise<any[]> => {
-      const out: any[] = [];
-      let hasMore = true;
-      let startingAfter: string | undefined = undefined;
-
-      const queryParams: any = {
-        limit: 100,
-        expand: ["data.customer", "data.shipping_cost"],
-      };
-      if (options?.startTimestamp) {
-        queryParams.created = { gte: options.startTimestamp };
-      }
-
-      while (hasMore) {
-        if (startingAfter) queryParams.starting_after = startingAfter;
-        const page = await stripe.checkout.sessions.list(queryParams);
-        out.push(...(page.data || []));
-        hasMore = Boolean(page.has_more);
-        if (hasMore && (page.data || []).length > 0) {
-          startingAfter = (page.data || [])[(page.data || []).length - 1]?.id;
+        if (limitAll || transactions.length < limit) {
+          const createdAt = String((r as any)?.created_at || "").trim();
+          const createdMs = createdAt ? new Date(createdAt).getTime() : NaN;
+          const created =
+            Number.isFinite(createdMs) && createdMs > 0
+              ? Math.floor(createdMs / 1000)
+              : 0;
+          transactions.push({
+            payment_id: String((r as any)?.payment_id || "").trim() || "—",
+            created,
+            currency: "eur",
+            customer: {
+              id: String((r as any)?.customer_stripe_id || "").trim() || null,
+            },
+            product_reference:
+              String((r as any)?.product_reference || "").trim() || null,
+            promo_code: formatPromoCodeForStore((r as any)?.promo_code),
+            net_total: netEur,
+          });
         }
       }
 
-      return out;
+      if (rows.length < pageSizeDb) break;
+    }
+
+    const extractStripeProductIds = (raw: any): string[] =>
+      String(raw || "")
+        .split(";")
+        .map((s) => String(s || "").trim())
+        .filter((s) => s.startsWith("prod_"));
+
+    const formatArticlesFromIds = (
+      raw: any,
+      productsById: Map<
+        string,
+        { id: string; name?: string | null; unit_amount_cents?: number | null }
+      >,
+    ): string | null => {
+      const ids = extractStripeProductIds(raw);
+      if (ids.length === 0) return null;
+      const counts = new Map<string, number>();
+      for (const id of ids) counts.set(id, (counts.get(id) || 0) + 1);
+      const parts: string[] = [];
+      for (const [id, qty] of counts.entries()) {
+        const p = productsById.get(id) || null;
+        const label = String(p?.name || "").trim() || id;
+        const base = qty > 1 ? `${label}(x${qty})` : label;
+        const unit =
+          typeof p?.unit_amount_cents === "number" &&
+          Number.isFinite(p.unit_amount_cents) &&
+          p.unit_amount_cents > 0
+            ? p.unit_amount_cents
+            : null;
+        parts.push(
+          unit != null ? `${base} — ${(unit / 100).toFixed(2)}€` : base,
+        );
+      }
+      return parts.length > 0 ? parts.join(", ") : null;
     };
 
-    const allSessionsAfter = await listAllCheckoutSessionsAfter({
-      startTimestamp,
-    });
-
-    const matchedSessions = allSessionsAfter
-      .map((s) => {
-        const pid =
-          typeof (s as any)?.payment_intent === "string"
-            ? String((s as any).payment_intent)
-            : String((s as any)?.payment_intent?.id || "");
-        const paymentId = pid.trim();
-        if (!paymentId) return null;
-        if (!paymentIdSet.has(paymentId)) return null;
-        return { session: s, paymentId };
-      })
-      .filter(Boolean) as Array<{ session: any; paymentId: string }>;
-
-    const uniqByPaymentId = new Map<
-      string,
-      { session: any; paymentId: string }
-    >();
-    for (const it of matchedSessions) {
-      const existing = uniqByPaymentId.get(it.paymentId);
-      if (!existing) {
-        uniqByPaymentId.set(it.paymentId, it);
-        continue;
-      }
-      const prevCreated = Number((existing.session as any)?.created || 0);
-      const nextCreated = Number((it.session as any)?.created || 0);
-      if (nextCreated > prevCreated) {
-        uniqByPaymentId.set(it.paymentId, it);
-      }
-    }
-    const uniqMatchedSessions = Array.from(uniqByPaymentId.values());
-
-    const totalNetAll = uniqMatchedSessions.reduce((sum, it) => {
-      const s = it.session as any;
-      const totalCents = Number(s?.amount_total || 0);
-      const baseNet = totalCents / 100;
-      return sum + (Number.isFinite(baseNet) ? baseNet : 0);
-    }, 0);
-
-    uniqMatchedSessions.sort(
-      (a, b) =>
-        Number((b.session as any)?.created || 0) -
-        Number((a.session as any)?.created || 0),
+    const uniqueStripeProductIds = Array.from(
+      new Set(
+        transactions.flatMap((t) =>
+          extractStripeProductIds(t.product_reference),
+        ),
+      ),
     );
-
-    const view = limitAll
-      ? uniqMatchedSessions
-      : uniqMatchedSessions.slice(0, limit);
-    const transactions: any[] = await mapWithLimit(view, 6, async (it) => {
-      const session = it.session as any;
-      const paymentId = it.paymentId;
-      const created = Number(session?.created || 0);
-      const currency = String(session?.currency || "eur").toLowerCase();
-      const status = String(session?.payment_status || session?.status || "");
-      const customerObj =
-        session?.customer && typeof session.customer === "object"
-          ? (session.customer as any)
-          : null;
-      const shippingCents = Number(session?.shipping_cost?.amount_total || 0);
-      const totalCents = Number(session?.amount_total || 0);
-      const baseNet = totalCents / 100;
-
-      let lineItems: any[] = [];
-      try {
-        const liResp: any = await stripe.checkout.sessions.listLineItems(
-          String(session?.id || ""),
-          { limit: 100, expand: ["data.price.product"] } as any,
-        );
-        lineItems = Array.isArray(liResp?.data) ? liResp.data : [];
-      } catch {}
-
-      const items = lineItems.map((li) => {
-        const price = (li as any)?.price || null;
-        const unit = Number((price as any)?.unit_amount || 0);
-        const qty = Number((li as any)?.quantity || 1);
-        const product = (price as any)?.product || null;
-        const ref = String(
-          (product as any)?.name || (li as any)?.description || "",
-        ).trim();
-        const desc = String((product as any)?.description || "").trim();
-        return {
-          reference: ref || "—",
-          description: desc || null,
-          unit_price: unit / 100,
-          quantity: qty,
-          line_total: (unit * qty) / 100,
-        };
+    const stripeProductsById = new Map<
+      string,
+      { id: string; name?: string | null; unit_amount_cents?: number | null }
+    >();
+    if (uniqueStripeProductIds.length > 0) {
+      let idx = 0;
+      const maxConcurrent = 10;
+      const workers = new Array(maxConcurrent).fill(null).map(async () => {
+        while (idx < uniqueStripeProductIds.length) {
+          const i = idx++;
+          const pid = uniqueStripeProductIds[i];
+          try {
+            const p = (await stripe.products.retrieve(pid, {
+              expand: ["default_price"],
+            } as any)) as any;
+            if (!p || p.deleted) continue;
+            const dp: any = p.default_price;
+            const unitAmount =
+              dp && typeof dp === "object" ? Number(dp.unit_amount || 0) : null;
+            stripeProductsById.set(pid, {
+              id: String(p.id || pid),
+              name: String(p.name || "").trim() || null,
+              unit_amount_cents:
+                typeof unitAmount === "number" && Number.isFinite(unitAmount)
+                  ? unitAmount
+                  : null,
+            });
+          } catch (_e) {}
+        }
       });
-
-      return {
-        payment_id: paymentId,
-        created,
-        currency,
-        status,
-        customer: {
-          name: String(customerObj?.name || "").trim() || null,
-          email: String(customerObj?.email || "").trim() || null,
-          id: String(customerObj?.id || "").trim() || null,
-        },
-        items,
-        shipping_fee: shippingCents / 100,
-        total: totalCents / 100,
-        net_total: baseNet,
-      };
-    });
+      await Promise.all(workers);
+    }
+    for (const t of transactions) {
+      (t as any).articles = formatArticlesFromIds(
+        (t as any)?.product_reference,
+        stripeProductsById,
+      );
+    }
 
     return res.json({
       success: true,
       storeSlug: decodedSlug,
       startDate: startDateRaw || null,
-      total_count: uniqMatchedSessions.length,
-      total_net: totalNetAll,
+      total_count: totalCount,
+      total_net: totalNet,
       count: transactions.length,
       transactions,
     });
@@ -1853,23 +1752,13 @@ router.post("/:storeSlug/stock/products", async (req, res) => {
       return res.status(500).json({ error: "Mise à jour Stripe invalide" });
     }
 
-    const isMissingColumnError = (err: any, column: string) => {
-      const code = String(err?.code || "").trim();
-      const msg = String(err?.message || "").toLowerCase();
-      const col = String(column || "").toLowerCase();
-      if (!col) return false;
-      if (code === "42703") return msg.includes(col);
-      return msg.includes(col) && msg.includes("does not exist");
-    };
-
-    const payloadWithPrice: any = {
+    const stockPayload: any = {
       store_id: storeId,
       product_reference: referenceTrim,
       quantity: normalizedQty,
       weight: normalizedWeight,
       image_url: imageUrlJoined,
       product_stripe_id: stripeProductId,
-      price: normalizedPrice,
     };
 
     let stockInserted: any = null;
@@ -1877,21 +1766,11 @@ router.post("/:storeSlug/stock/products", async (req, res) => {
     {
       const resp = await supabase
         .from("stock")
-        .insert([payloadWithPrice])
+        .insert([stockPayload])
         .select("*")
         .single();
       stockInserted = resp.data as any;
       stockInsertErr = resp.error as any;
-    }
-    if (stockInsertErr && isMissingColumnError(stockInsertErr, "price")) {
-      const { price: _omit, ...payloadWithoutPrice } = payloadWithPrice;
-      const resp2 = await supabase
-        .from("stock")
-        .insert([payloadWithoutPrice])
-        .select("*")
-        .single();
-      stockInserted = resp2.data as any;
-      stockInsertErr = resp2.error as any;
     }
     if (stockInsertErr) {
       return res.status(500).json({ error: stockInsertErr.message });
@@ -1942,9 +1821,7 @@ router.get("/:storeSlug/stock/search", async (req, res) => {
       return res.status(500).json({ error: "store_id invalide" });
     }
 
-    const selectWithPrice =
-      "id, created_at, store_id, product_reference, quantity, weight, image_url, product_stripe_id, bought, price";
-    const selectWithoutPrice =
+    const stockSelect =
       "id, created_at, store_id, product_reference, quantity, weight, image_url, product_stripe_id, bought";
 
     let stockRows: any[] | null = null;
@@ -1952,27 +1829,13 @@ router.get("/:storeSlug/stock/search", async (req, res) => {
     {
       const resp = await supabase
         .from("stock")
-        .select(selectWithPrice)
+        .select(stockSelect)
         .eq("store_id", storeId)
         .ilike("product_reference", `%${q}%`)
         .order("product_reference", { ascending: true })
         .limit(10);
       stockRows = resp.data as any;
       stockErr = resp.error as any;
-    }
-    if (stockErr && String(stockErr?.code || "").trim() === "42703") {
-      const msg = String(stockErr?.message || "").toLowerCase();
-      if (msg.includes("price") && msg.includes("does not exist")) {
-        const resp2 = await supabase
-          .from("stock")
-          .select(selectWithoutPrice)
-          .eq("store_id", storeId)
-          .ilike("product_reference", `%${q}%`)
-          .order("product_reference", { ascending: true })
-          .limit(10);
-        stockRows = resp2.data as any;
-        stockErr = resp2.error as any;
-      }
     }
     if (stockErr) return res.status(500).json({ error: stockErr.message });
 
@@ -1983,6 +1846,7 @@ router.get("/:storeSlug/stock/search", async (req, res) => {
         const raw = (r as any)?.product_stripe_id;
         const asString = String(raw ?? "").trim();
         let product: any = null;
+        let unit_price: number | null = null;
         try {
           if (asString && asString.startsWith("prod_")) {
             product = await stripe.products.retrieve(asString);
@@ -1993,7 +1857,30 @@ router.get("/:storeSlug/stock/search", async (req, res) => {
         if (product && (product as any)?.active === false) {
           product = null;
         }
-        return { stock: r, product };
+        if (product?.id) {
+          try {
+            const p = await stripe.prices.list({
+              product: product.id,
+              active: true,
+              limit: 100,
+            } as any);
+            const prices = Array.isArray((p as any)?.data)
+              ? (p as any).data
+              : [];
+            const eur = prices.find(
+              (pr: any) =>
+                String(pr?.currency || "").toLowerCase() === "eur" &&
+                Number(pr?.unit_amount || 0) > 0,
+            );
+            if (eur) {
+              const v = Number((eur as any)?.unit_amount || 0) / 100;
+              unit_price = Number.isFinite(v) && v > 0 ? v : null;
+            }
+          } catch {
+            unit_price = null;
+          }
+        }
+        return { stock: r, product, unit_price };
       }),
     );
 
@@ -2054,18 +1941,7 @@ router.get("/:storeSlug/stock/products", async (req, res) => {
       return res.status(500).json({ error: "store_id invalide" });
     }
 
-    const isMissingColumnError = (err: any, column: string) => {
-      const code = String(err?.code || "").trim();
-      const msg = String(err?.message || "").toLowerCase();
-      const col = String(column || "").toLowerCase();
-      if (!col) return false;
-      if (code === "42703") return msg.includes(col);
-      return msg.includes(col) && msg.includes("does not exist");
-    };
-
-    const selectWithPrice =
-      "id, created_at, store_id, product_reference, quantity, weight, image_url, product_stripe_id, bought, price";
-    const selectWithoutPrice =
+    const stockSelect =
       "id, created_at, store_id, product_reference, quantity, weight, image_url, product_stripe_id, bought";
 
     let stockRows: any[] | null = null;
@@ -2073,20 +1949,11 @@ router.get("/:storeSlug/stock/products", async (req, res) => {
     {
       const resp = await supabase
         .from("stock")
-        .select(selectWithPrice)
+        .select(stockSelect)
         .eq("store_id", storeId)
         .order("id", { ascending: false });
       stockRows = resp.data as any;
       stockErr = resp.error as any;
-    }
-    if (stockErr && isMissingColumnError(stockErr, "price")) {
-      const resp2 = await supabase
-        .from("stock")
-        .select(selectWithoutPrice)
-        .eq("store_id", storeId)
-        .order("id", { ascending: false });
-      stockRows = resp2.data as any;
-      stockErr = resp2.error as any;
     }
     if (stockErr) return res.status(500).json({ error: stockErr.message });
 
@@ -2402,21 +2269,11 @@ router.put("/:storeSlug/stock/products/:stockId", async (req, res) => {
       } as any);
     } catch {}
 
-    const isMissingColumnError = (err: any, column: string) => {
-      const code = String(err?.code || "").trim();
-      const msg = String(err?.message || "").toLowerCase();
-      const col = String(column || "").toLowerCase();
-      if (!col) return false;
-      if (code === "42703") return msg.includes(col);
-      return msg.includes(col) && msg.includes("does not exist");
-    };
-
-    const updateWithPrice: any = {
+    const updatePayload: any = {
       product_reference: referenceTrim,
       quantity: normalizedQty,
       weight: normalizedWeight,
       image_url: imageUrlJoined,
-      price: normalizedPrice,
     };
 
     let updatedStock: any = null;
@@ -2424,25 +2281,13 @@ router.put("/:storeSlug/stock/products/:stockId", async (req, res) => {
     {
       const resp = await supabase
         .from("stock")
-        .update(updateWithPrice)
+        .update(updatePayload)
         .eq("id", stockIdNum)
         .eq("store_id", storeId)
         .select("*")
         .single();
       updatedStock = resp.data as any;
       updateErr = resp.error as any;
-    }
-    if (updateErr && isMissingColumnError(updateErr, "price")) {
-      const { price: _omit, ...withoutPrice } = updateWithPrice;
-      const resp2 = await supabase
-        .from("stock")
-        .update(withoutPrice)
-        .eq("id", stockIdNum)
-        .eq("store_id", storeId)
-        .select("*")
-        .single();
-      updatedStock = resp2.data as any;
-      updateErr = resp2.error as any;
     }
     if (updateErr) return res.status(500).json({ error: updateErr.message });
 

@@ -150,7 +150,7 @@ router.post(
       const { data: shipment, error: shipErr } = await supabase
         .from("shipments")
         .select(
-          "id, store_id, shipment_id, tracking_url, product_reference, product_value, delivery_method, delivery_network"
+          "id, store_id, shipment_id, tracking_url, product_reference, customer_spent_amount, promo_code, delivery_method, delivery_network"
         )
         .eq("shipment_id", shipmentId)
         .maybeSingle();
@@ -227,11 +227,17 @@ router.post(
           shipmentId: (shipment as any).shipment_id || undefined,
           trackingUrl: (shipment as any).tracking_url || undefined,
           productReference: (shipment as any).product_reference || undefined,
-          value: (shipment as any).product_value || undefined,
+          value:
+            typeof (shipment as any).customer_spent_amount === "number"
+              ? Math.max(0, Number((shipment as any).customer_spent_amount)) / 100
+              : undefined,
           deliveryMethod: (shipment as any).delivery_method || undefined,
           deliveryNetwork: (shipment as any).delivery_network || undefined,
           message: msg,
-          promoCodes: (shipment as any).promo_code || "",
+          promoCodes: String((shipment as any).promo_code || "").replace(
+            /;+/g,
+            ", ",
+          ),
           attachments,
         });
       } catch (emailErr) {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../../components/Header';
@@ -62,7 +62,6 @@ type Store = {
   siret?: string | null;
   iban_bic?: { iban: string; bic: string } | null;
   payout_created_at?: string | null;
-  product_value?: number | null;
   is_verified?: boolean;
 };
 
@@ -80,7 +79,8 @@ type Shipment = {
   weight: number | null;
   product_reference: string | null;
   description?: string | null;
-  paid_value: number | null;
+  store_earnings_amount?: number | null;
+  customer_spent_amount?: number | null;
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
@@ -88,8 +88,7 @@ type Shipment = {
   is_final_destination?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
-  promo_code_id?: string | null;
-  product_value?: number | null;
+  promo_code?: string | null;
   estimated_delivery_cost?: number | null;
   facture_id?: number | string | null;
 };
@@ -100,27 +99,23 @@ type ProductItem = {
   description?: string | null;
 };
 
-type WalletTransactionItem = {
-  reference: string;
-  description?: string | null;
-  unit_price: number;
-  quantity: number;
-  line_total: number;
+type StripeProductLite = {
+  id: string;
+  name: string | null;
+  description: string | null;
+  unit_amount_cents: number | null;
 };
 
 type WalletTransaction = {
   payment_id: string;
   created: number;
   currency: string;
-  status?: string;
   customer?: {
-    name?: string | null;
-    email?: string | null;
     id?: string | null;
   };
-  items: WalletTransactionItem[];
-  shipping_fee: number;
-  total: number;
+  product_reference?: string | null;
+  articles?: string | null;
+  promo_code?: string | null;
   net_total: number;
 };
 
@@ -231,6 +226,10 @@ export default function DashboardPage() {
     useState<number>(0);
   const [walletTablePageSize, setWalletTablePageSize] = useState<number>(10);
   const [walletTablePage, setWalletTablePage] = useState<number>(1);
+  const [stripeProductsLiteById, setStripeProductsLiteById] = useState<
+    Record<string, StripeProductLite>
+  >({});
+  const requestedStripeProductIdsRef = useRef<Set<string>>(new Set());
 
   const [stockTitle, setStockTitle] = useState<string>('');
   const [stockReference, setStockReference] = useState<string>('');
@@ -531,6 +530,32 @@ export default function DashboardPage() {
     }
   };
 
+  const normalizePromoToastError = (raw: any) => {
+    let msg = String(raw ?? '').trim();
+    msg = msg.replace(/^Error:\s*/i, '').trim();
+
+    const match = msg.match(/\{[\s\S]*\}/);
+    if (match?.[0]) {
+      try {
+        const parsed = JSON.parse(match[0]);
+        const inner =
+          parsed && typeof parsed === 'object' && 'error' in parsed
+            ? (parsed as any).error
+            : null;
+        if (typeof inner === 'string' && inner.trim()) msg = inner.trim();
+      } catch {}
+    }
+
+    const normalized = msg.toLowerCase();
+    if (
+      normalized.includes('promotion code') &&
+      normalized.includes('already exists')
+    ) {
+      return 'Ce nom de code existe déjà';
+    }
+    return msg || 'Erreur inconnue';
+  };
+
   const handleDeletePromotionCode = async (id: string) => {
     try {
       if (!id) return;
@@ -550,8 +575,7 @@ export default function DashboardPage() {
       showToast('Code promo archivé', 'success');
       await fetchPromotionCodes();
     } catch (e: any) {
-      const raw = e?.message || 'Erreur inconnue';
-      showToast(raw, 'error');
+      showToast(normalizePromoToastError(e?.message || e), 'error');
     } finally {
       setPromoDeletingIds(prev => ({ ...prev, [id]: false }));
     }
@@ -559,7 +583,7 @@ export default function DashboardPage() {
 
   const handleCreatePromotionCode = async () => {
     try {
-      const code = (promoCodeName || '').trim();
+      const code = (promoCodeName || '').trim().toUpperCase();
       if (!promoSelectedCouponId || !code) {
         showToast('Veuillez choisir un coupon et saisir un code', 'error');
         return;
@@ -647,8 +671,9 @@ export default function DashboardPage() {
       });
       const json = await resp.json().catch(() => ({}));
       if (!resp.ok) {
-        const msg = json?.error || 'Création du code promo échouée';
-        throw new Error(typeof msg === 'string' ? msg : 'Erreur');
+        const candidate = json?.error || 'Création du code promo échouée';
+        let msg = typeof candidate === 'string' ? candidate : 'Erreur';
+        throw new Error(normalizePromoToastError(msg));
       }
       showToast('Code promo créé', 'success');
       // Rafraîchir la liste
@@ -660,8 +685,7 @@ export default function DashboardPage() {
       setPromoActive(true);
       setPromoMaxRedemptions('');
     } catch (e: any) {
-      const raw = e?.message || 'Erreur inconnue';
-      showToast(raw, 'error');
+      showToast(normalizePromoToastError(e?.message || e), 'error');
     } finally {
       setPromoCreating(false);
     }
@@ -999,7 +1023,10 @@ export default function DashboardPage() {
             id: s.id ?? null,
             shipmentId: s.shipment_id ?? null,
             productReference: s.product_reference ?? null,
-            value: s.paid_value ?? null,
+            value:
+              s.customer_spent_amount != null
+                ? Math.max(0, Number(s.customer_spent_amount || 0) / 100)
+                : null,
             customerStripeId: s.customer_stripe_id ?? null,
             status: s.status ?? null,
             createdAt: s.created_at ?? null,
@@ -2166,6 +2193,69 @@ export default function DashboardPage() {
     }
   };
 
+  const extractStripeProductIds = useCallback(
+    (raw: string | null | undefined): string[] =>
+      String(raw || '')
+        .split(';')
+        .map(s => String(s || '').trim())
+        .filter(s => s.startsWith('prod_')),
+    []
+  );
+
+  const ensureStripeProductsLoaded = useCallback(
+    async (ids: string[]) => {
+      const unique = Array.from(
+        new Set(
+          (ids || [])
+            .map(s => String(s || '').trim())
+            .filter(s => s.startsWith('prod_'))
+        )
+      );
+      if (unique.length === 0) return;
+
+      const toFetch: string[] = [];
+      for (const id of unique) {
+        if (stripeProductsLiteById[id]) continue;
+        if (requestedStripeProductIdsRef.current.has(id)) continue;
+        requestedStripeProductIdsRef.current.add(id);
+        toFetch.push(id);
+      }
+      if (toFetch.length === 0) return;
+
+      const token = await getToken();
+      const resp = await apiPost(
+        '/api/stripe/products/by-ids',
+        { ids: toFetch },
+        { headers: { Authorization: token ? `Bearer ${token}` : '' } }
+      );
+      const json = await resp.json().catch(() => ({}) as any);
+      const products: StripeProductLite[] = Array.isArray(json?.products)
+        ? json.products
+        : [];
+      if (products.length === 0) return;
+
+      setStripeProductsLiteById(prev => {
+        const next = { ...prev };
+        for (const p of products) {
+          const id = String((p as any)?.id || '').trim();
+          if (!id || !id.startsWith('prod_')) continue;
+          next[id] = {
+            id,
+            name: String((p as any)?.name || '').trim() || null,
+            description: String((p as any)?.description || '').trim() || null,
+            unit_amount_cents:
+              typeof (p as any)?.unit_amount_cents === 'number' &&
+              Number.isFinite((p as any).unit_amount_cents)
+                ? (p as any).unit_amount_cents
+                : null,
+          };
+        }
+        return next;
+      });
+    },
+    [getToken, stripeProductsLiteById]
+  );
+
   const parseProductReferenceItems = (
     raw: string | null | undefined
   ): ProductItem[] => {
@@ -2176,6 +2266,22 @@ export default function DashboardPage() {
       .split(';')
       .map(s => String(s || '').trim())
       .filter(Boolean);
+
+    const onlyStripeIds =
+      parts.length > 0 && parts.every(p => String(p || '').startsWith('prod_'));
+    if (onlyStripeIds) {
+      const counts = new Map<string, number>();
+      for (const pid of parts) {
+        const id = String(pid || '').trim();
+        if (!id) continue;
+        counts.set(id, (counts.get(id) || 0) + 1);
+      }
+      return Array.from(counts.entries()).map(([reference, quantity]) => ({
+        reference,
+        quantity,
+        description: null,
+      }));
+    }
 
     const m = new Map<string, { quantity: number; description?: string }>();
     for (const p of parts) {
@@ -2229,9 +2335,13 @@ export default function DashboardPage() {
     const items = parseProductReferenceItems(raw);
     if (items.length === 0) return '';
     return items
-      .map(
-        it => `${it.reference} Qté: ${Math.max(1, Number(it.quantity || 1))}`
-      )
+      .map(it => {
+        const ref = String(it.reference || '').trim();
+        const label = ref.startsWith('prod_')
+          ? stripeProductsLiteById[ref]?.name || ref
+          : ref;
+        return `${label} Qté: ${Math.max(1, Number(it.quantity || 1))}`;
+      })
       .join('; ');
   };
 
@@ -2241,7 +2351,15 @@ export default function DashboardPage() {
   const formatShipmentProductReference = (s: Shipment) => {
     const items = getShipmentProductItems(s);
     if (items.length === 0) return '—';
-    return items.map(it => `${it.reference}(x${it.quantity})`).join(', ');
+    return items
+      .map(it => {
+        const ref = String(it.reference || '').trim();
+        const label = ref.startsWith('prod_')
+          ? stripeProductsLiteById[ref]?.name || ref
+          : ref;
+        return `${label}(x${it.quantity})`;
+      })
+      .join(', ');
   };
 
   const renderShipmentProductReference = (s: Shipment) => {
@@ -2250,21 +2368,34 @@ export default function DashboardPage() {
     return (
       <div className='space-y-2'>
         {items.map((it, idx) => {
-          const d = String(it.description || '').trim();
+          const ref = String(it.reference || '').trim();
+          const sp = ref.startsWith('prod_')
+            ? stripeProductsLiteById[ref]
+            : null;
+          const label = sp?.name || ref;
+          const d =
+            String(sp?.description || '').trim() ||
+            String(it.description || '').trim();
+          const price =
+            sp?.unit_amount_cents != null
+              ? formatValue(
+                  Math.max(0, Number(sp.unit_amount_cents || 0)) / 100
+                )
+              : '';
           return (
             <div key={`${s.id}-${idx}`} className='space-y-0.5'>
               <div
                 className='font-medium truncate max-w-[280px]'
-                title={`${it.reference}(x${it.quantity})`}
+                title={`${label}(x${it.quantity})`}
               >
-                {it.reference}(x{it.quantity})
+                {label}(x{it.quantity})
               </div>
-              {d ? (
+              {d || price ? (
                 <div
                   className='text-xs text-gray-500 truncate max-w-[280px]'
-                  title={d}
+                  title={[d, price].filter(Boolean).join(' — ')}
                 >
-                  {d}
+                  {[d, price].filter(Boolean).join(' — ')}
                 </div>
               ) : null}
             </div>
@@ -2273,6 +2404,18 @@ export default function DashboardPage() {
       </div>
     );
   };
+
+  useEffect(() => {
+    const ids = Array.from(
+      new Set(
+        (shipments || []).flatMap(s =>
+          extractStripeProductIds(s.product_reference)
+        )
+      )
+    );
+    if (ids.length === 0) return;
+    ensureStripeProductsLoaded(ids).catch(() => {});
+  }, [extractStripeProductIds, ensureStripeProductsLoaded, shipments]);
 
   // Filtre Mes ventes: champ sélectionné + terme de recherche
   const filteredShipments = (shipments || []).filter(s => {
@@ -2639,7 +2782,7 @@ export default function DashboardPage() {
     if (!ref || qtyAvailable <= 0) return;
 
     const title = String(product?.name || ref || '').trim() || ref;
-    const priceRaw = Number(stock?.price);
+    const priceRaw = Number((s as any)?.unit_price);
     const price = Number.isFinite(priceRaw) && priceRaw > 0 ? priceRaw : null;
 
     const stripeWeightRaw = (product as any)?.metadata?.weight_kg;
@@ -4147,7 +4290,7 @@ export default function DashboardPage() {
                           const title = String(
                             product?.name || ref || ''
                           ).trim();
-                          const priceRaw = Number(stock?.price);
+                          const priceRaw = Number((s as any)?.unit_price);
                           const price =
                             Number.isFinite(priceRaw) && priceRaw > 0
                               ? priceRaw
@@ -4863,11 +5006,8 @@ export default function DashboardPage() {
                             <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                               Articles
                             </th>
-                            <th className='text-right py-3 px-4 font-semibold text-gray-700'>
-                              Livraison
-                            </th>
-                            <th className='text-right py-3 px-4 font-semibold text-gray-700'>
-                              Total
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Code Promo
                             </th>
                             <th className='text-right py-3 px-4 font-semibold text-gray-700'>
                               Net
@@ -4876,14 +5016,27 @@ export default function DashboardPage() {
                         </thead>
                         <tbody>
                           {visibleWalletTransactions.map(tx => {
-                            const customerName = String(
-                              tx?.customer?.name || ''
+                            const stripeId = String(tx?.customer?.id || '');
+                            const customer = stripeId
+                              ? customersMap[stripeId] || null
+                              : null;
+                            const clerkId =
+                              customer?.clerkUserId || customer?.clerk_id;
+                            const u = clerkId
+                              ? socialsMap[clerkId] || null
+                              : null;
+                            const name =
+                              customer?.name ||
+                              [u?.firstName, u?.lastName]
+                                .filter(Boolean)
+                                .join(' ') ||
+                              stripeId ||
+                              '—';
+                            const email = (
+                              u?.emailAddress ||
+                              customer?.email ||
+                              ''
                             ).trim();
-                            const customerEmail = String(
-                              tx?.customer?.email || ''
-                            ).trim();
-                            const customerLabel =
-                              customerName || customerEmail || '—';
 
                             return (
                               <tr
@@ -4892,49 +5045,24 @@ export default function DashboardPage() {
                               >
                                 <td className='py-3 px-4 text-gray-700 whitespace-nowrap'>
                                   <div>{formatDateEpoch(tx.created)}</div>
-                                  {tx.status &&
-                                  String(tx.status || '').toLowerCase() !==
-                                    'paid' ? (
-                                    <div className='text-xs text-gray-500'>
-                                      {tx.status}
-                                    </div>
-                                  ) : null}
                                 </td>
                                 <td className='py-3 px-4 text-gray-700'>
                                   <div className='font-medium text-gray-900'>
-                                    {customerLabel}
+                                    {name}
                                   </div>
-                                  {customerName && customerEmail ? (
+                                  {email ? (
                                     <div className='text-xs text-gray-500'>
-                                      {customerEmail}
+                                      {email}
                                     </div>
                                   ) : null}
                                 </td>
                                 <td className='py-3 px-4 text-gray-700'>
-                                  <div className='space-y-1'>
-                                    {(tx.items || []).map((it, idx) => (
-                                      <div key={`${tx.payment_id}-it-${idx}`}>
-                                        <span className='font-medium text-gray-900'>
-                                          {it.reference}
-                                        </span>{' '}
-                                        <span className='text-gray-600'>
-                                          ×{Number(it.quantity || 1)}
-                                        </span>{' '}
-                                        <span className='text-gray-600'>
-                                          ({formatValue(it.unit_price)})
-                                        </span>{' '}
-                                        <span className='text-gray-900'>
-                                          {formatValue(it.line_total)}
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
+                                  {String(
+                                    tx.articles || tx.product_reference || ''
+                                  ).trim() || '—'}
                                 </td>
-                                <td className='py-3 px-4 text-right text-gray-900 whitespace-nowrap'>
-                                  {formatValue(tx.shipping_fee)}
-                                </td>
-                                <td className='py-3 px-4 text-right text-gray-900 font-semibold whitespace-nowrap'>
-                                  {formatValue(tx.total)}
+                                <td className='py-3 px-4 text-gray-700 whitespace-nowrap'>
+                                  {String(tx.promo_code || '').trim() || '—'}
                                 </td>
                                 <td className='py-3 px-4 text-right text-gray-900 font-semibold whitespace-nowrap'>
                                   {formatValue(tx.net_total)}
@@ -5819,34 +5947,30 @@ export default function DashboardPage() {
                               className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                             />
                           </div>
-                          <div className='text-sm font-semibold text-gray-900'>
-                            Payé: {formatValue(s.paid_value)}
-                          </div>
                           <div className='text-xs text-gray-600'>
                             Reçu:{' '}
                             {formatValue(
-                              (s.paid_value ?? 0) -
-                                (s.estimated_delivery_cost ?? 0)
+                              Math.max(
+                                0,
+                                Number(s.store_earnings_amount || 0) / 100
+                              )
                             )}
                           </div>
-                          {s.promo_code_id && (
-                            <div className='text-xs text-gray-500'>
-                              <span className='line-through'>
-                                {formatValue(s.product_value)}
-                              </span>{' '}
-                              (
-                              {formatValue(
-                                Math.max(
-                                  0,
-                                  (s.product_value ?? 0) -
-                                    ((s.paid_value ?? 0) -
-                                      (s.estimated_delivery_cost ?? 0))
-                                )
-                              )}{' '}
-                              de remise avec le code :
-                              {String(s.promo_code_id || '')})
-                            </div>
-                          )}
+                          {(() => {
+                            const tokens = String(s.promo_code || '')
+                              .split(';;')
+                              .map(t => String(t || '').trim())
+                              .filter(Boolean)
+                              .filter(
+                                t => !t.toUpperCase().startsWith('PAYLIVE-')
+                              );
+                            const promo = tokens.join(', ');
+                            return promo ? (
+                              <div className='text-xs text-gray-500'>
+                                Code promo : {promo}
+                              </div>
+                            ) : null;
+                          })()}
                         </div>
                       </div>
 
@@ -6005,10 +6129,10 @@ export default function DashboardPage() {
                         Référence produit
                       </th>
                       <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Payé
+                        Reçu
                       </th>
                       <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Reçu
+                        Code Promo
                       </th>
                       <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                         Méthode
@@ -6123,36 +6247,25 @@ export default function DashboardPage() {
                             {renderShipmentProductReference(s)}
                           </td>
                           <td className='py-4 px-4 text-gray-900 font-semibold'>
-                            {formatValue(s.paid_value)}
-                          </td>
-                          <td className='py-4 px-4 text-gray-900 font-semibold'>
                             {(() => {
-                              const hasPromo = !!s.promo_code_id;
-                              const finalValue =
-                                (s.paid_value ?? 0) -
-                                (s.estimated_delivery_cost ?? 0);
-                              return (
-                                <>
-                                  {formatValue(finalValue)}
-                                  {hasPromo && (
-                                    <div className='text-xs text-gray-500 mt-1'>
-                                      <span className='line-through'>
-                                        {formatValue(s.product_value)}
-                                      </span>{' '}
-                                      (
-                                      {formatValue(
-                                        Math.max(
-                                          0,
-                                          (s.product_value ?? 0) -
-                                            (finalValue ?? 0)
-                                        )
-                                      )}{' '}
-                                      de remise avec le code:{' '}
-                                      {String(s.promo_code_id || '')})
-                                    </div>
-                                  )}
-                                </>
+                              const finalValue = Math.max(
+                                0,
+                                Number(s.store_earnings_amount || 0) / 100
                               );
+                              return <>{formatValue(finalValue)}</>;
+                            })()}
+                          </td>
+                          <td className='py-4 px-4 text-gray-700'>
+                            {(() => {
+                              const tokens = String(s.promo_code || '')
+                                .split(';;')
+                                .map(t => String(t || '').trim())
+                                .filter(Boolean)
+                                .filter(
+                                  t => !t.toUpperCase().startsWith('PAYLIVE-')
+                                );
+                              const promo = tokens.join(', ');
+                              return promo || '—';
                             })()}
                           </td>
                           <td className='py-4 px-4 text-gray-700'>
@@ -6453,8 +6566,10 @@ export default function DashboardPage() {
                   (shipments || []).forEach(s => {
                     const id = s.customer_stripe_id || '';
                     if (!id) return;
-                    const v =
-                      (s.paid_value ?? 0) - (s.estimated_delivery_cost ?? 0);
+                    const v = Math.max(
+                      0,
+                      Number(s.store_earnings_amount || 0) / 100
+                    );
                     spentMap[id] = (spentMap[id] || 0) + v;
                   });
 
@@ -6881,9 +6996,10 @@ export default function DashboardPage() {
                                   (shipments || []).forEach(s => {
                                     const id = s.customer_stripe_id || '';
                                     if (!id) return;
-                                    const v =
-                                      (s.paid_value ?? 0) -
-                                      (s.estimated_delivery_cost ?? 0);
+                                    const v = Math.max(
+                                      0,
+                                      Number(s.store_earnings_amount || 0) / 100
+                                    );
                                     spentMap[id] = (spentMap[id] || 0) + v;
                                   });
                                   const sortedIds = [...filteredIds].sort(
@@ -7459,7 +7575,9 @@ export default function DashboardPage() {
                   <input
                     type='text'
                     value={promoCodeName}
-                    onChange={e => setPromoCodeName(e.target.value)}
+                    onChange={e =>
+                      setPromoCodeName(e.target.value.toUpperCase())
+                    }
                     placeholder='Ex: STORE20'
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />

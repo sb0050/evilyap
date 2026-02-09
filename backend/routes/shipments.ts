@@ -97,22 +97,22 @@ const parseProductReferenceItems = (raw: string): ProductReferenceItem[] => {
     let description = "";
 
     if (tail) {
-      const m = tail.match(/^(\d+)?\s*(?:\((.*)\))?$/);
+      const m = tail.match(/^(\d+)?(?:@(\d+))?\s*(?:\((.*)\))?$/);
       if (m?.[1]) {
         const q = Number(m[1]);
         if (Number.isFinite(q) && q > 0) quantity = Math.floor(q);
       }
-      if (typeof m?.[2] === "string") description = m[2];
+      if (typeof m?.[3] === "string") description = m[3];
     } else {
-      const m = reference.match(/^(.*?)(?:\((.*)\))?$/);
-      if (m?.[2]) {
-        description = m[2];
+      const m = reference.match(/^(.*?)(?:@(\d+))?\s*(?:\((.*)\))?$/);
+      if (m?.[3]) {
+        description = m[3];
       }
     }
 
     const descClean = String(description || "").trim();
     items.push({
-      reference: reference.replace(/\((.*)\)$/, "").trim(),
+      reference: reference.replace(/(?:@(\d+))?\s*\((.*)\)$/, "").trim(),
       quantity,
       description: descClean || undefined,
     });
@@ -283,7 +283,9 @@ router.post("/open-shipment-by-payment", async (req, res) => {
 
     const { data: shipment, error: shipmentErr } = await supabase
       .from("shipments")
-      .select("id,shipment_id,store_id,customer_stripe_id,payment_id,paid_value")
+      .select(
+        "id,shipment_id,store_id,customer_stripe_id,payment_id,customer_spent_amount",
+      )
       .eq("payment_id", paymentIdStr)
       .eq("store_id", storeIdNum)
       .maybeSingle();
@@ -364,7 +366,9 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       success: true,
       shipmentId: shipmentIdNum,
       shipmentDisplayId: String((shipment as any)?.shipment_id || "").trim(),
-      paidValue: Number((shipment as any)?.paid_value || 0) || 0,
+      paidValue:
+        Math.max(0, Number((shipment as any)?.customer_spent_amount || 0)) /
+        100,
     });
   } catch (e) {
     console.error("Error opening shipment by payment:", e);
@@ -674,8 +678,8 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
                 : NaN;
               const weight = Number.isFinite(parsedMetaWeight)
                 ? Math.max(0, parsedMetaWeight)
-                : parseWeightKgFromDescription(description) ??
-                  getFallbackWeightKgFromDescription(description);
+                : (parseWeightKgFromDescription(description) ??
+                  getFallbackWeightKgFromDescription(description));
               return {
                 product_reference: ref,
                 description,
@@ -991,7 +995,7 @@ router.get("/:id/invoice", async (req, res) => {
     const { data: shipment, error: shipmentErr } = await supabase
       .from("shipments")
       .select(
-        "id,store_id,customer_stripe_id,shipment_id,product_reference,paid_value,product_value,delivery_cost,estimated_delivery_cost,created_at,facture_id,payment_id",
+        "id,store_id,customer_stripe_id,shipment_id,product_reference,customer_spent_amount,store_earnings_amount,delivery_cost,estimated_delivery_cost,created_at,facture_id,payment_id",
       )
       .eq("id", id)
       .single();
@@ -1151,17 +1155,6 @@ router.get("/:id/invoice", async (req, res) => {
       } catch {}
     }
 
-    const fallbackProductTtc = Math.max(
-      0,
-      Number((shipment as any)?.product_value || 0),
-    );
-    const fallbackDeliveryTtc = Math.max(
-      0,
-      Number((shipment as any)?.delivery_cost || 0),
-    );
-    const fallbackProductSplit = splitTtc(fallbackProductTtc);
-    const fallbackDeliverySplit = splitTtc(fallbackDeliveryTtc);
-
     const invoiceRows: Array<{
       description: string;
       qty: number;
@@ -1198,8 +1191,7 @@ router.get("/:id/invoice", async (req, res) => {
         totalTtc = round2(totalTtc + ttc);
       }
 
-      const shipTtc =
-        checkoutShippingTtc != null ? checkoutShippingTtc : fallbackDeliveryTtc;
+      const shipTtc = checkoutShippingTtc != null ? checkoutShippingTtc : 0;
       const shipSplit = splitTtc(shipTtc);
       if (shipSplit.ttc > 0) {
         invoiceRows.push({
@@ -1220,46 +1212,41 @@ router.get("/:id/invoice", async (req, res) => {
         invoiceRows.push({
           description: "Produit",
           qty: 1,
-          unitHt: fallbackProductSplit.ht,
+          unitHt: 0,
           vatPct,
-          totalHt: fallbackProductSplit.ht,
+          totalHt: 0,
         });
       } else {
-        const totalUnits = productItems.reduce(
-          (acc, it) => acc + Math.max(1, Number(it.quantity || 1)),
-          0,
-        );
-        let allocatedHt = 0;
         for (let i = 0; i < productItems.length; i++) {
           const it = productItems[i];
           const qty = Math.max(1, Number(it.quantity || 1));
-          const lineTotalHt =
-            i === productItems.length - 1
-              ? round2(fallbackProductSplit.ht - allocatedHt)
-              : round2(fallbackProductSplit.ht * (qty / totalUnits));
-          allocatedHt = round2(allocatedHt + lineTotalHt);
-          const unitHt = round2(lineTotalHt / qty);
           invoiceRows.push({
             description: `${it.reference} Qté: ${qty}${it.description ? ` — ${it.description}` : ""}`,
             qty,
-            unitHt,
+            unitHt: 0,
             vatPct,
-            totalHt: lineTotalHt,
+            totalHt: 0,
           });
         }
       }
 
-      invoiceRows.push({
-        description: "Frais de livraison",
-        qty: 1,
-        unitHt: fallbackDeliverySplit.ht,
-        vatPct,
-        totalHt: fallbackDeliverySplit.ht,
-      });
+      const shipTtc = checkoutShippingTtc != null ? checkoutShippingTtc : 0;
+      const shipSplit = splitTtc(shipTtc);
+      if (shipSplit.ttc > 0) {
+        invoiceRows.push({
+          description: "Frais de livraison",
+          qty: 1,
+          unitHt: shipSplit.ht,
+          vatPct,
+          totalHt: shipSplit.ht,
+        });
+      }
 
-      totalHt = round2(fallbackProductSplit.ht + fallbackDeliverySplit.ht);
-      totalVat = round2(fallbackProductSplit.vat + fallbackDeliverySplit.vat);
-      totalTtc = round2(fallbackProductSplit.ttc + fallbackDeliverySplit.ttc);
+      totalHt = round2(
+        invoiceRows.reduce((sum, r) => sum + (r.totalHt || 0), 0),
+      );
+      totalVat = round2(totalHt * (vatPct / 100));
+      totalTtc = round2(totalHt + totalVat);
     }
 
     let customerName = "";

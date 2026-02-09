@@ -33,6 +33,53 @@ import Header from '../components/Header';
 import { Toast } from '../components/Toast';
 import Modal from '../components/Modal';
 import { search } from 'fast-fuzzy';
+import { DICTIONARY_ITEMS } from '../types/dictionnary_items';
+
+const getStockItemUnitPrice = (item: any): number | null => {
+  const direct = Number((item as any)?.unit_price);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+
+  const prices = Array.isArray((item as any)?.prices)
+    ? (item as any).prices
+    : [];
+  const eur = prices.find((p: any) => {
+    const currency = String(p?.currency || '').toLowerCase();
+    const unitAmount = Number(p?.unit_amount ?? NaN);
+    return currency === 'eur' && Number.isFinite(unitAmount) && unitAmount > 0;
+  });
+  if (eur) {
+    const unitAmount = Number((eur as any)?.unit_amount || 0);
+    const v = unitAmount / 100;
+    return Number.isFinite(v) && v > 0 ? v : null;
+  }
+
+  return null;
+};
+
+const fetchStockSearchExactMatch = async (
+  storeSlug: string,
+  ref: string
+): Promise<any | null> => {
+  const slug = String(storeSlug || '').trim();
+  const q = String(ref || '').trim();
+  if (!slug || q.length < 2) return null;
+  const resp = await fetch(
+    `${API_BASE_URL}/api/stores/${encodeURIComponent(
+      slug
+    )}/stock/search?q=${encodeURIComponent(q)}`
+  );
+  if (!resp.ok) return null;
+  const json = await resp.json().catch(() => null as any);
+  const items = Array.isArray(json?.items) ? json.items : [];
+  const qKey = q.toLowerCase();
+  const exact = items.find((it: any) => {
+    const r = String(it?.stock?.product_reference || '')
+      .trim()
+      .toLowerCase();
+    return r === qKey;
+  });
+  return exact || null;
+};
 
 interface Store {
   id: number;
@@ -44,7 +91,7 @@ interface Store {
   stripe_id?: string;
   website?: string;
   is_verified?: boolean;
-  promo_code_id?: string | null;
+  promo_code?: string | null;
   address?: {
     city?: string;
     line1?: string;
@@ -186,31 +233,6 @@ export default function CheckoutPage() {
     String(ref || '')
       .trim()
       .toLowerCase();
-
-  const fetchStockSearchExactMatch = async (
-    storeSlug: string,
-    ref: string
-  ): Promise<any | null> => {
-    const slug = String(storeSlug || '').trim();
-    const q = String(ref || '').trim();
-    if (!slug || q.length < 2) return null;
-    const resp = await fetch(
-      `${API_BASE_URL}/api/stores/${encodeURIComponent(
-        slug
-      )}/stock/search?q=${encodeURIComponent(q)}`
-    );
-    if (!resp.ok) return null;
-    const json = await resp.json().catch(() => null as any);
-    const items = Array.isArray(json?.items) ? json.items : [];
-    const qKey = q.toLowerCase();
-    const exact = items.find((it: any) => {
-      const r = String(it?.stock?.product_reference || '')
-        .trim()
-        .toLowerCase();
-      return r === qKey;
-    });
-    return exact || null;
-  };
 
   const refreshCartForStore = async () => {
     const apiBase = API_BASE_URL;
@@ -834,20 +856,6 @@ export default function CheckoutPage() {
     }
   };
 
-  const allowedPromoCodeIds = (() => {
-    const raw = String((store as any)?.promo_code_id || '').trim();
-    if (!raw) return [];
-    return Array.from(
-      new Set(
-        raw
-          .split(';;')
-          .map(s => String(s || '').trim())
-          .filter(Boolean)
-          .filter(id => id.startsWith('promo_'))
-      )
-    );
-  })();
-
   const creditBalanceCents = (() => {
     const raw = (customerData as any)?.metadata?.credit_balance;
     const parsed = Number.parseInt(String(raw || '0'), 10);
@@ -1006,8 +1014,11 @@ export default function CheckoutPage() {
           setIsProcessingPayment(false);
           return;
         }
-        if (!allowedPromoCodeIds.includes(enteredPromoCodeId)) {
-          const msg = 'Code promo non autorisé pour cette boutique.';
+        const normalizedPromo = enteredPromoCodeId.toUpperCase();
+        const isPayliveCode = normalizedPromo.startsWith('PAYLIVE-');
+        const isValidChars = /^[A-Z0-9_-]+$/.test(normalizedPromo);
+        if (!isPayliveCode && !isValidChars) {
+          const msg = 'Code promo invalide.';
           setPaymentError(msg);
           showToast(msg, 'error');
           setIsProcessingPayment(false);
@@ -1079,7 +1090,9 @@ export default function CheckoutPage() {
               (md.deliveryNetwork as any) ||
               ((md.metadata || {})?.delivery_network as any) ||
               '',
-        promotionCodeId: enteredPromoCodeId || '',
+        promotionCodeId: enteredPromoCodeId
+          ? enteredPromoCodeId.toUpperCase()
+          : '',
       };
 
       const response = await fetch(
@@ -1657,6 +1670,10 @@ export default function CheckoutPage() {
                                   ref ||
                                   ''
                               ).trim();
+                              const cartDesc = String(
+                                (it as any)?.description || ''
+                              ).trim();
+                              const showDesc = Boolean(cartDesc);
                               const imgRaw =
                                 Array.isArray(product?.images) &&
                                 product.images.length > 0
@@ -1682,6 +1699,11 @@ export default function CheckoutPage() {
                                     <div className='truncate text-xs text-gray-600'>
                                       {title || '—'}
                                     </div>
+                                    {showDesc ? (
+                                      <div className='truncate text-xs text-gray-500'>
+                                        {cartDesc}
+                                      </div>
+                                    ) : null}
                                   </div>
                                 </div>
                               );
@@ -1780,7 +1802,7 @@ export default function CheckoutPage() {
                       <span>Total</span>
                       <span>{Number(cartTotalForStore || 0).toFixed(2)} €</span>
                     </div>
-                    {canEnterPromoCode && allowedPromoCodeIds.length > 0 ? (
+                    {canEnterPromoCode ? (
                       <div className='mt-3'>
                         <label
                           htmlFor='cart-promo-code'
@@ -1792,25 +1814,23 @@ export default function CheckoutPage() {
                           id='cart-promo-code'
                           value={promoCodeId}
                           onChange={e => {
-                            const next = String(e.target.value || '').trim();
-                            setPromoCodeId(next);
+                            setPromoCodeId(
+                              String(e.target.value || '').toUpperCase()
+                            );
+                            const next = String(
+                              e.target.value || ''
+                            ).toUpperCase();
                             if (!next) {
                               setPromoCodeError(null);
                               return;
                             }
-                            if (!next.startsWith('promo_')) {
-                              setPromoCodeError('Code promo invalide.');
-                              return;
-                            }
-                            if (!allowedPromoCodeIds.includes(next)) {
-                              setPromoCodeError(
-                                'Code promo non autorisé pour cette boutique.'
-                              );
+                            if (next.startsWith('PAYLIVE-')) {
+                              setPromoCodeError(null);
                               return;
                             }
                             setPromoCodeError(null);
                           }}
-                          placeholder='promo_...'
+                          placeholder='PAYLIVE-...'
                           className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                         />
                         {promoCodeError ? (
@@ -2262,11 +2282,9 @@ function CheckoutForm({
       if (Number.isFinite(qtyAvailable) && qtyAvailable <= 0) return;
 
       const title = String(product?.name || ref || '').trim() || ref;
-      const priceRaw = Number(stock?.price);
+      const unitPrice = getStockItemUnitPrice(s);
       const value =
-        Number.isFinite(priceRaw) && priceRaw > 0
-          ? priceRaw
-          : Number(amount || 0);
+        unitPrice && unitPrice > 0 ? unitPrice : Number(amount || 0);
 
       const stripeWeightRaw = (product as any)?.metadata?.weight_kg;
       const stripeWeightParsed = stripeWeightRaw
@@ -2383,6 +2401,23 @@ function CheckoutForm({
         const items = Array.isArray(json?.items) ? json.items : [];
         setStockSuggestions(items);
         setStockSuggestionsOpen(true);
+        const qKey = String(q || '')
+          .trim()
+          .toLowerCase();
+        const exact = items.find((it: any) => {
+          const r = String(it?.stock?.product_reference || '')
+            .trim()
+            .toLowerCase();
+          return r === qKey;
+        });
+        if (exact) {
+          setSelectedStockItem(exact);
+          const unitPrice = getStockItemUnitPrice(exact);
+          if (unitPrice) {
+            setAmount(unitPrice);
+            setAmountInput(String(unitPrice));
+          }
+        }
       } finally {
         if (!cancelled) setStockSuggestionsLoading(false);
       }
@@ -2430,58 +2465,12 @@ function CheckoutForm({
           .normalize('NFD')
           .replace(/[\u0300-\u036f]/g, '')
           .trim();
-      const DICT = [
-        'robe',
-        'jupe',
-        'pantalon',
-        'jean',
-        'tailleur',
-        'chemise',
-        'chemisier',
-        'blouse',
-        'top',
-        'tshirt',
-        'tee',
-        'shirt',
-        'debardeur',
-        'gilet',
-        'cardigan',
-        'pull',
-        'sweat',
-        'sweatshirt',
-        'veste',
-        'manteau',
-        'trench',
-        'doudoune',
-        'parka',
-        'short',
-        'combinaison',
-        'ensemble',
-        'long',
-        'epais',
-        'hiver',
-        'manches',
-        'longues',
-        'courtes',
-        'manche',
-        'coton',
-        'lin',
-        'laine',
-        'soie',
-        'satin',
-        'velours',
-        'dentelle',
-        'double',
-        'col',
-        'v',
-        'roule',
-      ];
       const correctTypos = (text: string) => {
         const base = normalizeText(text || '');
         const tokens = base.split(/\s+/).filter(Boolean);
         const corrected = tokens.map(tok => {
           if (tok.length < 3) return tok;
-          const res = search(tok, DICT, {
+          const res = search(tok, DICTIONARY_ITEMS, {
             threshold: 0.7,
             returnMatchData: true,
           } as any) as any[];
@@ -2549,14 +2538,46 @@ function CheckoutForm({
       const selectedMatches =
         selectedRef &&
         selectedRef.toLowerCase() === String(product_reference).toLowerCase();
-      const productStripeId = selectedMatches
-        ? String(selectedStock?.product_stripe_id || '').trim()
+
+      const resolvedStockItem = selectedMatches
+        ? selectedStockItem
+        : await fetchStockSearchExactMatch(
+            storeSlugForStock,
+            product_reference
+          );
+      const resolvedStock = (resolvedStockItem as any)?.stock || null;
+      const resolvedProduct = (resolvedStockItem as any)?.product || null;
+
+      const resolvedRef = String(resolvedStock?.product_reference || '').trim();
+      const resolvedMatches =
+        resolvedRef &&
+        resolvedRef.toLowerCase() === String(product_reference).toLowerCase();
+
+      const qtyAvailable = Number(resolvedStock?.quantity ?? NaN);
+      if (Number.isFinite(qtyAvailable) && qtyAvailable <= 0) {
+        const msg = 'Produit indisponible (stock épuisé)';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return;
+      }
+
+      const productStripeId = resolvedMatches
+        ? String(resolvedStock?.product_stripe_id || '').trim()
         : '';
-      const stripeWeightRaw = (selectedProduct as any)?.metadata?.weight_kg;
+
+      const resolvedUnitPrice = getStockItemUnitPrice(resolvedStockItem);
+      const resolvedValue =
+        resolvedUnitPrice && resolvedUnitPrice > 0 ? resolvedUnitPrice : amount;
+      if (Number.isFinite(resolvedValue) && resolvedValue > 0) {
+        setAmount(resolvedValue);
+        setAmountInput(String(resolvedValue));
+      }
+
+      const stripeWeightRaw = (resolvedProduct as any)?.metadata?.weight_kg;
       const stripeWeightParsed = stripeWeightRaw
         ? Number(String(stripeWeightRaw).replace(',', '.'))
         : NaN;
-      const stockWeightRaw = Number(selectedStock?.weight);
+      const stockWeightRaw = Number(resolvedStock?.weight);
       const weightForCart =
         Number.isFinite(stripeWeightParsed) && stripeWeightParsed >= 0
           ? stripeWeightParsed
@@ -2567,7 +2588,7 @@ function CheckoutForm({
       const resp = await apiPost('/api/carts', {
         store_id: store.id,
         product_reference,
-        value: amount,
+        value: resolvedValue,
         customer_stripe_id: customerStripeId,
         description: normalizedDescription || null,
         weight: weightForCart === null ? undefined : weightForCart,
@@ -2690,11 +2711,7 @@ function CheckoutForm({
                     const qty = Number(stock?.quantity ?? 0);
                     const disabled = Number.isFinite(qty) && qty <= 0;
                     const title = String(product?.name || ref || '').trim();
-                    const priceRaw = Number(stock?.price);
-                    const price =
-                      Number.isFinite(priceRaw) && priceRaw > 0
-                        ? priceRaw
-                        : null;
+                    const unitPrice = getStockItemUnitPrice(s);
                     const imgRaw =
                       Array.isArray(product?.images) &&
                       product.images.length > 0
@@ -2733,7 +2750,7 @@ function CheckoutForm({
                           </div>
                           <div className='text-xs text-gray-600 truncate'>
                             {title || '—'}
-                            {price !== null ? ` • ${price.toFixed(2)} €` : ''}
+                            {unitPrice ? ` • ${unitPrice.toFixed(2)} €` : ''}
                           </div>
                         </div>
                       </button>
@@ -2755,9 +2772,7 @@ function CheckoutForm({
                       : String(stock?.image_url || '')
                           .split(',')[0]
                           ?.trim() || '';
-                  const priceRaw = Number(stock?.price);
-                  const price =
-                    Number.isFinite(priceRaw) && priceRaw > 0 ? priceRaw : null;
+                  const unitPrice = getStockItemUnitPrice(selectedStockItem);
                   const stripeWeightRaw = product?.metadata?.weight_kg;
                   const stripeWeightParsed = stripeWeightRaw
                     ? Number(String(stripeWeightRaw).replace(',', '.'))
@@ -2789,8 +2804,8 @@ function CheckoutForm({
                           {ref || '—'}
                         </div>
                         <div className='text-xs text-gray-600'>
-                          {price !== null
-                            ? `Prix: ${price.toFixed(2)} €`
+                          {unitPrice
+                            ? `Prix: ${unitPrice.toFixed(2)} €`
                             : 'Prix: —'}
                           {weight !== null ? ` • Poids: ${weight} kg` : ''}
                         </div>

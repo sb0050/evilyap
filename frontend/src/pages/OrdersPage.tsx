@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
 import { Toast } from '../components/Toast';
@@ -48,7 +48,7 @@ type Shipment = {
   weight: number | null;
   product_reference: string | null;
   description?: string | null;
-  paid_value: number | null;
+  customer_spent_amount?: number | null;
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
@@ -58,15 +58,25 @@ type Shipment = {
   tracking_url?: string | null;
   store?: StoreInfo | null;
   is_final_destination?: boolean | null;
-  promo_code_id?: string | null;
-  product_value?: number | null;
+  promo_code?: string | null;
   estimated_delivery_cost?: number | null;
+};
+
+type StripeProductLite = {
+  id: string;
+  name: string | null;
+  description: string | null;
+  unit_amount_cents: number | null;
 };
 
 export default function OrdersPage() {
   const { user } = useUser();
   const { getToken } = useAuth();
   const [shipments, setShipments] = useState<Shipment[]>([]);
+  const [stripeProductsLiteById, setStripeProductsLiteById] = useState<
+    Record<string, StripeProductLite>
+  >({});
+  const requestedStripeProductIdsRef = useRef<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [reloadingOrders, setReloadingOrders] = useState(false);
   const [creditBalanceCents, setCreditBalanceCents] = useState<number | null>(
@@ -400,6 +410,78 @@ export default function OrdersPage() {
     }
   };
 
+  const extractStripeProductIds = useCallback(
+    (raw: string | null | undefined): string[] =>
+      String(raw || '')
+        .split(';')
+        .map(s => String(s || '').trim())
+        .filter(s => s.startsWith('prod_')),
+    []
+  );
+
+  const ensureStripeProductsLoaded = useCallback(
+    async (ids: string[]) => {
+      const unique = Array.from(
+        new Set(
+          (ids || [])
+            .map(s => String(s || '').trim())
+            .filter(s => s.startsWith('prod_'))
+        )
+      );
+      if (unique.length === 0) return;
+
+      const toFetch: string[] = [];
+      for (const id of unique) {
+        if (stripeProductsLiteById[id]) continue;
+        if (requestedStripeProductIdsRef.current.has(id)) continue;
+        requestedStripeProductIdsRef.current.add(id);
+        toFetch.push(id);
+      }
+      if (toFetch.length === 0) return;
+
+      const token = await getToken();
+      const resp = await fetch(`${apiBase}/api/stripe/products/by-ids`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+        body: JSON.stringify({ ids: toFetch }),
+      });
+      const json = await resp.json().catch(() => ({}) as any);
+      if (!resp.ok) {
+        const msg = json?.error || json?.message || 'Erreur produits Stripe';
+        throw new Error(
+          typeof msg === 'string' ? msg : 'Erreur produits Stripe'
+        );
+      }
+      const products: StripeProductLite[] = Array.isArray(json?.products)
+        ? json.products
+        : [];
+      if (products.length === 0) return;
+
+      setStripeProductsLiteById(prev => {
+        const next = { ...prev };
+        for (const p of products) {
+          const id = String((p as any)?.id || '').trim();
+          if (!id || !id.startsWith('prod_')) continue;
+          next[id] = {
+            id,
+            name: String((p as any)?.name || '').trim() || null,
+            description: String((p as any)?.description || '').trim() || null,
+            unit_amount_cents:
+              typeof (p as any)?.unit_amount_cents === 'number' &&
+              Number.isFinite((p as any).unit_amount_cents)
+                ? (p as any).unit_amount_cents
+                : null,
+          };
+        }
+        return next;
+      });
+    },
+    [apiBase, getToken, stripeProductsLiteById]
+  );
+
   const parseProductReferenceItems = (raw: string | null | undefined) => {
     const txt = String(raw || '').trim();
     if (!txt)
@@ -412,6 +494,22 @@ export default function OrdersPage() {
       .split(';')
       .map(s => String(s || '').trim())
       .filter(Boolean);
+
+    const onlyStripeIds =
+      parts.length > 0 && parts.every(p => String(p || '').startsWith('prod_'));
+    if (onlyStripeIds) {
+      const counts = new Map<string, number>();
+      for (const pid of parts) {
+        const id = String(pid || '').trim();
+        if (!id) continue;
+        counts.set(id, (counts.get(id) || 0) + 1);
+      }
+      return Array.from(counts.entries()).map(([reference, quantity]) => ({
+        reference,
+        quantity,
+        description: null,
+      }));
+    }
 
     const m = new Map<
       string,
@@ -429,24 +527,24 @@ export default function OrdersPage() {
         const [refRaw, restRaw] = seg.split('**');
         reference = String(refRaw || '').trim();
         const rest = String(restRaw || '').trim();
-        const match = rest.match(/^(\d+)\s*(?:\((.*)\))?$/);
+        const match = rest.match(/^(\d+)(?:@(\d+))?\s*(?:\((.*)\))?$/);
         if (match) {
           const qNum = Number(match[1]);
           quantity = Number.isFinite(qNum) && qNum > 0 ? Math.round(qNum) : 1;
-          const d = String(match[2] || '').trim();
+          const d = String(match[3] || '').trim();
           description = d || null;
         } else {
-          const qNum = Number(rest);
+          const qNum = Number(String(rest).split('@')[0]);
           quantity = Number.isFinite(qNum) && qNum > 0 ? Math.round(qNum) : 1;
         }
       } else {
-        const match = seg.match(/^(.+?)\s*\((.*)\)\s*$/);
+        const match = seg.match(/^(.+?)(?:@(\d+))?\s*\((.*)\)\s*$/);
         if (match) {
           reference = String(match[1] || '').trim();
-          const d = String(match[2] || '').trim();
+          const d = String(match[3] || '').trim();
           description = d || null;
         } else {
-          reference = seg;
+          reference = String(seg).split('@')[0] || seg;
         }
       }
 
@@ -481,7 +579,15 @@ export default function OrdersPage() {
   const formatShipmentProductReference = (s: Shipment) => {
     const items = getShipmentProductItems(s);
     if (items.length === 0) return '—';
-    return items.map(it => `${it.reference}(x${it.quantity})`).join(', ');
+    return items
+      .map(it => {
+        const ref = String(it.reference || '').trim();
+        const label = ref.startsWith('prod_')
+          ? stripeProductsLiteById[ref]?.name || ref
+          : ref;
+        return `${label}(x${it.quantity})`;
+      })
+      .join(', ');
   };
 
   const renderShipmentProductReference = (s: Shipment) => {
@@ -490,21 +596,34 @@ export default function OrdersPage() {
     return (
       <div className='space-y-2'>
         {items.map((it, idx) => {
-          const d = String(it.description || '').trim();
+          const ref = String(it.reference || '').trim();
+          const sp = ref.startsWith('prod_')
+            ? stripeProductsLiteById[ref]
+            : null;
+          const label = sp?.name || ref;
+          const d =
+            String(sp?.description || '').trim() ||
+            String(it.description || '').trim();
+          const price =
+            sp?.unit_amount_cents != null
+              ? formatValue(
+                  Math.max(0, Number(sp.unit_amount_cents || 0)) / 100
+                )
+              : '';
           return (
             <div key={`${s.id}-${idx}`} className='space-y-0.5'>
               <div
                 className='font-medium truncate max-w-[280px]'
-                title={`${it.reference}(x${it.quantity})`}
+                title={`${label}(x${it.quantity})`}
               >
-                {it.reference}(x{it.quantity})
+                {label}(x{it.quantity})
               </div>
-              {d ? (
+              {d || price ? (
                 <div
                   className='text-xs text-gray-500 truncate max-w-[280px]'
-                  title={d}
+                  title={[d, price].filter(Boolean).join(' — ')}
                 >
-                  {d}
+                  {[d, price].filter(Boolean).join(' — ')}
                 </div>
               ) : null}
             </div>
@@ -513,6 +632,18 @@ export default function OrdersPage() {
       </div>
     );
   };
+
+  useEffect(() => {
+    const ids = Array.from(
+      new Set(
+        (shipments || []).flatMap(s =>
+          extractStripeProductIds(s.product_reference)
+        )
+      )
+    );
+    if (ids.length === 0) return;
+    ensureStripeProductsLoaded(ids).catch(() => {});
+  }, [extractStripeProductIds, ensureStripeProductsLoaded, shipments]);
 
   // Tri par date estimée (prochain colis)
   const sortedShipments = (() => {
@@ -1321,7 +1452,12 @@ export default function OrdersPage() {
                           className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                         />
                         <div className='text-sm font-semibold text-gray-900'>
-                          {formatValue(s.paid_value)}
+                          {formatValue(
+                            Math.max(
+                              0,
+                              Number(s.customer_spent_amount || 0) / 100
+                            )
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1330,6 +1466,17 @@ export default function OrdersPage() {
                       <div>
                         <span className='font-medium'>Référence:</span>{' '}
                         {renderShipmentProductReference(s)}
+                      </div>
+                      <div>
+                        <span className='font-medium'>Code promo:</span>{' '}
+                        {(() => {
+                          const promo = String(s.promo_code || '')
+                            .split(';;')
+                            .map(t => String(t || '').trim())
+                            .filter(Boolean)
+                            .join(', ');
+                          return promo || '—';
+                        })()}
                       </div>
                       <div>
                         <span className='font-medium'>Statut:</span>{' '}
@@ -1425,6 +1572,9 @@ export default function OrdersPage() {
                       Payé
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                      Code Promo
+                    </th>
+                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Statut
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
@@ -1499,7 +1649,22 @@ export default function OrdersPage() {
                         {renderShipmentProductReference(s)}
                       </td>
                       <td className='py-4 px-4 text-gray-900 font-semibold'>
-                        {formatValue(s.paid_value)}
+                        {formatValue(
+                          Math.max(
+                            0,
+                            Number(s.customer_spent_amount || 0) / 100
+                          )
+                        )}
+                      </td>
+                      <td className='py-4 px-4 text-gray-700'>
+                        {(() => {
+                          const promo = String(s.promo_code || '')
+                            .split(';;')
+                            .map(t => String(t || '').trim())
+                            .filter(Boolean)
+                            .join(', ');
+                          return promo || '—';
+                        })()}
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
                         <div className='space-y-1'>
@@ -1582,7 +1747,12 @@ export default function OrdersPage() {
                           </div>
                           <div className='text-right'>
                             <div className='text-xs font-semibold text-gray-900'>
-                              {formatValue(s.paid_value)}
+                              {formatValue(
+                                Math.max(
+                                  0,
+                                  Number(s.customer_spent_amount || 0) / 100
+                                )
+                              )}
                             </div>
                             <div className='text-xs text-gray-600'>
                               {s.status || '—'}
