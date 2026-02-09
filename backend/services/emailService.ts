@@ -211,7 +211,7 @@ class EmailService {
       const promoNote = data.promoCodes
         ? ` <span style="color:#666; font-size:12px;"><span style="text-decoration: line-through;">${formattedOriginalProduct}</span> (${formattedDiscount} de remise avec le code : ${String(
             data.promoCodes || "",
-          ).replace(/;/g, ", ")})</span>`
+          ).replace(/;+/g, ", ")})</span>`
         : "";
       const formattedEstimatedDate = this.formatEstimatedDate(
         data.estimatedDeliveryDate,
@@ -525,7 +525,7 @@ class EmailService {
       const promoNote = data.promoCodes
         ? ` <span style="color:#666; font-size:12px;"><span style="text-decoration: line-through;">${formattedOriginalProduct}</span> (${formattedDiscount} de remise avec le code : ${String(
             data.promoCodes || "",
-          ).replace(/;/g, ", ")})</span>`
+          ).replace(/;+/g, ", ")})</span>`
         : "";
 
       // Préparer les infos réseau (lien carte + image dimensions) selon deliveryNetwork

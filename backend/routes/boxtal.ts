@@ -779,26 +779,14 @@ router.delete("/shipping-orders/:id", async (req, res) => {
           }
         }
 
-        const amountRaw =
-          typeof shipment?.product_value === "number"
-            ? shipment.product_value
-            : typeof shipment?.value === "number"
-              ? shipment.value
-              : undefined;
-        const deliveryCostRaw =
-          typeof shipment?.delivery_cost === "number"
-            ? shipment.delivery_cost
-            : undefined;
-        const totalRaw =
-          typeof amountRaw === "number" && typeof deliveryCostRaw === "number"
-            ? amountRaw + deliveryCostRaw
-            : amountRaw;
-
         const paymentId = String(shipment?.payment_id || "").trim();
-        const creditCents =
-          typeof totalRaw === "number" && Number.isFinite(totalRaw) && totalRaw > 0
-            ? Math.round(totalRaw * 100)
-            : 0;
+        const customerSpentAmountCents = Math.max(
+          0,
+          Math.round(Number((shipment as any)?.customer_spent_amount || 0)),
+        );
+        const creditCents = Number.isFinite(customerSpentAmountCents)
+          ? customerSpentAmountCents
+          : 0;
 
         if (stripe && customerStripeId && creditCents > 0) {
           let alreadyIssued = false;

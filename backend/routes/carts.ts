@@ -99,8 +99,47 @@ router.post("/", async (req, res) => {
         ? quantity
         : 1;
 
+    const storeIdNum =
+      typeof store_id === "number"
+        ? store_id
+        : typeof store_id === "string"
+          ? Number(store_id)
+          : NaN;
+
+    const refTrimmed = String(product_reference || "").trim();
+    const refCandidates = Array.from(
+      new Set(
+        [refTrimmed, refTrimmed.toLowerCase(), refTrimmed.toUpperCase()].filter(
+          Boolean,
+        ),
+      ),
+    );
+
+    let stockMatch: any | null = null;
+    if (Number.isFinite(storeIdNum) && storeIdNum > 0 && refCandidates.length) {
+      let stockErr: any = null;
+      let stockData: any[] | null = null;
+      {
+        const resp = await supabase
+          .from("stock")
+          .select("product_reference,product_stripe_id,weight,quantity")
+          .eq("store_id", storeIdNum)
+          .in("product_reference", refCandidates)
+          .limit(1);
+        stockData = resp.data as any;
+        stockErr = resp.error;
+      }
+      if (!stockErr && Array.isArray(stockData) && stockData.length > 0) {
+        stockMatch = stockData[0] || null;
+      }
+    }
+
     const normalizedWeight = (() => {
       if (weight === undefined || weight === null || weight === "") {
+        const stockWeightRaw = Number((stockMatch as any)?.weight);
+        if (Number.isFinite(stockWeightRaw) && stockWeightRaw >= 0) {
+          return stockWeightRaw;
+        }
         return getFallbackWeightKgFromDescription(descriptionTrimmed);
       }
       const wRaw =
@@ -116,26 +155,15 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "weight invalide (>= 0)" });
     }
 
-    const row: any = {
-      store_id,
-      product_reference,
-      value: typeof value === "number" ? value : 0,
-      customer_stripe_id,
-      description: descriptionTrimmed,
-      status: "PENDING",
-      quantity: normalizedQuantity,
-      weight: normalizedWeight,
-      created_at: new Date().toISOString(),
-    };
+    const stockStripeId =
+      typeof (stockMatch as any)?.product_stripe_id === "string"
+        ? String((stockMatch as any).product_stripe_id || "").trim()
+        : "";
     const productStripeId =
       typeof product_stripe_id === "string" ? product_stripe_id.trim() : "";
-    if (productStripeId && productStripeId.startsWith("prod_")) {
-      const storeIdNum =
-        typeof store_id === "number"
-          ? store_id
-          : typeof store_id === "string"
-            ? Number(store_id)
-            : NaN;
+    let resolvedStripeProductId =
+      stockStripeId && stockStripeId.startsWith("prod_") ? stockStripeId : "";
+    if (!resolvedStripeProductId && productStripeId && productStripeId.startsWith("prod_")) {
       if (Number.isFinite(storeIdNum) && storeIdNum > 0) {
         const resp = await supabase
           .from("stock")
@@ -144,9 +172,65 @@ router.post("/", async (req, res) => {
           .eq("product_stripe_id", productStripeId)
           .limit(1);
         if (!resp.error && Array.isArray(resp.data) && resp.data.length > 0) {
-          row.stripe_product_id = productStripeId;
+          resolvedStripeProductId = productStripeId;
         }
       }
+    }
+
+    const getStripeUnitPriceEur = async (stripeProductId: string) => {
+      const pid = String(stripeProductId || "").trim();
+      if (!pid || !pid.startsWith("prod_")) return null;
+      try {
+        const list = await stripe.prices.list({
+          product: pid,
+          active: true,
+          limit: 100,
+        } as any);
+        const prices = Array.isArray((list as any)?.data) ? (list as any).data : [];
+        const eur = prices.find(
+          (p: any) =>
+            String(p?.currency || "").toLowerCase() === "eur" &&
+            Number(p?.unit_amount || 0) > 0,
+        );
+        if (!eur) return null;
+        const cents = Number((eur as any)?.unit_amount || 0);
+        const v = cents / 100;
+        return Number.isFinite(v) && v > 0 ? v : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const incomingValueRaw =
+      typeof value === "number"
+        ? value
+        : typeof value === "string"
+          ? parseFloat(value.trim().replace(",", "."))
+          : 0;
+    const stripeUnitPrice = resolvedStripeProductId
+      ? await getStripeUnitPriceEur(resolvedStripeProductId)
+      : null;
+    const normalizedValue =
+      stripeUnitPrice && stripeUnitPrice > 0
+        ? stripeUnitPrice
+        : Number.isFinite(incomingValueRaw)
+          ? incomingValueRaw
+          : 0;
+
+    const row: any = {
+      store_id,
+      product_reference,
+      value: normalizedValue,
+      customer_stripe_id,
+      description: descriptionTrimmed,
+      status: "PENDING",
+      quantity: normalizedQuantity,
+      weight: normalizedWeight,
+      created_at: new Date().toISOString(),
+    };
+
+    if (resolvedStripeProductId) {
+      row.stripe_product_id = resolvedStripeProductId;
     }
 
     let data: any = null;
