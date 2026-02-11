@@ -1893,6 +1893,120 @@ router.get("/:storeSlug/stock/search", async (req, res) => {
   }
 });
 
+router.get("/:storeSlug/stock/public", async (req, res) => {
+  try {
+    const { storeSlug } = req.params as { storeSlug?: string };
+    if (!storeSlug) {
+      return res.status(400).json({ error: "Slug de boutique requis" });
+    }
+    const decodedSlug = decodeURIComponent(storeSlug);
+
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, slug")
+      .eq("slug", decodedSlug)
+      .maybeSingle();
+    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!storeRow) {
+      return res.status(404).json({ error: "Boutique introuvable" });
+    }
+
+    const storeId = Number((storeRow as any)?.id);
+    if (!Number.isFinite(storeId) || storeId <= 0) {
+      return res.status(500).json({ error: "store_id invalide" });
+    }
+
+    const stockSelect =
+      "id, created_at, store_id, product_reference, quantity, weight, image_url, product_stripe_id, bought";
+
+    const { data: stockRows, error: stockErr } = await supabase
+      .from("stock")
+      .select(stockSelect)
+      .eq("store_id", storeId)
+      .gt("quantity", 0)
+      .order("id", { ascending: false });
+    if (stockErr) return res.status(500).json({ error: stockErr.message });
+
+    const rows = Array.isArray(stockRows) ? stockRows : [];
+
+    const mapWithLimit = async <T, R>(
+      items: T[],
+      maxConcurrent: number,
+      fn: (item: T, idx: number) => Promise<R>,
+    ): Promise<R[]> => {
+      const out: R[] = new Array(items.length);
+      let idx = 0;
+      const workers = new Array(Math.max(1, maxConcurrent))
+        .fill(null)
+        .map(async () => {
+          while (idx < items.length) {
+            const current = idx++;
+            out[current] = await fn(items[current], current);
+          }
+        });
+      await Promise.all(workers);
+      return out;
+    };
+
+    const items = await mapWithLimit(rows, 6, async (r: any) => {
+      const boughtRaw = Number((r as any)?.bought || 0);
+      const bought =
+        Number.isFinite(boughtRaw) && boughtRaw > 0 ? boughtRaw : 0;
+
+      const raw = (r as any)?.product_stripe_id;
+      const asString = String(raw ?? "").trim();
+      if (!asString || !asString.startsWith("prod_")) {
+        return { stock: { ...r, bought }, product: null, unit_price: null };
+      }
+
+      let product: any = null;
+      try {
+        product = await stripe.products.retrieve(asString);
+      } catch {
+        product = null;
+      }
+      if (product && (product as any)?.active === false) {
+        return { stock: { ...r, bought }, product: null, unit_price: null };
+      }
+
+      let unit_price: number | null = null;
+      if (product?.id) {
+        try {
+          const p = await stripe.prices.list({
+            product: product.id,
+            active: true,
+            limit: 100,
+          } as any);
+          const prices = Array.isArray((p as any)?.data) ? (p as any).data : [];
+          const eur = prices.find(
+            (pr: any) =>
+              String(pr?.currency || "").toLowerCase() === "eur" &&
+              Number(pr?.unit_amount || 0) > 0,
+          );
+          if (eur) {
+            const v = Number((eur as any)?.unit_amount || 0) / 100;
+            unit_price = Number.isFinite(v) && v > 0 ? v : null;
+          }
+        } catch {
+          unit_price = null;
+        }
+      }
+
+      return { stock: { ...r, bought }, product, unit_price };
+    });
+
+    return res.json({ success: true, items });
+  } catch (e: any) {
+    const msg = e?.message || "Erreur interne du serveur";
+    console.error("Error listing public stock products:", e);
+    return res.status(500).json({
+      error: typeof msg === "string" ? msg : "Erreur interne du serveur",
+    });
+  }
+});
+
 router.get("/:storeSlug/stock/products", async (req, res) => {
   try {
     const auth = getAuth(req);

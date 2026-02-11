@@ -1,4 +1,4 @@
-import { useEffect, useState, useLayoutEffect, useRef } from 'react';
+import { useEffect, useState, useLayoutEffect, useRef, Fragment } from 'react';
 import {
   RedirectToSignUp,
   SignedIn,
@@ -7,11 +7,12 @@ import {
   useUser,
   useAuth,
 } from '@clerk/clerk-react';
-import { Store } from 'lucide-react';
+import { ShoppingCart, Store } from 'lucide-react';
 import Spinner from './Spinner';
 import { API_BASE_URL } from '../utils/api';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Protect } from '@clerk/clerk-react';
+import { Popover, Transition } from '@headlessui/react';
 
 type OwnerStoreInfo = {
   exists: boolean;
@@ -56,6 +57,22 @@ export default function Header() {
   const apiBase = API_BASE_URL;
   const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
   const hasEnsuredStripeCustomerRef = useRef<boolean>(false);
+  const [cartSummaryLoading, setCartSummaryLoading] = useState(false);
+  const [cartItemsByStore, setCartItemsByStore] = useState<
+    Array<{
+      store: { id: number; name: string; slug: string } | null;
+      total: number;
+      suggestedWeight: number;
+      items: Array<{
+        id: number;
+        product_reference: string;
+        value: number;
+        quantity?: number;
+        description?: string;
+      }>;
+    }>
+  >([]);
+  const [selectedStoreSlug, setSelectedStoreSlug] = useState<string>('');
   // useEffect dédié: assurer l'existence du client Stripe une seule fois
   useEffect(() => {
     const ensureStripeCustomer = async () => {
@@ -114,6 +131,82 @@ export default function Header() {
     };
     ensureStripeCustomer();
   }, [user?.primaryEmailAddress?.emailAddress, stripeCustomerId]);
+
+  const formatEur = (value: number) =>
+    new Intl.NumberFormat('fr-FR', {
+      style: 'currency',
+      currency: 'EUR',
+    }).format(value);
+
+  const parseActiveStoreSlug = () => {
+    const path = String(location.pathname || '');
+    const parts = path.split('/').filter(Boolean);
+    if (parts.length >= 2 && (parts[0] === 'store' || parts[0] === 'checkout')) {
+      return decodeURIComponent(parts[1] || '');
+    }
+    return '';
+  };
+
+  const refreshCartSummary = async () => {
+    const sid = String(stripeCustomerId || '').trim();
+    if (!sid) {
+      setCartItemsByStore([]);
+      return;
+    }
+    try {
+      setCartSummaryLoading(true);
+      const resp = await fetch(
+        `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(sid)}`
+      );
+      if (!resp.ok) return;
+      const json = await resp.json().catch(() => null as any);
+      const groups = Array.isArray(json?.itemsByStore) ? json.itemsByStore : [];
+      setCartItemsByStore(groups);
+    } catch {
+    } finally {
+      setCartSummaryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshCartSummary();
+  }, [stripeCustomerId]);
+
+  useEffect(() => {
+    const onUpdated = () => refreshCartSummary();
+    window.addEventListener('cart:updated', onUpdated as any);
+    return () => window.removeEventListener('cart:updated', onUpdated as any);
+  }, [stripeCustomerId]);
+
+  useEffect(() => {
+    const active = String(parseActiveStoreSlug() || '').trim();
+    const available = cartItemsByStore
+      .map(g => String(g?.store?.slug || '').trim())
+      .filter(Boolean);
+    const next =
+      (active && available.includes(active) && active) ||
+      (selectedStoreSlug && available.includes(selectedStoreSlug)
+        ? selectedStoreSlug
+        : available[0] || '');
+    if (next !== selectedStoreSlug) setSelectedStoreSlug(next);
+  }, [location.pathname, cartItemsByStore]);
+
+  const currentGroup =
+    cartItemsByStore.find(
+      g =>
+        String(g?.store?.slug || '').trim() ===
+        String(selectedStoreSlug || '').trim()
+    ) || null;
+
+  const currentItems = Array.isArray(currentGroup?.items) ? currentGroup!.items : [];
+  const currentTotal = currentItems.reduce((sum, it) => {
+    const qty = Math.max(1, Number(it?.quantity || 1));
+    return sum + Number(it?.value || 0) * qty;
+  }, 0);
+  const totalItemsCount = cartItemsByStore.reduce(
+    (sum, g) => sum + (Array.isArray(g?.items) ? g.items.length : 0),
+    0
+  );
 
   // Suppression de la déduction d’accès au dashboard basée sur des slugs
 
@@ -364,6 +457,132 @@ export default function Header() {
               </Protect>
 
               <div className='flex items-center gap-2'>
+                <Popover className='relative'>
+                  {({ open }) => (
+                    <>
+                      <Popover.Button className='relative inline-flex items-center justify-center h-9 w-9 rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50'>
+                        <ShoppingCart className='w-5 h-5' aria-hidden='true' />
+                        {totalItemsCount > 0 ? (
+                          <span className='absolute -top-1 -right-1 inline-flex items-center justify-center h-5 min-w-5 px-1 rounded-full bg-indigo-600 text-white text-[10px] font-semibold'>
+                            {totalItemsCount}
+                          </span>
+                        ) : null}
+                      </Popover.Button>
+                      <Transition
+                        as={Fragment}
+                        show={open}
+                        enter='transition ease-out duration-150'
+                        enterFrom='opacity-0 translate-y-1'
+                        enterTo='opacity-100 translate-y-0'
+                        leave='transition ease-in duration-100'
+                        leaveFrom='opacity-100 translate-y-0'
+                        leaveTo='opacity-0 translate-y-1'
+                      >
+                        <Popover.Panel className='absolute right-0 mt-2 w-[360px] max-w-[calc(100vw-2rem)] bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden z-50'>
+                          <div className='p-4 border-b border-gray-100'>
+                            <div className='flex items-center justify-between gap-3'>
+                              <div className='min-w-0'>
+                                <div className='text-sm font-semibold text-gray-900'>
+                                  Panier
+                                </div>
+                                <div className='text-xs text-gray-500 truncate'>
+                                  {currentGroup?.store?.name || 'Sélectionnez une boutique'}
+                                </div>
+                              </div>
+                              <div className='text-xs text-gray-500'>
+                                {cartSummaryLoading ? 'Chargement…' : null}
+                              </div>
+                            </div>
+
+                            {cartItemsByStore.length > 1 ? (
+                              <div className='mt-3'>
+                                <select
+                                  value={selectedStoreSlug}
+                                  onChange={e => {
+                                    setSelectedStoreSlug(e.target.value);
+                                  }}
+                                  className='w-full h-9 rounded-md border border-gray-200 bg-white px-2 text-sm text-gray-900'
+                                >
+                                  {cartItemsByStore
+                                    .filter(g => Boolean(g?.store?.slug))
+                                    .map(g => (
+                                      <option
+                                        key={String(g.store?.slug || '')}
+                                        value={String(g.store?.slug || '')}
+                                      >
+                                        {g.store?.name || g.store?.slug}
+                                      </option>
+                                    ))}
+                                </select>
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className='p-4'>
+                            {currentItems.length === 0 ? (
+                              <div className='text-sm text-gray-600'>
+                                Votre panier est vide.
+                              </div>
+                            ) : (
+                              <>
+                                <div className='mt-3 max-h-[280px] overflow-auto divide-y divide-gray-100'>
+                                  {currentItems.map(it => {
+                                    const id = Number(it?.id || 0);
+                                    const title =
+                                      String(it?.description || '').trim() ||
+                                      String(it?.product_reference || '').trim();
+                                    const ref = String(it?.product_reference || '').trim();
+                                    const qty = Math.max(1, Number(it?.quantity || 1));
+                                    const price = Number(it?.value || 0);
+                                    return (
+                                      <div
+                                        key={id || ref}
+                                        className='py-3 flex gap-3'
+                                      >
+                                        <div className='min-w-0 flex-1'>
+                                          <div className='text-sm font-medium text-gray-900 truncate'>
+                                            {title}
+                                          </div>
+                                          <div className='text-xs text-gray-500 truncate'>
+                                            Réf: {ref} • Qté: {qty}
+                                          </div>
+                                        </div>
+                                        <div className='text-sm font-semibold text-gray-900'>
+                                          {price > 0 ? formatEur(price * qty) : '—'}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+
+                                <div className='mt-4 flex items-center justify-between'>
+                                  <div className='text-sm text-gray-700'>Total panier</div>
+                                  <div className='text-sm font-semibold text-gray-900'>
+                                    {formatEur(currentTotal)}
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </div>
+
+                          <div className='p-4 border-t border-gray-100'>
+                            <button
+                              disabled={!selectedStoreSlug || currentItems.length === 0}
+                              onClick={() => {
+                                navigate(
+                                  `/checkout/${encodeURIComponent(selectedStoreSlug)}`
+                                );
+                              }}
+                              className='w-full inline-flex items-center justify-center px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60'
+                            >
+                              Procéder au paiement
+                            </button>
+                          </div>
+                        </Popover.Panel>
+                      </Transition>
+                    </>
+                  )}
+                </Popover>
                 <UserButton userProfileMode='modal' />
               </div>
             </SignedIn>
