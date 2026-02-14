@@ -1600,6 +1600,31 @@ export default function DashboardPage() {
     setStockImageUrls([]);
   };
 
+  const fetchStockSearchExactMatch = async (
+    storeSlug: string,
+    ref: string
+  ): Promise<StockApiItem | null> => {
+    const slug = String(storeSlug || '').trim();
+    const q = String(ref || '').trim();
+    if (!slug || q.length < 2) return null;
+    const resp = await fetch(
+      `${API_BASE_URL}/api/stores/${encodeURIComponent(
+        slug
+      )}/stock/search?q=${encodeURIComponent(q)}`
+    );
+    if (!resp.ok) return null;
+    const json = await resp.json().catch(() => null as any);
+    const items = Array.isArray(json?.items) ? json.items : [];
+    const qKey = q.toLowerCase();
+    const exact = items.find((it: any) => {
+      const r = String(it?.stock?.product_reference || '')
+        .trim()
+        .toLowerCase();
+      return r === qKey;
+    });
+    return (exact as StockApiItem) || null;
+  };
+
   const handleCreateStockProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     const slug = store?.slug;
@@ -1620,6 +1645,18 @@ export default function DashboardPage() {
         'Veuillez renseigner le titre, la référence et la description',
         'error'
       );
+      return;
+    }
+
+    let existing: StockApiItem | null = null;
+    try {
+      existing = await fetchStockSearchExactMatch(slug, referenceTrim);
+    } catch {
+      showToast('Erreur vérification de la référence', 'error');
+      return;
+    }
+    if (existing) {
+      showToast('Cette référence existe déjà dans le stock', 'error');
       return;
     }
 
@@ -1746,6 +1783,19 @@ export default function DashboardPage() {
         'Veuillez renseigner le titre, la référence et la description',
         'error'
       );
+      return;
+    }
+
+    let existing: StockApiItem | null = null;
+    try {
+      existing = await fetchStockSearchExactMatch(slug, referenceTrim);
+    } catch {
+      showToast('Erreur vérification de la référence', 'error');
+      return;
+    }
+    const existingId = Number((existing as any)?.stock?.id ?? 0);
+    if (existing && existingId !== stockId) {
+      showToast('Cette référence existe déjà dans le stock', 'error');
       return;
     }
 
@@ -2140,6 +2190,7 @@ export default function DashboardPage() {
     if (selectedStockIds.size === 0) return;
 
     const ids = Array.from(selectedStockIds).filter(id => Number.isFinite(id));
+    setStockLoading(true);
 
     setStockItems(prev =>
       (prev || []).filter(it => {
@@ -2189,7 +2240,10 @@ export default function DashboardPage() {
         'error'
       );
     } finally {
-      fetchStockProducts({ silent: true, background: true }).catch(() => {});
+      await fetchStockProducts({ silent: true, background: true }).catch(
+        () => {}
+      );
+      setStockLoading(false);
     }
   };
 
@@ -2776,10 +2830,22 @@ export default function DashboardPage() {
     const product = s?.product || null;
 
     const ref = String(stock?.product_reference || '').trim();
-    const qtyRaw = Number(stock?.quantity ?? 0);
+    const qtyRaw = stock?.quantity;
+    const qtyParsed =
+      typeof qtyRaw === 'number'
+        ? qtyRaw
+        : typeof qtyRaw === 'string'
+          ? Number(qtyRaw)
+          : qtyRaw === null || qtyRaw === undefined
+            ? null
+            : Number(qtyRaw);
+    if (!ref) return;
+    if (qtyParsed !== null && Number.isFinite(qtyParsed) && qtyParsed <= 0)
+      return;
     const qtyAvailable =
-      Number.isFinite(qtyRaw) && qtyRaw > 0 ? Math.floor(qtyRaw) : 0;
-    if (!ref || qtyAvailable <= 0) return;
+      qtyParsed !== null && Number.isFinite(qtyParsed) && qtyParsed > 0
+        ? Math.floor(qtyParsed)
+        : 1;
 
     const title = String(product?.name || ref || '').trim() || ref;
     const priceRaw = Number((s as any)?.unit_price);
@@ -2879,6 +2945,57 @@ export default function DashboardPage() {
           "Impossible de déterminer l'identifiant Stripe du client",
           'error'
         );
+        return;
+      }
+      const existingForCustomer = (storeCarts || []).find((c: any) => {
+        const existingRef = String(c?.product_reference || '')
+          .trim()
+          .toLowerCase();
+        const currentRef = String(ref || '')
+          .trim()
+          .toLowerCase();
+        const existingCustomerStripeId = String(c?.customer_stripe_id || '');
+        return (
+          existingRef === currentRef &&
+          existingCustomerStripeId === String(stripeId || '')
+        );
+      });
+      if (existingForCustomer?.id) {
+        const existingQtyRaw = Number(existingForCustomer?.quantity);
+        const existingQty =
+          Number.isFinite(existingQtyRaw) && existingQtyRaw > 0
+            ? Math.floor(existingQtyRaw)
+            : 1;
+        const nextQty = existingQty + qty;
+        const updateResp = await fetch(
+          `${API_BASE_URL}/api/carts/${existingForCustomer.id}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quantity: nextQty }),
+          }
+        );
+        const updateJson = await updateResp.json().catch(() => ({}));
+        if (!updateResp.ok) {
+          const msg =
+            updateJson?.error ||
+            updateJson?.message ||
+            'Mise a jour du panier echouee';
+          throw new Error(typeof msg === 'string' ? msg : 'Erreur');
+        }
+        showToast('Quantite mise a jour', 'success');
+        setCartReference('');
+        setCartDescription('');
+        setCartWeightKg('');
+        setCartAmountEuro('');
+        setCartQuantity('1');
+        if (store?.slug) {
+          const r = await apiGet(
+            `/api/carts/store/${encodeURIComponent(store.slug)}`
+          );
+          const j = await r.json().catch(() => ({}));
+          setStoreCarts(Array.isArray(j?.carts) ? j.carts : []);
+        }
         return;
       }
       const payload: any = {
@@ -4285,8 +4402,17 @@ export default function DashboardPage() {
                           const ref = String(
                             stock?.product_reference || ''
                           ).trim();
-                          const qty = Number(stock?.quantity ?? 0);
-                          const disabled = Number.isFinite(qty) && qty <= 0;
+                          const qRaw = (stock as any)?.quantity;
+                          const qty =
+                            typeof qRaw === 'number'
+                              ? qRaw
+                              : typeof qRaw === 'string'
+                                ? Number(qRaw)
+                                : qRaw === null || qRaw === undefined
+                                  ? null
+                                  : Number(qRaw);
+                          const disabled =
+                            qty !== null && Number.isFinite(qty) && qty <= 0;
                           const title = String(
                             product?.name || ref || ''
                           ).trim();
@@ -4406,7 +4532,6 @@ export default function DashboardPage() {
                         value={cartQuantity}
                         onChange={e => setCartQuantity(e.target.value)}
                         placeholder='1'
-                        disabled={Boolean(cartSelectedStockItem)}
                         className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
                       />
                     </div>
@@ -5574,15 +5699,40 @@ export default function DashboardPage() {
                                       <div className='text-sm font-semibold text-gray-900'>
                                         {d.qtyLabel}
                                       </div>
-                                      {Number(d.qtyLabel || 0) <= 0 ? (
-                                        <div className='mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200'>
-                                          Épuisé
-                                        </div>
-                                      ) : (
-                                        <div className='mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-50 text-green-700 border border-green-200'>
-                                          Disponible
-                                        </div>
-                                      )}
+                                      {(() => {
+                                        const stockQtyRaw = stock?.quantity;
+                                        if (stockQtyRaw === null) {
+                                          return (
+                                            <div className='mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-50 text-orange-700 border border-orange-200'>
+                                              Temporaire
+                                            </div>
+                                          );
+                                        }
+                                        const stockQty =
+                                          typeof stockQtyRaw === 'number'
+                                            ? stockQtyRaw
+                                            : typeof stockQtyRaw === 'string'
+                                              ? Number(stockQtyRaw)
+                                              : stockQtyRaw === null ||
+                                                  stockQtyRaw === undefined
+                                                ? null
+                                                : Number(stockQtyRaw);
+                                        if (
+                                          stockQty === null ||
+                                          !Number.isFinite(stockQty)
+                                        ) {
+                                          return null;
+                                        }
+                                        return stockQty <= 0 ? (
+                                          <div className='mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200'>
+                                            Épuisé
+                                          </div>
+                                        ) : (
+                                          <div className='mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-50 text-green-700 border border-green-200'>
+                                            Disponible
+                                          </div>
+                                        );
+                                      })()}
                                     </div>
                                   </div>
 

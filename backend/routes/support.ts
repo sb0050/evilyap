@@ -64,13 +64,6 @@ router.post("/contact", upload.single("attachment"), async (req, res) => {
       return res.status(404).json({ error: "Boutique non trouvée" });
     }
 
-    try {
-      const user = await clerkClient.users.getUser(requesterId);
-      const role = (user?.publicMetadata as any)?.role;
-    } catch (_e) {
-      // default false
-    }
-
     const isOwner =
       (store as any)?.clerk_id && (store as any).clerk_id === requesterId;
     if (!isOwner) {
@@ -150,7 +143,7 @@ router.post(
       const { data: shipment, error: shipErr } = await supabase
         .from("shipments")
         .select(
-          "id, store_id, shipment_id, tracking_url, product_reference, customer_spent_amount, promo_code, delivery_method, delivery_network"
+          "id, store_id, shipment_id, tracking_url, product_reference, customer_spent_amount, promo_code, delivery_method, delivery_network",
         )
         .eq("shipment_id", shipmentId)
         .maybeSingle();
@@ -229,7 +222,8 @@ router.post(
           productReference: (shipment as any).product_reference || undefined,
           value:
             typeof (shipment as any).customer_spent_amount === "number"
-              ? Math.max(0, Number((shipment as any).customer_spent_amount)) / 100
+              ? Math.max(0, Number((shipment as any).customer_spent_amount)) /
+                100
               : undefined,
           deliveryMethod: (shipment as any).delivery_method || undefined,
           deliveryNetwork: (shipment as any).delivery_network || undefined,
@@ -252,5 +246,5 @@ router.post(
       console.error("Erreur serveur (customer-contact):", err);
       return res.status(500).json({ error: "Erreur interne du serveur" });
     }
-  }
+  },
 );

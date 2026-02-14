@@ -2,7 +2,7 @@ import express from "express";
 import nodemailer from "nodemailer";
 import fs from "fs";
 import path from "path";
-import { clerkClient, getAuth } from "@clerk/express";
+import { getAuth } from "@clerk/express";
 
 const router = express.Router();
 
@@ -29,15 +29,6 @@ router.post("/prospect", async (req, res) => {
     const auth = getAuth(req);
     if (!auth?.isAuthenticated || !auth.userId) {
       return res.status(401).json({ error: "Unauthorized" });
-    }
-
-    let role: string | undefined;
-    try {
-      const user = await clerkClient.users.getUser(auth.userId);
-      role = (user.publicMetadata as any)?.role as string | undefined;
-    } catch (e) {}
-    if (role !== "admin") {
-      return res.status(403).json({ error: "Forbidden" });
     }
 
     const { email } = req.body || {};
@@ -95,7 +86,7 @@ router.post("/prospect", async (req, res) => {
         const rowHtml = `<tr>${rowShots
           .map(
             (s) =>
-              `<td style="width:${cellWidth}%; padding:2px;"><img src="cid:${s.cid}" alt="Capture Paylive" style="width:100%; border-radius:10px; box-shadow:0 6px 14px rgba(15,23,42,0.12); display:block;" /></td>`
+              `<td style="width:${cellWidth}%; padding:2px;"><img src="cid:${s.cid}" alt="Capture Paylive" style="width:100%; border-radius:10px; box-shadow:0 6px 14px rgba(15,23,42,0.12); display:block;" /></td>`,
           )
           .join("")}</tr>`;
         rows.push(rowHtml);

@@ -156,6 +156,43 @@ router.get("/check-owner/:email", async (req, res) => {
   }
 });
 
+// GET /api/stores/check-owner-by-stripe/:stripeId - Vérifier si un stripe_id existe comme propriétaire
+router.get("/check-owner-by-stripe/:stripeId", async (req, res) => {
+  try {
+    const stripeId = String(req.params?.stripeId || "").trim();
+
+    if (!stripeId) {
+      return res.status(400).json({ error: "stripeId requis" });
+    }
+
+    const { data, error } = await supabase
+      .from("stores")
+      .select("name, owner_email, slug")
+      .eq("stripe_id", stripeId)
+      .single();
+
+    if (error) {
+      if (error.code === "PGRST116") {
+        return res.json({ exists: false });
+      }
+      console.error("Erreur Supabase:", error);
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la vérification du stripeId" });
+    }
+
+    return res.json({
+      exists: true,
+      storeName: data.name,
+      ownerEmail: data.owner_email,
+      slug: (data as any)?.slug,
+    });
+  } catch (error) {
+    console.error("Erreur serveur:", error);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
 // POST /api/stores - Créer une nouvelle boutique
 router.post("/", async (req, res) => {
   try {
@@ -246,17 +283,6 @@ router.post("/", async (req, res) => {
       return res
         .status(500)
         .json({ error: "Erreur lors de la création de la boutique" });
-    }
-
-    // Mettre à jour le rôle Clerk en "owner" après la création du store
-    if (clerkUserId) {
-      try {
-        await clerkClient.users.updateUserMetadata(clerkUserId, {
-          publicMetadata: { role: "owner" },
-        });
-      } catch (e) {
-        console.error("Erreur mise à jour du rôle Clerk:", e);
-      }
     }
 
     return res.status(201).json({
@@ -1722,8 +1748,6 @@ router.post("/:storeSlug/stock/products", async (req, res) => {
       metadata: {
         store_id: String(storeId),
         product_reference: referenceTrim,
-        weight: String(normalizedWeight),
-        weight_kg: String(normalizedWeight),
         quantity: String(normalizedQty),
         price_eur: String(normalizedPrice),
       },
@@ -1884,6 +1908,69 @@ router.get("/:storeSlug/stock/search", async (req, res) => {
       }),
     );
 
+    return res.json({ success: true, items });
+  } catch (e: any) {
+    const msg = e?.message || "Erreur interne du serveur";
+    return res.status(500).json({
+      error: typeof msg === "string" ? msg : "Erreur interne du serveur",
+    });
+  }
+});
+
+router.post("/:storeSlug/stock/by-stripe-product-ids", async (req, res) => {
+  try {
+    const { storeSlug } = req.params as { storeSlug?: string };
+    if (!storeSlug) {
+      return res.status(400).json({ error: "Slug de boutique requis" });
+    }
+    const decodedSlug = decodeURIComponent(storeSlug);
+
+    const bodyIds = Array.isArray((req.body as any)?.ids)
+      ? ((req.body as any).ids as any[])
+      : [];
+    const ids = Array.from(
+      new Set(
+        bodyIds
+          .map((id) => String(id || "").trim())
+          .filter((id) => id.startsWith("prod_")),
+      ),
+    ).slice(0, 100);
+
+    if (ids.length === 0) {
+      return res.json({ success: true, items: [] });
+    }
+
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, slug")
+      .eq("slug", decodedSlug)
+      .maybeSingle();
+    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!storeRow) {
+      return res.status(404).json({ error: "Boutique introuvable" });
+    }
+
+    const storeId = Number((storeRow as any)?.id);
+    if (!Number.isFinite(storeId) || storeId <= 0) {
+      return res.status(500).json({ error: "store_id invalide" });
+    }
+
+    const stockSelect =
+      "id, created_at, store_id, product_reference, quantity, weight, image_url, product_stripe_id, bought";
+    const { data: stockRows, error: stockErr } = await supabase
+      .from("stock")
+      .select(stockSelect)
+      .eq("store_id", storeId)
+      .in("product_stripe_id", ids as any);
+
+    if (stockErr) {
+      return res.status(500).json({ error: stockErr.message });
+    }
+
+    const rows = Array.isArray(stockRows) ? stockRows : [];
+    const items = rows.map((r: any) => ({ stock: r }));
     return res.json({ success: true, items });
   } catch (e: any) {
     const msg = e?.message || "Erreur interne du serveur";
@@ -2214,8 +2301,6 @@ router.put("/:storeSlug/stock/products/:stockId", async (req, res) => {
       metadata: {
         store_id: String(storeId),
         product_reference: referenceTrim,
-        weight: String(normalizedWeight),
-        weight_kg: String(normalizedWeight),
         quantity: String(normalizedQty),
         price_eur: String(normalizedPrice),
       },
