@@ -71,7 +71,6 @@ router.post("/", async (req, res) => {
       description,
       quantity,
       weight,
-      product_stripe_id,
     } = req.body || {};
 
     if (!customer_stripe_id) {
@@ -159,23 +158,8 @@ router.post("/", async (req, res) => {
       typeof (stockMatch as any)?.product_stripe_id === "string"
         ? String((stockMatch as any).product_stripe_id || "").trim()
         : "";
-    const productStripeId =
-      typeof product_stripe_id === "string" ? product_stripe_id.trim() : "";
     let resolvedStripeProductId =
       stockStripeId && stockStripeId.startsWith("prod_") ? stockStripeId : "";
-    if (!resolvedStripeProductId && productStripeId && productStripeId.startsWith("prod_")) {
-      if (Number.isFinite(storeIdNum) && storeIdNum > 0) {
-        const resp = await supabase
-          .from("stock")
-          .select("id")
-          .eq("store_id", storeIdNum)
-          .eq("product_stripe_id", productStripeId)
-          .limit(1);
-        if (!resp.error && Array.isArray(resp.data) && resp.data.length > 0) {
-          resolvedStripeProductId = productStripeId;
-        }
-      }
-    }
 
     const getStripeUnitPriceEur = async (stripeProductId: string) => {
       const pid = String(stripeProductId || "").trim();
@@ -229,10 +213,6 @@ router.post("/", async (req, res) => {
       created_at: new Date().toISOString(),
     };
 
-    if (resolvedStripeProductId) {
-      row.stripe_product_id = resolvedStripeProductId;
-    }
-
     let data: any = null;
     let error: any = null;
     const candidates: any[] = [];
@@ -258,35 +238,6 @@ router.post("/", async (req, res) => {
         return { ...withoutWeight };
       })(),
     );
-    if (row.stripe_product_id) {
-      pushCandidate(
-        (() => {
-          const { stripe_product_id: _spid, ...withoutStripeProductId } = row;
-          return { ...withoutStripeProductId };
-        })(),
-      );
-      pushCandidate(
-        (() => {
-          const { stripe_product_id: _spid, ...withoutStripeProductId } = row;
-          (withoutStripeProductId as any).product_stripe_id =
-            row.stripe_product_id;
-          return { ...withoutStripeProductId };
-        })(),
-      );
-      pushCandidate(
-        (() => {
-          const { weight: _w, stripe_product_id: _spid, ...withoutBoth } = row;
-          return { ...withoutBoth };
-        })(),
-      );
-      pushCandidate(
-        (() => {
-          const { weight: _w, stripe_product_id: _spid, ...withoutBoth } = row;
-          (withoutBoth as any).product_stripe_id = row.stripe_product_id;
-          return { ...withoutBoth };
-        })(),
-      );
-    }
 
     for (const cand of candidates) {
       const { __key: _k, ...payload } = cand as any;
@@ -298,11 +249,7 @@ router.post("/", async (req, res) => {
       data = resp.data;
       error = resp.error;
       if (!error) break;
-      if (
-        !isMissingColumnError(error, "weight") &&
-        !isMissingColumnError(error, "stripe_product_id") &&
-        !isMissingColumnError(error, "product_stripe_id")
-      ) {
+      if (!isMissingColumnError(error, "weight")) {
         break;
       }
     }
@@ -332,78 +279,48 @@ router.get("/summary", async (req, res) => {
     }
 
     const includePaymentIdColumn = Boolean(paymentId);
-    const selectWithWeightBase =
-      "id,store_id,product_reference,value,quantity,created_at,description,status,recap_sent_at,weight";
-    const selectWithoutWeightBase =
+    const baseFields =
       "id,store_id,product_reference,value,quantity,created_at,description,status,recap_sent_at";
-    const selectWithWeight = includePaymentIdColumn
-      ? `${selectWithWeightBase},payment_id`
-      : selectWithWeightBase;
-    const selectWithoutWeight = includePaymentIdColumn
-      ? `${selectWithoutWeightBase},payment_id`
-      : selectWithoutWeightBase;
+
+    let includeWeight = true;
+    let paymentIdColumnOk = includePaymentIdColumn;
+
+    const buildSelect = () => {
+      const cols: string[] = [baseFields];
+      if (includeWeight) cols.push("weight");
+      if (paymentIdColumnOk) cols.push("payment_id");
+      return cols.join(",");
+    };
 
     let cartRows: any[] | null = null;
     let error: any = null;
-    {
+    for (let attempt = 0; attempt < 8; attempt++) {
       let q = supabase
         .from("carts")
-        .select(selectWithWeight)
+        .select(buildSelect())
         .eq("customer_stripe_id", stripeId)
         .eq("status", "PENDING")
         .order("id", { ascending: false });
-      if (paymentId && includePaymentIdColumn) {
+
+      if (paymentId && paymentIdColumnOk) {
         q = q.or(`payment_id.eq.${paymentId},payment_id.is.null`);
       }
+
       const resp = await q;
       cartRows = resp.data as any;
       error = resp.error;
-    }
-    let paymentIdColumnOk = includePaymentIdColumn;
-    if (error && paymentId && isMissingColumnError(error, "payment_id")) {
-      paymentIdColumnOk = false;
-      let q = supabase
-        .from("carts")
-        .select(selectWithWeightBase)
-        .eq("customer_stripe_id", stripeId)
-        .eq("status", "PENDING")
-        .order("id", { ascending: false });
-      const resp = await q;
-      cartRows = resp.data as any;
-      error = resp.error;
-    }
-    if (error && isMissingColumnError(error, "weight")) {
-      let q2 = supabase
-        .from("carts")
-        .select(
-          paymentIdColumnOk ? selectWithoutWeight : selectWithoutWeightBase,
-        )
-        .eq("customer_stripe_id", stripeId)
-        .eq("status", "PENDING")
-        .order("id", { ascending: false });
-      if (paymentId && paymentIdColumnOk) {
-        q2 = q2.or(`payment_id.eq.${paymentId},payment_id.is.null`);
+      if (!error) break;
+
+      let changed = false;
+      if (paymentId && paymentIdColumnOk && isMissingColumnError(error, "payment_id")) {
+        paymentIdColumnOk = false;
+        changed = true;
       }
-      const resp2 = await q2;
-      cartRows = resp2.data as any;
-      error = resp2.error;
-    }
-    if (
-      error &&
-      paymentId &&
-      paymentIdColumnOk &&
-      isMissingColumnError(error, "payment_id")
-    ) {
-      paymentIdColumnOk = false;
-      let q2 = supabase
-        .from("carts")
-        .select(selectWithoutWeightBase)
-        .eq("customer_stripe_id", stripeId)
-        .eq("status", "PENDING")
-        .order("id", { ascending: false });
-      const resp2 = await q2;
-      cartRows = resp2.data as any;
-      error = resp2.error;
+      if (includeWeight && isMissingColumnError(error, "weight")) {
+        includeWeight = false;
+        changed = true;
+      }
+      if (!changed) break;
     }
 
     if (error) {
@@ -435,6 +352,32 @@ router.get("/summary", async (req, res) => {
         },
         {},
       );
+    }
+
+    const uniqueRefs = Array.from(
+      new Set(
+        validRows
+          .map((r: any) => String(r?.product_reference || "").trim())
+          .filter(Boolean),
+      ),
+    );
+    const stockStripeIdByStoreAndRef = new Map<string, string>();
+    if (storeIds.length > 0 && uniqueRefs.length > 0) {
+      const { data: stockRows, error: stockErr } = await supabase
+        .from("stock")
+        .select("store_id,product_reference,product_stripe_id")
+        .in("store_id", storeIds as any)
+        .in("product_reference", uniqueRefs as any);
+      if (stockErr) {
+        return res.status(500).json({ error: stockErr.message });
+      }
+      for (const r of Array.isArray(stockRows) ? stockRows : []) {
+        const sid = Number((r as any)?.store_id || 0);
+        const ref = String((r as any)?.product_reference || "").trim();
+        const pid = String((r as any)?.product_stripe_id || "").trim();
+        if (!Number.isFinite(sid) || sid <= 0 || !ref || !pid) continue;
+        stockStripeIdByStoreAndRef.set(`${sid}::${ref.toLowerCase()}`, pid);
+      }
     }
 
     const itemsByStore: Array<{
@@ -475,6 +418,14 @@ router.get("/summary", async (req, res) => {
         recap_sent_at: (r as any).recap_sent_at,
         weight: (r as any).weight ?? null,
       };
+      const storeIdNum = Number(r?.store_id || 0);
+      const refTrimmed = String(r?.product_reference || "").trim();
+      const pid = stockStripeIdByStoreAndRef.get(
+        `${storeIdNum}::${refTrimmed.toLowerCase()}`,
+      );
+      if (pid) {
+        rowItem.product_stripe_id = pid;
+      }
       if (paymentIdColumnOk) {
         rowItem.payment_id = (r as any).payment_id ?? null;
       }

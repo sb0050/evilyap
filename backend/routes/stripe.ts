@@ -59,6 +59,7 @@ const normalizeText = (text: string): string =>
     .trim();
 const detectCategory = (description: string) => {
   const normalized = normalizeText(description);
+
   for (const cat of CATEGORIES) {
     if (normalized.includes(cat)) {
       return { category: cat, confidence: 0.8 };
@@ -78,6 +79,7 @@ const computeUnitWeight = (description: string) => {
   if (text.includes("manche longue")) weight += 0.1;
   if (text.includes("coton")) weight += 0.05;
   if (text.includes("double")) weight += 0.25;
+
   return { category, unitWeight: weight, confidence };
 };
 const calculateParcelWeight = (
@@ -108,6 +110,7 @@ const calculateParcelWeight = (
       confidence,
     });
   }
+  console.log("calculateParcelWeight breakdown", breakdown);
   const finalWeightKg = Math.round(total * 100) / 100;
   return { totalWeightKg: finalWeightKg, rawTotalKg: total, breakdown };
 };
@@ -135,6 +138,39 @@ router.get("/get-customer-details", async (req, res) => {
 
     const customer = existingCustomers.data[0];
 
+    const metadata = (customer.metadata || {}) as Record<string, string>;
+    const shippingAny: any = customer.shipping || null;
+    const shippingName = String(shippingAny?.name || "").trim();
+    const shippingNameParts = shippingName
+      .split(" - ")
+      .map((s) => String(s || "").trim())
+      .filter(Boolean);
+    const deliveryNetwork = String(metadata.delivery_network || "").trim();
+    const deliveryNetworkPrefix = String(
+      (deliveryNetwork.split("-")[0] || "").trim(),
+    );
+    const parcelPointCode = String(metadata.parcel_point || "").trim();
+    const derivedParcelPoint =
+      parcelPointCode ||
+      shippingName ||
+      shippingAny?.address?.line1 ||
+      shippingAny?.address?.city
+        ? {
+            code: parcelPointCode || undefined,
+            name: shippingNameParts[0] || undefined,
+            network: shippingNameParts[1] || deliveryNetworkPrefix || undefined,
+            location: {
+              street: shippingAny?.address?.line1 || "",
+              number: shippingAny?.address?.line2 || "",
+              city: shippingAny?.address?.city || "",
+              state: shippingAny?.address?.state || "",
+              postalCode: shippingAny?.address?.postal_code || "",
+              countryIsoCode: shippingAny?.address?.country || "FR",
+            },
+            shippingOfferCode: deliveryNetwork || undefined,
+          }
+        : null;
+
     // Extract relevant details
     const customerData = {
       id: customer.id,
@@ -143,9 +179,11 @@ router.get("/get-customer-details", async (req, res) => {
       email: customer.email,
       address: customer.address,
       shipping: customer.shipping,
-      deliveryMethod: customer.metadata.delivery_method,
-      parcelPointCode: customer.metadata.parcel_point,
-      deliveryNetwork: customer.metadata.delivery_network,
+      metadata,
+      deliveryMethod: metadata.delivery_method,
+      parcelPointCode: metadata.parcel_point,
+      deliveryNetwork: metadata.delivery_network,
+      parcel_point: derivedParcelPoint,
     };
     res.json({ customer: customerData });
   } catch (error) {
@@ -193,6 +231,11 @@ router.post("/products/by-ids", async (req, res) => {
             id: String(p.id || pid),
             name: String(p.name || "").trim() || null,
             description: String(p.description || "").trim() || null,
+            images: Array.isArray((p as any)?.images) ? (p as any).images : [],
+            metadata:
+              (p as any)?.metadata && typeof (p as any).metadata === "object"
+                ? (p as any).metadata
+                : {},
             unit_amount_cents:
               typeof unitAmount === "number" && Number.isFinite(unitAmount)
                 ? unitAmount
@@ -279,7 +322,7 @@ router.post("/create-customer", async (req, res) => {
         if (auth?.isAuthenticated && targetUserId) {
           console.log("Updating Clerk user:", targetUserId);
           await clerkClient.users.updateUser(targetUserId, {
-            publicMetadata: { stripe_id: stripeId, role: "customer" },
+            publicMetadata: { stripe_id: stripeId },
           } as any);
         }
       } catch (updErr) {
@@ -389,8 +432,48 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       promotionCodeId,
     } = req.body;
 
-    const pickupPointCode = parcelPoint?.code || "";
-    const dropOffPointCode = parcelPoint?.code || "";
+    const toCleanString = (v: unknown) => String(v || "").trim();
+    const parseNetworkFromOffer = (offer: string) => {
+      const raw = toCleanString(offer);
+      if (!raw) return "";
+      const token = raw.split("-")[0] || "";
+      return toCleanString(token);
+    };
+    const shippingAddressFromParcelPoint = (point: any, fallbackAddr?: any) => ({
+      line1:
+        toCleanString(point?.location?.street) ||
+        toCleanString(fallbackAddr?.line1) ||
+        "",
+      line2:
+        toCleanString(point?.location?.number) ||
+        toCleanString(fallbackAddr?.line2) ||
+        "",
+      city:
+        toCleanString(point?.location?.city) ||
+        toCleanString(fallbackAddr?.city) ||
+        "",
+      state:
+        toCleanString(point?.location?.state) ||
+        toCleanString(fallbackAddr?.state) ||
+        "",
+      postal_code:
+        toCleanString(point?.location?.postalCode) ||
+        toCleanString(fallbackAddr?.postal_code) ||
+        "",
+      country:
+        toCleanString(point?.location?.countryIsoCode) ||
+        toCleanString(fallbackAddr?.country) ||
+        "FR",
+    });
+
+    const deliveryNetworkRaw = toCleanString(deliveryNetwork);
+    const deliveryNetworkPrefix = parseNetworkFromOffer(deliveryNetworkRaw);
+
+    let pickupPointCode = toCleanString(parcelPoint?.code);
+    let dropOffPointCode = toCleanString(parcelPoint?.code);
+    let pickupPointName = toCleanString(parcelPoint?.name);
+    let pickupPointNetwork =
+      toCleanString(parcelPoint?.network) || deliveryNetworkPrefix;
 
     console.log("Creating checkout session with data:", req.body);
 
@@ -429,6 +512,34 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           existingCustomer && !("deleted" in existingCustomer)
             ? (existingCustomer.metadata as Record<string, string>)
             : {};
+        const existingShipping: any = (existingCustomer as any)?.shipping || {};
+        const existingShippingName = toCleanString(existingShipping?.name);
+        const existingShippingNameParts = existingShippingName
+          .split(" - ")
+          .map((s) => toCleanString(s))
+          .filter(Boolean);
+        const existingPickupName = existingShippingNameParts[0] || "";
+        const existingPickupNetwork = existingShippingNameParts[1] || "";
+        const metadataPickupCode = toCleanString(existingMetadata.parcel_point);
+        const metadataDeliveryNetwork = toCleanString(
+          existingMetadata.delivery_network,
+        );
+        if (!pickupPointCode && metadataPickupCode) {
+          pickupPointCode = metadataPickupCode;
+          dropOffPointCode = metadataPickupCode;
+        }
+        if (!pickupPointName && existingPickupName) {
+          pickupPointName = existingPickupName;
+        }
+        if (!pickupPointNetwork) {
+          pickupPointNetwork =
+            existingPickupNetwork || parseNetworkFromOffer(metadataDeliveryNetwork);
+        }
+        const shippingName = [pickupPointName, pickupPointNetwork]
+          .map((s) => toCleanString(s))
+          .filter(Boolean)
+          .join(" - ");
+
         customer = await stripe.customers.update(existingCustomers.data[0].id, {
           name: customerName,
           phone: phone,
@@ -441,31 +552,35 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
             country: address.country || "FR",
           },
           shipping:
-            deliveryMethod === "pickup_point" && parcelPoint
+            deliveryMethod === "pickup_point" &&
+            (parcelPoint || pickupPointCode || existingShipping?.address)
               ? {
-                  name: `${parcelPoint.name || ""} - ${parcelPoint.network}`,
+                  name: shippingName || existingShippingName || pickupPointName,
                   phone: phone,
-                  address: {
-                    line1: parcelPoint.location.street,
-                    line2: parcelPoint.location.number || "",
-                    city: parcelPoint.location.city,
-                    state: parcelPoint.location.state || "",
-                    postal_code: parcelPoint.location.postalCode,
-                    country: parcelPoint.location.countryIsoCode || "FR",
-                  },
+                  address: shippingAddressFromParcelPoint(
+                    parcelPoint,
+                    existingShipping?.address,
+                  ),
                 }
               : ({} as Stripe.CustomerUpdateParams.Shipping),
           metadata: {
             ...existingMetadata,
             clerk_id: clerkUserId || "",
             delivery_method: deliveryMethod || "",
-            delivery_network: deliveryNetwork || "",
+            delivery_network:
+              deliveryNetworkRaw ||
+              toCleanString(existingMetadata.delivery_network) ||
+              "",
             store_name: storeName || "",
             parcel_point: pickupPointCode || "",
           },
         });
         customerId = customer.id;
       } else {
+        const shippingName = [pickupPointName, pickupPointNetwork]
+          .map((s) => toCleanString(s))
+          .filter(Boolean)
+          .join(" - ");
         customer = await stripe.customers.create({
           name: customerName,
           email: customerEmail,
@@ -479,24 +594,17 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
             country: address.country || "FR",
           },
           shipping:
-            deliveryMethod === "pickup_point" && parcelPoint
+            deliveryMethod === "pickup_point" && (parcelPoint || pickupPointCode)
               ? {
-                  name: `${parcelPoint.name || ""} - ${parcelPoint.network}`,
+                  name: shippingName || pickupPointName,
                   phone: phone,
-                  address: {
-                    line1: parcelPoint.location.street,
-                    line2: parcelPoint.location.number || "",
-                    city: parcelPoint.location.city,
-                    state: parcelPoint.location.state || "",
-                    postal_code: parcelPoint.location.postalCode,
-                    country: parcelPoint.location.countryIsoCode || "FR",
-                  },
+                  address: shippingAddressFromParcelPoint(parcelPoint),
                 }
               : undefined,
           metadata: {
             clerk_id: clerkUserId || "",
             delivery_method: deliveryMethod || "",
-            delivery_network: deliveryNetwork || "",
+            delivery_network: deliveryNetworkRaw || "",
             store_name: storeName || "",
             parcel_point: pickupPointCode || "",
           },
@@ -510,6 +618,35 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         .json({ error: "Erreur lors de la création/mise à jour du client" });
       return;
     }
+
+    const customerMetadata =
+      customer && !("deleted" in customer)
+        ? ((customer.metadata as Record<string, string>) || {})
+        : {};
+    const customerShipping: any =
+      customer && !("deleted" in customer) ? (customer as any)?.shipping || {} : {};
+    const customerShippingName = toCleanString(customerShipping?.name);
+    const customerShippingNameParts = customerShippingName
+      .split(" - ")
+      .map((s) => toCleanString(s))
+      .filter(Boolean);
+    if (!pickupPointCode) {
+      pickupPointCode = toCleanString(customerMetadata?.parcel_point);
+      if (!dropOffPointCode) dropOffPointCode = pickupPointCode;
+    }
+    if (!pickupPointName) {
+      pickupPointName = customerShippingNameParts[0] || "";
+    }
+    if (!pickupPointNetwork) {
+      pickupPointNetwork =
+        customerShippingNameParts[1] ||
+        parseNetworkFromOffer(deliveryNetworkRaw) ||
+        parseNetworkFromOffer(toCleanString(customerMetadata?.delivery_network));
+    }
+    const effectivePickupAddress = shippingAddressFromParcelPoint(
+      parcelPoint,
+      customerShipping?.address,
+    );
 
     const formatDeliveryMethod = (deliveryMethod: string) => {
       if (deliveryMethod === "pickup_point") return "par point relais";
@@ -654,22 +791,51 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
 
     const stockByRef = new Map<
       string,
-      { product_stripe_id?: string; weight?: number }
+      {
+        product_stripe_id?: string;
+        weight?: number | null;
+        quantity?: number | null;
+      }
     >();
     if (uniqueRefsForCheck.length > 0) {
       try {
         const { data: stockRows, error: stockErr } = await supabase
           .from("stock")
-          .select("product_reference, product_stripe_id, weight")
+          .select("product_reference, product_stripe_id, weight, quantity")
           .eq("store_id", storeIdForCheck as number)
           .in("product_reference", uniqueRefsForCheck as any);
         if (!stockErr && Array.isArray(stockRows)) {
           for (const r of stockRows as any[]) {
             const ref = String(r?.product_reference || "").trim();
             if (!ref) continue;
+            const rawWeightField = (r as any)?.weight;
+            const parsedWeight =
+              rawWeightField === null || rawWeightField === undefined
+                ? null
+                : typeof rawWeightField === "number"
+                  ? rawWeightField
+                  : Number(rawWeightField);
+            const normalizedWeight =
+              parsedWeight === null ||
+              (Number.isFinite(parsedWeight) && parsedWeight >= 0)
+                ? parsedWeight
+                : null;
+            const rawQtyField = (r as any)?.quantity;
+            const parsedQty =
+              rawQtyField === null || rawQtyField === undefined
+                ? null
+                : typeof rawQtyField === "number"
+                  ? rawQtyField
+                  : Number(rawQtyField);
+            const normalizedQty =
+              parsedQty === null ||
+              (Number.isFinite(parsedQty) && parsedQty >= 0)
+                ? parsedQty
+                : null;
             stockByRef.set(ref, {
               product_stripe_id: String(r?.product_stripe_id || "").trim(),
-              weight: Number(r?.weight),
+              weight: normalizedWeight,
+              quantity: normalizedQty,
             });
           }
         }
@@ -699,18 +865,22 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       }
 
       const productStripeId = (
-        fromBody && fromBody.startsWith("prod_")
-          ? fromBody
-          : fromProductId && fromProductId.startsWith("prod_")
-            ? fromProductId
-            : fromStock && fromStock.startsWith("prod_")
-              ? fromStock
+        fromStock && fromStock.startsWith("prod_")
+          ? fromStock
+          : fromBody && fromBody.startsWith("prod_")
+            ? fromBody
+            : fromProductId && fromProductId.startsWith("prod_")
+              ? fromProductId
               : ""
       ).trim();
 
       const wStockRaw = Number(stockRow?.weight);
-      const stockWeightKg =
-        Number.isFinite(wStockRaw) && wStockRaw >= 0 ? wStockRaw : null;
+      const stockWeightKg = (() => {
+        const raw = (stockRow as any)?.weight;
+        if (raw === null || raw === undefined) return null;
+        const n = typeof raw === "number" ? raw : Number(raw);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+      })();
 
       const weightFromItemRaw = Number((it as any)?.weight);
       const weightFromItemKg =
@@ -753,30 +923,59 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     let weightKg = 0;
     if (deliveryMethod !== "store_pickup") {
       let itemsWeightKg = 0;
-      const missingWeights: Array<{ description: string; quantity: number }> =
-        [];
 
       for (const it of resolvedItems as any[]) {
         const qty = Math.max(1, Math.round(Number(it.quantity || 1)));
         const itemUnitKg =
           Number.isFinite(it._item_weight_kg) && it._item_weight_kg >= 0
             ? Number(it._item_weight_kg)
-            : NaN;
-        if (Number.isFinite(itemUnitKg)) {
-          itemsWeightKg += itemUnitKg * qty;
-        } else {
-          missingWeights.push({
-            description: String(it.description || ""),
-            quantity: qty,
-          });
-        }
-      }
+            : null;
+        const stockUnitKg =
+          Number.isFinite(it._stock_weight_kg) && it._stock_weight_kg >= 0
+            ? Number(it._stock_weight_kg)
+            : null;
+        const desc = String(it.description || "");
+        const shouldComputeFromDesc =
+          stockUnitKg === null &&
+          (itemUnitKg === null || itemUnitKg === DEFAULT_WEIGHT);
+        const computedFromDesc = shouldComputeFromDesc
+          ? computeUnitWeight(desc)
+          : null;
+        const computedUnitKg = (() => {
+          if (computedFromDesc) {
+            return Number.isFinite(computedFromDesc.unitWeight) &&
+              computedFromDesc.unitWeight >= 0
+              ? computedFromDesc.unitWeight
+              : DEFAULT_WEIGHT;
+          }
+          if (itemUnitKg !== null) return itemUnitKg;
+          if (stockUnitKg !== null) return stockUnitKg;
+          return DEFAULT_WEIGHT;
+        })();
 
-      if (missingWeights.length > 0) {
-        const calc = calculateParcelWeight(missingWeights);
-        const raw = Number(calc?.rawTotalKg ?? 0);
-        if (Number.isFinite(raw) && raw >= 0) {
-          itemsWeightKg += raw;
+        if (Number.isFinite(computedUnitKg) && computedUnitKg >= 0) {
+          itemsWeightKg += computedUnitKg * qty;
+        }
+
+        if (
+          stockUnitKg === null &&
+          storeIdForCheck &&
+          Number.isFinite(storeIdForCheck) &&
+          storeIdForCheck > 0
+        ) {
+          const ref = String(it.reference || "").trim();
+          if (ref) {
+            try {
+              if (computedFromDesc && computedFromDesc.category !== "unknown") {
+                await supabase
+                  .from("stock")
+                  .update({ weight: computedUnitKg })
+                  .eq("store_id", storeIdForCheck)
+                  .eq("product_reference", ref)
+                  .is("weight", null);
+              }
+            } catch (_e) {}
+          }
         }
       }
 
@@ -833,6 +1032,23 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
             network: deliveryNetwork,
           }),
         });
+        console.log(
+          "body api/boxtal/cotation",
+          JSON.stringify({
+            sender: {
+              country: senderCountry,
+              postal_code: senderPostal,
+              city: senderCity,
+            },
+            recipient: {
+              country: recipientCountry,
+              postal_code: recipientPostal,
+              city: recipientCity,
+            },
+            weight: weightKg,
+            network: deliveryNetwork,
+          }),
+        );
         if (cotResp.ok) {
           const cotJson: any = await cotResp.json();
           const priceRaw =
@@ -875,33 +1091,38 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         });
         return;
       }
+    }
 
-      const { data: shippedRows, error: shippedErr } = await supabase
-        .from("shipments")
-        .select("id")
-        .eq("store_id", storeIdForCheck)
-        .or(
-          (() => {
-            const pid = String(refToStripeProductId.get(ref) || "").trim();
-            return pid && pid.startsWith("prod_")
-              ? buildProductReferenceOrFilter(pid)
-              : buildProductReferenceOrFilter(ref);
-          })(),
-        )
-        .not("payment_id", "is", null)
-        .limit(1);
-
-      if (shippedErr) {
-        console.log("Shipped Err", shippedErr);
-        res.status(500).json({ error: shippedErr.message });
-        return;
-      }
-      if ((shippedRows || []).length > 0) {
+    const qtyByRef = new Map<string, number>();
+    for (const it of resolvedItems as any[]) {
+      const ref = String(it.reference || "").trim();
+      if (!ref) continue;
+      const qty = Math.max(1, Math.round(Number(it.quantity || 1)));
+      qtyByRef.set(ref, (qtyByRef.get(ref) || 0) + qty);
+    }
+    for (const [ref, qty] of qtyByRef.entries()) {
+      const stockRow = stockByRef.get(ref);
+      if (!stockRow) continue;
+      const rawQtyField = (stockRow as any)?.quantity;
+      if (rawQtyField === null || rawQtyField === undefined) continue;
+      const qRaw = Number(rawQtyField);
+      const available = Number.isFinite(qRaw) ? Math.floor(qRaw) : 0;
+      if (available <= 0) {
         res.status(409).json({
           blocked: true,
-          reason: "already_bought",
+          reason: "out_of_stock",
           reference: ref,
-          source: "shipments",
+          available: 0,
+        });
+        return;
+      }
+      if (qty > available) {
+        res.status(409).json({
+          blocked: true,
+          reason: "insufficient_stock",
+          reference: ref,
+          available,
+          requested: qty,
         });
         return;
       }
@@ -988,23 +1209,70 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       const itemUnitKg =
         Number.isFinite(it._item_weight_kg) && it._item_weight_kg >= 0
           ? Number(it._item_weight_kg)
-          : NaN;
+          : null;
+      const stockUnitKg =
+        Number.isFinite(it._stock_weight_kg) && it._stock_weight_kg >= 0
+          ? Number(it._stock_weight_kg)
+          : null;
+      const desc = String(it.description || "");
+      const shouldComputeFromDesc =
+        stockUnitKg === null &&
+        (itemUnitKg === null || itemUnitKg === DEFAULT_WEIGHT);
+      const computedFromDesc = shouldComputeFromDesc
+        ? computeUnitWeight(desc)
+        : null;
       const computedUnitKg = (() => {
-        if (Number.isFinite(itemUnitKg)) return itemUnitKg;
-        const desc = String(it.description || "");
-        const { unitWeight } = computeUnitWeight(desc);
-        return Number.isFinite(unitWeight) && unitWeight >= 0
-          ? unitWeight
-          : NaN;
+        if (computedFromDesc) {
+          return Number.isFinite(computedFromDesc.unitWeight) &&
+            computedFromDesc.unitWeight >= 0
+            ? computedFromDesc.unitWeight
+            : DEFAULT_WEIGHT;
+        }
+        if (itemUnitKg !== null) return itemUnitKg;
+        if (stockUnitKg !== null) return stockUnitKg;
+        return DEFAULT_WEIGHT;
       })();
+
+      const ref = String(it.reference || "").trim();
+      let existingProductId = "";
+      if (storeIdForCheck && ref) {
+        try {
+          const existingStockResp = await supabase
+            .from("stock")
+            .select("product_stripe_id")
+            .eq("store_id", storeIdForCheck)
+            .eq("product_reference", ref)
+            .maybeSingle();
+          const pid = String(
+            (existingStockResp as any)?.data?.product_stripe_id || "",
+          ).trim();
+          if (!(existingStockResp as any)?.error && pid.startsWith("prod_")) {
+            try {
+              await stripe.products.retrieve(pid);
+              existingProductId = pid;
+            } catch {}
+          }
+        } catch {}
+      }
+
+      if (existingProductId) {
+        for (let i = 0; i < qty; i++)
+          stripeProductIdsForShipment.push(existingProductId);
+        const unitCents = Math.max(0, Math.round(Number(it.price || 0) * 100));
+        subtotalExclShippingCents += unitCents * qty;
+        const pr = await stripe.prices.create({
+          product: existingProductId,
+          unit_amount: unitCents,
+          currency: "eur",
+        });
+        orderLineItems.push({ price: pr.id, quantity: qty });
+        continue;
+      }
 
       const p = await stripe.products.create({
         name: `${String(it.reference || "N/A")}`,
         type: "good",
         shippable: true,
-        ...(Number.isFinite(computedUnitKg)
-          ? { metadata: { weight: String(computedUnitKg) } }
-          : {}),
       });
       {
         const pid = String((p as any)?.id || "").trim();
@@ -1013,17 +1281,17 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         }
       }
       try {
-        const ref = String(it.reference || "").trim();
         if (storeIdForCheck && ref) {
           const unitWeight =
-            Number.isFinite(computedUnitKg) && computedUnitKg >= 0
+            Number.isFinite(computedUnitKg) &&
+            computedUnitKg >= 0 &&
+            computedFromDesc &&
+            computedFromDesc.category !== "unknown"
               ? computedUnitKg
-              : 0;
+              : null;
           const payload: any = {
             store_id: storeIdForCheck,
             product_reference: ref,
-            quantity: 1,
-            weight: unitWeight,
             product_stripe_id: p.id,
           };
 
@@ -1035,13 +1303,20 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           if (insertErr && String(insertErr?.code || "") === "23505") {
             const updatePayload: any = {
               product_stripe_id: p.id,
-              weight: unitWeight,
             };
             await supabase
               .from("stock")
               .update(updatePayload)
               .eq("store_id", storeIdForCheck)
               .eq("product_reference", ref);
+          }
+          if (unitWeight !== null) {
+            await supabase
+              .from("stock")
+              .update({ weight: unitWeight })
+              .eq("store_id", storeIdForCheck)
+              .eq("product_reference", ref)
+              .is("weight", null);
           }
         }
       } catch (e) {
@@ -1203,28 +1478,33 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         stripe_product_ids: stripeProductIdsJoined,
         delivery_method: deliveryMethod || "",
         delivery_network: deliveryNetwork || "",
+        parcel_point: pickupPointCode || "",
+        parcel_point_name: pickupPointName || "",
+        parcel_point_network: pickupPointNetwork || "",
         weight: String(weightKg || 0),
         pickup_point: JSON.stringify({
-          street: parcelPoint?.location?.street,
-          city: parcelPoint?.location?.city,
-          state: parcelPoint?.location?.state || "",
-          postal_code: parcelPoint?.location?.postalCode,
-          country: parcelPoint?.location?.countryIsoCode || "FR",
-          code: parcelPoint?.code || "",
-          name: parcelPoint?.name || "",
-          network: parcelPoint?.network || "",
-          shippingOfferCode: parcelPoint?.shippingOfferCode || "",
+          street: effectivePickupAddress?.line1 || "",
+          city: effectivePickupAddress?.city || "",
+          state: effectivePickupAddress?.state || "",
+          postal_code: effectivePickupAddress?.postal_code || "",
+          country: effectivePickupAddress?.country || "FR",
+          code: pickupPointCode || "",
+          name: pickupPointName || "",
+          network: pickupPointNetwork || "",
+          shippingOfferCode:
+            toCleanString(parcelPoint?.shippingOfferCode) || deliveryNetworkRaw,
         }),
         dropoff_point: JSON.stringify({
-          street: parcelPoint?.location?.street,
-          city: parcelPoint?.location?.city,
-          state: parcelPoint?.location?.state || "",
-          postal_code: parcelPoint?.location?.postalCode,
-          country: parcelPoint?.location?.countryIsoCode || "FR",
-          code: parcelPoint?.code || "",
-          name: parcelPoint?.name || "",
-          network: parcelPoint?.network || "",
-          shippingOfferCode: parcelPoint?.shippingOfferCode || "",
+          street: effectivePickupAddress?.line1 || "",
+          city: effectivePickupAddress?.city || "",
+          state: effectivePickupAddress?.state || "",
+          postal_code: effectivePickupAddress?.postal_code || "",
+          country: effectivePickupAddress?.country || "FR",
+          code: dropOffPointCode || pickupPointCode || "",
+          name: pickupPointName || "",
+          network: pickupPointNetwork || "",
+          shippingOfferCode:
+            toCleanString(parcelPoint?.shippingOfferCode) || deliveryNetworkRaw,
         }),
         cart_item_ids: Array.isArray(cartItemIds)
           ? (cartItemIds as any[]).join(",")
@@ -1432,11 +1712,24 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
     const referenceFromSession = (session as any)?.metadata?.product_reference;
     const deliveryMethodFromSession = (session as any)?.metadata
       ?.delivery_method;
-    const parcelPointCodeFromSession = (session as any)?.metadata?.parcel_point;
-    const parcelPointNameFromSession = (session as any)?.metadata
-      ?.parcel_point_name;
-    const parcelPointNetworkFromSession = (session as any)?.metadata
-      ?.parcel_point_network;
+    let pickupPointMeta: any = null;
+    try {
+      pickupPointMeta = (session as any)?.metadata?.pickup_point
+        ? JSON.parse(String((session as any).metadata.pickup_point))
+        : null;
+    } catch (_e) {
+      pickupPointMeta = null;
+    }
+    const parcelPointCodeFromSession =
+      (session as any)?.metadata?.parcel_point || pickupPointMeta?.code || "";
+    const parcelPointNameFromSession =
+      (session as any)?.metadata?.parcel_point_name ||
+      pickupPointMeta?.name ||
+      "";
+    const parcelPointNetworkFromSession =
+      (session as any)?.metadata?.parcel_point_network ||
+      pickupPointMeta?.network ||
+      "";
 
     let referenceWithQuantity: string | undefined = undefined;
     try {
@@ -1480,7 +1773,6 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
 
     let businessStatus: "PAID" | "PAYMENT_FAILED" | "PENDING" | undefined =
       undefined;
-
     try {
       const storeNameToCheck = String(storeNameFromSession || "").trim();
       const refsToCheck = String(referenceFromSession || "")
@@ -1498,22 +1790,6 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
         if (!storeErr) {
           const storeId = (storeRow as any)?.id ?? null;
           if (storeId) {
-            const refToPid = new Map<string, string>();
-            try {
-              const { data: stockRows } = await supabase
-                .from("stock")
-                .select("product_reference,product_stripe_id")
-                .eq("store_id", storeId)
-                .in("product_reference", uniqueRefs as any);
-              for (const r of Array.isArray(stockRows) ? stockRows : []) {
-                const ref = String((r as any)?.product_reference || "").trim();
-                const pid = String((r as any)?.product_stripe_id || "").trim();
-                if (ref && pid && pid.startsWith("prod_")) {
-                  if (!refToPid.has(ref)) refToPid.set(ref, pid);
-                }
-              }
-            } catch (_e) {}
-
             for (const ref of uniqueRefs) {
               const { data: failedCart, error: failedErr } = await supabase
                 .from("carts")
@@ -1527,37 +1803,24 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
                 break;
               }
             }
-
-            if (!businessStatus) {
-              for (const ref of uniqueRefs) {
-                const { data: shippedRows, error: shippedErr } = await supabase
-                  .from("shipments")
-                  .select("id")
-                  .eq("store_id", storeId)
-                  .or(
-                    (() => {
-                      const pid = String(refToPid.get(ref) || "").trim();
-                      return pid && pid.startsWith("prod_")
-                        ? buildProductReferenceOrFilter(pid)
-                        : buildProductReferenceOrFilter(ref);
-                    })(),
-                  )
-                  .not("payment_id", "is", null)
-                  .limit(1);
-                if (!shippedErr && (shippedRows || []).length > 0) {
-                  businessStatus = "PAID";
-                  break;
-                }
-              }
-            }
-
-            if (!businessStatus) {
-              businessStatus = "PENDING";
-            }
           }
         }
       }
     } catch (_e) {}
+
+    if (!businessStatus) {
+      if (paymentStatus === "succeeded") {
+        businessStatus = "PAID";
+      } else if (
+        ["requires_payment_method", "canceled", "failed"].includes(
+          String(paymentStatus || ""),
+        )
+      ) {
+        businessStatus = "PAYMENT_FAILED";
+      } else {
+        businessStatus = "PENDING";
+      }
+    }
 
     const result = {
       ...paymentDetails,

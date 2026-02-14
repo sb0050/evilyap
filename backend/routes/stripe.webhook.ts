@@ -20,7 +20,8 @@ const formatWeight = (weight?: string): number => {
 };
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const supabaseKey =
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 const CLOUDFRONT_URL = process.env.CLOUDFRONT_URL;
 
 if (!supabaseUrl || !supabaseKey) {
@@ -178,6 +179,29 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               if (!storeErr && storeRow) {
                 const storeId = Number((storeRow as any)?.id);
                 if (Number.isFinite(storeId)) {
+                  const managedRefKeySet = new Set<string>();
+                  try {
+                    const { data: stockRowsForRefs, error: stockRowsErr } =
+                      await supabase
+                        .from("stock")
+                        .select("product_reference,quantity")
+                        .eq("store_id", storeId)
+                        .in("product_reference", refsToCheck as any);
+                    if (!stockRowsErr && Array.isArray(stockRowsForRefs)) {
+                      for (const sr of stockRowsForRefs as any[]) {
+                        const ref = String(sr?.product_reference || "")
+                          .trim()
+                          .toLowerCase();
+                        if (!ref) continue;
+                        const rawQty = (sr as any)?.quantity;
+                        if (rawQty === null || rawQty === undefined) continue;
+                        const qty = Number(rawQty);
+                        if (Number.isFinite(qty)) {
+                          managedRefKeySet.add(ref);
+                        }
+                      }
+                    }
+                  } catch (_e) {}
                   if (resolvedCustomerId) {
                     const { data: cartRows, error: cartErr } = await supabase
                       .from("carts")
@@ -195,15 +219,36 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                       const availableRefSet = new Set(
                         (cartRows || [])
                           .map((r: any) =>
-                            String((r as any)?.product_reference || "").trim(),
+                            String((r as any)?.product_reference || "")
+                              .trim()
+                              .toLowerCase(),
                           )
                           .filter((r: string) => r.length > 0),
                       );
+                      if (managedRefKeySet.size > 0) {
+                        for (const ref of refsToCheck) {
+                          const key = String(ref || "")
+                            .trim()
+                            .toLowerCase();
+                          if (key && managedRefKeySet.has(key)) {
+                            availableRefSet.add(key);
+                          }
+                        }
+                      }
                       const availableRefs = refsToCheck.filter((r) =>
-                        availableRefSet.has(r),
+                        availableRefSet.has(
+                          String(r || "")
+                            .trim()
+                            .toLowerCase(),
+                        ),
                       );
                       const missingRefs = refsToCheck.filter(
-                        (r) => !availableRefSet.has(r),
+                        (r) =>
+                          !availableRefSet.has(
+                            String(r || "")
+                              .trim()
+                              .toLowerCase(),
+                          ),
                       );
                       console.log(
                         "checkout.session.completed: availableRefs",
@@ -217,29 +262,36 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                       if (availableRefs.length > 0) {
                         refsToProcessOverride = availableRefs;
                         productReferenceOverride = availableRefs.join(";");
-                        try {
-                          const { error: otherDelErr } = await supabase
-                            .from("carts")
-                            .delete()
-                            .eq("store_id", storeId)
-                            .eq("status", "PENDING")
-                            .neq("customer_stripe_id", resolvedCustomerId)
-                            .in("product_reference", availableRefs);
-                          if (otherDelErr) {
+                        if (managedRefKeySet.size === 0) {
+                          try {
+                            const { error: otherDelErr } = await supabase
+                              .from("carts")
+                              .delete()
+                              .eq("store_id", storeId)
+                              .eq("status", "PENDING")
+                              .neq("customer_stripe_id", resolvedCustomerId)
+                              .in("product_reference", availableRefs);
+                            if (otherDelErr) {
+                              console.error(
+                                "checkout.session.completed: Error deleting other users cart refs:",
+                                otherDelErr.message,
+                              );
+                            } else {
+                              console.log(
+                                "checkout.session.completed: refs deleted for other users",
+                                availableRefs,
+                              );
+                            }
+                          } catch (otherDelErr) {
                             console.error(
                               "checkout.session.completed: Error deleting other users cart refs:",
-                              otherDelErr.message,
-                            );
-                          } else {
-                            console.log(
-                              "checkout.session.completed: refs deleted for other users",
-                              availableRefs,
+                              otherDelErr,
                             );
                           }
-                        } catch (otherDelErr) {
-                          console.error(
-                            "checkout.session.completed: Error deleting other users cart refs:",
-                            otherDelErr,
+                        } else {
+                          console.log(
+                            "checkout.session.completed: skip cross-cart cleanup for stock-managed refs",
+                            availableRefs,
                           );
                         }
 
@@ -580,12 +632,12 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             dropOffPoint = {};
           }
           const storeName = session.metadata?.store_name || null;
-          const productReference =
+          let productReference =
             productReferenceOverride ||
             session.metadata?.product_reference ||
             "N/A";
           const amount = paymentIntent?.amount ?? session.amount_total ?? 0;
-          const netAmount = Math.max(0, amount - creditAmountForMissingRefs);
+          let netAmount = Math.max(0, amount - creditAmountForMissingRefs);
           const currency = paymentIntent?.currency ?? session.currency ?? "eur";
           const paymentId = paymentIntent?.id ?? session.id;
           const weight = formatWeight(session.metadata?.weight);
@@ -709,7 +761,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
 
           const regulationName = "Régularisation livraison";
 
-          const products = (lineItemsResp?.data || [])
+          let products = (lineItemsResp?.data || [])
             .map((item: any) => ({
               id: item.price.product.id,
               name: item.price.product.name,
@@ -934,6 +986,389 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             );
             res.json({ received: true });
             return;
+          }
+
+          try {
+            const purchased = (Array.isArray(products) ? products : [])
+              .map((p: any) => {
+                const pid = String(p?.id || "").trim();
+                const ref = String(p?.name || "").trim();
+                const qtyRaw = Number(p?.quantity || 1);
+                const qty =
+                  Number.isFinite(qtyRaw) && qtyRaw > 0
+                    ? Math.floor(qtyRaw)
+                    : 1;
+                const amountTotalRaw = Number(p?.amount_total || 0);
+                const amountTotalCents =
+                  Number.isFinite(amountTotalRaw) && amountTotalRaw > 0
+                    ? Math.round(amountTotalRaw)
+                    : 0;
+                return {
+                  pid,
+                  ref,
+                  qty,
+                  amountTotalCents,
+                  original: p,
+                };
+              })
+              .filter(
+                (p) =>
+                  p.pid.startsWith("prod_") && p.ref.length > 0 && p.qty > 0,
+              );
+
+            if (purchased.length > 0) {
+              const uniquePids = Array.from(
+                new Set(purchased.map((p) => p.pid)),
+              );
+              const { data: stockRows, error: stockErr } = await supabase
+                .from("stock")
+                .select(
+                  "id, product_stripe_id, product_reference, quantity, bought",
+                )
+                .eq("store_id", storeId)
+                .in("product_stripe_id", uniquePids as any);
+
+              if (stockErr) {
+                console.error(
+                  "checkout.session.completed webhook: stock read failed (post-payment)",
+                  stockErr,
+                );
+              } else {
+                const stockByPid = new Map<string, any>();
+                for (const r of Array.isArray(stockRows) ? stockRows : []) {
+                  const pid = String(
+                    (r as any)?.product_stripe_id || "",
+                  ).trim();
+                  if (pid && pid.startsWith("prod_")) stockByPid.set(pid, r);
+                }
+
+                const missing = purchased.filter((p) => !stockByPid.has(p.pid));
+                if (missing.length > 0) {
+                  const rowsToInsert = missing.map((m) => ({
+                    store_id: storeId,
+                    product_reference: m.ref,
+                    product_stripe_id: m.pid,
+                    quantity: 0,
+                    bought: 0,
+                  }));
+                  const { data: inserted, error: insErr } = await supabase
+                    .from("stock")
+                    .insert(rowsToInsert as any)
+                    .select(
+                      "id, product_stripe_id, product_reference, quantity, bought",
+                    );
+                  if (insErr) {
+                    console.error(
+                      "checkout.session.completed webhook: stock insert failed (post-payment)",
+                      insErr,
+                      { storeId, missing },
+                    );
+                  }
+
+                  if (!insErr) {
+                    for (const r of Array.isArray(inserted) ? inserted : []) {
+                      const pid = String(
+                        (r as any)?.product_stripe_id || "",
+                      ).trim();
+                      if (pid && pid.startsWith("prod_")) {
+                        stockByPid.set(pid, r);
+                      }
+                    }
+                  }
+                }
+
+                const expectedByStockId = new Map<
+                  number,
+                  { quantity: number | null; bought: number }
+                >();
+                const creditedRefSet = new Set<string>();
+                const purchasedRefSet = new Set<string>();
+                const adjustedProducts: any[] = [];
+                let stockCreditAmountCents = 0;
+
+                for (const p of purchased) {
+                  const row = stockByPid.get(p.pid) || null;
+                  const stockId = Number((row as any)?.id || 0);
+                  if (!row || !Number.isFinite(stockId) || stockId <= 0) {
+                    if (p.qty > 0) {
+                      creditedRefSet.add(p.ref);
+                      stockCreditAmountCents += p.amountTotalCents;
+                    }
+                    continue;
+                  }
+
+                  const rawQtyField = (row as any)?.quantity;
+                  const bRaw = Number((row as any)?.bought || 0);
+                  const currentBought =
+                    Number.isFinite(bRaw) && bRaw >= 0 ? Math.floor(bRaw) : 0;
+
+                  let fulfilledQty = p.qty;
+                  let nextQty: number | null = null;
+
+                  if (rawQtyField !== null && rawQtyField !== undefined) {
+                    const parsedQty = Number(rawQtyField);
+                    if (!Number.isFinite(parsedQty)) {
+                      console.error(
+                        "checkout.session.completed webhook: invalid stock.quantity (post-payment)",
+                        { storeId, stockId, product_stripe_id: p.pid, row },
+                      );
+                      fulfilledQty = 0;
+                      nextQty = 0;
+                    } else {
+                      const available = Math.max(0, Math.floor(parsedQty));
+                      fulfilledQty = Math.min(p.qty, available);
+                      nextQty = available - fulfilledQty;
+                    }
+                  }
+
+                  const creditedQty = Math.max(0, p.qty - fulfilledQty);
+                  const nextBought = currentBought + fulfilledQty;
+                  expectedByStockId.set(stockId, {
+                    quantity: nextQty,
+                    bought: nextBought,
+                  });
+
+                  const fulfilledAmountCents =
+                    fulfilledQty > 0
+                      ? Math.round((p.amountTotalCents * fulfilledQty) / p.qty)
+                      : 0;
+
+                  if (fulfilledQty > 0) {
+                    purchasedRefSet.add(p.ref);
+                    adjustedProducts.push({
+                      ...(p.original || {}),
+                      quantity: fulfilledQty,
+                      amount_total: fulfilledAmountCents,
+                      amount_subtotal: fulfilledAmountCents,
+                    });
+                  }
+
+                  if (creditedQty > 0) {
+                    creditedRefSet.add(p.ref);
+                    stockCreditAmountCents += Math.max(
+                      0,
+                      p.amountTotalCents - fulfilledAmountCents,
+                    );
+                  }
+                }
+
+                for (const [stockId, exp] of expectedByStockId.entries()) {
+                  const payload =
+                    exp.quantity === null
+                      ? { bought: exp.bought }
+                      : { quantity: exp.quantity, bought: exp.bought };
+                  const { error: updErr } = await supabase
+                    .from("stock")
+                    .update(payload as any)
+                    .eq("id", stockId)
+                    .eq("store_id", storeId);
+
+                  if (updErr) {
+                    console.error(
+                      "checkout.session.completed webhook: stock update failed (post-payment)",
+                      updErr,
+                      {
+                        storeId,
+                        stockId,
+                        expected: exp,
+                      },
+                    );
+                  }
+                }
+
+                if (expectedByStockId.size > 0) {
+                  const ids = Array.from(expectedByStockId.keys());
+                  const { data: afterRows, error: afterErr } = await supabase
+                    .from("stock")
+                    .select(
+                      "id, quantity, bought, product_stripe_id, product_reference",
+                    )
+                    .eq("store_id", storeId)
+                    .in("id", ids as any);
+
+                  if (afterErr) {
+                    console.error(
+                      "checkout.session.completed webhook: stock reread failed (post-payment)",
+                      afterErr,
+                      { storeId },
+                    );
+                  } else {
+                    const mismatches: any[] = [];
+                    for (const r of Array.isArray(afterRows) ? afterRows : []) {
+                      const stockId = Number((r as any)?.id || 0);
+                      const exp = expectedByStockId.get(stockId);
+                      if (!exp) continue;
+                      const b = Math.floor(Number((r as any)?.bought || 0));
+                      const rawQ = (r as any)?.quantity;
+                      const q =
+                        rawQ === null || rawQ === undefined
+                          ? null
+                          : Math.floor(Number(rawQ || 0));
+                      const qtyMismatch =
+                        exp.quantity === null ? false : q !== exp.quantity;
+                      if (qtyMismatch || b !== exp.bought) {
+                        mismatches.push({
+                          stockId,
+                          expected: exp,
+                          actual: { quantity: q, bought: b },
+                          row: r,
+                        });
+                      }
+                    }
+                    if (mismatches.length > 0) {
+                      console.error(
+                        "checkout.session.completed webhook: stock mismatch after update",
+                        { storeId, mismatches },
+                      );
+                    }
+                  }
+                }
+
+                if (stockCreditAmountCents > 0 && paymentIntent?.id) {
+                  const pi = paymentIntent;
+                  const existingStockIssuedParsed = Number.parseInt(
+                    String(
+                      (pi.metadata as any)?.stock_credit_issued_cents || "0",
+                    ),
+                    10,
+                  );
+                  const existingStockIssuedCents =
+                    Number.isFinite(existingStockIssuedParsed) &&
+                    existingStockIssuedParsed > 0
+                      ? existingStockIssuedParsed
+                      : 0;
+
+                  if (existingStockIssuedCents === stockCreditAmountCents) {
+                    netAmount = Math.max(0, netAmount - stockCreditAmountCents);
+                  } else if (existingStockIssuedCents > 0) {
+                    console.warn(
+                      "checkout.session.completed: stock credit already issued with different amount",
+                      {
+                        paymentIntentId: pi.id,
+                        existingStockIssuedCents,
+                        stockCreditAmountCents,
+                      },
+                    );
+                  } else if (resolvedCustomerId) {
+                    try {
+                      const cust = (await stripe.customers.retrieve(
+                        resolvedCustomerId,
+                      )) as Stripe.Customer;
+                      if (cust && !("deleted" in cust)) {
+                        const meta = (cust as any)?.metadata || {};
+                        const prevBalanceParsed = Number.parseInt(
+                          String(meta?.credit_balance || "0"),
+                          10,
+                        );
+                        const prevBalanceCents = Number.isFinite(
+                          prevBalanceParsed,
+                        )
+                          ? prevBalanceParsed
+                          : 0;
+                        const nextBalanceCents =
+                          prevBalanceCents + stockCreditAmountCents;
+                        await stripe.customers.update(
+                          resolvedCustomerId,
+                          {
+                            metadata: {
+                              ...meta,
+                              credit_balance: String(nextBalanceCents),
+                            },
+                          } as any,
+                          {
+                            idempotencyKey: `credit-stock-${pi.id}`,
+                          } as any,
+                        );
+
+                        const existingCreditedRefs = normalizeRefs(
+                          (pi.metadata as any)?.credited_references || "",
+                        );
+                        const existingPurchasedRefs = normalizeRefs(
+                          (pi.metadata as any)?.purchased_references || "",
+                        );
+                        const mergedCreditedRefs = Array.from(
+                          new Set([
+                            ...existingCreditedRefs,
+                            ...Array.from(creditedRefSet),
+                          ]),
+                        );
+                        const mergedPurchasedRefs = Array.from(
+                          new Set([
+                            ...existingPurchasedRefs,
+                            ...Array.from(purchasedRefSet),
+                          ]),
+                        );
+                        const existingCreditAmountParsed = Number.parseInt(
+                          String(
+                            (pi.metadata as any)?.credit_amount_cents || "0",
+                          ),
+                          10,
+                        );
+                        const existingCreditAmountCents =
+                          Number.isFinite(existingCreditAmountParsed) &&
+                          existingCreditAmountParsed > 0
+                            ? existingCreditAmountParsed
+                            : 0;
+                        const nextCreditAmountCents =
+                          existingCreditAmountCents + stockCreditAmountCents;
+                        await stripe.paymentIntents.update(pi.id, {
+                          metadata: {
+                            ...(pi.metadata || {}),
+                            credited_references: mergedCreditedRefs.join(";"),
+                            purchased_references: mergedPurchasedRefs.join(";"),
+                            credit_amount_cents: String(nextCreditAmountCents),
+                            stock_credited_references:
+                              Array.from(creditedRefSet).join(";"),
+                            stock_credit_amount_cents: String(
+                              stockCreditAmountCents,
+                            ),
+                            stock_credit_issued_cents: String(
+                              stockCreditAmountCents,
+                            ),
+                          },
+                        });
+                        netAmount = Math.max(
+                          0,
+                          netAmount - stockCreditAmountCents,
+                        );
+                      }
+                    } catch (creditErr: any) {
+                      console.warn(
+                        "checkout.session.completed: stock credit issue failed:",
+                        creditErr?.message || creditErr,
+                      );
+                    }
+                  }
+                }
+
+                if (adjustedProducts.length > 0) {
+                  products = adjustedProducts;
+                  productReference = Array.from(
+                    new Set(
+                      adjustedProducts
+                        .map((p: any) => String(p?.name || "").trim())
+                        .filter(Boolean),
+                    ),
+                  ).join(";");
+                } else if (stockCreditAmountCents > 0) {
+                  console.log(
+                    "checkout.session.completed webhook: all paid products were unavailable, skipping shipment creation",
+                    {
+                      paymentIntentId: paymentIntent?.id || null,
+                      creditedRefs: Array.from(creditedRefSet),
+                    },
+                  );
+                  res.json({ received: true });
+                  return;
+                }
+              }
+            }
+          } catch (stockUpdateEx) {
+            console.error(
+              "checkout.session.completed webhook: stock update exception (post-payment)",
+              stockUpdateEx,
+              { storeId },
+            );
           }
 
           console.log("checkout.session.completed webhook: build addresses");

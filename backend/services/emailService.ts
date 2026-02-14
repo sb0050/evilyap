@@ -316,7 +316,6 @@ class EmailService {
             </div>
             
             <div class="footer">
-              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
               <p>© ${new Date().getFullYear()} ${
                 data.storeName
               } - Tous droits réservés</p>
@@ -848,7 +847,6 @@ class EmailService {
               <p><strong>L'équipe ${data.storeName}</strong></p>
             </div>
             <div class="footer">
-              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
             </div>
           </div>
         </body>
@@ -1556,7 +1554,6 @@ class EmailService {
               <p><strong>L’équipe PayLive</strong></p>
             </div>
             <div class="footer">
-              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
               <p>© ${new Date().getFullYear()} PayLive - Tous droits réservés</p>
             </div>
           </div>

@@ -1,4 +1,4 @@
-import { useState, useEffect, type Dispatch, type SetStateAction } from 'react';
+﻿import { useState, useEffect, type Dispatch, type SetStateAction } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import {
   useStripe,
@@ -172,6 +172,9 @@ export default function CheckoutPage() {
     Record<string, any>
   >({});
   const [cartStockLoading, setCartStockLoading] = useState(false);
+  const [cartQtyInputById, setCartQtyInputById] = useState<
+    Record<number, string>
+  >({});
 
   const [storePickupAddress, setStorePickupAddress] = useState<
     Address | undefined
@@ -234,45 +237,325 @@ export default function CheckoutPage() {
       .trim()
       .toLowerCase();
 
+  const refreshStripeProductDetailsForCart = async (
+    items: CartItem[],
+    productStripeIdByRefKey?: Map<string, string>
+  ) => {
+    const unitPriceByProductId = new Map<string, number>();
+    const productById = new Map<string, any>();
+    const apiBase = API_BASE_URL;
+    const ids = Array.from(
+      new Set(
+        (items || [])
+          .map(it => {
+            const ref = String(it.product_reference || '').trim();
+            const pidFromStock = productStripeIdByRefKey?.get(getRefKey(ref));
+            const pidFromCart = String(it.product_stripe_id || '').trim();
+            return String(pidFromStock || pidFromCart || '').trim();
+          })
+          .filter(pid => pid.startsWith('prod_'))
+      )
+    );
+    if (ids.length === 0) return { unitPriceByProductId, productById };
+
+    try {
+      const token = await getToken();
+      const resp = await fetch(`${apiBase}/api/stripe/products/by-ids`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+        body: JSON.stringify({ ids }),
+      });
+      const json = await resp.json().catch(() => null as any);
+      if (!resp.ok) return { unitPriceByProductId, productById };
+
+      const products = Array.isArray(json?.products) ? json.products : [];
+      for (const p of products) {
+        const id = String((p as any)?.id || '').trim();
+        if (id && id.startsWith('prod_')) {
+          productById.set(id, p);
+          const unitAmountCents = Number((p as any)?.unit_amount_cents ?? NaN);
+          const unitPrice =
+            Number.isFinite(unitAmountCents) && unitAmountCents > 0
+              ? unitAmountCents / 100
+              : NaN;
+          if (Number.isFinite(unitPrice) && unitPrice > 0) {
+            unitPriceByProductId.set(id, unitPrice);
+          }
+        }
+      }
+      if (productById.size === 0) return { unitPriceByProductId, productById };
+
+      setCartStockByRefKey(prev => {
+        const next = { ...prev };
+        for (const it of items || []) {
+          const ref = String(it.product_reference || '').trim();
+          if (!ref) continue;
+          const key = getRefKey(ref);
+          const pid = String(
+            productStripeIdByRefKey?.get(key) || it.product_stripe_id || ''
+          ).trim();
+          if (!pid || !pid.startsWith('prod_')) continue;
+          const p = productById.get(pid) || null;
+          if (!p) continue;
+
+          const existing =
+            next[key] && typeof next[key] === 'object' ? next[key] : {};
+          const existingProduct =
+            existing?.product && typeof existing.product === 'object'
+              ? existing.product
+              : null;
+          const mergedProduct = existingProduct
+            ? { ...existingProduct, ...p }
+            : p;
+          const unitAmountCents = Number((p as any)?.unit_amount_cents ?? NaN);
+          const unitPrice =
+            Number.isFinite(unitAmountCents) && unitAmountCents > 0
+              ? unitAmountCents / 100
+              : (existing?.unit_price ?? null);
+          next[key] = {
+            ...existing,
+            product: mergedProduct,
+            unit_price: unitPrice,
+          };
+        }
+        return next;
+      });
+    } catch (_e) {}
+    return { unitPriceByProductId, productById };
+  };
+
+  const refreshStockDetailsForCart = async (
+    items: CartItem[],
+    storeSlug: string
+  ) => {
+    const weightByRefKey = new Map<string, number>();
+    const productStripeIdByRefKey = new Map<string, string>();
+    const existingRefKeys = new Set<string>();
+    const slug = String(storeSlug || '').trim();
+    if (!slug)
+      return { weightByRefKey, productStripeIdByRefKey, existingRefKeys };
+
+    const refs = Array.from(
+      new Set(
+        (items || [])
+          .map(it => String(it.product_reference || '').trim())
+          .filter(Boolean)
+      )
+    );
+    if (refs.length === 0)
+      return { weightByRefKey, productStripeIdByRefKey, existingRefKeys };
+
+    try {
+      const maxConcurrent = 4;
+      let idx = 0;
+      const results: Array<{ key: string; item: any | null }> = [];
+      const workers = new Array(Math.min(maxConcurrent, refs.length))
+        .fill(null)
+        .map(async () => {
+          while (idx < refs.length) {
+            const current = idx++;
+            const ref = refs[current];
+            const key = getRefKey(ref);
+            try {
+              const item = await fetchStockSearchExactMatch(slug, ref);
+              results.push({ key, item });
+            } catch {
+              results.push({ key, item: null });
+            }
+          }
+        });
+      await Promise.all(workers);
+
+      setCartStockByRefKey(prev => {
+        const next = { ...prev };
+        for (const r of results) {
+          next[r.key] = r.item;
+        }
+        return next;
+      });
+
+      for (const r of results) {
+        if (!r.item) continue;
+        existingRefKeys.add(r.key);
+        const stock = (r.item as any)?.stock || null;
+        const pid = String(stock?.product_stripe_id || '').trim();
+        if (pid.startsWith('prod_')) {
+          productStripeIdByRefKey.set(r.key, pid);
+        }
+        const wRaw = Number(stock?.weight);
+        const w = Number.isFinite(wRaw) && wRaw >= 0 ? wRaw : NaN;
+        if (Number.isFinite(w)) {
+          weightByRefKey.set(r.key, w);
+        }
+      }
+    } catch (_e) {}
+
+    return { weightByRefKey, productStripeIdByRefKey, existingRefKeys };
+  };
+
   const refreshCartForStore = async () => {
     const apiBase = API_BASE_URL;
     try {
       setReloadingCart(true);
       const userEmail = user?.primaryEmailAddress?.emailAddress;
-      if (!userEmail || !store?.id) return;
-      const resp = await fetch(
-        `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(userEmail)}`
-      );
-      if (!resp.ok) return;
-      const json = await resp.json();
-      const stripeId = json?.customer?.id;
-      if (!stripeId) return;
-      setStripeCustomerId(stripeId);
+      if (!userEmail || !store?.id) {
+        return {
+          items: [] as CartItem[],
+          total: 0,
+          missingRefs: [] as string[],
+        };
+      }
+
+      let stripeId = String(stripeCustomerId || '').trim();
+      if (!stripeId) {
+        const resp = await fetch(
+          `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(
+            userEmail
+          )}`
+        );
+        const json = await resp.json().catch(() => null as any);
+        if (!resp.ok) {
+          const msg =
+            json?.error ||
+            `Erreur get-customer-details (${resp.status || 'unknown'})`;
+          showToast(String(msg), 'error');
+          return {
+            items: cartItemsForStore || [],
+            total: Number(cartTotalForStore || 0),
+            missingRefs: [] as string[],
+          };
+        }
+        stripeId = String(json?.customer?.id || '').trim();
+        if (!stripeId) {
+          showToast('Stripe customer id introuvable', 'error');
+          return {
+            items: cartItemsForStore || [],
+            total: Number(cartTotalForStore || 0),
+            missingRefs: [] as string[],
+          };
+        }
+        setStripeCustomerId(stripeId);
+      }
+
       const paymentId = String(searchParams.get('payment_id') || '').trim();
       const cartResp = await fetch(
         `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(
           stripeId
         )}${paymentId ? `&paymentId=${encodeURIComponent(paymentId)}` : ''}`
       );
-      if (!cartResp.ok) return;
-      const cartJson = await cartResp.json();
+      const cartJson = await cartResp.json().catch(() => null as any);
+      if (!cartResp.ok) {
+        const msg =
+          cartJson?.error || `Erreur carts/summary (${cartResp.status})`;
+        showToast(String(msg), 'error');
+        return {
+          items: cartItemsForStore || [],
+          total: Number(cartTotalForStore || 0),
+          missingRefs: [] as string[],
+        };
+      }
+
       const groups = Array.isArray(cartJson?.itemsByStore)
         ? cartJson.itemsByStore
         : [];
       const groupForStore = groups.find(
         (g: any) => g?.store?.id && store?.id && g.store.id === store.id
       );
-      if (groupForStore) {
-        setCartItemsForStore(groupForStore.items || []);
-        setCartTotalForStore(Number(groupForStore.total || 0));
-      } else {
+      if (!groupForStore) {
         setCartItemsForStore([]);
         setCartTotalForStore(0);
+        return {
+          items: [] as CartItem[],
+          total: 0,
+          missingRefs: [] as string[],
+        };
       }
+
+      const storeSlug = String(store?.slug || '').trim();
+      const items: CartItem[] = groupForStore.items || [];
+      const { weightByRefKey, productStripeIdByRefKey, existingRefKeys } =
+        await refreshStockDetailsForCart(items, storeSlug);
+      const { unitPriceByProductId, productById } =
+        await refreshStripeProductDetailsForCart(
+          items,
+          productStripeIdByRefKey
+        );
+
+      const missingRefs = (items || [])
+        .filter(it => {
+          const ref = String(it.product_reference || '').trim();
+          if (!ref) return false;
+          const refKey = getRefKey(ref);
+          const pidFromStock = String(
+            productStripeIdByRefKey.get(refKey) || ''
+          ).trim();
+          const pidFromCart = String(it.product_stripe_id || '').trim();
+          const hasStripeProduct =
+            pidFromStock.startsWith('prod_') || pidFromCart.startsWith('prod_');
+          if (!hasStripeProduct) return false;
+          return !existingRefKeys.has(refKey);
+        })
+        .map(it => String(it.product_reference || '').trim())
+        .filter(Boolean);
+
+      const nextItems = (items || []).map(it => {
+        const ref = String(it.product_reference || '').trim();
+        const refKey = getRefKey(ref);
+        const pid = String(
+          productStripeIdByRefKey.get(refKey) || it.product_stripe_id || ''
+        ).trim();
+        const hasStripe = pid.startsWith('prod_');
+        if (!hasStripe) return it;
+        if (!ref || !existingRefKeys.has(refKey)) return it;
+        const nextValue = unitPriceByProductId.get(pid) ?? it.value;
+        const p = productById.get(pid) || null;
+        const nextDescription =
+          String((p as any)?.description || '').trim() || it.description;
+        const nextWeight = weightByRefKey.get(refKey) ?? it.weight;
+        if (
+          nextValue === it.value &&
+          nextDescription === it.description &&
+          nextWeight === it.weight
+        ) {
+          return it;
+        }
+        return {
+          ...it,
+          value: nextValue,
+          description: nextDescription,
+          weight: nextWeight,
+        };
+      });
+
+      const total = nextItems.reduce(
+        (sum, it) => sum + Number(it.value || 0) * Number(it.quantity || 1),
+        0
+      );
+      setCartItemsForStore(nextItems);
+      setCartTotalForStore(total);
+      return { items: nextItems, total, missingRefs };
     } catch (_e) {
+      return {
+        items: cartItemsForStore || [],
+        total: Number(cartTotalForStore || 0),
+        missingRefs: [] as string[],
+      };
     } finally {
       setReloadingCart(false);
     }
+  };
+
+  const handleReloadCartItems = async () => {
+    const result = await refreshCartForStore();
+    if (result.missingRefs.length > 0) {
+      const msg = `Les articles ${result.missingRefs.join(', ')} ne sont plus disponibles. Veuillez les retirer de votre panier.`;
+      setPaymentError(msg);
+      showToast(msg, 'error');
+    }
+    return result;
   };
 
   useEffect(() => {
@@ -806,54 +1089,7 @@ export default function CheckoutPage() {
   };
 
   const validateCartQuantitiesInStock = async () => {
-    const storeSlug = String(store?.slug || '').trim();
-    if (!storeSlug) return;
-    const refs = Array.from(
-      new Set(
-        (cartItemsForStore || [])
-          .map(it => String(it.product_reference || '').trim())
-          .filter(Boolean)
-      )
-    );
-    if (refs.length === 0) return;
-
-    const snapshot = new Map<string, number>();
-    const maxConcurrent = 4;
-    let idx = 0;
-    const workers = new Array(Math.min(maxConcurrent, refs.length))
-      .fill(null)
-      .map(async () => {
-        while (idx < refs.length) {
-          const current = idx++;
-          const ref = refs[current];
-          try {
-            const item = await fetchStockSearchExactMatch(storeSlug, ref);
-            const qRaw = Number(item?.stock?.quantity);
-            if (Number.isFinite(qRaw)) {
-              snapshot.set(getRefKey(ref), qRaw);
-            }
-          } catch {}
-        }
-      });
-    await Promise.all(workers);
-
-    for (const it of cartItemsForStore || []) {
-      const ref = String(it.product_reference || '').trim();
-      if (!ref) continue;
-      const key = getRefKey(ref);
-      if (!snapshot.has(key)) continue;
-      const available = Number(snapshot.get(key) ?? NaN);
-      if (!Number.isFinite(available)) continue;
-      const chosen = Math.max(1, Math.round(Number(it.quantity || 1)));
-      if (available <= 0) {
-        throw new Error(`Article épuisé: ${ref}`);
-      }
-      if (chosen > available) {
-        throw new Error(
-          `Stock insuffisant pour ${ref} (demandé ${chosen}, disponible ${available})`
-        );
-      }
-    }
+    return;
   };
 
   const creditBalanceCents = (() => {
@@ -875,63 +1111,61 @@ export default function CheckoutPage() {
     setIsProcessingPayment(true);
 
     try {
-      // Vérifier la cohérence du panier en base avant de payer
+      let latestCartItems = [...(cartItemsForStore || [])];
+      let latestCartTotal = Number(cartTotalForStore || 0);
+      let missingRefs: string[] = [];
+
       try {
-        const apiBase = API_BASE_URL;
-        const refreshResp = await fetch(
-          `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(stripeCustomerId)}`
+        const refreshed = await handleReloadCartItems();
+        latestCartItems = Array.isArray(refreshed?.items)
+          ? refreshed.items
+          : latestCartItems;
+        latestCartTotal = Number(
+          Number.isFinite(Number(refreshed?.total))
+            ? Number(refreshed?.total)
+            : latestCartTotal
         );
-        if (refreshResp.ok) {
-          const json = await refreshResp.json();
-          const groups = Array.isArray(json?.itemsByStore)
-            ? json.itemsByStore
-            : [];
-          const groupForStore = groups.find(
-            (g: any) => g?.store?.id && store?.id && g.store.id === store.id
-          );
-          const items = groupForStore?.items || [];
-          if (cartItemsForStore.length > 0) {
-            const freshRefs = new Set(
-              items.map((it: any) => String(it.product_reference || '').trim())
-            );
-            const currentRefs = cartItemsForStore.map(it =>
-              String(it.product_reference || '').trim()
-            );
-            const missingRefs = currentRefs.filter(r => !freshRefs.has(r));
-            if (missingRefs.length > 0) {
-              const msg = 'Certains articles ne sont plus dans votre panier';
-              setPaymentError(msg);
-              showToast(msg, 'error');
-              setCartItemsForStore(items);
-              setCartTotalForStore(Number(groupForStore?.total || 0));
-              setIsProcessingPayment(false);
-              return;
-            }
-          }
-          const refs = items.map((it: any) =>
-            String(it.product_reference || '').trim()
-          );
-          const seen = new Set<string>();
-          let hasDuplicate = false;
-          for (const r of refs) {
-            if (seen.has(r)) {
-              hasDuplicate = true;
-              break;
-            }
-            seen.add(r);
-          }
-          if (hasDuplicate) {
-            const msg =
-              'Vous avez la même référence plusieurs fois dans le panier';
-            setPaymentError(msg);
-            showToast(msg, 'error');
-            setCartItemsForStore(items);
-            setCartTotalForStore(Number(groupForStore?.total || 0));
-            setIsProcessingPayment(false);
-            return;
-          }
+        missingRefs = Array.isArray(refreshed?.missingRefs)
+          ? refreshed.missingRefs
+          : [];
+      } catch (e: any) {
+        const msg = e?.message || 'Erreur lors du rechargement du panier';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+      }
+
+      if (missingRefs.length > 0) {
+        const msg = `Les articles ${missingRefs.join(', ')} ne sont plus disponibles. Veuillez les retirer de votre panier.`;
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return;
+      }
+
+      if (latestCartItems.length === 0) {
+        const msg = 'Votre panier est vide';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return;
+      }
+
+      const refs = latestCartItems.map(it =>
+        String(it.product_reference || '').trim()
+      );
+      const seen = new Set<string>();
+      let hasDuplicate = false;
+      for (const r of refs) {
+        if (seen.has(r)) {
+          hasDuplicate = true;
+          break;
         }
-      } catch (_e) {}
+        seen.add(r);
+      }
+      if (hasDuplicate) {
+        const msg = 'Vous avez la m�me r�f�rence plusieurs fois dans le panier';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return;
+      }
 
       await validateCartQuantitiesInStock();
 
@@ -953,8 +1187,32 @@ export default function CheckoutPage() {
               }
               const fromShipping = (customerData as any)?.shipping?.address;
               if (fromShipping && typeof fromShipping === 'object') {
+                const customerMeta = (customerData as any)?.metadata || {};
+                const deliveryNetworkFallback = String(
+                  (customerData as any)?.deliveryNetwork ||
+                    customerMeta?.delivery_network ||
+                    ''
+                ).trim();
+                const parcelPointCodeFallback = String(
+                  (customerData as any)?.parcelPointCode ||
+                    customerMeta?.parcel_point ||
+                    ''
+                ).trim();
+                const shippingNameRaw = String(
+                  (customerData as any)?.shipping?.name || ''
+                ).trim();
+                const shippingNameParts = shippingNameRaw
+                  .split(' - ')
+                  .map((s: string) => String(s || '').trim())
+                  .filter(Boolean);
+                const inferredNetwork =
+                  shippingNameParts[1] ||
+                  String((deliveryNetworkFallback.split('-')[0] || '').trim());
                 return {
-                  name: (customerData as any)?.shipping?.name || '',
+                  code: parcelPointCodeFallback || '',
+                  name: shippingNameParts[0] || shippingNameRaw || '',
+                  network: inferredNetwork || '',
+                  shippingOfferCode: deliveryNetworkFallback || '',
                   location: {
                     street: fromShipping?.street || fromShipping?.line1 || '',
                     number: fromShipping?.number || fromShipping?.line2 || '',
@@ -973,6 +1231,13 @@ export default function CheckoutPage() {
               return null;
             })()
           : null;
+      if (effectiveDeliveryMethod === 'pickup_point' && !resolvedParcelPoint) {
+        const msg =
+          'Veuillez sélectionner un point relais avant de procéder au paiement.';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return;
+      }
       const customerInfo = {
         email: email || user.primaryEmailAddress.emailAddress,
         name: (formData.name || md.name || user.fullName || 'Client') as string,
@@ -1044,19 +1309,18 @@ export default function CheckoutPage() {
         setCreatedCreditPromotionCodeId('');
       }
 
-      const payloadItems = (cartItemsForStore || []).map(it => ({
+      const payloadItems = (latestCartItems || []).map(it => ({
         reference: String(it.product_reference || '').trim(),
         description: String((it as any).description || '').trim(),
         price: Number(it.value || 0),
         quantity: Number(it.quantity || 1),
-        product_stripe_id: String((it as any).product_stripe_id || '').trim(),
         weight: Number((it as any).weight),
       }));
 
       const payloadData = {
         shippingHasBeenModified: shippingHasBeenModified,
         openShipmentPaymentId: openShipmentMode ? currentPaymentId : '',
-        amount: cartTotalForStore,
+        amount: latestCartTotal,
         currency: 'eur',
         customerName: customerInfo.name,
         customerEmail: customerInfo.email,
@@ -1081,7 +1345,7 @@ export default function CheckoutPage() {
             : null,
         phone: customerInfo.phone,
 
-        cartItemIds: (cartItemsForStore || []).map(it => it.id),
+        cartItemIds: (latestCartItems || []).map(it => it.id),
         deliveryNetwork:
           effectiveDeliveryMethod === 'store_pickup'
             ? 'STORE_PICKUP'
@@ -1109,15 +1373,35 @@ export default function CheckoutPage() {
       const data = await response.json().catch(() => null as any);
 
       if (!response.ok) {
-        if (
-          response.status === 409 &&
-          data?.blocked &&
-          data?.reason === 'already_bought' &&
-          data?.reference
-        ) {
-          throw new Error(
-            `Malheureusement, la référence ${String(data.reference)} a déjà été achetée.`
-          );
+        if (response.status === 409 && data?.blocked) {
+          const ref = String(data?.reference || '').trim();
+          const reason = String(data?.reason || '').trim();
+          if (reason === 'already_bought' && ref) {
+            throw new Error(
+              `Malheureusement, la référence ${ref} a déjà été achetée.`
+            );
+          }
+          if (reason === 'out_of_stock' && ref) {
+            throw new Error(`La référence ${ref} n'est plus en stock.`);
+          }
+          if (reason === 'insufficient_stock' && ref) {
+            const available = Number(data?.available);
+            const requested = Number(data?.requested);
+            if (Number.isFinite(available) && Number.isFinite(requested)) {
+              throw new Error(
+                `Stock insuffisant pour la référence ${ref} (disponible: ${available}, demandé: ${requested}).`
+              );
+            }
+            throw new Error(`Stock insuffisant pour la référence ${ref}.`);
+          }
+          if (ref) {
+            throw new Error(
+              `Impossible de finaliser l'achat pour la référence ${ref}.`
+            );
+          }
+          if (reason) {
+            throw new Error(`Impossible de finaliser l'achat (${reason}).`);
+          }
         }
         throw new Error(
           data?.error || 'Erreur lors de la création de la session'
@@ -1638,7 +1922,7 @@ export default function CheckoutPage() {
                         </h3>
                         <button
                           type='button'
-                          onClick={refreshCartForStore}
+                          onClick={handleReloadCartItems}
                           disabled={reloadingCart}
                           className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                         >
@@ -1664,14 +1948,28 @@ export default function CheckoutPage() {
                               const info = cartStockByRefKey[key] || null;
                               const stock = info?.stock || null;
                               const product = info?.product || null;
+                              const stripePid = String(
+                                stock?.product_stripe_id ||
+                                  (it as any)?.product_stripe_id ||
+                                  ''
+                              ).trim();
+                              const hasStripeProduct =
+                                stripePid.startsWith('prod_');
                               const title = String(
                                 product?.name ||
-                                  (it as any)?.description ||
+                                  (!hasStripeProduct
+                                    ? (it as any)?.description
+                                    : null) ||
                                   ref ||
                                   ''
                               ).trim();
+                              const stripeDesc = hasStripeProduct
+                                ? String(product?.description || '').trim()
+                                : '';
                               const cartDesc = String(
-                                (it as any)?.description || ''
+                                hasStripeProduct
+                                  ? stripeDesc
+                                  : (it as any)?.description || ''
                               ).trim();
                               const showDesc = Boolean(cartDesc);
                               const imgRaw =
@@ -1711,73 +2009,58 @@ export default function CheckoutPage() {
                           </div>
                           <div className='flex items-center gap-2'>
                             {(() => {
-                              const ref = String(
-                                it.product_reference || ''
-                              ).trim();
-                              const key = getRefKey(ref);
-                              const info = cartStockByRefKey[key] || null;
-                              const stockQtyRaw = Number(info?.stock?.quantity);
-                              const stockQtyKnown =
-                                Number.isFinite(stockQtyRaw);
-                              const stockQty = stockQtyKnown
-                                ? stockQtyRaw
-                                : null;
                               const currentQty = Math.max(
                                 1,
                                 Math.round(Number(it.quantity || 1))
                               );
-                              const maxSelectable =
-                                stockQtyKnown &&
-                                stockQty !== null &&
-                                stockQty > 0
-                                  ? Math.min(
-                                      10,
-                                      Math.max(1, Math.floor(stockQty))
-                                    )
-                                  : 10;
-                              const options = Array.from(
-                                { length: maxSelectable },
-                                (_, idx) => idx + 1
-                              );
-                              const showOutOfStock =
-                                stockQtyKnown &&
-                                stockQty !== null &&
-                                stockQty <= 0;
-
-                              if (showOutOfStock) {
-                                return (
-                                  <span className='text-xs text-gray-500 whitespace-nowrap'>
-                                    Épuisé
-                                  </span>
-                                );
-                              }
+                              const localValue =
+                                cartQtyInputById[it.id] !== undefined
+                                  ? cartQtyInputById[it.id]
+                                  : String(currentQty);
 
                               return (
-                                <select
-                                  value={currentQty}
-                                  onChange={e =>
-                                    handleUpdateCartItemQuantity(
-                                      it.id,
-                                      Math.max(1, Number(e.target.value || 1))
-                                    )
-                                  }
-                                  className='border border-gray-300 rounded px-1 py-0.5 text-sm'
-                                  aria-label='Quantité'
-                                >
-                                  {stockQtyKnown &&
-                                  stockQty !== null &&
-                                  stockQty > 0 &&
-                                  currentQty > stockQty ? (
-                                    <option value={currentQty} disabled>
-                                      {currentQty} (indispo)
-                                    </option>
-                                  ) : null}
-                                  {options.map(q => (
-                                    <option key={q} value={q}>
-                                      {q}
-                                    </option>
-                                  ))}
-                                </select>
+                                <>
+                                  <span className='whitespace-nowrap text-xs text-gray-600'>
+                                    {Number(it.value || 0).toFixed(2)} €/u
+                                  </span>
+                                  <input
+                                    type='number'
+                                    min='1'
+                                    step='1'
+                                    value={localValue}
+                                    onChange={e => {
+                                      const next = String(e.target.value || '');
+                                      setCartQtyInputById(prev => ({
+                                        ...prev,
+                                        [it.id]: next,
+                                      }));
+                                    }}
+                                    onKeyDown={e => {
+                                      if (e.key !== 'Enter') return;
+                                      (e.currentTarget as any)?.blur?.();
+                                    }}
+                                    onBlur={() => {
+                                      const raw = String(
+                                        cartQtyInputById[it.id] ?? currentQty
+                                      );
+                                      const parsed = Math.max(
+                                        1,
+                                        Math.round(Number(raw || 1))
+                                      );
+                                      setCartQtyInputById(prev => {
+                                        const next = { ...prev };
+                                        delete next[it.id];
+                                        return next;
+                                      });
+                                      handleUpdateCartItemQuantity(
+                                        it.id,
+                                        parsed
+                                      );
+                                    }}
+                                    className='border border-gray-300 rounded px-2 py-0.5 text-sm w-20'
+                                    aria-label='Quantité'
+                                  />
+                                </>
                               );
                             })()}
                             <span className='whitespace-nowrap'>
@@ -1883,6 +2166,7 @@ export default function CheckoutPage() {
                   showDelivery={showDelivery}
                   setShowDelivery={setShowDelivery}
                   showToast={showToast}
+                  cartItemsForStore={cartItemsForStore}
                   setCartItemsForStore={setCartItemsForStore}
                   setCartTotalForStore={setCartTotalForStore}
                   shippingHasBeenModified={shippingHasBeenModified}
@@ -1890,6 +2174,7 @@ export default function CheckoutPage() {
                   isEditingDelivery={isEditingDelivery}
                   isEditingOrder={isEditingOrder}
                   cartItemsCount={cartItemsForStore.length}
+                  refreshCartForStore={handleReloadCartItems}
                 />
               </div>
 
@@ -2011,6 +2296,11 @@ export default function CheckoutPage() {
                         <>
                           {(() => {
                             const ship = (customerData as any)?.shipping;
+                            console.log('Shipping info:', ship);
+                            console.log(
+                              'Selected parcel point:',
+                              selectedParcelPoint
+                            );
                             const name =
                               ship?.name || selectedParcelPoint?.name || null;
                             const addr =
@@ -2062,16 +2352,27 @@ export default function CheckoutPage() {
             <div className='mt-4'>
               {(!showPayment || !embeddedClientSecret) &&
                 (() => {
+                  const md = (customerData as any)?.metadata || {};
                   const savedMethod =
                     (customerData as any)?.deliveryMethod ||
                     (customerData as any)?.delivery_method ||
-                    (customerData as any)?.metadata?.delivery_method ||
+                    md?.delivery_method ||
                     null;
                   const hasItems = cartItemsForStore.length > 0;
                   const deliveryIsValid =
                     isEditingDelivery || savedMethod ? true : isFormComplete();
 
-                  const canProceed = hasItems && deliveryIsValid;
+                  const hasParcelPoint =
+                    Boolean(selectedParcelPoint) ||
+                    Boolean((customerData as any)?.parcel_point) ||
+                    Boolean((customerData as any)?.shipping?.parcel_point) ||
+                    Boolean(md?.parcel_point_code) ||
+                    Boolean((customerData as any)?.parcelPointCode);
+                  const parcelPointOk =
+                    deliveryMethod !== 'pickup_point' || hasParcelPoint;
+
+                  const canProceed =
+                    hasItems && deliveryIsValid && parcelPointOk;
 
                   const btnColor = canProceed ? '#0074D4' : '#6B7280';
                   return (
@@ -2170,6 +2471,7 @@ function CheckoutForm({
   showDelivery,
   setShowDelivery,
   showToast,
+  cartItemsForStore,
   setCartItemsForStore,
   setCartTotalForStore,
   isEditingDelivery,
@@ -2177,6 +2479,7 @@ function CheckoutForm({
   setShippingHasBeenModified,
   isEditingOrder,
   cartItemsCount,
+  refreshCartForStore,
 }: {
   store: Store | null;
   amount: number;
@@ -2214,6 +2517,7 @@ function CheckoutForm({
   showDelivery: boolean;
   setShowDelivery: (val: boolean) => void;
   showToast: (message: string, type?: 'error' | 'info' | 'success') => void;
+  cartItemsForStore: CartItem[];
   setCartItemsForStore: Dispatch<SetStateAction<CartItem[]>>;
   setCartTotalForStore: Dispatch<SetStateAction<number>>;
   isEditingDelivery: boolean;
@@ -2221,13 +2525,14 @@ function CheckoutForm({
   setShippingHasBeenModified: (val: boolean) => void;
   isEditingOrder: boolean;
   cartItemsCount: number;
+  refreshCartForStore: () => Promise<{
+    items: CartItem[];
+    total: number;
+    missingRefs: string[];
+  }>;
 }) {
   const stripe = useStripe();
   const elements = useElements();
-  const isAddToCartDisabled =
-    !Boolean((formData.reference || '').trim()) ||
-    !(amount > 0) ||
-    !Boolean(String((formData as any).description || '').trim());
 
   const hasDeliveryMethod = (() => {
     const md = (customerData as any)?.metadata || {};
@@ -2255,9 +2560,76 @@ function CheckoutForm({
   const [stockSuggestionsOpen, setStockSuggestionsOpen] = useState(false);
   const [stockSuggestionsLoading, setStockSuggestionsLoading] = useState(false);
   const [selectedStockItem, setSelectedStockItem] = useState<any | null>(null);
+  const [isReferenceInputFocused, setIsReferenceInputFocused] = useState(false);
 
   const storeSlugForStock = String((store as any)?.slug || '').trim();
   const referenceQuery = String((formData as any)?.reference || '').trim();
+
+  const selectedReference = String(
+    (selectedStockItem as any)?.stock?.product_reference || ''
+  ).trim();
+  const mustSelectSuggestionOrChangeReference =
+    Boolean(referenceQuery) &&
+    Boolean(selectedReference) &&
+    selectedReference.toLowerCase() === referenceQuery.toLowerCase();
+
+  const isAddToCartDisabled =
+    mustSelectSuggestionOrChangeReference ||
+    !Boolean(referenceQuery) ||
+    !(amount > 0) ||
+    !Boolean(String((formData as any).description || '').trim());
+
+  const refKey = (ref: string) =>
+    String(ref || '')
+      .trim()
+      .toLowerCase();
+
+  const incrementExistingCartItem = async (
+    existing: CartItem,
+    deltaQty: number
+  ) => {
+    const currentQty = Math.max(1, Math.round(Number(existing.quantity || 1)));
+    const nextQty = currentQty + Math.max(1, Math.round(Number(deltaQty || 1)));
+    try {
+      const apiBase = API_BASE_URL;
+      const resp = await fetch(`${apiBase}/api/carts/${existing.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quantity: nextQty }),
+      });
+      if (!resp.ok) {
+        const json = await resp.json().catch(() => null as any);
+        const msg =
+          json?.message ||
+          json?.error ||
+          'Erreur lors de la mise à jour du panier';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return false;
+      }
+
+      setPaymentError(null);
+      showToast('Quantité mise à jour', 'success');
+      setCartItemsForStore(prev =>
+        prev.map(it =>
+          it.id === existing.id ? { ...it, quantity: nextQty } : it
+        )
+      );
+      const unitValue = Number(existing.value || 0);
+      setCartTotalForStore(
+        prevTotal => prevTotal + unitValue * (nextQty - currentQty)
+      );
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('cart:updated'));
+      }
+      return true;
+    } catch (e: any) {
+      const msg = e?.message || 'Erreur lors de la mise à jour du panier';
+      setPaymentError(msg);
+      showToast(msg, 'error');
+      return false;
+    }
+  };
 
   const addSuggestionToCart = async (s: any) => {
     try {
@@ -2278,7 +2650,19 @@ function CheckoutForm({
       const ref = String(stock?.product_reference || '').trim();
       if (!ref) return;
 
-      const qtyAvailable = Number(stock?.quantity ?? 0);
+      const existing = (cartItemsForStore || []).find(
+        it => refKey(it.product_reference) === refKey(ref)
+      );
+      if (existing) {
+        await incrementExistingCartItem(existing, 1);
+        await refreshCartForStore().catch(() => {});
+        setSelectedStockItem(s);
+        setStockSuggestionsOpen(false);
+        setFormData((prev: any) => ({ ...prev, reference: '' }));
+        return;
+      }
+
+      const qtyAvailable = Number(stock?.quantity ?? NaN);
       if (Number.isFinite(qtyAvailable) && qtyAvailable <= 0) return;
 
       const title = String(product?.name || ref || '').trim() || ref;
@@ -2308,7 +2692,6 @@ function CheckoutForm({
         description: title,
         quantity: 1,
         weight: weightForCart === null ? undefined : weightForCart,
-        product_stripe_id: productStripeId || undefined,
       });
       const json = await resp.json().catch(() => null as any);
       if (resp.status === 409) {
@@ -2362,6 +2745,8 @@ function CheckoutForm({
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('cart:updated'));
       }
+      await refreshCartForStore().catch(() => {});
+
       setSelectedStockItem(s);
       setStockSuggestionsOpen(false);
       setFormData((prev: any) => ({ ...prev, reference: '' }));
@@ -2585,6 +2970,15 @@ function CheckoutForm({
             ? stockWeightRaw
             : null;
 
+      const existing = (cartItemsForStore || []).find(
+        it => refKey(it.product_reference) === refKey(product_reference)
+      );
+      if (existing) {
+        await incrementExistingCartItem(existing, 1);
+        await refreshCartForStore().catch(() => {});
+        return;
+      }
+
       const resp = await apiPost('/api/carts', {
         store_id: store.id,
         product_reference,
@@ -2592,7 +2986,6 @@ function CheckoutForm({
         customer_stripe_id: customerStripeId,
         description: normalizedDescription || null,
         weight: weightForCart === null ? undefined : weightForCart,
-        product_stripe_id: productStripeId || undefined,
       });
       const json = await resp.json();
 
@@ -2648,6 +3041,7 @@ function CheckoutForm({
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('cart:updated'));
       }
+      await refreshCartForStore().catch(() => {});
     } catch (e: any) {
       const rawMsg = e?.message || "Erreur lors de l'ajout au panier";
       setPaymentError(rawMsg);
@@ -2685,10 +3079,12 @@ function CheckoutForm({
                   setStockSuggestionsOpen(true);
                 }}
                 onFocus={() => {
+                  setIsReferenceInputFocused(true);
                   if (stockSuggestions.length > 0)
                     setStockSuggestionsOpen(true);
                 }}
                 onBlur={() => {
+                  setIsReferenceInputFocused(false);
                   setTimeout(() => setStockSuggestionsOpen(false), 150);
                 }}
                 className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300`}
@@ -2696,71 +3092,119 @@ function CheckoutForm({
                 placeholder='Votre référence'
                 required
               />
-              {stockSuggestionsOpen &&
-              (stockSuggestionsLoading || stockSuggestions.length > 0) ? (
-                <div className='absolute z-20 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg overflow-hidden'>
-                  {stockSuggestionsLoading ? (
-                    <div className='px-3 py-2 text-sm text-gray-500'>
-                      Recherche…
-                    </div>
-                  ) : null}
-                  {stockSuggestions.map((s: any, idx: number) => {
-                    const stock = s?.stock || {};
-                    const product = s?.product || null;
-                    const ref = String(stock?.product_reference || '').trim();
-                    const qty = Number(stock?.quantity ?? 0);
-                    const disabled = Number.isFinite(qty) && qty <= 0;
-                    const title = String(product?.name || ref || '').trim();
-                    const unitPrice = getStockItemUnitPrice(s);
-                    const imgRaw =
-                      Array.isArray(product?.images) &&
-                      product.images.length > 0
-                        ? String(product.images[0] || '').trim()
-                        : String(stock?.image_url || '')
-                            .split(',')[0]
-                            ?.trim() || '';
-                    return (
-                      <button
-                        key={String(stock?.id || ref || idx)}
-                        type='button'
-                        disabled={disabled}
-                        onMouseDown={e => e.preventDefault()}
-                        onClick={() => {
-                          if (disabled) return;
-                          void addSuggestionToCart(s);
-                        }}
-                        className={`w-full px-3 py-2 text-left flex items-center gap-3 ${
-                          disabled
-                            ? 'bg-gray-50 text-gray-400 cursor-not-allowed'
-                            : 'hover:bg-gray-50'
-                        }`}
-                      >
-                        {imgRaw ? (
-                          <img
-                            src={imgRaw}
-                            alt={title || ref}
-                            className='w-10 h-10 rounded object-cover bg-gray-100 shrink-0'
-                          />
-                        ) : (
-                          <div className='w-10 h-10 rounded bg-gray-100 shrink-0' />
-                        )}
-                        <div className='min-w-0 flex-1'>
-                          <div className='text-sm font-medium truncate'>
-                            {ref || '—'}
-                          </div>
-                          <div className='text-xs text-gray-600 truncate'>
-                            {title || '—'}
-                            {unitPrice ? ` • ${unitPrice.toFixed(2)} €` : ''}
-                          </div>
-                        </div>
-                      </button>
+              {stockSuggestionsOpen
+                ? (() => {
+                    const visibleSuggestions = stockSuggestions.filter(
+                      (s: any) => {
+                        const qRaw = (s as any)?.stock?.quantity;
+                        const q =
+                          typeof qRaw === 'number'
+                            ? qRaw
+                            : typeof qRaw === 'string'
+                              ? Number(qRaw)
+                              : qRaw === null || qRaw === undefined
+                                ? null
+                                : Number(qRaw);
+                        return !(q !== null && Number.isFinite(q) && q <= 0);
+                      }
                     );
-                  })}
-                </div>
-              ) : null}
+                    if (
+                      !stockSuggestionsLoading &&
+                      visibleSuggestions.length === 0
+                    ) {
+                      return null;
+                    }
+                    return (
+                      <div className='absolute z-20 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg overflow-hidden'>
+                        {stockSuggestionsLoading ? (
+                          <div className='px-3 py-2 text-sm text-gray-500'>
+                            Recherche…
+                          </div>
+                        ) : null}
+                        {visibleSuggestions.map((s: any, idx: number) => {
+                          const stock = s?.stock || {};
+                          const product = s?.product || null;
+                          const ref = String(
+                            stock?.product_reference || ''
+                          ).trim();
+                          const qRaw = stock?.quantity;
+                          const qty =
+                            typeof qRaw === 'number'
+                              ? qRaw
+                              : typeof qRaw === 'string'
+                                ? Number(qRaw)
+                                : qRaw === null || qRaw === undefined
+                                  ? null
+                                  : Number(qRaw);
+                          const disabled =
+                            qty !== null && Number.isFinite(qty) && qty <= 0;
+                          const title = String(
+                            product?.name || ref || ''
+                          ).trim();
+                          const unitPrice = getStockItemUnitPrice(s);
+                          const imgRaw =
+                            Array.isArray(product?.images) &&
+                            product.images.length > 0
+                              ? String(product.images[0] || '').trim()
+                              : String(stock?.image_url || '')
+                                  .split(',')[0]
+                                  ?.trim() || '';
+                          return (
+                            <button
+                              key={String(stock?.id || ref || idx)}
+                              type='button'
+                              disabled={disabled}
+                              onMouseDown={e => e.preventDefault()}
+                              onClick={() => {
+                                if (disabled) return;
+                                void addSuggestionToCart(s);
+                              }}
+                              className={`w-full px-3 py-2 text-left flex items-center gap-3 ${
+                                disabled
+                                  ? 'bg-gray-50 text-gray-400 cursor-not-allowed'
+                                  : 'hover:bg-gray-50'
+                              }`}
+                            >
+                              {imgRaw ? (
+                                <img
+                                  src={imgRaw}
+                                  alt={title || ref}
+                                  className='w-10 h-10 rounded object-cover bg-gray-100 shrink-0'
+                                />
+                              ) : (
+                                <div className='w-10 h-10 rounded bg-gray-100 shrink-0' />
+                              )}
+                              <div className='min-w-0 flex-1'>
+                                <div className='text-sm font-medium truncate'>
+                                  {ref || '—'}
+                                </div>
+                                <div className='text-xs text-gray-600 truncate'>
+                                  {title || '—'}
+                                  {unitPrice
+                                    ? ` • ${unitPrice.toFixed(2)} €`
+                                    : ''}
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()
+                : null}
             </div>
-            {selectedStockItem ? (
-              <div className='mt-2 rounded-md border border-gray-200 bg-gray-50 p-3 flex items-start gap-3'>
+            {selectedStockItem && !isReferenceInputFocused ? (
+              <div
+                className='mt-2 rounded-md border border-gray-200 bg-gray-50 p-3 flex items-start gap-3 cursor-pointer hover:bg-gray-100'
+                role='button'
+                tabIndex={0}
+                onClick={() => addSuggestionToCart(selectedStockItem)}
+                onKeyDown={e => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return;
+                  e.preventDefault();
+                  addSuggestionToCart(selectedStockItem);
+                }}
+              >
                 {(() => {
                   const stock = (selectedStockItem as any)?.stock || {};
                   const product = (selectedStockItem as any)?.product || null;
@@ -2826,9 +3270,10 @@ function CheckoutForm({
               onChange={e =>
                 setFormData({ ...formData, description: e.target.value })
               }
-              className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300`}
+              disabled={mustSelectSuggestionOrChangeReference}
+              className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300 disabled:bg-gray-100 disabled:text-gray-600 disabled:cursor-not-allowed`}
               style={{ lineHeight: '1.5' }}
-              placeholder='Détails (taille, couleur, etc.)'
+              placeholder='Permet de calculer le poids de votre colis. Soyez le plus précis possible.'
               rows={3}
               required
             />
@@ -2843,6 +3288,7 @@ function CheckoutForm({
               step='0.01'
               min='0.01'
               value={amountInput}
+              disabled={mustSelectSuggestionOrChangeReference}
               onChange={e => {
                 let raw = e.target.value.replace(',', '.');
                 const parts = raw.split('.');
@@ -2863,7 +3309,7 @@ function CheckoutForm({
                   setAmountInput(amount.toFixed(2));
                 }
               }}
-              className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300`}
+              className={`w-full px-3 py-3.5 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-300 disabled:bg-gray-100 disabled:text-gray-600 disabled:cursor-not-allowed`}
               style={{ lineHeight: '1.5' }}
               placeholder='0.00'
               required
