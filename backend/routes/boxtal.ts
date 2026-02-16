@@ -124,6 +124,7 @@ router.post("/cotation", async (req, res) => {
     },
     CH: {
       "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
+      "FEDX-FedexRegionalEconomy": { width: 20, length: 200, height: 10 },
     },
   };
   const { sender, recipient, weight, network } = req.body || {};
@@ -794,9 +795,7 @@ router.delete("/shipping-orders/:id", async (req, res) => {
             try {
               const pi = await stripe.paymentIntents.retrieve(paymentId);
               const issuedParsed = Number.parseInt(
-                String(
-                  (pi.metadata as any)?.boxtal_cancel_credit_cents || "0",
-                ),
+                String((pi.metadata as any)?.boxtal_cancel_credit_cents || "0"),
                 10,
               );
               alreadyIssued =

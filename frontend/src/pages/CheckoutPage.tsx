@@ -165,6 +165,7 @@ export default function CheckoutPage() {
   const [showPayment, setShowPayment] = useState(false);
   const [email, setEmail] = useState('');
   const [showDelivery, setShowDelivery] = useState(false);
+  const [modifyDeliveryClickCount, setModifyDeliveryClickCount] = useState(0);
   const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
   const [cartItemsForStore, setCartItemsForStore] = useState<CartItem[]>([]);
   const [cartTotalForStore, setCartTotalForStore] = useState<number>(0);
@@ -1413,27 +1414,29 @@ export default function CheckoutPage() {
       setCreatedCreditPromotionCodeId(
         String(data?.creditPromotionCodeId || '').trim()
       );
-      if (effectiveDeliveryMethod === 'home_delivery' && address) {
+      if (effectiveDeliveryMethod === 'home_delivery') {
+        const nextAddr =
+          (address as any) || (customerData?.address as any) || null;
         setCustomerData(prev => ({
           ...(prev || {}),
-          address: address as any,
+          address: nextAddr,
           name: customerInfo.name,
           phone: customerInfo.phone,
           delivery_method: effectiveDeliveryMethod,
           metadata: {
             ...((prev as any)?.metadata || {}),
             delivery_method: effectiveDeliveryMethod,
-            delivery_network:
-              (formData as any)?.shippingOfferCode ||
-              (prev as any)?.metadata?.delivery_network ||
-              '',
+            delivery_network: String(
+              (formData as any)?.shippingOfferCode || ''
+            ).trim(),
           },
         }));
       } else if (
         effectiveDeliveryMethod === 'pickup_point' &&
-        selectedParcelPoint
+        resolvedParcelPoint
       ) {
-        const loc = (selectedParcelPoint as any)?.location;
+        const parcelPointToSave = selectedParcelPoint || resolvedParcelPoint;
+        const loc = (parcelPointToSave as any)?.location;
         const fallbackShipAddr =
           ((customerData as any)?.shipping?.address as any) || {};
         const shipAddr = {
@@ -1464,27 +1467,25 @@ export default function CheckoutPage() {
           ...(prev || {}),
           shipping: {
             name:
-              (selectedParcelPoint as any)?.name ||
-              (prev as any)?.shipping?.name,
+              (parcelPointToSave as any)?.name || (prev as any)?.shipping?.name,
             phone: customerInfo.phone,
             address: shipAddr,
           },
-          parcel_point: selectedParcelPoint,
+          parcel_point: parcelPointToSave,
           name: customerInfo.name,
           phone: customerInfo.phone,
           delivery_method: effectiveDeliveryMethod,
           metadata: {
             ...((prev as any)?.metadata || {}),
             delivery_method: effectiveDeliveryMethod,
-            delivery_network:
-              selectedParcelPoint.shippingOfferCode ||
-              (formData as any)?.shippingOfferCode ||
-              (prev as any)?.metadata?.delivery_network ||
-              '',
-            parcel_point_code:
-              selectedParcelPoint.code ||
-              (prev as any)?.metadata?.parcel_point_code ||
-              '',
+            delivery_network: String(
+              (parcelPointToSave as any)?.shippingOfferCode ||
+                (formData as any)?.shippingOfferCode ||
+                ''
+            ).trim(),
+            parcel_point_code: String(
+              (parcelPointToSave as any)?.code || ''
+            ).trim(),
           },
         }));
       } else if (effectiveDeliveryMethod === 'store_pickup') {
@@ -1592,6 +1593,8 @@ export default function CheckoutPage() {
   };
 
   const handleModifyDelivery = () => {
+    const shouldForceReset = modifyDeliveryClickCount >= 1;
+    setModifyDeliveryClickCount(c => c + 1);
     setOrderCompleted(false);
     setOrderAccordionOpen(true);
     setPaymentAccordionOpen(false);
@@ -1599,6 +1602,44 @@ export default function CheckoutPage() {
     setIsEditingOrder(false);
     setIsEditingDelivery(true);
     setEmbeddedClientSecret('');
+
+    if (shouldForceReset) {
+      setDeliveryMethod('pickup_point');
+      setSelectedParcelPoint(null);
+      setFormData((prev: any) => ({ ...prev, shippingOfferCode: '' }));
+      setIsFormValid(false);
+      return;
+    }
+
+    const md = (customerData as any)?.metadata || {};
+    const savedMethod =
+      (customerData as any)?.deliveryMethod ||
+      (customerData as any)?.delivery_method ||
+      md?.delivery_method ||
+      null;
+    const normalizedMethod =
+      savedMethod === 'home_delivery' ||
+      savedMethod === 'pickup_point' ||
+      savedMethod === 'store_pickup'
+        ? savedMethod
+        : null;
+    setDeliveryMethod(normalizedMethod || 'pickup_point');
+    setSelectedParcelPoint(null);
+    setFormData((prev: any) => ({ ...prev, shippingOfferCode: '' }));
+    if (!address && (customerData as any)?.address) {
+      setAddress(((customerData as any)?.address || undefined) as any);
+    }
+    if (normalizedMethod === 'home_delivery') {
+      const net = String(md?.delivery_network || '').trim();
+      if (net) {
+        setFormData((prev: any) => ({ ...prev, shippingOfferCode: net }));
+      }
+    } else if (normalizedMethod === 'pickup_point') {
+      const net = String(md?.delivery_network || '').trim();
+      if (net) {
+        setFormData((prev: any) => ({ ...prev, shippingOfferCode: net }));
+      }
+    }
   };
 
   if (loading) {
@@ -2359,8 +2400,11 @@ export default function CheckoutPage() {
                     md?.delivery_method ||
                     null;
                   const hasItems = cartItemsForStore.length > 0;
-                  const deliveryIsValid =
-                    isEditingDelivery || savedMethod ? true : isFormComplete();
+                  const deliveryIsValid = isEditingDelivery
+                    ? isFormComplete()
+                    : savedMethod
+                      ? true
+                      : isFormComplete();
 
                   const hasParcelPoint =
                     Boolean(selectedParcelPoint) ||
@@ -3426,11 +3470,20 @@ function CheckoutForm({
                 Boolean((customerData as any)?.parcelPointCode);
 
               const showMap = isEditingDelivery || !Boolean(savedMethod);
+              const savedMethodNormalized =
+                savedMethod === 'home_delivery' ||
+                savedMethod === 'pickup_point' ||
+                savedMethod === 'store_pickup'
+                  ? savedMethod
+                  : null;
+              const mapDefaultDeliveryMethod = deliveryMethod;
+              const mapAddress =
+                address || ((customerData as any)?.address as any) || undefined;
 
               return (
                 showMap && (
                   <ParcelPointMap
-                    address={address}
+                    address={mapAddress}
                     storePickupAddress={storePickupAddress}
                     storePickupPhone={storePickupPhone}
                     storeWebsite={store?.website}
@@ -3454,14 +3507,14 @@ function CheckoutForm({
                         setSelectedParcelPoint(point);
                         setFormData((prev: any) => ({
                           ...prev,
-                          shippingOfferCode: null,
+                          shippingOfferCode: '',
                         }));
                       }
 
                       setDeliveryMethod(method);
                       setIsFormValid(true);
                     }}
-                    defaultDeliveryMethod={deliveryMethod}
+                    defaultDeliveryMethod={mapDefaultDeliveryMethod}
                     defaultParcelPoint={selectedParcelPoint}
                     defaultParcelPointCode={
                       (customerData as any)?.parcelPointCode ||
@@ -3469,7 +3522,7 @@ function CheckoutForm({
                       (customerData?.parcel_point?.code ?? undefined)
                     }
                     initialDeliveryNetwork={
-                      (customerData as any)?.metadata?.delivery_network
+                      (formData as any)?.shippingOfferCode
                     }
                     disablePopupsOnMobile={true}
                   />

@@ -155,6 +155,39 @@ class EmailService {
     }
   }
 
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private isRetryableSmtpError(err: any): boolean {
+    const code = String(err?.code || "").toUpperCase();
+    const responseCode = Number(err?.responseCode || 0);
+    if (
+      [
+        "EAUTH",
+        "ECONNECTION",
+        "ETIMEDOUT",
+        "EAI_AGAIN",
+        "ECONNRESET",
+        "ENOTFOUND",
+        "ESOCKET",
+      ].includes(code)
+    ) {
+      return true;
+    }
+    if ([421, 450, 451, 452, 454].includes(responseCode)) return true;
+    const response = String(err?.response || "").toLowerCase();
+    if (
+      response.includes("temporary") ||
+      response.includes("try again") ||
+      response.includes("connection lost") ||
+      response.includes("rate limit")
+    ) {
+      return true;
+    }
+    return false;
+  }
+
   private formatAmount(amount?: number, currency?: string): string | undefined {
     if (typeof amount !== "number" || !currency) return undefined;
     try {
@@ -191,7 +224,9 @@ class EmailService {
 
   // Email de confirmation pour le client
   async sendCustomerConfirmation(data: CustomerEmailData): Promise<boolean> {
-    try {
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
       const netProductValue =
         (data.amount ?? 0) - (data.estimatedDeliveryCost ?? 0);
@@ -341,10 +376,37 @@ class EmailService {
         response: info.response,
       });
       return true;
-    } catch (error) {
-      console.error("❌ Erreur envoi email client:", error);
-      return false;
     }
+      catch (error: any) {
+        const retryable = this.isRetryableSmtpError(error);
+        const code = String(error?.code || "");
+        const responseCode = Number(error?.responseCode || 0);
+        const response = String(error?.response || "");
+        console.error("❌ Erreur envoi email client:", {
+          attempt,
+          maxAttempts,
+          retryable,
+          code,
+          responseCode,
+          response,
+        });
+        if (!retryable || attempt >= maxAttempts) {
+          try {
+            await this.sendAdminError({
+              subject: "Email client échoué (confirmation commande)",
+              message: `Echec d'envoi au client après ${attempt} tentative(s). to=${data.customerEmail} store=${data.storeName} paymentId=${data.paymentId}`,
+              context: JSON.stringify({ code, responseCode, response }),
+            });
+          } catch {}
+          return false;
+        }
+        const baseMs = 800;
+        const backoffMs = baseMs * attempt * attempt;
+        const jitterMs = Math.floor(Math.random() * 250);
+        await this.sleep(backoffMs + jitterMs);
+      }
+    }
+    return false;
   }
 
   async sendCartRecap(data: {
@@ -504,7 +566,9 @@ class EmailService {
   async sendStoreOwnerNotification(
     data: StoreOwnerEmailData,
   ): Promise<boolean> {
-    try {
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
       const formattedAmount = this.formatAmount(data.amount, data.currency);
       const netProductValue =
         (data.amount ?? 0) - (data.estimatedDeliveryCost ?? 0);
@@ -782,10 +846,30 @@ class EmailService {
         response: info.response,
       });
       return true;
-    } catch (error) {
-      console.error("❌ Erreur envoi email propriétaire:", error);
-      return false;
     }
+      catch (error: any) {
+        const retryable = this.isRetryableSmtpError(error);
+        const code = String(error?.code || "");
+        const responseCode = Number(error?.responseCode || 0);
+        const response = String(error?.response || "");
+        console.error("❌ Erreur envoi email propriétaire:", {
+          attempt,
+          maxAttempts,
+          retryable,
+          code,
+          responseCode,
+          response,
+        });
+        if (!retryable || attempt >= maxAttempts) {
+          return false;
+        }
+        const baseMs = 800;
+        const backoffMs = baseMs * attempt * attempt;
+        const jitterMs = Math.floor(Math.random() * 250);
+        await this.sleep(backoffMs + jitterMs);
+      }
+    }
+    return false;
   }
 
   async sendCustomerTrackingUpdate(
