@@ -1,6 +1,8 @@
 import express from "express";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
+import fs from "fs/promises";
+import path from "path";
 
 import slugify from "slugify";
 import { CATEGORY_BASE_WEIGHT } from "../CATEGORY_BASE_WEIGHT";
@@ -46,6 +48,83 @@ const getInternalBase = (): string => {
     return /^https?:\/\//i.test(vercelUrl) ? vercelUrl : `https://${vercelUrl}`;
   }
   return `http://localhost:${process.env.PORT || 5000}`;
+};
+
+type FallbackCotationBoxtalTable = Record<
+  string,
+  Record<string, Record<string, number>>
+>;
+let fallbackCotationBoxtalCache: FallbackCotationBoxtalTable | null = null;
+
+const loadFallbackCotationBoxtal =
+  async (): Promise<FallbackCotationBoxtalTable | null> => {
+    if (fallbackCotationBoxtalCache) return fallbackCotationBoxtalCache;
+    const candidatePaths = [
+      path.resolve(process.cwd(), "FALLBACK_COTATION_BOXTAL.json"),
+      path.resolve(__dirname, "..", "FALLBACK_COTATION_BOXTAL.json"),
+      path.resolve(
+        __dirname,
+        "..",
+        "..",
+        "..",
+        "FALLBACK_COTATION_BOXTAL.json",
+      ),
+    ];
+    for (const p of candidatePaths) {
+      try {
+        const raw = await fs.readFile(p, "utf8");
+        const parsed = JSON.parse(raw) as FallbackCotationBoxtalTable;
+        if (parsed && typeof parsed === "object") {
+          fallbackCotationBoxtalCache = parsed;
+          return parsed;
+        }
+      } catch (_e) {}
+    }
+    return null;
+  };
+
+const pickFallbackCotationBoxtal = (
+  table: FallbackCotationBoxtalTable,
+  recipientCountryRaw: string,
+  deliveryNetworkRaw: string,
+  weightKg: number,
+): number | null => {
+  const recipientCountry = (() => {
+    const c = String(recipientCountryRaw || "")
+      .trim()
+      .toUpperCase();
+    return c || "FR";
+  })();
+  const deliveryNetwork = String(deliveryNetworkRaw || "").trim();
+  if (!deliveryNetwork) return null;
+  const byCountry = table?.[recipientCountry];
+  if (!byCountry || typeof byCountry !== "object") return null;
+
+  const byCarrier =
+    (byCountry as any)?.[deliveryNetwork] ||
+    (() => {
+      const target = deliveryNetwork.toUpperCase();
+      const matchKey = Object.keys(byCountry).find(
+        (k) =>
+          String(k || "")
+            .trim()
+            .toUpperCase() === target,
+      );
+      return matchKey ? (byCountry as any)?.[matchKey] : null;
+    })();
+  if (!byCarrier || typeof byCarrier !== "object") return null;
+
+  const weightKeys = Object.keys(byCarrier)
+    .map((k) => ({ raw: k, n: Number(String(k).replace(",", ".")) }))
+    .filter((x) => Number.isFinite(x.n) && x.n > 0)
+    .sort((a, b) => a.n - b.n);
+  if (weightKeys.length === 0) return null;
+
+  const w = Number.isFinite(weightKg) && weightKg > 0 ? weightKg : 0;
+  const picked =
+    weightKeys.find((x) => x.n >= w) || weightKeys[weightKeys.length - 1];
+  const price = Number((byCarrier as any)?.[picked.raw]);
+  return Number.isFinite(price) ? Math.max(0, price) : null;
 };
 
 const DEFAULT_WEIGHT = 0.5;
@@ -439,7 +518,10 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       const token = raw.split("-")[0] || "";
       return toCleanString(token);
     };
-    const shippingAddressFromParcelPoint = (point: any, fallbackAddr?: any) => ({
+    const shippingAddressFromParcelPoint = (
+      point: any,
+      fallbackAddr?: any,
+    ) => ({
       line1:
         toCleanString(point?.location?.street) ||
         toCleanString(fallbackAddr?.line1) ||
@@ -533,7 +615,8 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         }
         if (!pickupPointNetwork) {
           pickupPointNetwork =
-            existingPickupNetwork || parseNetworkFromOffer(metadataDeliveryNetwork);
+            existingPickupNetwork ||
+            parseNetworkFromOffer(metadataDeliveryNetwork);
         }
         const shippingName = [pickupPointName, pickupPointNetwork]
           .map((s) => toCleanString(s))
@@ -594,7 +677,8 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
             country: address.country || "FR",
           },
           shipping:
-            deliveryMethod === "pickup_point" && (parcelPoint || pickupPointCode)
+            deliveryMethod === "pickup_point" &&
+            (parcelPoint || pickupPointCode)
               ? {
                   name: shippingName || pickupPointName,
                   phone: phone,
@@ -621,10 +705,12 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
 
     const customerMetadata =
       customer && !("deleted" in customer)
-        ? ((customer.metadata as Record<string, string>) || {})
+        ? (customer.metadata as Record<string, string>) || {}
         : {};
     const customerShipping: any =
-      customer && !("deleted" in customer) ? (customer as any)?.shipping || {} : {};
+      customer && !("deleted" in customer)
+        ? (customer as any)?.shipping || {}
+        : {};
     const customerShippingName = toCleanString(customerShipping?.name);
     const customerShippingNameParts = customerShippingName
       .split(" - ")
@@ -641,7 +727,9 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       pickupPointNetwork =
         customerShippingNameParts[1] ||
         parseNetworkFromOffer(deliveryNetworkRaw) ||
-        parseNetworkFromOffer(toCleanString(customerMetadata?.delivery_network));
+        parseNetworkFromOffer(
+          toCleanString(customerMetadata?.delivery_network),
+        );
     }
     const effectivePickupAddress = shippingAddressFromParcelPoint(
       parcelPoint,
@@ -671,6 +759,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       "MONR-DomicileEurope": { min: 3, max: 6 },
       "CHRP-ChronoInternationalClassic": { min: 1, max: 2 },
       "DLVG-DelivengoEasy": { min: 3, max: 5 },
+      "FEDX-FedexRegionalEconomy": { min: 1, max: 4 },
     };
     const deliveryEstimate = offerDelivery[deliveryNetwork];
     console.log("deliveryEstimate:", deliveryNetwork);
@@ -982,9 +1071,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       weightKg =
         Math.round(Math.max(0, itemsWeightKg + PACKAGING_WEIGHT) * 100) / 100;
     }
-    let computedDeliveryCost = 0;
+    let computedDeliveryCost: number | null = null;
     if (deliveryMethod !== "store_pickup") {
       try {
+        const sleep = (ms: number) =>
+          new Promise((resolve) => setTimeout(resolve, ms));
         let senderCity = "Paris";
         let senderPostal = "75001";
         let senderCountry = "FR";
@@ -1014,24 +1105,20 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
             ? String(parcelPoint?.location?.countryIsoCode || "FR")
             : String(address?.country || "FR");
         const apiBase = getInternalBase();
-        const cotResp = await fetch(`${apiBase}/api/boxtal/cotation`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sender: {
-              country: senderCountry,
-              postal_code: senderPostal,
-              city: senderCity,
-            },
-            recipient: {
-              country: recipientCountry,
-              postal_code: recipientPostal,
-              city: recipientCity,
-            },
-            weight: weightKg,
-            network: deliveryNetwork,
-          }),
-        });
+        const cotationBody = {
+          sender: {
+            country: senderCountry,
+            postal_code: senderPostal,
+            city: senderCity,
+          },
+          recipient: {
+            country: recipientCountry,
+            postal_code: recipientPostal,
+            city: recipientCity,
+          },
+          weight: weightKg,
+          network: deliveryNetwork,
+        };
         console.log(
           "body api/boxtal/cotation",
           JSON.stringify({
@@ -1049,17 +1136,50 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
             network: deliveryNetwork,
           }),
         );
-        if (cotResp.ok) {
-          const cotJson: any = await cotResp.json();
-          const priceRaw =
-            cotJson?.price?.["tax-inclusive"] ??
-            cotJson?.price?.taxInclusive ??
-            cotJson?.price;
-          const parsed = priceRaw
-            ? Number(String(priceRaw).replace(",", "."))
-            : NaN;
-          if (Number.isFinite(parsed)) {
-            computedDeliveryCost = parsed;
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const cotResp = await fetch(`${apiBase}/api/boxtal/cotation`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(cotationBody),
+            });
+            if (cotResp.ok) {
+              const cotJson: any = await cotResp.json();
+              const priceRaw =
+                cotJson?.price?.["tax-inclusive"] ??
+                cotJson?.price?.taxInclusive ??
+                cotJson?.price;
+              const parsed = priceRaw
+                ? Number(String(priceRaw).replace(",", "."))
+                : NaN;
+              if (Number.isFinite(parsed)) {
+                computedDeliveryCost = Math.max(0, parsed);
+                break;
+              }
+            }
+          } catch (_e) {}
+
+          if (attempt < 2) {
+            await sleep(250 * (attempt + 1));
+          }
+        }
+
+        if (
+          computedDeliveryCost === null ||
+          !Number.isFinite(computedDeliveryCost)
+        ) {
+          const table = await loadFallbackCotationBoxtal();
+          if (table) {
+            const fallback = pickFallbackCotationBoxtal(
+              table,
+              recipientCountry,
+              deliveryNetwork,
+              weightKg,
+            );
+            if (fallback !== null && Number.isFinite(fallback)) {
+              computedDeliveryCost = fallback;
+            }
           }
         }
       } catch (_e) {}
@@ -1067,30 +1187,15 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       computedDeliveryCost = 0;
     }
 
-    for (const ref of uniqueRefsForCheck) {
-      const { data: failedCartRows, error: failedCartErr } = await supabase
-        .from("carts")
-        .select("id")
-        .eq("store_id", storeIdForCheck)
-        .eq("product_reference", ref)
-        .eq("status", "PAYMENT_FAILED")
-        .limit(1);
-
-      if (failedCartErr) {
-        console.log("Failed Cart Err", failedCartErr);
-        res.status(500).json({ error: failedCartErr.message });
-        return;
-      }
-      if ((failedCartRows || []).length > 0) {
-        console.log("Cart Failed", failedCartRows);
-        res.status(409).json({
-          blocked: true,
-          reason: "already_bought",
-          reference: ref,
-          source: "carts",
-        });
-        return;
-      }
+    if (
+      deliveryMethod !== "store_pickup" &&
+      (computedDeliveryCost === null || !Number.isFinite(computedDeliveryCost))
+    ) {
+      res.status(502).json({
+        error:
+          "Impossible de calculer les frais de livraison. Veuillez réessayer.",
+      });
+      return;
     }
 
     const qtyByRef = new Map<string, number>();
@@ -1441,6 +1546,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       payment_method_types: ["card", "paypal"],
       customer: customerId,
       payment_intent_data: {
+        capture_method: "manual",
         description: `store: ${storeName || ""} - reference: ${
           joinedRefs || ""
         }`,
@@ -1699,6 +1805,16 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
             .map((s: string) => String(s || "").trim())
             .filter((s: string) => s.length > 0)
         : [];
+    const stockUnfulfilledReferencesRaw =
+      (paymentIntentObj?.metadata as any)?.stock_unfulfilled_references || null;
+    const stockUnfulfilledReferences =
+      typeof stockUnfulfilledReferencesRaw === "string" &&
+      stockUnfulfilledReferencesRaw
+        ? stockUnfulfilledReferencesRaw
+            .split(";")
+            .map((s: string) => String(s || "").trim())
+            .filter((s: string) => s.length > 0)
+        : [];
     const creditAmountRaw =
       (paymentIntentObj?.metadata as any)?.credit_amount_cents ||
       (paymentIntentObj?.metadata as any)?.refund_amount ||
@@ -1712,6 +1828,8 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
     const referenceFromSession = (session as any)?.metadata?.product_reference;
     const deliveryMethodFromSession = (session as any)?.metadata
       ?.delivery_method;
+    const deliveryNetworkFromSession = (session as any)?.metadata
+      ?.delivery_network;
     let pickupPointMeta: any = null;
     try {
       pickupPointMeta = (session as any)?.metadata?.pickup_point
@@ -1730,28 +1848,154 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
       (session as any)?.metadata?.parcel_point_network ||
       pickupPointMeta?.network ||
       "";
+    let dropoffPointMeta: any = null;
+    try {
+      dropoffPointMeta = (session as any)?.metadata?.dropoff_point
+        ? JSON.parse(String((session as any).metadata.dropoff_point))
+        : null;
+    } catch (_e) {
+      dropoffPointMeta = null;
+    }
 
     let referenceWithQuantity: string | undefined = undefined;
+    let detailedLineItems: Array<{
+      title: string;
+      description?: string;
+      reference?: string;
+      quantity: number;
+      amount_total: number;
+      currency: string;
+      stripe_product_id?: string;
+      is_delivery_regulation?: boolean;
+    }> = [];
     try {
       const lineItemsResp = await stripe.checkout.sessions.listLineItems(
         sessionId,
         { limit: 100, expand: ["data.price.product"] },
       );
       const refQtyMap = new Map<string, number>();
+      const items: any[] = Array.isArray(lineItemsResp?.data)
+        ? (lineItemsResp.data as any[])
+        : [];
       for (const item of (lineItemsResp?.data || []) as any[]) {
         const name = String(item?.price?.product?.name || "").trim();
         if (!name) continue;
         const qty = Number(item?.quantity || 1);
         refQtyMap.set(name, (refQtyMap.get(name) || 0) + qty);
       }
+      detailedLineItems = items.map((li: any) => {
+        const prod: any = li?.price?.product || null;
+        const title = String(prod?.name || li?.description || "").trim();
+        const description = String(prod?.description || "").trim() || undefined;
+        const qty = Math.max(1, Math.floor(Number(li?.quantity || 1)));
+        const amountTotal = Math.max(
+          0,
+          Math.round(Number(li?.amount_total ?? li?.amount_subtotal ?? 0)),
+        );
+        const currency = String(session.currency || "eur").toUpperCase();
+        const ref =
+          String(prod?.metadata?.product_reference || "").trim() || undefined;
+        const isDeliveryRegulation = title
+          ? /r[ée]gulation\s+livraison/i.test(title)
+          : false;
+        return {
+          title,
+          description,
+          reference: ref,
+          quantity: qty,
+          amount_total: amountTotal,
+          currency,
+          stripe_product_id: String(prod?.id || "").trim() || undefined,
+          is_delivery_regulation: isDeliveryRegulation || undefined,
+        };
+      });
       referenceWithQuantity = Array.from(refQtyMap.entries())
         .map(([n, q]) => `${n}**${q}`)
         .join(";");
       if (!referenceWithQuantity) referenceWithQuantity = undefined;
     } catch (_e) {}
 
+    let promoCodeDetails: Array<{
+      code: string;
+      amount_off_cents?: number;
+    }> = [];
+    try {
+      let expandedSession: any = session;
+      try {
+        expandedSession = await stripe.checkout.sessions.retrieve(sessionId, {
+          expand: [
+            "total_details.breakdown.discounts.discount",
+            "total_details.breakdown.discounts.discount.promotion_code",
+            "total_details.breakdown.discounts.discount.coupon",
+          ],
+        } as any);
+      } catch (_e) {
+        expandedSession = session;
+      }
+      const breakdownDiscounts: any[] = Array.isArray(
+        (expandedSession as any)?.total_details?.breakdown?.discounts,
+      )
+        ? ((expandedSession as any).total_details.breakdown.discounts as any[])
+        : [];
+      for (const d of breakdownDiscounts) {
+        const amountOff = Math.max(0, Math.round(Number(d?.amount || 0)));
+        const discountObj: any = d?.discount || {};
+        const promo = discountObj?.promotion_code;
+        if (!promo) continue;
+        let promoCode: any = promo;
+        if (typeof promo === "string") {
+          try {
+            promoCode = await stripe.promotionCodes.retrieve(promo);
+          } catch (_e) {
+            promoCode = null;
+          }
+        }
+        const code = String((promoCode as any)?.code || "").trim();
+        if (!code) continue;
+        promoCodeDetails.push({
+          code,
+          amount_off_cents: amountOff > 0 ? amountOff : undefined,
+        });
+      }
+    } catch (_e) {}
+
+    const promoCodesUsed = Array.from(
+      new Set(
+        promoCodeDetails
+          .map((d) => String(d?.code || "").trim())
+          .filter((s) => s.length > 0),
+      ),
+    );
+    const creditCodes = promoCodesUsed.filter((c) => /^CREDIT-/i.test(c));
+    const platformCodes = promoCodesUsed.filter((c) => /^PAYLIVE-/i.test(c));
+    const storeCodes = promoCodesUsed.filter(
+      (c) => !/^CREDIT-/i.test(c) && !/^PAYLIVE-/i.test(c),
+    );
+
+    const creditAppliedCentsParsed = Number.parseInt(
+      String((session as any)?.metadata?.credit_applied_cents || "0"),
+      10,
+    );
+    const creditAppliedCents =
+      Number.isFinite(creditAppliedCentsParsed) && creditAppliedCentsParsed > 0
+        ? creditAppliedCentsParsed
+        : 0;
+    const creditPromoDiscountCents = promoCodeDetails
+      .filter((d) => /^CREDIT-/i.test(String(d?.code || "")))
+      .reduce((sum, d) => {
+        const v = Number(d?.amount_off_cents || 0);
+        return sum + (Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0);
+      }, 0);
+
+    const shippingDetails: any = (session as any)?.shipping_details || null;
+    const customerDetails: any = (session as any)?.customer_details || null;
+
     const paymentDetails = {
-      amount: session.amount_total || 0,
+      amount:
+        ((paymentIntentObj as any)?.amount_received ??
+          (paymentIntentObj as any)?.amount ??
+          session.amount_total) ||
+        0,
       currency: session.currency || "eur",
       reference: referenceFromSession || "N/A",
       reference_with_quantity: referenceWithQuantity || undefined,
@@ -1764,49 +2008,33 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
       blocked_references: blockedReferences,
       credited_references: creditedReferences,
       purchased_references: purchasedReferences,
+      stock_unfulfilled_references: stockUnfulfilledReferences,
       credit_amount_cents: creditAmountCents,
       deliveryMethod: deliveryMethodFromSession || undefined,
+      deliveryNetwork: deliveryNetworkFromSession || undefined,
       parcelPointCode: parcelPointCodeFromSession || undefined,
       parcelPointName: parcelPointNameFromSession || undefined,
       parcelPointNetwork: parcelPointNetworkFromSession || undefined,
+      pickup_point: pickupPointMeta || undefined,
+      dropoff_point: dropoffPointMeta || undefined,
+      shipping_details: shippingDetails || undefined,
+      customer_details: customerDetails || undefined,
+      line_items: detailedLineItems,
+      delivery_regulation_items: detailedLineItems.filter(
+        (it) => (it as any)?.is_delivery_regulation,
+      ),
+      promo_codes: promoCodesUsed,
+      promo_codes_store: storeCodes,
+      promo_codes_platform: platformCodes,
+      promo_codes_credit: creditCodes,
+      promo_code_details: promoCodeDetails,
+      credit_balance_used_cents: creditAppliedCents || undefined,
+      credit_discount_total_cents:
+        creditPromoDiscountCents > 0 ? creditPromoDiscountCents : undefined,
     };
 
     let businessStatus: "PAID" | "PAYMENT_FAILED" | "PENDING" | undefined =
       undefined;
-    try {
-      const storeNameToCheck = String(storeNameFromSession || "").trim();
-      const refsToCheck = String(referenceFromSession || "")
-        .split(";")
-        .map((s) => String(s || "").trim())
-        .filter((s) => s.length > 0);
-      const uniqueRefs = Array.from(new Set(refsToCheck));
-
-      if (storeNameToCheck && uniqueRefs.length > 0) {
-        const { data: storeRow, error: storeErr } = await supabase
-          .from("stores")
-          .select("id")
-          .eq("name", storeNameToCheck)
-          .maybeSingle();
-        if (!storeErr) {
-          const storeId = (storeRow as any)?.id ?? null;
-          if (storeId) {
-            for (const ref of uniqueRefs) {
-              const { data: failedCart, error: failedErr } = await supabase
-                .from("carts")
-                .select("id")
-                .eq("store_id", storeId)
-                .eq("product_reference", ref)
-                .eq("status", "PAYMENT_FAILED")
-                .limit(1);
-              if (!failedErr && (failedCart || []).length > 0) {
-                businessStatus = "PAYMENT_FAILED";
-                break;
-              }
-            }
-          }
-        }
-      }
-    } catch (_e) {}
 
     if (!businessStatus) {
       if (paymentStatus === "succeeded") {

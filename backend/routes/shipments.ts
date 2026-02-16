@@ -227,7 +227,6 @@ router.post("/open-shipment", async (req, res) => {
           .delete()
           .eq("customer_stripe_id", stripeCustomerId)
           .eq("store_id", storeIdNum)
-          .eq("status", "PENDING")
           .in("payment_id", paymentIdsToCleanup);
         if (
           delResp.error &&
@@ -343,7 +342,6 @@ router.post("/open-shipment-by-payment", async (req, res) => {
           .delete()
           .eq("customer_stripe_id", stripeCustomerId)
           .eq("store_id", storeIdNum)
-          .eq("status", "PENDING")
           .in("payment_id", paymentIdsToCleanup);
         if (
           delResp.error &&
@@ -552,7 +550,6 @@ router.post("/cancel-open-shipment", async (req, res) => {
         .delete()
         .eq("customer_stripe_id", stripeCustomerId)
         .eq("store_id", storeIdNum)
-        .eq("status", "PENDING")
         .in("payment_id", Array.from(new Set(paymentIdsToCleanup)));
       if (delResp.error && !isMissingColumnError(delResp.error, "payment_id")) {
         return res.status(500).json({ error: delResp.error.message });
@@ -719,7 +716,6 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
         .delete()
         .eq("customer_stripe_id", stripeCustomerId)
         .eq("store_id", storeIdNum)
-        .eq("status", "PENDING")
         .eq("payment_id", paymentIdStr);
       if (delResp.error && !isMissingColumnError(delResp.error, "payment_id")) {
         return res.status(500).json({ error: delResp.error.message });
@@ -727,49 +723,60 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
     }
 
     const nowIso = new Date().toISOString();
-    const rowsWithWeight = items.map((it) => ({
+    const baseRowsWithWeight = items.map((it) => ({
       store_id: storeIdNum,
       product_reference: it.product_reference,
       value: it.value,
       customer_stripe_id: stripeCustomerId,
       payment_id: paymentIdStr,
       description: it.description,
-      status: "PENDING",
       quantity: it.quantity,
       weight: it.weight,
       created_at: nowIso,
     }));
 
     let insertErr: any = null;
-    {
-      const resp = await supabase.from("carts").insert(rowsWithWeight);
+    const candidates: any[][] = [];
+    const pushCandidate = (rows: any[]) => {
+      const key = JSON.stringify(
+        (rows || []).map((r) =>
+          Object.keys(r || {})
+            .sort()
+            .reduce((acc: any, k) => {
+              acc[k] = (r as any)[k];
+              return acc;
+            }, {}),
+        ),
+      );
+      if (!candidates.some((c) => (c as any).__key === key)) {
+        (rows as any).__key = key;
+        candidates.push(rows);
+      }
+    };
+
+    const rowsNoStatus = baseRowsWithWeight;
+    const rowsNoStatusNoWeight = baseRowsWithWeight.map((r: any) => {
+      const { weight: _w, ...rest } = r;
+      return rest;
+    });
+    const rowsNoStatusNoPayment = baseRowsWithWeight.map((r: any) => {
+      const { payment_id: _p, ...rest } = r;
+      return rest;
+    });
+    const rowsNoStatusNoPaymentNoWeight = baseRowsWithWeight.map((r: any) => {
+      const { payment_id: _p, weight: _w, ...rest } = r;
+      return rest;
+    });
+
+    pushCandidate(rowsNoStatus);
+    pushCandidate(rowsNoStatusNoWeight);
+    pushCandidate(rowsNoStatusNoPayment);
+    pushCandidate(rowsNoStatusNoPaymentNoWeight);
+
+    for (const cand of candidates) {
+      const resp = await supabase.from("carts").insert(cand);
       insertErr = resp.error;
-    }
-    if (insertErr && isMissingColumnError(insertErr, "weight")) {
-      const rowsWithoutWeight = rowsWithWeight.map((r: any) => {
-        const { weight: _w, ...rest } = r;
-        return rest;
-      });
-      const resp2 = await supabase.from("carts").insert(rowsWithoutWeight);
-      insertErr = resp2.error;
-    }
-    if (insertErr && isMissingColumnError(insertErr, "payment_id")) {
-      const rowsWithoutPaymentId = rowsWithWeight.map((r: any) => {
-        const { payment_id: _p, ...rest } = r;
-        return rest;
-      });
-      const resp2 = await supabase.from("carts").insert(rowsWithoutPaymentId);
-      insertErr = resp2.error;
-    }
-    if (insertErr && isMissingColumnError(insertErr, "weight")) {
-      const rowsWithoutPaymentIdAndWeight = rowsWithWeight.map((r: any) => {
-        const { payment_id: _p, weight: _w, ...rest } = r;
-        return rest;
-      });
-      const resp2 = await supabase
-        .from("carts")
-        .insert(rowsWithoutPaymentIdAndWeight);
-      insertErr = resp2.error;
+      if (!insertErr) break;
     }
     if (insertErr) {
       return res.status(500).json({ error: insertErr.message });

@@ -170,7 +170,9 @@ router.post("/", async (req, res) => {
           active: true,
           limit: 100,
         } as any);
-        const prices = Array.isArray((list as any)?.data) ? (list as any).data : [];
+        const prices = Array.isArray((list as any)?.data)
+          ? (list as any).data
+          : [];
         const eur = prices.find(
           (p: any) =>
             String(p?.currency || "").toLowerCase() === "eur" &&
@@ -207,7 +209,6 @@ router.post("/", async (req, res) => {
       value: normalizedValue,
       customer_stripe_id,
       description: descriptionTrimmed,
-      status: "PENDING",
       quantity: normalizedQuantity,
       weight: normalizedWeight,
       created_at: new Date().toISOString(),
@@ -249,9 +250,6 @@ router.post("/", async (req, res) => {
       data = resp.data;
       error = resp.error;
       if (!error) break;
-      if (!isMissingColumnError(error, "weight")) {
-        break;
-      }
     }
 
     if (error) {
@@ -278,12 +276,11 @@ router.get("/summary", async (req, res) => {
       return res.status(400).json({ error: "paymentId invalide" });
     }
 
-    const includePaymentIdColumn = Boolean(paymentId);
     const baseFields =
-      "id,store_id,product_reference,value,quantity,created_at,description,status,recap_sent_at";
+      "id,store_id,product_reference,value,quantity,created_at,description,recap_sent_at";
 
     let includeWeight = true;
-    let paymentIdColumnOk = includePaymentIdColumn;
+    let paymentIdColumnOk = true;
 
     const buildSelect = () => {
       const cols: string[] = [baseFields];
@@ -299,12 +296,7 @@ router.get("/summary", async (req, res) => {
         .from("carts")
         .select(buildSelect())
         .eq("customer_stripe_id", stripeId)
-        .eq("status", "PENDING")
         .order("id", { ascending: false });
-
-      if (paymentId && paymentIdColumnOk) {
-        q = q.or(`payment_id.eq.${paymentId},payment_id.is.null`);
-      }
 
       const resp = await q;
       cartRows = resp.data as any;
@@ -312,7 +304,7 @@ router.get("/summary", async (req, res) => {
       if (!error) break;
 
       let changed = false;
-      if (paymentId && paymentIdColumnOk && isMissingColumnError(error, "payment_id")) {
+      if (paymentIdColumnOk && isMissingColumnError(error, "payment_id")) {
         paymentIdColumnOk = false;
         changed = true;
       }
@@ -513,7 +505,7 @@ router.put("/:id", async (req, res) => {
       .update({ quantity: qty })
       .eq("id", id)
       .select(
-        "id,store_id,product_reference,value,quantity,created_at,description,status,weight",
+        "id,store_id,product_reference,value,quantity,created_at,description,weight",
       )
       .single();
     if (error && isMissingColumnError(error, "weight")) {
@@ -522,7 +514,7 @@ router.put("/:id", async (req, res) => {
         .update({ quantity: qty })
         .eq("id", id)
         .select(
-          "id,store_id,product_reference,value,quantity,created_at,description,status",
+          "id,store_id,product_reference,value,quantity,created_at,description",
         )
         .single();
       if (error2) {
@@ -560,9 +552,9 @@ router.get("/store/:slug", async (req, res) => {
     }
     const storeId = (storeRow as any)?.id;
     const cartsSelectWithWeight =
-      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status, recap_sent_at, weight";
+      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, recap_sent_at, weight";
     const cartsSelectWithoutWeight =
-      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, status, recap_sent_at";
+      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, recap_sent_at";
 
     let carts: any[] | null = null;
     let error: any = null;
@@ -571,7 +563,6 @@ router.get("/store/:slug", async (req, res) => {
         .from("carts")
         .select(cartsSelectWithWeight)
         .eq("store_id", storeId)
-        .eq("status", "PENDING")
         .order("id", { ascending: false });
       carts = resp.data as any;
       error = resp.error;
@@ -581,7 +572,6 @@ router.get("/store/:slug", async (req, res) => {
         .from("carts")
         .select(cartsSelectWithoutWeight)
         .eq("store_id", storeId)
-        .eq("status", "PENDING")
         .order("id", { ascending: false });
       carts = resp2.data as any;
       error = resp2.error;
@@ -641,12 +631,17 @@ router.post("/recap", async (req, res) => {
         customerName = String((customer as any)?.name || "Client");
       } catch {}
       if (!customerEmail) continue;
-      const { data: carts, error } = await supabase
-        .from("carts")
-        .select("id, product_reference, value, description, quantity")
-        .eq("customer_stripe_id", stripeId)
-        .eq("store_id", storeId)
-        .eq("status", "PENDING");
+      let carts: any[] | null = null;
+      let error: any = null;
+      {
+        const resp = await supabase
+          .from("carts")
+          .select("id, product_reference, value, description, quantity")
+          .eq("customer_stripe_id", stripeId)
+          .eq("store_id", storeId);
+        carts = resp.data as any;
+        error = resp.error;
+      }
       if (error) continue;
       const items = (carts || []).map((c: any) => ({
         product_reference: String(c.product_reference || ""),
@@ -669,14 +664,17 @@ router.post("/recap", async (req, res) => {
         checkoutLink,
       });
       if (ok) {
-        sentStripeIds.push(stripeId);
         const nowIso = new Date().toISOString();
-        await supabase
+        const updResp = await supabase
           .from("carts")
           .update({ recap_sent_at: nowIso })
           .eq("customer_stripe_id", stripeId)
-          .eq("store_id", storeId)
-          .eq("status", "PENDING");
+          .eq("store_id", storeId);
+        if (updResp.error) {
+          failedStripeIds.push(stripeId);
+        } else {
+          sentStripeIds.push(stripeId);
+        }
       } else {
         failedStripeIds.push(stripeId);
       }

@@ -53,6 +53,76 @@ const getInternalBase = (): string => {
   return `http://localhost:${process.env.PORT || 5000}`;
 };
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const waitForCapturablePaymentIntent = async (
+  paymentIntentId: string,
+): Promise<Stripe.PaymentIntent | null> => {
+  const id = String(paymentIntentId || "").trim();
+  if (!id) return null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const pi = await stripe.paymentIntents.retrieve(id);
+      const status = String((pi as any)?.status || "");
+      if (status === "requires_capture" || status === "succeeded") return pi;
+    } catch (_e) {}
+    await sleep(400 * (attempt + 1));
+  }
+  try {
+    return await stripe.paymentIntents.retrieve(id);
+  } catch (_e) {
+    return null;
+  }
+};
+
+const ensurePaymentIntentSucceededForFulfillment = async (
+  paymentIntentId: string,
+): Promise<Stripe.PaymentIntent | null> => {
+  const fresh = await waitForCapturablePaymentIntent(paymentIntentId);
+  if (!fresh) return null;
+  if (fresh.status === "succeeded") return fresh;
+
+  const captureMethod = String((fresh as any)?.capture_method || "");
+  if (captureMethod !== "manual") return null;
+  if (fresh.status !== "requires_capture") return null;
+
+  const md: any = (fresh as any)?.metadata || {};
+  const amountFromMetaRaw = Number.parseInt(
+    String(md?.amount_to_capture_cents || "0"),
+    10,
+  );
+  const amountCapturable = Number((fresh as any)?.amount_capturable || 0);
+  const amountToCapture = Math.max(
+    0,
+    Math.min(
+      amountCapturable,
+      Number.isFinite(amountFromMetaRaw) && amountFromMetaRaw > 0
+        ? amountFromMetaRaw
+        : amountCapturable,
+    ),
+  );
+  if (amountToCapture <= 0) return null;
+
+  try {
+    await stripe.paymentIntents.capture(
+      fresh.id,
+      { amount_to_capture: amountToCapture } as any,
+      {
+        idempotencyKey: `capture-${fresh.id}-${amountToCapture}`,
+      } as any,
+    );
+  } catch (_e) {
+    return null;
+  }
+
+  try {
+    const after = await stripe.paymentIntents.retrieve(fresh.id);
+    return after.status === "succeeded" ? after : null;
+  } catch (_e) {
+    return null;
+  }
+};
+
 export const stripeWebhookHandler = async (req: any, res: any) => {
   const sig: any = req.headers["stripe-signature"];
   let event;
@@ -77,6 +147,45 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
       console.log("payment_intent.succeeded", event.data.object.id);
       break;
     case "payment_intent.created":
+      break;
+    case "payment_intent.amount_capturable_updated":
+      try {
+        const evtPi = event.data.object as Stripe.PaymentIntent;
+        const fresh = await stripe.paymentIntents.retrieve(evtPi.id);
+        if (fresh.status !== "requires_capture") break;
+        const md: any = (fresh as any)?.metadata || {};
+        const amountFromMetaRaw = Number.parseInt(
+          String(md?.amount_to_capture_cents || "0"),
+          10,
+        );
+        const amountCapturable = Number((fresh as any)?.amount_capturable || 0);
+        const amountToCapture = Math.max(
+          0,
+          Math.min(
+            amountCapturable,
+            Number.isFinite(amountFromMetaRaw) && amountFromMetaRaw > 0
+              ? amountFromMetaRaw
+              : amountCapturable,
+          ),
+        );
+        if (amountToCapture <= 0) break;
+        await stripe.paymentIntents.capture(
+          fresh.id,
+          { amount_to_capture: amountToCapture } as any,
+          {
+            idempotencyKey: `capture-${fresh.id}-${amountToCapture}`,
+          } as any,
+        );
+        console.log("payment_intent.amount_capturable_updated: captured", {
+          paymentIntentId: fresh.id,
+          amountToCapture,
+        });
+      } catch (e: any) {
+        console.error(
+          "payment_intent.amount_capturable_updated: capture failed",
+          e?.message || e,
+        );
+      }
       break;
     case "refund.created":
       console.log(`Remboursement ${event.data.object.id} créé`);
@@ -123,10 +232,6 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
           );
         }
 
-        let blockedFlowTriggered = false;
-        let creditAmountForMissingRefs = 0;
-        let refsToProcessOverride: string[] | null = null;
-        let productReferenceOverride: string | null = null;
         const sessionId = event.data.object.id;
         let lineItemsResp: any = null;
         try {
@@ -137,328 +242,15 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               expand: ["data.price.product"],
             },
           );
+          console.log(
+            "checkout.session.completed webhook: lineItemsResp",
+            lineItemsResp,
+          );
         } catch (lineItemsErr) {
           console.warn(
             "checkout.session.completed webhook: Error fetching line items:",
             (lineItemsErr as any)?.message || lineItemsErr,
           );
-        }
-        try {
-          const pi = paymentIntent;
-          if (!pi) {
-            console.warn(
-              "checkout.session.completed: payment_intent missing for blocked check",
-            );
-          } else {
-            console.log(
-              "checkout.session.completed: payment_intent for blocked check",
-              pi.id,
-            );
-            console.log(
-              "checkout.session.completed: payment_intent metadata",
-              pi.metadata || {},
-            );
-
-            const storeNameToCheck = String(
-              (pi.metadata as any)?.store_name || "",
-            ).trim();
-            const refsToCheck = normalizeRefs(
-              (pi.metadata as any)?.product_reference || "",
-            );
-            console.log(
-              "checkout.session.completed: store/refs",
-              storeNameToCheck || "missing",
-              refsToCheck,
-            );
-            if (storeNameToCheck && refsToCheck.length > 0) {
-              const { data: storeRow, error: storeErr } = await supabase
-                .from("stores")
-                .select("id")
-                .eq("name", storeNameToCheck)
-                .maybeSingle();
-              if (!storeErr && storeRow) {
-                const storeId = Number((storeRow as any)?.id);
-                if (Number.isFinite(storeId)) {
-                  const managedRefKeySet = new Set<string>();
-                  try {
-                    const { data: stockRowsForRefs, error: stockRowsErr } =
-                      await supabase
-                        .from("stock")
-                        .select("product_reference,quantity")
-                        .eq("store_id", storeId)
-                        .in("product_reference", refsToCheck as any);
-                    if (!stockRowsErr && Array.isArray(stockRowsForRefs)) {
-                      for (const sr of stockRowsForRefs as any[]) {
-                        const ref = String(sr?.product_reference || "")
-                          .trim()
-                          .toLowerCase();
-                        if (!ref) continue;
-                        const rawQty = (sr as any)?.quantity;
-                        if (rawQty === null || rawQty === undefined) continue;
-                        const qty = Number(rawQty);
-                        if (Number.isFinite(qty)) {
-                          managedRefKeySet.add(ref);
-                        }
-                      }
-                    }
-                  } catch (_e) {}
-                  if (resolvedCustomerId) {
-                    const { data: cartRows, error: cartErr } = await supabase
-                      .from("carts")
-                      .select("product_reference")
-                      .eq("customer_stripe_id", resolvedCustomerId)
-                      .eq("store_id", storeId)
-                      .eq("status", "PENDING")
-                      .in("product_reference", refsToCheck);
-                    if (cartErr) {
-                      console.error(
-                        "checkout.session.completed: Error fetching customer carts:",
-                        cartErr.message,
-                      );
-                    } else {
-                      const availableRefSet = new Set(
-                        (cartRows || [])
-                          .map((r: any) =>
-                            String((r as any)?.product_reference || "")
-                              .trim()
-                              .toLowerCase(),
-                          )
-                          .filter((r: string) => r.length > 0),
-                      );
-                      if (managedRefKeySet.size > 0) {
-                        for (const ref of refsToCheck) {
-                          const key = String(ref || "")
-                            .trim()
-                            .toLowerCase();
-                          if (key && managedRefKeySet.has(key)) {
-                            availableRefSet.add(key);
-                          }
-                        }
-                      }
-                      const availableRefs = refsToCheck.filter((r) =>
-                        availableRefSet.has(
-                          String(r || "")
-                            .trim()
-                            .toLowerCase(),
-                        ),
-                      );
-                      const missingRefs = refsToCheck.filter(
-                        (r) =>
-                          !availableRefSet.has(
-                            String(r || "")
-                              .trim()
-                              .toLowerCase(),
-                          ),
-                      );
-                      console.log(
-                        "checkout.session.completed: availableRefs",
-                        availableRefs,
-                      );
-                      console.log(
-                        "checkout.session.completed: missingRefs",
-                        missingRefs,
-                      );
-
-                      if (availableRefs.length > 0) {
-                        refsToProcessOverride = availableRefs;
-                        productReferenceOverride = availableRefs.join(";");
-                        if (managedRefKeySet.size === 0) {
-                          try {
-                            const { error: otherDelErr } = await supabase
-                              .from("carts")
-                              .delete()
-                              .eq("store_id", storeId)
-                              .eq("status", "PENDING")
-                              .neq("customer_stripe_id", resolvedCustomerId)
-                              .in("product_reference", availableRefs);
-                            if (otherDelErr) {
-                              console.error(
-                                "checkout.session.completed: Error deleting other users cart refs:",
-                                otherDelErr.message,
-                              );
-                            } else {
-                              console.log(
-                                "checkout.session.completed: refs deleted for other users",
-                                availableRefs,
-                              );
-                            }
-                          } catch (otherDelErr) {
-                            console.error(
-                              "checkout.session.completed: Error deleting other users cart refs:",
-                              otherDelErr,
-                            );
-                          }
-                        } else {
-                          console.log(
-                            "checkout.session.completed: skip cross-cart cleanup for stock-managed refs",
-                            availableRefs,
-                          );
-                        }
-
-                        try {
-                          const { error: selfDelErr } = await supabase
-                            .from("carts")
-                            .delete()
-                            .eq("customer_stripe_id", resolvedCustomerId)
-                            .eq("store_id", storeId)
-                            .eq("status", "PENDING")
-                            .in("product_reference", availableRefs);
-                          if (selfDelErr) {
-                            console.error(
-                              "checkout.session.completed: Error deleting customer cart refs:",
-                              selfDelErr.message,
-                            );
-                          } else {
-                            console.log(
-                              "checkout.session.completed: refs deleted for customer",
-                              resolvedCustomerId,
-                              availableRefs,
-                            );
-                          }
-                        } catch (selfDelErr) {
-                          console.error(
-                            "checkout.session.completed: Error deleting customer cart refs:",
-                            selfDelErr,
-                          );
-                        }
-                      }
-
-                      if (missingRefs.length > 0) {
-                        const paymentTotal = Number(
-                          pi.amount ?? session.amount_total ?? 0,
-                        );
-                        let creditAmount = 0;
-                        if (lineItemsResp?.data?.length) {
-                          for (const item of lineItemsResp.data as any[]) {
-                            const name = String(
-                              item?.price?.product?.name || "",
-                            ).trim();
-                            if (name && missingRefs.includes(name)) {
-                              const itemTotal = Number(item?.amount_total || 0);
-                              if (Number.isFinite(itemTotal)) {
-                                creditAmount += itemTotal;
-                              }
-                            }
-                          }
-                        }
-                        if (availableRefs.length === 0) {
-                          creditAmount = paymentTotal;
-                        }
-                        if (creditAmount > paymentTotal) {
-                          creditAmount = paymentTotal;
-                        }
-                        console.log(
-                          "checkout.session.completed: creditAmount",
-                          creditAmount,
-                        );
-                        try {
-                          await stripe.paymentIntents.update(pi.id, {
-                            metadata: {
-                              ...(pi.metadata || {}),
-                              credited_references: missingRefs.join(";"),
-                              purchased_references: availableRefs.join(";"),
-                              credit_amount_cents: String(
-                                Math.round(creditAmount),
-                              ),
-                            },
-                          });
-                        } catch (metaErr: any) {
-                          console.warn(
-                            "checkout.session.completed: Update PI metadata failed:",
-                            metaErr?.message || metaErr,
-                          );
-                        }
-                        const creditAmountCents = Math.round(creditAmount);
-                        if (creditAmountCents > 0 && resolvedCustomerId) {
-                          try {
-                            const existingCreditIssuedParsed = Number.parseInt(
-                              String(
-                                (pi.metadata as any)?.credit_issued_cents ||
-                                  "0",
-                              ),
-                              10,
-                            );
-                            const existingCreditIssuedCents =
-                              Number.isFinite(existingCreditIssuedParsed) &&
-                              existingCreditIssuedParsed > 0
-                                ? existingCreditIssuedParsed
-                                : 0;
-                            if (
-                              existingCreditIssuedCents === creditAmountCents
-                            ) {
-                              creditAmountForMissingRefs = creditAmountCents;
-                            } else if (existingCreditIssuedCents > 0) {
-                              console.warn(
-                                "checkout.session.completed: credit already issued with different amount",
-                                {
-                                  paymentIntentId: pi.id,
-                                  existingCreditIssuedCents,
-                                  creditAmountCents,
-                                },
-                              );
-                            } else {
-                              const cust = (await stripe.customers.retrieve(
-                                resolvedCustomerId,
-                              )) as Stripe.Customer;
-                              if (cust && !("deleted" in cust)) {
-                                const meta = (cust as any)?.metadata || {};
-                                const prevBalanceParsed = Number.parseInt(
-                                  String(meta?.credit_balance || "0"),
-                                  10,
-                                );
-                                const prevBalanceCents = Number.isFinite(
-                                  prevBalanceParsed,
-                                )
-                                  ? prevBalanceParsed
-                                  : 0;
-                                const nextBalanceCents =
-                                  prevBalanceCents + creditAmountCents;
-                                await stripe.customers.update(
-                                  resolvedCustomerId,
-                                  {
-                                    metadata: {
-                                      ...meta,
-                                      credit_balance: String(nextBalanceCents),
-                                    },
-                                  } as any,
-                                  {
-                                    idempotencyKey: `credit-missingrefs-${pi.id}`,
-                                  } as any,
-                                );
-                                try {
-                                  await stripe.paymentIntents.update(pi.id, {
-                                    metadata: {
-                                      ...(pi.metadata || {}),
-                                      credit_issued_cents:
-                                        String(creditAmountCents),
-                                    },
-                                  });
-                                } catch (_e) {}
-                                creditAmountForMissingRefs = creditAmountCents;
-                              }
-                            }
-                          } catch (creditErr: any) {
-                            console.warn(
-                              "checkout.session.completed: credit issue failed:",
-                              creditErr?.message || creditErr,
-                            );
-                          }
-                        }
-                      }
-
-                      if (availableRefs.length === 0) {
-                        blockedFlowTriggered = true;
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        } catch (_e) {}
-
-        if (blockedFlowTriggered) {
-          break;
         }
         let customer: Stripe.Customer | null = null;
         if (resolvedCustomerId) {
@@ -576,35 +368,11 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             );
           }
 
-          if (shouldResetDebtBalance) {
-            try {
-              await stripe.customers.update(
-                customerId,
-                { metadata: { credit_balance: "0" } },
-                { idempotencyKey: `credit-debt-${session.id}` },
-              );
-            } catch (e) {
-              console.warn(
-                "checkout.session.completed webhook: unable to reset credit_balance:",
-                (e as any)?.message || e,
-              );
-            }
-          } else if (stripeCreditAppliedCents > 0 || tempTopupCents > 0) {
-            const nextBalanceCents =
-              Math.max(0, currentBalanceCents - stripeCreditAppliedCents) +
-              tempTopupCents;
-            try {
-              await stripe.customers.update(
-                customerId,
-                { metadata: { credit_balance: String(nextBalanceCents) } },
-                { idempotencyKey: `credit-balance-${session.id}` },
-              );
-            } catch (e) {
-              console.warn(
-                "checkout.session.completed webhook: unable to update credit_balance:",
-                (e as any)?.message || e,
-              );
-            }
+          if (
+            shouldResetDebtBalance ||
+            stripeCreditAppliedCents > 0 ||
+            tempTopupCents > 0
+          ) {
           }
           const deliveryMethod =
             (session.metadata?.delivery_method as any) ||
@@ -632,15 +400,12 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             dropOffPoint = {};
           }
           const storeName = session.metadata?.store_name || null;
-          let productReference =
-            productReferenceOverride ||
-            session.metadata?.product_reference ||
-            "N/A";
+          let productReference = session.metadata?.product_reference || "N/A";
           const amount = paymentIntent?.amount ?? session.amount_total ?? 0;
-          let netAmount = Math.max(0, amount - creditAmountForMissingRefs);
+          let netAmount = Math.max(0, amount);
           const currency = paymentIntent?.currency ?? session.currency ?? "eur";
           const paymentId = paymentIntent?.id ?? session.id;
-          const weight = formatWeight(session.metadata?.weight);
+          let weight = formatWeight(session.metadata?.weight);
           let estimatedDeliveryDate: string = "";
           let boxtalId = "";
           let trackingUrl = "";
@@ -761,33 +526,57 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
 
           const regulationName = "Régularisation livraison";
 
+          console.log(
+            "checkout.session.completed webhook: lineItemsResp bis",
+            lineItemsResp,
+          );
           let products = (lineItemsResp?.data || [])
-            .map((item: any) => ({
-              id: item.price.product.id,
-              name: item.price.product.name,
-              description: item.price.product.description,
-              image: item.price.product.images?.[0],
-              quantity: item.quantity,
-              amount_total: item.amount_total,
-              amount_subtotal: item.amount_subtotal,
-              currency: item.currency,
-              unit_price: item.price.unit_amount,
-              price_id: item.price.id,
-            }))
-            .filter((p: any) => String(p?.name || "").trim() !== regulationName)
-            .filter((p: any) => {
-              if (
-                !refsToProcessOverride ||
-                refsToProcessOverride.length === 0
-              ) {
-                return true;
-              }
-              const name = String(p?.name || "").trim();
-              return name && refsToProcessOverride.includes(name);
-            });
+            .map((item: any) => {
+              const prod = item?.price?.product as any;
+              const productId =
+                typeof prod === "string" ? prod : String(prod?.id || "").trim();
+              const productName =
+                typeof prod === "string"
+                  ? String(item?.description || item?.price?.nickname || "")
+                  : String(prod?.name || "");
+              const productDescription =
+                typeof prod === "string"
+                  ? undefined
+                  : (prod?.description as any);
+              const productImage =
+                typeof prod === "string"
+                  ? undefined
+                  : (prod?.images?.[0] as any);
+              return {
+                id: productId,
+                name: productName,
+                description: productDescription,
+                image: productImage,
+                quantity: item.quantity,
+                amount_total: item.amount_total,
+                amount_subtotal: item.amount_subtotal,
+                currency: item.currency,
+                unit_price: item.price?.unit_amount,
+                price_id: item.price?.id,
+              };
+            })
+            .filter(
+              (p: any) => String(p?.name || "").trim() !== regulationName,
+            );
+
+          console.log(
+            "checkout.session.completed webhook: products 0000",
+            products,
+          );
           const nonRegItemsSubtotalCents = (lineItemsResp?.data || []).reduce(
             (sum: number, item: any) => {
-              const name = String(item?.price?.product?.name || "").trim();
+              const prod = item?.price?.product as any;
+              const name =
+                typeof prod === "string"
+                  ? String(
+                      item?.description || item?.price?.nickname || "",
+                    ).trim()
+                  : String(prod?.name || "").trim();
               if (name === regulationName) return sum;
               const vRaw =
                 item?.amount_subtotal ??
@@ -798,6 +587,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               return sum + v;
             },
             0,
+          );
+          console.log(
+            "checkout.session.completed webhook: nonRegItemsSubtotalCents",
+            nonRegItemsSubtotalCents,
           );
           const shippingCostCents = Math.max(
             0,
@@ -827,11 +620,11 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             storePromoDiscountCents += amountOff;
           }
 
-          const storeEarningsAmountCents = Math.max(
+          let storeEarningsAmountCents = Math.max(
             0,
             nonRegItemsSubtotalCents - storePromoDiscountCents,
           );
-          const customerSpentAmountCents = Math.max(
+          let customerSpentAmountCents = Math.max(
             0,
             nonRegItemsSubtotalCents +
               shippingCostCents -
@@ -989,6 +782,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
           }
 
           try {
+            console.log(
+              "checkout.session.completed webhook: products",
+              products,
+            );
             const purchased = (Array.isArray(products) ? products : [])
               .map((p: any) => {
                 const pid = String(p?.id || "").trim();
@@ -1016,6 +813,11 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   p.pid.startsWith("prod_") && p.ref.length > 0 && p.qty > 0,
               );
 
+            console.log(
+              "checkout.session.completed webhook: purchased",
+              purchased,
+            );
+
             if (purchased.length > 0) {
               const uniquePids = Array.from(
                 new Set(purchased.map((p) => p.pid)),
@@ -1023,7 +825,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               const { data: stockRows, error: stockErr } = await supabase
                 .from("stock")
                 .select(
-                  "id, product_stripe_id, product_reference, quantity, bought",
+                  "id, product_stripe_id, product_reference, quantity, bought, weight",
                 )
                 .eq("store_id", storeId)
                 .in("product_stripe_id", uniquePids as any);
@@ -1044,37 +846,38 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
 
                 const missing = purchased.filter((p) => !stockByPid.has(p.pid));
                 if (missing.length > 0) {
-                  const rowsToInsert = missing.map((m) => ({
-                    store_id: storeId,
-                    product_reference: m.ref,
-                    product_stripe_id: m.pid,
-                    quantity: 0,
-                    bought: 0,
-                  }));
-                  const { data: inserted, error: insErr } = await supabase
-                    .from("stock")
-                    .insert(rowsToInsert as any)
-                    .select(
-                      "id, product_stripe_id, product_reference, quantity, bought",
-                    );
-                  if (insErr) {
-                    console.error(
-                      "checkout.session.completed webhook: stock insert failed (post-payment)",
-                      insErr,
-                      { storeId, missing },
-                    );
-                  }
-
-                  if (!insErr) {
-                    for (const r of Array.isArray(inserted) ? inserted : []) {
-                      const pid = String(
-                        (r as any)?.product_stripe_id || "",
-                      ).trim();
-                      if (pid && pid.startsWith("prod_")) {
-                        stockByPid.set(pid, r);
+                  const missingRefs = Array.from(
+                    new Set(
+                      missing
+                        .map((m) => String(m.ref || "").trim())
+                        .filter((s) => s.length > 0),
+                    ),
+                  );
+                  if (paymentIntent?.id) {
+                    try {
+                      await stripe.paymentIntents.update(paymentIntent.id, {
+                        metadata: {
+                          ...(paymentIntent.metadata || {}),
+                          blocked_references: missingRefs.join(";"),
+                          blocked_reason: "missing_stock_reference",
+                        },
+                      });
+                    } catch (_e) {}
+                    try {
+                      if (paymentIntent.status === "requires_capture") {
+                        await stripe.paymentIntents.cancel(paymentIntent.id, {
+                          cancellation_reason: "requested_by_customer",
+                        } as any);
                       }
-                    }
+                    } catch (_e) {}
                   }
+                  res.json({
+                    received: true,
+                    blocked: true,
+                    reason: "missing_stock_reference",
+                    blocked_references: missingRefs,
+                  });
+                  return;
                 }
 
                 const expectedByStockId = new Map<
@@ -1085,6 +888,8 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 const purchasedRefSet = new Set<string>();
                 const adjustedProducts: any[] = [];
                 let stockCreditAmountCents = 0;
+                let shippingCreditAmountCents = 0;
+                let shippingToCaptureCents = shippingCostCents;
 
                 for (const p of purchased) {
                   const row = stockByPid.get(p.pid) || null;
@@ -1096,6 +901,9 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                     }
                     continue;
                   }
+                  const stockRef = String(
+                    (row as any)?.product_reference || p.ref || "",
+                  ).trim();
 
                   const rawQtyField = (row as any)?.quantity;
                   const bRaw = Number((row as any)?.bought || 0);
@@ -1133,8 +941,14 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                       ? Math.round((p.amountTotalCents * fulfilledQty) / p.qty)
                       : 0;
 
+                  console.log(
+                    "checkout.session.completed webhook: fulfilledQty",
+                    fulfilledQty,
+                    stockRef,
+                    fulfilledAmountCents,
+                  );
                   if (fulfilledQty > 0) {
-                    purchasedRefSet.add(p.ref);
+                    purchasedRefSet.add(stockRef);
                     adjustedProducts.push({
                       ...(p.original || {}),
                       quantity: fulfilledQty,
@@ -1142,9 +956,15 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                       amount_subtotal: fulfilledAmountCents,
                     });
                   }
+                  console.log(
+                    "checkout.session.completed webhook: adjustedProducts",
+                    creditedQty,
+                    stockRef,
+                    adjustedProducts,
+                  );
 
                   if (creditedQty > 0) {
-                    creditedRefSet.add(p.ref);
+                    creditedRefSet.add(stockRef);
                     stockCreditAmountCents += Math.max(
                       0,
                       p.amountTotalCents - fulfilledAmountCents,
@@ -1152,6 +972,122 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   }
                 }
 
+                const totalFulfilledQty = adjustedProducts.reduce(
+                  (sum, p) => sum + Math.max(0, Number(p?.quantity || 0)),
+                  0,
+                );
+                console.log(
+                  "checkout.session.completed webhook: totalFulfilledQty",
+                  totalFulfilledQty,
+                );
+                const totalOrderedQty = purchased.reduce(
+                  (sum, p) => sum + Math.max(0, Number(p?.qty || 0)),
+                  0,
+                );
+                const originalWeightKg = Number.isFinite(weight) ? weight : 0;
+                if (totalFulfilledQty <= 0 && paymentIntent?.id) {
+                  try {
+                    await stripe.paymentIntents.update(paymentIntent.id, {
+                      metadata: {
+                        ...(paymentIntent.metadata || {}),
+                        blocked_reason: "out_of_stock",
+                      },
+                    });
+                  } catch (_e) {}
+                  try {
+                    if (paymentIntent.status === "requires_capture") {
+                      await stripe.paymentIntents.cancel(paymentIntent.id, {
+                        cancellation_reason: "requested_by_customer",
+                      } as any);
+                    }
+                  } catch (_e) {}
+                  res.json({
+                    received: true,
+                    blocked: true,
+                    reason: "out_of_stock",
+                  });
+                  return;
+                }
+                if (
+                  shippingCostCents > 0 &&
+                  originalWeightKg > 0 &&
+                  totalOrderedQty > 0 &&
+                  totalFulfilledQty > 0
+                ) {
+                  const fulfilledRatio = Math.min(
+                    1,
+                    Math.max(0, totalFulfilledQty / totalOrderedQty),
+                  );
+                  shippingToCaptureCents = Math.max(
+                    0,
+                    Math.round(shippingCostCents * fulfilledRatio),
+                  );
+                  shippingCreditAmountCents = Math.max(
+                    0,
+                    shippingCostCents - shippingToCaptureCents,
+                  );
+                  const adjustedWeightKg = Math.max(
+                    0,
+                    Math.min(
+                      originalWeightKg,
+                      originalWeightKg * fulfilledRatio,
+                    ),
+                  );
+                  if (adjustedWeightKg > 0) {
+                    weight = adjustedWeightKg;
+                  }
+                }
+
+                console.log(
+                  "checkout.session.completed webhook: non-regulation items subtotal",
+                  nonRegItemsSubtotalCents,
+                  adjustedProducts.length,
+                );
+                if (
+                  nonRegItemsSubtotalCents > 0 &&
+                  adjustedProducts.length > 0
+                ) {
+                  const adjustedItemsSubtotalCents = adjustedProducts.reduce(
+                    (sum, p) => {
+                      const raw =
+                        p?.amount_subtotal ?? p?.amount_total ?? p?.amount ?? 0;
+                      const v = Math.max(0, Math.round(Number(raw || 0)));
+                      return sum + v;
+                    },
+                    0,
+                  );
+                  const ratio = Math.min(
+                    1,
+                    Math.max(
+                      0,
+                      adjustedItemsSubtotalCents / nonRegItemsSubtotalCents,
+                    ),
+                  );
+                  const storePromoAppliedCents = Math.max(
+                    0,
+                    Math.round(storePromoDiscountCents * ratio),
+                  );
+                  storeEarningsAmountCents = Math.max(
+                    0,
+                    adjustedItemsSubtotalCents - storePromoAppliedCents,
+                  );
+                }
+
+                console.log(
+                  "checkout.session.completed webhook: stock update begin (post-payment)",
+                  {
+                    storeId,
+                    paymentIntentId: paymentIntent?.id || null,
+                    paymentIntentStatus: paymentIntent?.status || null,
+                    expectedCount: expectedByStockId.size,
+                    usingServiceRole: Boolean(
+                      process.env.SUPABASE_SERVICE_ROLE_KEY,
+                    ),
+                  },
+                );
+
+                let stockUpdateOk = 0;
+                let stockUpdateFail = 0;
                 for (const [stockId, exp] of expectedByStockId.entries()) {
                   const payload =
                     exp.quantity === null
@@ -1164,6 +1100,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                     .eq("store_id", storeId);
 
                   if (updErr) {
+                    stockUpdateFail++;
                     console.error(
                       "checkout.session.completed webhook: stock update failed (post-payment)",
                       updErr,
@@ -1173,8 +1110,20 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                         expected: exp,
                       },
                     );
+                  } else {
+                    stockUpdateOk++;
                   }
                 }
+
+                console.log(
+                  "checkout.session.completed webhook: stock update end (post-payment)",
+                  {
+                    storeId,
+                    paymentIntentId: paymentIntent?.id || null,
+                    ok: stockUpdateOk,
+                    failed: stockUpdateFail,
+                  },
+                );
 
                 if (expectedByStockId.size > 0) {
                   const ids = Array.from(expectedByStockId.keys());
@@ -1220,124 +1169,160 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                         "checkout.session.completed webhook: stock mismatch after update",
                         { storeId, mismatches },
                       );
+                    } else {
+                      console.log(
+                        "checkout.session.completed webhook: stock verified ok (post-payment)",
+                        {
+                          storeId,
+                          verifiedCount: Array.isArray(afterRows)
+                            ? afterRows.length
+                            : 0,
+                        },
+                      );
                     }
                   }
                 }
 
-                if (stockCreditAmountCents > 0 && paymentIntent?.id) {
-                  const pi = paymentIntent;
-                  const existingStockIssuedParsed = Number.parseInt(
-                    String(
-                      (pi.metadata as any)?.stock_credit_issued_cents || "0",
-                    ),
-                    10,
-                  );
-                  const existingStockIssuedCents =
-                    Number.isFinite(existingStockIssuedParsed) &&
-                    existingStockIssuedParsed > 0
-                      ? existingStockIssuedParsed
-                      : 0;
-
-                  if (existingStockIssuedCents === stockCreditAmountCents) {
-                    netAmount = Math.max(0, netAmount - stockCreditAmountCents);
-                  } else if (existingStockIssuedCents > 0) {
-                    console.warn(
-                      "checkout.session.completed: stock credit already issued with different amount",
-                      {
-                        paymentIntentId: pi.id,
-                        existingStockIssuedCents,
-                        stockCreditAmountCents,
-                      },
+                if (paymentIntent?.id) {
+                  try {
+                    const unfulfilledItemCents = Math.max(
+                      0,
+                      Math.round(stockCreditAmountCents || 0),
                     );
-                  } else if (resolvedCustomerId) {
-                    try {
-                      const cust = (await stripe.customers.retrieve(
-                        resolvedCustomerId,
-                      )) as Stripe.Customer;
-                      if (cust && !("deleted" in cust)) {
-                        const meta = (cust as any)?.metadata || {};
-                        const prevBalanceParsed = Number.parseInt(
-                          String(meta?.credit_balance || "0"),
-                          10,
-                        );
-                        const prevBalanceCents = Number.isFinite(
-                          prevBalanceParsed,
-                        )
-                          ? prevBalanceParsed
-                          : 0;
-                        const nextBalanceCents =
-                          prevBalanceCents + stockCreditAmountCents;
-                        await stripe.customers.update(
-                          resolvedCustomerId,
-                          {
-                            metadata: {
-                              ...meta,
-                              credit_balance: String(nextBalanceCents),
-                            },
-                          } as any,
-                          {
-                            idempotencyKey: `credit-stock-${pi.id}`,
-                          } as any,
-                        );
-
-                        const existingCreditedRefs = normalizeRefs(
-                          (pi.metadata as any)?.credited_references || "",
-                        );
-                        const existingPurchasedRefs = normalizeRefs(
-                          (pi.metadata as any)?.purchased_references || "",
-                        );
-                        const mergedCreditedRefs = Array.from(
-                          new Set([
-                            ...existingCreditedRefs,
-                            ...Array.from(creditedRefSet),
-                          ]),
-                        );
-                        const mergedPurchasedRefs = Array.from(
-                          new Set([
-                            ...existingPurchasedRefs,
-                            ...Array.from(purchasedRefSet),
-                          ]),
-                        );
-                        const existingCreditAmountParsed = Number.parseInt(
-                          String(
-                            (pi.metadata as any)?.credit_amount_cents || "0",
-                          ),
-                          10,
-                        );
-                        const existingCreditAmountCents =
-                          Number.isFinite(existingCreditAmountParsed) &&
-                          existingCreditAmountParsed > 0
-                            ? existingCreditAmountParsed
-                            : 0;
-                        const nextCreditAmountCents =
-                          existingCreditAmountCents + stockCreditAmountCents;
-                        await stripe.paymentIntents.update(pi.id, {
+                    const unfulfilledShippingCents = Math.max(
+                      0,
+                      Math.round(shippingCreditAmountCents || 0),
+                    );
+                    const unfulfilledCents = Math.max(
+                      0,
+                      unfulfilledItemCents + unfulfilledShippingCents,
+                    );
+                    const amountToCapture = Math.max(
+                      0,
+                      Math.round(netAmount || 0) - unfulfilledCents,
+                    );
+                    if (amountToCapture <= 0) {
+                      try {
+                        await stripe.paymentIntents.update(paymentIntent.id, {
                           metadata: {
-                            ...(pi.metadata || {}),
-                            credited_references: mergedCreditedRefs.join(";"),
-                            purchased_references: mergedPurchasedRefs.join(";"),
-                            credit_amount_cents: String(nextCreditAmountCents),
-                            stock_credited_references:
-                              Array.from(creditedRefSet).join(";"),
-                            stock_credit_amount_cents: String(
-                              stockCreditAmountCents,
-                            ),
-                            stock_credit_issued_cents: String(
-                              stockCreditAmountCents,
-                            ),
+                            ...(paymentIntent.metadata || {}),
+                            blocked_reason: "out_of_stock",
                           },
                         });
-                        netAmount = Math.max(
+                      } catch (_e) {}
+                      try {
+                        await stripe.paymentIntents.cancel(paymentIntent.id, {
+                          cancellation_reason: "requested_by_customer",
+                        } as any);
+                      } catch (_e) {}
+                      res.json({
+                        received: true,
+                        blocked: true,
+                        reason: "out_of_stock",
+                      });
+                      return;
+                    }
+
+                    const existingPurchasedRefs = normalizeRefs(
+                      (paymentIntent.metadata as any)?.purchased_references ||
+                        "",
+                    );
+                    const mergedPurchasedRefs = Array.from(
+                      new Set([
+                        ...existingPurchasedRefs,
+                        ...Array.from(purchasedRefSet),
+                      ]),
+                    );
+                    await stripe.paymentIntents.update(paymentIntent.id, {
+                      metadata: {
+                        ...(paymentIntent.metadata || {}),
+                        purchased_references: mergedPurchasedRefs.join(";"),
+                        stock_unfulfilled_references:
+                          Array.from(creditedRefSet).join(";"),
+                        stock_unfulfilled_amount_cents:
+                          String(unfulfilledCents),
+                        stock_unfulfilled_items_amount_cents:
+                          String(unfulfilledItemCents),
+                        shipping_original_amount_cents:
+                          String(shippingCostCents),
+                        shipping_to_capture_amount_cents: String(
+                          shippingToCaptureCents,
+                        ),
+                        shipping_unfulfilled_amount_cents: String(
+                          unfulfilledShippingCents,
+                        ),
+                        amount_to_capture_cents: String(amountToCapture),
+                      },
+                    });
+                    const fresh = await waitForCapturablePaymentIntent(
+                      paymentIntent.id,
+                    );
+                    if (fresh && fresh.status === "requires_capture") {
+                      const captured = await stripe.paymentIntents.capture(
+                        paymentIntent.id,
+                        { amount_to_capture: amountToCapture } as any,
+                        {
+                          idempotencyKey: `capture-${paymentIntent.id}-${amountToCapture}`,
+                        } as any,
+                      );
+                      console.log(
+                        "checkout.session.completed webhook: capture success",
+                        {
+                          paymentIntentId: paymentIntent.id,
+                          amountToCapture,
+                          status: (captured as any)?.status || null,
+                        },
+                      );
+                      netAmount = amountToCapture;
+                      customerSpentAmountCents = Math.max(
+                        0,
+                        Math.round(netAmount || 0) + stripeCreditAppliedCents,
+                      );
+                    } else if (fresh && fresh.status === "succeeded") {
+                      console.log(
+                        "checkout.session.completed webhook: already captured",
+                        {
+                          paymentIntentId: paymentIntent.id,
+                          amountReceived: Number(
+                            (fresh as any)?.amount_received || 0,
+                          ),
+                        },
+                      );
+                      const ar = Number((fresh as any)?.amount_received || 0);
+                      if (Number.isFinite(ar) && ar > 0) {
+                        customerSpentAmountCents = Math.max(
                           0,
-                          netAmount - stockCreditAmountCents,
+                          Math.round(ar) + stripeCreditAppliedCents,
                         );
                       }
-                    } catch (creditErr: any) {
+                    } else {
                       console.warn(
-                        "checkout.session.completed: stock credit issue failed:",
-                        creditErr?.message || creditErr,
+                        "checkout.session.completed webhook: payment_intent not capturable yet, will rely on amount_capturable_updated",
+                        {
+                          paymentIntentId: paymentIntent.id,
+                          status: (fresh as any)?.status || null,
+                          amountToCapture,
+                        },
                       );
                     }
+                  } catch (capErr: any) {
+                    console.error(
+                      "checkout.session.completed webhook: capture failed",
+                      capErr?.message || capErr,
+                    );
+                    res.json({ received: true });
+                    return;
+                  }
+                }
+                if (paymentIntent?.status === "succeeded") {
+                  const ar = Number(
+                    (paymentIntent as any)?.amount_received || 0,
+                  );
+                  if (Number.isFinite(ar) && ar > 0) {
+                    customerSpentAmountCents = Math.max(
+                      0,
+                      Math.round(ar) + stripeCreditAppliedCents,
+                    );
                   }
                 }
 
@@ -1448,6 +1433,11 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               height: 20,
             },
             "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
+            "FEDX-FedexRegionalEconomy": {
+              width: 20,
+              length: 200,
+              height: 10,
+            },
           };
           const dims = offerDimensions[deliveryNetwork] || {
             width: 10,
@@ -1493,6 +1483,80 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             contentType?: string;
           }> = [];
           let boxtalOrderFailed = false;
+
+          if (paymentId) {
+            const succeededPi =
+              await ensurePaymentIntentSucceededForFulfillment(paymentId);
+            if (!succeededPi) {
+              console.warn(
+                "checkout.session.completed webhook: payment not captured, skipping fulfillment",
+                {
+                  paymentIntentId: paymentId,
+                  status: paymentIntent?.status || null,
+                },
+              );
+              res.json({ received: true });
+              return;
+            }
+            paymentIntent = succeededPi;
+          }
+
+          try {
+            const cartItemIdsRaw = String(
+              (session as any)?.metadata?.cart_item_ids ||
+                (paymentIntent as any)?.metadata?.cart_item_ids ||
+                "",
+            ).trim();
+            const cartItemIds = Array.from(
+              new Set(
+                cartItemIdsRaw
+                  .split(",")
+                  .map((s) => Number(String(s || "").trim()))
+                  .filter((n) => Number.isFinite(n) && n > 0),
+              ),
+            );
+
+            if (customerId && storeId) {
+              if (cartItemIds.length > 0) {
+                const delResp = await supabase
+                  .from("carts")
+                  .delete()
+                  .eq("customer_stripe_id", customerId)
+                  .eq("store_id", storeId)
+                  .in("id", cartItemIds as any);
+                if (delResp.error) {
+                  console.error(
+                    "checkout.session.completed webhook: failed to delete cart items by id",
+                    delResp.error,
+                    {
+                      storeId,
+                      customerId,
+                      cartItemIdsCount: cartItemIds.length,
+                    },
+                  );
+                }
+              } else if (uniqueRefs.length > 0) {
+                const delResp = await supabase
+                  .from("carts")
+                  .delete()
+                  .eq("customer_stripe_id", customerId)
+                  .eq("store_id", storeId)
+                  .in("product_reference", uniqueRefs as any);
+                if (delResp.error) {
+                  console.error(
+                    "checkout.session.completed webhook: failed to delete cart items by reference",
+                    delResp.error,
+                    { storeId, customerId, refsCount: uniqueRefs.length },
+                  );
+                }
+              }
+            }
+          } catch (cartCleanupErr) {
+            console.error(
+              "checkout.session.completed webhook: cart cleanup exception",
+              cartCleanupErr,
+            );
+          }
 
           if (deliveryMethod !== "store_pickup") {
             console.log(
@@ -1776,6 +1840,25 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             console.log(
               "checkout.session.completed webhook: send customer confirmation email",
             );
+            if (paymentId) {
+              const succeededPi =
+                await ensurePaymentIntentSucceededForFulfillment(paymentId);
+              if (!succeededPi) {
+                console.warn(
+                  "checkout.session.completed webhook: payment not captured, skipping customer email",
+                  {
+                    paymentIntentId: paymentId,
+                    status: paymentIntent?.status || null,
+                  },
+                );
+              } else {
+                paymentIntent = succeededPi;
+              }
+            }
+            if (paymentIntent?.status !== "succeeded") {
+              res.json({ received: true });
+              return;
+            }
             await emailService.sendCustomerConfirmation({
               customerEmail:
                 paymentIntent?.receipt_email || customerEmail || "",
@@ -1813,6 +1896,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
           try {
             console.log("Stripe webhook: send store owner notification");
             if (storeOwnerEmail) {
+              if (paymentIntent?.status !== "succeeded") {
+                res.json({ received: true });
+                return;
+              }
               const sentOwner = await emailService.sendStoreOwnerNotification({
                 ownerEmail: storeOwnerEmail,
                 storeName: storeName || "Votre Boutique",

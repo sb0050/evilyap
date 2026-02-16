@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useUser } from '@clerk/clerk-react';
 import { useNavigate } from 'react-router-dom';
+import slugify from 'slugify';
 
 interface StoreCheckResponse {
   exists: boolean;
@@ -46,7 +47,11 @@ export default function AuthRedirect({ children }: AuthRedirectProps) {
         if (data.exists && (data.slug || data.storeName)) {
           // L'utilisateur a déjà une boutique, rediriger vers checkout/<slug>
           const storeSlug =
-            data.slug || data.storeName!.toLowerCase().replace(/\s+/g, '-');
+            data.slug ||
+            slugify(String(data.storeName || 'default'), {
+              lower: true,
+              strict: true,
+            });
           navigate(`/checkout/${storeSlug}`);
         } else {
           // L'utilisateur n'a pas de boutique, rediriger vers onboarding
