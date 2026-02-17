@@ -19,7 +19,8 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
 
 // Configuration Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const supabaseKey =
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
   console.error("Supabase environment variables are missing");
@@ -27,6 +28,15 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+const requireSupabaseServiceRole = (res: express.Response) => {
+  if (process.env.SUPABASE_SERVICE_ROLE_KEY) return true;
+  res.status(500).json({
+    error:
+      "SUPABASE_SERVICE_ROLE_KEY manquante côté backend (nécessaire avec RLS activé)",
+  });
+  return false;
+};
 
 const getCloudBase = () => {
   const raw = String(process.env.CLOUDFRONT_URL || "").trim();
@@ -1569,6 +1579,7 @@ router.post("/:storeSlug/stock/products", async (req, res) => {
       return res.status(400).json({ error: "Slug de boutique requis" });
     }
     const decodedSlug = decodeURIComponent(storeSlug);
+    if (!requireSupabaseServiceRole(res)) return;
 
     const { data: storeRow, error: storeErr } = await supabase
       .from("stores")
@@ -1798,6 +1809,7 @@ router.get("/:storeSlug/stock/search", async (req, res) => {
       return res.status(400).json({ error: "Slug de boutique requis" });
     }
     const decodedSlug = decodeURIComponent(storeSlug);
+    if (!requireSupabaseServiceRole(res)) return;
     const qRaw = (req.query.q as string) || (req.query.query as string) || "";
     const q = String(qRaw || "").trim();
     if (q.length < 2) {
@@ -1904,6 +1916,7 @@ router.get("/:storeSlug/stock/products", async (req, res) => {
       return res.status(400).json({ error: "Slug de boutique requis" });
     }
     const decodedSlug = decodeURIComponent(storeSlug);
+    if (!requireSupabaseServiceRole(res)) return;
 
     const { data: storeRow, error: storeErr } = await supabase
       .from("stores")
@@ -2047,6 +2060,7 @@ router.put("/:storeSlug/stock/products/:stockId", async (req, res) => {
     };
     if (!storeSlug) return res.status(400).json({ error: "Slug requis" });
     const decodedSlug = decodeURIComponent(storeSlug);
+    if (!requireSupabaseServiceRole(res)) return;
 
     const stockIdNum = Number(stockId);
     if (!Number.isFinite(stockIdNum) || stockIdNum <= 0) {
@@ -2315,6 +2329,7 @@ router.delete("/:storeSlug/stock/products", async (req, res) => {
     const { storeSlug } = req.params as { storeSlug?: string };
     if (!storeSlug) return res.status(400).json({ error: "Slug requis" });
     const decodedSlug = decodeURIComponent(storeSlug);
+    if (!requireSupabaseServiceRole(res)) return;
 
     const { data: storeRow, error: storeErr } = await supabase
       .from("stores")
