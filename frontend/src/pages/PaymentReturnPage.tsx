@@ -348,17 +348,18 @@ const PaymentReturnPage: React.FC = () => {
                 <strong>Code avoir:</strong> {creditCodes.join(', ')}
               </p>
             )}
-            {(creditUsedCents > 0 || creditDiscountTotalCents > 0) && (
-              <p>
-                <strong>Solde utilisé:</strong>{' '}
-                {formatAmount(
-                  creditUsedCents > 0
-                    ? creditUsedCents
-                    : creditDiscountTotalCents,
-                  (session as any).currency || 'EUR'
-                )}
-              </p>
-            )}
+            {creditCodes.length > 0 &&
+              (creditUsedCents > 0 || creditDiscountTotalCents > 0) && (
+                <p>
+                  <strong>Solde utilisé:</strong>{' '}
+                  {formatAmount(
+                    creditUsedCents > 0
+                      ? creditUsedCents
+                      : creditDiscountTotalCents,
+                    (session as any).currency || 'EUR'
+                  )}
+                </p>
+              )}
             {storeCodes.length > 0 && (
               <p>
                 <strong>Code promo boutique:</strong> {storeCodes.join(', ')}
@@ -391,15 +392,20 @@ const PaymentReturnPage: React.FC = () => {
                               {it.description || ''}
                             </div>
                           )}
-                          <div className='text-sm text-gray-600'>
-                            Quantité: {it.quantity}
-                          </div>
                         </div>
                         <div className='text-sm font-medium text-gray-900 whitespace-nowrap'>
-                          {formatAmount(
-                            Number(it.amount_total || 0),
-                            it.currency || (session as any).currency || 'EUR'
-                          )}
+                          {(() => {
+                            const qty = Math.max(1, Number(it.quantity || 1));
+                            const totalCents = Math.max(
+                              0,
+                              Math.round(Number(it.amount_total || 0))
+                            );
+                            const unitCents = Math.round(totalCents / qty);
+                            return formatAmount(
+                              unitCents,
+                              it.currency || (session as any).currency || 'EUR'
+                            );
+                          })()}
                         </div>
                       </div>
                     </li>
@@ -423,13 +429,13 @@ const PaymentReturnPage: React.FC = () => {
                           <div className='font-medium text-gray-900 truncate'>
                             {it.title}
                           </div>
-                          <div className='text-sm text-gray-600'>
-                            Quantité: {it.quantity}
-                          </div>
                         </div>
                         <div className='text-sm font-medium text-gray-900 whitespace-nowrap'>
                           {formatAmount(
-                            Number(it.amount_total || 0),
+                            Math.round(
+                              Math.max(0, Number(it.amount_total || 0)) /
+                                Math.max(1, Number(it.quantity || 1))
+                            ),
                             it.currency || (session as any).currency || 'EUR'
                           )}
                         </div>
