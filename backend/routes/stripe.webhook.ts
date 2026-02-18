@@ -39,6 +39,19 @@ const normalizeRefs = (raw: unknown): string[] => {
   return Array.from(new Set(refs));
 };
 
+const safeStripeMetadata = (
+  input: Record<string, any>,
+): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input || {})) {
+    const key = String(k || "").trim();
+    if (!key || key.length > 40) continue;
+    if (v === null || v === undefined) continue;
+    out[key] = String(v);
+  }
+  return out;
+};
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
 });
@@ -269,6 +282,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             String(session.metadata?.credit_applied_cents || "0"),
             10,
           );
+          const tempAppliedCentsParsed = Number.parseInt(
+            String(session.metadata?.temp_credit_applied_cents || "0"),
+            10,
+          );
           const tempTopupCentsParsed = Number.parseInt(
             String(session.metadata?.temp_credit_topup_cents || "0"),
             10,
@@ -312,6 +329,13 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   creditAppliedCentsParsed > 0
                 ? creditAppliedCentsParsed
                 : 0;
+          let effectiveCustomerCreditAppliedCents = stripeCreditAppliedCents;
+          const tempAppliedCents =
+            Number.isFinite(tempAppliedCentsParsed) &&
+            tempAppliedCentsParsed > 0
+              ? tempAppliedCentsParsed
+              : 0;
+          let effectiveTempAppliedCents = tempAppliedCents;
           const tempTopupCents =
             Number.isFinite(tempTopupCentsParsed) && tempTopupCentsParsed > 0
               ? tempTopupCentsParsed
@@ -352,6 +376,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
           const shouldResetDebtBalance =
             expectedDeliveryDebtCents > 0 &&
             deliveryDebtLineItemAmountCents === expectedDeliveryDebtCents;
+          const deliveryRegulationPaidCents =
+            deliveryDebtLineItemAmountCents > 0
+              ? deliveryDebtLineItemAmountCents
+              : deliveryDebtPaidCents;
 
           if (expectedDeliveryDebtCents > 0 && !shouldResetDebtBalance) {
             console.warn(
@@ -850,42 +878,6 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   if (pid && pid.startsWith("prod_")) stockByPid.set(pid, r);
                 }
 
-                const missing = purchased.filter((p) => !stockByPid.has(p.pid));
-                if (missing.length > 0) {
-                  const missingRefs = Array.from(
-                    new Set(
-                      missing
-                        .map((m) => String(m.ref || "").trim())
-                        .filter((s) => s.length > 0),
-                    ),
-                  );
-                  if (paymentIntent?.id) {
-                    try {
-                      await stripe.paymentIntents.update(paymentIntent.id, {
-                        metadata: {
-                          ...(paymentIntent.metadata || {}),
-                          blocked_references: missingRefs.join(";"),
-                          blocked_reason: "missing_stock_reference",
-                        },
-                      });
-                    } catch (_e) {}
-                    try {
-                      if (paymentIntent.status === "requires_capture") {
-                        await stripe.paymentIntents.cancel(paymentIntent.id, {
-                          cancellation_reason: "requested_by_customer",
-                        } as any);
-                      }
-                    } catch (_e) {}
-                  }
-                  res.json({
-                    received: true,
-                    blocked: true,
-                    reason: "missing_stock_reference",
-                    blocked_references: missingRefs,
-                  });
-                  return;
-                }
-
                 const expectedByStockId = new Map<
                   number,
                   { quantity: number | null; bought: number }
@@ -1017,10 +1009,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 if (totalFulfilledQty <= 0 && paymentIntent?.id) {
                   try {
                     await stripe.paymentIntents.update(paymentIntent.id, {
-                      metadata: {
+                      metadata: safeStripeMetadata({
                         ...(paymentIntent.metadata || {}),
                         blocked_reason: "out_of_stock",
-                      },
+                      }),
                     });
                   } catch (_e) {}
                   try {
@@ -1205,6 +1197,42 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   }
                 }
 
+                const orderedItemsSubtotalExclShippingCents = purchased.reduce(
+                  (sum, p) =>
+                    sum +
+                    Math.max(
+                      0,
+                      Math.round(Number(p?.amountSubtotalCents || 0)),
+                    ),
+                  0,
+                );
+                const fulfilledItemsSubtotalExclShippingCents =
+                  adjustedProducts.reduce((sum, p) => {
+                    const raw = Number(p?.amount_subtotal || 0);
+                    return (
+                      sum +
+                      (Number.isFinite(raw) ? Math.max(0, Math.round(raw)) : 0)
+                    );
+                  }, 0);
+                effectiveTempAppliedCents = Math.min(
+                  effectiveTempAppliedCents,
+                  fulfilledItemsSubtotalExclShippingCents,
+                );
+                const remainingAfterTempCents = Math.max(
+                  0,
+                  fulfilledItemsSubtotalExclShippingCents -
+                    effectiveTempAppliedCents,
+                );
+                effectiveCustomerCreditAppliedCents = Math.min(
+                  stripeCreditAppliedCents,
+                  remainingAfterTempCents,
+                );
+                const creditBalanceRefundCents = Math.max(
+                  0,
+                  stripeCreditAppliedCents -
+                    effectiveCustomerCreditAppliedCents,
+                );
+
                 if (paymentIntent?.id) {
                   try {
                     const unfulfilledItemCents = Math.max(
@@ -1226,10 +1254,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                     if (amountToCapture <= 0) {
                       try {
                         await stripe.paymentIntents.update(paymentIntent.id, {
-                          metadata: {
+                          metadata: safeStripeMetadata({
                             ...(paymentIntent.metadata || {}),
                             blocked_reason: "out_of_stock",
-                          },
+                          }),
                         });
                       } catch (_e) {}
                       try {
@@ -1256,7 +1284,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                       ]),
                     );
                     await stripe.paymentIntents.update(paymentIntent.id, {
-                      metadata: {
+                      metadata: safeStripeMetadata({
                         ...(paymentIntent.metadata || {}),
                         purchased_references: mergedPurchasedRefs.join(";"),
                         stock_unfulfilled_references:
@@ -1274,7 +1302,22 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                           unfulfilledShippingCents,
                         ),
                         amount_to_capture_cents: String(amountToCapture),
-                      },
+                        credit_balance_used_cents_effective: String(
+                          effectiveCustomerCreditAppliedCents,
+                        ),
+                        credit_balance_refund_cents: String(
+                          creditBalanceRefundCents,
+                        ),
+                        temp_credit_applied_cents_effective: String(
+                          effectiveTempAppliedCents,
+                        ),
+                        ord_items_sub_ex_ship_cents: String(
+                          orderedItemsSubtotalExclShippingCents,
+                        ),
+                        ful_items_sub_ex_ship_cents: String(
+                          fulfilledItemsSubtotalExclShippingCents,
+                        ),
+                      }),
                     });
                     const fresh = await waitForCapturablePaymentIntent(
                       paymentIntent.id,
@@ -1298,7 +1341,8 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                       netAmount = amountToCapture;
                       customerSpentAmountCents = Math.max(
                         0,
-                        Math.round(netAmount || 0) + stripeCreditAppliedCents,
+                        Math.round(netAmount || 0) +
+                          effectiveCustomerCreditAppliedCents,
                       );
                     } else if (fresh && fresh.status === "succeeded") {
                       console.log(
@@ -1314,7 +1358,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                       if (Number.isFinite(ar) && ar > 0) {
                         customerSpentAmountCents = Math.max(
                           0,
-                          Math.round(ar) + stripeCreditAppliedCents,
+                          Math.round(ar) + effectiveCustomerCreditAppliedCents,
                         );
                       }
                     } else {
@@ -1343,7 +1387,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   if (Number.isFinite(ar) && ar > 0) {
                     customerSpentAmountCents = Math.max(
                       0,
-                      Math.round(ar) + stripeCreditAppliedCents,
+                      Math.round(ar) + effectiveCustomerCreditAppliedCents,
                     );
                   }
                 }
@@ -1914,6 +1958,71 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               res.json({ received: true });
               return;
             }
+
+            if (paymentId) {
+              try {
+                const pi = await stripe.paymentIntents.retrieve(paymentId);
+                const alreadyFinalized =
+                  String(
+                    (pi?.metadata as any)?.credit_balance_finalized || "",
+                  ) === "1";
+                if (
+                  !alreadyFinalized &&
+                  (shouldResetDebtBalance ||
+                    effectiveCustomerCreditAppliedCents > 0)
+                ) {
+                  const latestCustomer = (await stripe.customers.retrieve(
+                    customerId,
+                  )) as Stripe.Customer;
+                  if (latestCustomer && !("deleted" in latestCustomer)) {
+                    const meta: any = (latestCustomer.metadata as any) || {};
+                    const prevRaw = Number.parseInt(
+                      String(meta?.credit_balance || "0"),
+                      10,
+                    );
+                    const prevBalanceCents = Number.isFinite(prevRaw)
+                      ? prevRaw
+                      : 0;
+                    const baseBalanceCents = shouldResetDebtBalance
+                      ? 0
+                      : prevBalanceCents;
+                    const nextBalanceCents = Math.max(
+                      0,
+                      baseBalanceCents -
+                        Math.max(0, effectiveCustomerCreditAppliedCents),
+                    );
+                    await stripe.customers.update(
+                      customerId,
+                      {
+                        metadata: {
+                          ...meta,
+                          credit_balance: String(nextBalanceCents),
+                        },
+                      } as any,
+                      {
+                        idempotencyKey: `credit-balance-finalize-${paymentId}-${nextBalanceCents}`,
+                      } as any,
+                    );
+                    try {
+                      await stripe.paymentIntents.update(paymentId, {
+                        metadata: safeStripeMetadata({
+                          ...(pi?.metadata || {}),
+                          credit_balance_before_cents_observed:
+                            String(prevBalanceCents),
+                          credit_balance_after_cents_effective:
+                            String(nextBalanceCents),
+                          credit_balance_used_cents_effective: String(
+                            effectiveCustomerCreditAppliedCents,
+                          ),
+                          credit_balance_finalized: "1",
+                        }),
+                      });
+                    } catch (_e) {}
+                  }
+                }
+              } catch (_e) {}
+            }
+
             const emailProducts = (Array.isArray(products) ? products : [])
               .map((p: any) => {
                 const ref = String(p?.name || p?.id || "").trim();
@@ -1947,7 +2056,8 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               storeAddress: storeAddress,
               productReference: productReference,
               products: emailProducts,
-              creditUsedAmount: stripeCreditAppliedCents / 100,
+              creditUsedAmount: effectiveCustomerCreditAppliedCents / 100,
+              deliveryRegulationPaidAmount: deliveryRegulationPaidCents / 100,
               amount: customerSpentAmountCents / 100,
               currency: currency,
               paymentId: paymentId,
@@ -1964,7 +2074,8 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   .filter(Boolean)
                   .join(", ") || "",
               productValue: (products?.[0]?.unit_price || 0) / 100,
-              estimatedDeliveryCost: estimatedDeliveryCost / 100,
+              estimatedDeliveryCost:
+                Math.max(0, Number(adjustedShippingCostCents || 0)) / 100,
             });
           } catch (emailErr) {
             console.error(

@@ -1376,6 +1376,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
 
       const p = await stripe.products.create({
         name: `${String(it.reference || "N/A")}`,
+        description: String(it.description || "").trim() || undefined,
         type: "good",
         shippable: true,
       });
@@ -1436,6 +1437,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         unit_amount: Math.round(Number(it.price || 0) * 100),
         currency: "eur",
       });
+      try {
+        await stripe.products.update(p.id, {
+          default_price: String((pr as any)?.id || ""),
+        } as any);
+      } catch {}
       orderLineItems.push({ price: pr.id, quantity: qty });
     }
     const currencyLower = String(currency || "eur").toLowerCase();
@@ -1980,6 +1986,22 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
       Number.isFinite(creditAppliedCentsParsed) && creditAppliedCentsParsed > 0
         ? creditAppliedCentsParsed
         : 0;
+    const creditUsedEffectiveCentsParsed = Number.parseInt(
+      String(
+        (paymentIntentObj?.metadata as any)
+          ?.credit_balance_used_cents_effective || "",
+      ),
+      10,
+    );
+    const creditUsedEffectiveCents =
+      Number.isFinite(creditUsedEffectiveCentsParsed) &&
+      creditUsedEffectiveCentsParsed > 0
+        ? creditUsedEffectiveCentsParsed
+        : 0;
+    const creditUsedCents =
+      creditUsedEffectiveCents > 0
+        ? creditUsedEffectiveCents
+        : creditAppliedCents;
     const creditPromoDiscountCents = promoCodeDetails
       .filter((d) => /^CREDIT-/i.test(String(d?.code || "")))
       .reduce((sum, d) => {
@@ -2028,7 +2050,7 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
       promo_codes_platform: platformCodes,
       promo_codes_credit: creditCodes,
       promo_code_details: promoCodeDetails,
-      credit_balance_used_cents: creditAppliedCents || undefined,
+      credit_balance_used_cents: creditUsedCents || undefined,
       credit_discount_total_cents:
         creditPromoDiscountCents > 0 ? creditPromoDiscountCents : undefined,
     };

@@ -28,6 +28,7 @@ interface CustomerEmailData {
     currency?: string;
   }>;
   creditUsedAmount?: number;
+  deliveryRegulationPaidAmount?: number;
   amount: number;
   currency: string;
   paymentId: string;
@@ -259,6 +260,28 @@ class EmailService {
           creditUsed > 0
             ? this.formatAmount(creditUsed, data.currency) || String(creditUsed)
             : "";
+        const shippingFee =
+          typeof data.estimatedDeliveryCost === "number" &&
+          Number.isFinite(data.estimatedDeliveryCost) &&
+          data.estimatedDeliveryCost > 0
+            ? data.estimatedDeliveryCost
+            : 0;
+        const formattedShippingFee =
+          shippingFee > 0
+            ? this.formatAmount(shippingFee, data.currency) ||
+              String(shippingFee)
+            : "";
+        const deliveryRegulationPaid =
+          typeof data.deliveryRegulationPaidAmount === "number" &&
+          Number.isFinite(data.deliveryRegulationPaidAmount) &&
+          data.deliveryRegulationPaidAmount > 0
+            ? data.deliveryRegulationPaidAmount
+            : 0;
+        const formattedDeliveryRegulationPaid =
+          deliveryRegulationPaid > 0
+            ? this.formatAmount(deliveryRegulationPaid, data.currency) ||
+              String(deliveryRegulationPaid)
+            : "";
         const itemsRowsHtml = (() => {
           const products = Array.isArray(data.products) ? data.products : [];
           if (products.length > 0) {
@@ -376,6 +399,16 @@ class EmailService {
                 ${
                   creditCodes.length > 0 && formattedCreditUsed
                     ? `<p><strong>Solde utilisé :</strong> ${formattedCreditUsed}</p>`
+                    : ""
+                }
+                ${
+                  formattedDeliveryRegulationPaid
+                    ? `<p><strong>Régularisation livraison :</strong> ${formattedDeliveryRegulationPaid}</p>`
+                    : ""
+                }
+                ${
+                  formattedShippingFee
+                    ? `<p><strong>Frais de livraison :</strong> ${formattedShippingFee}</p>`
                     : ""
                 }
                 ${
@@ -682,6 +715,7 @@ class EmailService {
           .split(/[;,]+/g)
           .map((s) => String(s || "").trim())
           .filter(Boolean);
+        const ownerPromoCodes = promoCodes.filter((c) => !/^CREDIT-/i.test(c));
         const itemsRowsHtml = (() => {
           const products = Array.isArray(data.products) ? data.products : [];
           if (products.length > 0) {
@@ -876,12 +910,12 @@ class EmailService {
                 <h3>📦 Détails de la commande</h3>
                 <p><strong>Montant reçu :</strong> <span class="amount">${formattedAmount}</span></p>
                 ${
-                  promoCodes.length > 0
+                  ownerPromoCodes.length > 0
                     ? `<p><strong>Code${
-                        promoCodes.length > 1 ? "s" : ""
+                        ownerPromoCodes.length > 1 ? "s" : ""
                       } promo utilisé${
-                        promoCodes.length > 1 ? "s" : ""
-                      } :</strong> ${promoCodes.join(", ")}</p>`
+                        ownerPromoCodes.length > 1 ? "s" : ""
+                      } :</strong> ${ownerPromoCodes.join(", ")}</p>`
                     : ""
                 }
                 ${

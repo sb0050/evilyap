@@ -604,6 +604,7 @@ export default function OrdersPage() {
           const d =
             String(sp?.description || '').trim() ||
             String(it.description || '').trim();
+          const qtyText = `qté: ${Math.max(1, Number(it.quantity || 1))}`;
           const price =
             sp?.unit_amount_cents != null
               ? formatValue(
@@ -612,18 +613,15 @@ export default function OrdersPage() {
               : '';
           return (
             <div key={`${s.id}-${idx}`} className='space-y-0.5'>
-              <div
-                className='font-medium truncate max-w-[280px]'
-                title={`${label}(x${it.quantity})`}
-              >
-                {label}(x{it.quantity})
+              <div className='font-medium truncate max-w-[280px]' title={label}>
+                {label}
               </div>
-              {d || price ? (
+              {d || price || qtyText ? (
                 <div
                   className='text-xs text-gray-500 truncate max-w-[280px]'
-                  title={[d, price].filter(Boolean).join(' — ')}
+                  title={[d, qtyText, price].filter(Boolean).join(' — ')}
                 >
-                  {[d, price].filter(Boolean).join(' — ')}
+                  {[d, qtyText, price].filter(Boolean).join(' — ')}
                 </div>
               ) : null}
             </div>
