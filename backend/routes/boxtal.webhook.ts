@@ -300,7 +300,7 @@ export const boxtalWebhookHandler = async (req: any, res: any) => {
           const { data: shipment, error: shipmentError } = await supabase
             .from("shipments")
             .select(
-              "id, shipment_id, status, customer_stripe_id, store_id, estimated_delivery_cost, delivery_cost, is_final_destination",
+              "id, shipment_id, status, customer_stripe_id, store_id, estimated_delivery_cost, delivery_cost, is_final_destination, delivery_date",
             )
             .eq("shipment_id", shippingOrderId)
             .maybeSingle();
@@ -353,18 +353,69 @@ export const boxtalWebhookHandler = async (req: any, res: any) => {
                 (shipment as any)?.is_final_destination,
               );
               const prevCost = Number((shipment as any)?.delivery_cost || 0);
+              const prevDeliveryDateRaw = String(
+                (shipment as any)?.delivery_date || "",
+              ).trim();
+              const resolvedDeliveryDateIso = (() => {
+                for (let i = historyArray.length - 1; i >= 0; i--) {
+                  const h: any = historyArray[i] || {};
+                  const raw =
+                    h?.date ??
+                    h?.datetime ??
+                    h?.deliveredAt ??
+                    h?.createdAt ??
+                    h?.created_at ??
+                    h?.timestamp ??
+                    null;
+                  if (!raw) continue;
+                  const numeric =
+                    typeof raw === "number"
+                      ? raw
+                      : typeof raw === "string" && /^\d+$/.test(raw)
+                        ? Number(raw)
+                        : NaN;
+                  if (Number.isFinite(numeric) && numeric > 0) {
+                    const ms = numeric > 1e12 ? numeric : numeric * 1000;
+                    const d = new Date(ms);
+                    if (Number.isFinite(d.getTime())) return d.toISOString();
+                  }
+                  const d = new Date(raw);
+                  if (Number.isFinite(d.getTime())) return d.toISOString();
+                }
+                return null;
+              })();
               const sameCost =
                 actualDeliveryCostEur === null
                   ? false
                   : Number.isFinite(prevCost) &&
                     Math.abs(prevCost - actualDeliveryCostEur) < 0.001;
+              const sameDeliveryDate = resolvedDeliveryDateIso
+                ? (() => {
+                    const prevMs = prevDeliveryDateRaw
+                      ? Date.parse(prevDeliveryDateRaw)
+                      : NaN;
+                    const nextMs = Date.parse(resolvedDeliveryDateIso);
+                    return (
+                      Number.isFinite(prevMs) &&
+                      Number.isFinite(nextMs) &&
+                      prevMs === nextMs
+                    );
+                  })()
+                : true;
 
               if (
-                !(prevFinal && (actualDeliveryCostEur === null || sameCost))
+                !(
+                  prevFinal &&
+                  (actualDeliveryCostEur === null || sameCost) &&
+                  sameDeliveryDate
+                )
               ) {
                 const updatePayload: any = { is_final_destination: true };
                 if (actualDeliveryCostEur !== null) {
                   updatePayload.delivery_cost = actualDeliveryCostEur;
+                }
+                if (resolvedDeliveryDateIso) {
+                  updatePayload.delivery_date = resolvedDeliveryDateIso;
                 }
                 const { error: finalErr } = await supabase
                   .from("shipments")

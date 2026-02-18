@@ -158,15 +158,13 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
           String(md?.amount_to_capture_cents || "0"),
           10,
         );
+        if (!Number.isFinite(amountFromMetaRaw) || amountFromMetaRaw <= 0) {
+          break;
+        }
         const amountCapturable = Number((fresh as any)?.amount_capturable || 0);
         const amountToCapture = Math.max(
           0,
-          Math.min(
-            amountCapturable,
-            Number.isFinite(amountFromMetaRaw) && amountFromMetaRaw > 0
-              ? amountFromMetaRaw
-              : amountCapturable,
-          ),
+          Math.min(amountCapturable, amountFromMetaRaw),
         );
         if (amountToCapture <= 0) break;
         await stripe.paymentIntents.capture(
@@ -600,6 +598,8 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               ),
             ),
           );
+          let adjustedShippingCostCents = shippingCostCents;
+          let stripeFeesCents: number | null = null;
 
           let storePromoDiscountCents = 0;
           let paylivePromoDiscountCents = 0;
@@ -795,6 +795,11 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   Number.isFinite(qtyRaw) && qtyRaw > 0
                     ? Math.floor(qtyRaw)
                     : 1;
+                const amountSubtotalRaw = Number(p?.amount_subtotal || 0);
+                const amountSubtotalCents =
+                  Number.isFinite(amountSubtotalRaw) && amountSubtotalRaw > 0
+                    ? Math.round(amountSubtotalRaw)
+                    : 0;
                 const amountTotalRaw = Number(p?.amount_total || 0);
                 const amountTotalCents =
                   Number.isFinite(amountTotalRaw) && amountTotalRaw > 0
@@ -804,6 +809,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   pid,
                   ref,
                   qty,
+                  amountSubtotalCents,
                   amountTotalCents,
                   original: p,
                 };
@@ -890,6 +896,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 let stockCreditAmountCents = 0;
                 let shippingCreditAmountCents = 0;
                 let shippingToCaptureCents = shippingCostCents;
+                let fulfilledItemsWeightKg = 0;
 
                 for (const p of purchased) {
                   const row = stockByPid.get(p.pid) || null;
@@ -906,11 +913,19 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   ).trim();
 
                   const rawQtyField = (row as any)?.quantity;
+                  console.log(
+                    "checkout.session.completed webhook: rawQtyField",
+                    rawQtyField,
+                  );
                   const bRaw = Number((row as any)?.bought || 0);
                   const currentBought =
                     Number.isFinite(bRaw) && bRaw >= 0 ? Math.floor(bRaw) : 0;
 
                   let fulfilledQty = p.qty;
+                  console.log(
+                    "checkout.session.completed webhook: p.qty",
+                    p.qty,
+                  );
                   let nextQty: number | null = null;
 
                   if (rawQtyField !== null && rawQtyField !== undefined) {
@@ -936,6 +951,21 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                     bought: nextBought,
                   });
 
+                  const unitWeightRaw = Number((row as any)?.weight || 0);
+                  const unitWeightKg =
+                    Number.isFinite(unitWeightRaw) && unitWeightRaw > 0
+                      ? unitWeightRaw
+                      : 0;
+                  if (fulfilledQty > 0 && unitWeightKg > 0) {
+                    fulfilledItemsWeightKg += unitWeightKg * fulfilledQty;
+                  }
+
+                  const fulfilledAmountSubtotalCents =
+                    fulfilledQty > 0
+                      ? Math.round(
+                          (p.amountSubtotalCents * fulfilledQty) / p.qty,
+                        )
+                      : 0;
                   const fulfilledAmountCents =
                     fulfilledQty > 0
                       ? Math.round((p.amountTotalCents * fulfilledQty) / p.qty)
@@ -953,7 +983,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                       ...(p.original || {}),
                       quantity: fulfilledQty,
                       amount_total: fulfilledAmountCents,
-                      amount_subtotal: fulfilledAmountCents,
+                      amount_subtotal: fulfilledAmountSubtotalCents,
                     });
                   }
                   console.log(
@@ -984,7 +1014,6 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   (sum, p) => sum + Math.max(0, Number(p?.qty || 0)),
                   0,
                 );
-                const originalWeightKg = Number.isFinite(weight) ? weight : 0;
                 if (totalFulfilledQty <= 0 && paymentIntent?.id) {
                   try {
                     await stripe.paymentIntents.update(paymentIntent.id, {
@@ -1010,7 +1039,6 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 }
                 if (
                   shippingCostCents > 0 &&
-                  originalWeightKg > 0 &&
                   totalOrderedQty > 0 &&
                   totalFulfilledQty > 0
                 ) {
@@ -1026,16 +1054,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                     0,
                     shippingCostCents - shippingToCaptureCents,
                   );
-                  const adjustedWeightKg = Math.max(
-                    0,
-                    Math.min(
-                      originalWeightKg,
-                      originalWeightKg * fulfilledRatio,
-                    ),
-                  );
-                  if (adjustedWeightKg > 0) {
-                    weight = adjustedWeightKg;
-                  }
+                  adjustedShippingCostCents = shippingToCaptureCents;
+                }
+                if (fulfilledItemsWeightKg > 0) {
+                  weight = Math.max(0, fulfilledItemsWeightKg + 0.4);
                 }
 
                 console.log(
@@ -1501,6 +1523,38 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             paymentIntent = succeededPi;
           }
 
+          if (paymentIntent?.id) {
+            try {
+              const pi = await stripe.paymentIntents.retrieve(paymentIntent.id);
+              const chargeId =
+                typeof (pi as any)?.latest_charge === "string"
+                  ? ((pi as any).latest_charge as string)
+                  : String((pi as any)?.latest_charge?.id || "").trim();
+              if (chargeId) {
+                const charge = await stripe.charges.retrieve(chargeId, {
+                  expand: ["balance_transaction"],
+                } as any);
+                const btRaw: any = (charge as any)?.balance_transaction || null;
+                const bt =
+                  typeof btRaw === "string"
+                    ? await stripe.balanceTransactions.retrieve(btRaw)
+                    : btRaw;
+                const feeDetails: any[] = Array.isArray(bt?.fee_details)
+                  ? bt.fee_details
+                  : [];
+                const stripeOnly = feeDetails
+                  .filter((d: any) => String(d?.type || "") === "stripe_fee")
+                  .reduce(
+                    (sum: number, d: any) =>
+                      sum + Math.max(0, Math.round(Number(d?.amount || 0))),
+                    0,
+                  );
+                const feeRaw = Math.max(0, Math.round(Number(bt?.fee || 0)));
+                stripeFeesCents = stripeOnly > 0 ? stripeOnly : feeRaw;
+              }
+            } catch (_e) {}
+          }
+
           try {
             const cartItemIdsRaw = String(
               (session as any)?.metadata?.cart_item_ids ||
@@ -1728,13 +1782,14 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               payment_id: paymentIntent?.id || null,
               store_earnings_amount: storeEarningsAmountCents,
               customer_spent_amount: customerSpentAmountCents,
+              stripe_fees: stripeFeesCents,
               boxtal_shipping_json: boxtalOrderFailed
                 ? JSON.stringify(createOrderPayload)
                 : null,
               delivery_cost:
                 (dataBoxtal?.content?.deliveryPriceExclTax?.value || 0) * 1.2,
               promo_code: appliedPromoCodes,
-              estimated_delivery_cost: (estimatedDeliveryCost || 0) / 100,
+              estimated_delivery_cost: (adjustedShippingCostCents || 0) / 100,
             };
 
             let shipmentUpsert: any = null;
@@ -1859,6 +1914,29 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               res.json({ received: true });
               return;
             }
+            const emailProducts = (Array.isArray(products) ? products : [])
+              .map((p: any) => {
+                const ref = String(p?.name || p?.id || "").trim();
+                const desc = String(p?.description || "").trim();
+                const qtyRaw = Number(p?.quantity || 1);
+                const quantity =
+                  Number.isFinite(qtyRaw) && qtyRaw > 0
+                    ? Math.floor(qtyRaw)
+                    : 1;
+                const unitCentsRaw = Number(p?.unit_price || 0);
+                const unit_price =
+                  Number.isFinite(unitCentsRaw) && unitCentsRaw >= 0
+                    ? unitCentsRaw / 100
+                    : 0;
+                return {
+                  product_reference: ref,
+                  description: desc || undefined,
+                  quantity,
+                  unit_price,
+                  currency,
+                };
+              })
+              .filter((p: any) => String(p?.product_reference || "").trim());
             await emailService.sendCustomerConfirmation({
               customerEmail:
                 paymentIntent?.receipt_email || customerEmail || "",
@@ -1868,7 +1946,9 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               storeLogo: `${CLOUDFRONT_URL}/images/${storeId}`,
               storeAddress: storeAddress,
               productReference: productReference,
-              amount: netAmount / 100,
+              products: emailProducts,
+              creditUsedAmount: stripeCreditAppliedCents / 100,
+              amount: customerSpentAmountCents / 100,
               currency: currency,
               paymentId: paymentId,
               boxtalId: boxtalId,
@@ -1900,6 +1980,29 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 res.json({ received: true });
                 return;
               }
+              const emailProducts = (Array.isArray(products) ? products : [])
+                .map((p: any) => {
+                  const ref = String(p?.name || p?.id || "").trim();
+                  const desc = String(p?.description || "").trim();
+                  const qtyRaw = Number(p?.quantity || 1);
+                  const quantity =
+                    Number.isFinite(qtyRaw) && qtyRaw > 0
+                      ? Math.floor(qtyRaw)
+                      : 1;
+                  const unitCentsRaw = Number(p?.unit_price || 0);
+                  const unit_price =
+                    Number.isFinite(unitCentsRaw) && unitCentsRaw >= 0
+                      ? unitCentsRaw / 100
+                      : 0;
+                  return {
+                    product_reference: ref,
+                    description: desc || undefined,
+                    quantity,
+                    unit_price,
+                    currency,
+                  };
+                })
+                .filter((p: any) => String(p?.product_reference || "").trim());
               const sentOwner = await emailService.sendStoreOwnerNotification({
                 ownerEmail: storeOwnerEmail,
                 storeName: storeName || "Votre Boutique",
@@ -1924,7 +2027,8 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 customerAddress: {},
                 pickupPointCode: pickupPoint.code || "",
                 productReference,
-                amount: netAmount / 100,
+                products: emailProducts,
+                amount: storeEarningsAmountCents / 100,
                 weight,
                 currency,
                 paymentId,

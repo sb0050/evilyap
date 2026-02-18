@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, type Dispatch, type SetStateAction } from 'react';
+import { useState, useEffect, type Dispatch, type SetStateAction } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
 import {
   useStripe,
@@ -79,6 +79,39 @@ const fetchStockSearchExactMatch = async (
     return r === qKey;
   });
   return exact || null;
+};
+
+const normalizePhoneForPrefixCheck = (phone: unknown) => {
+  let raw = String(phone || '').trim();
+  if (!raw) return '';
+  raw = raw.replace(/[()\s.-]/g, '');
+  if (raw.startsWith('00')) raw = `+${raw.slice(2)}`;
+  return raw;
+};
+
+const getExpectedPhonePrefixForCountry = (country: unknown) => {
+  const c = String(country || '')
+    .trim()
+    .toUpperCase();
+  if (c === 'BE') return { country: 'BE', prefix: '+32', label: 'Belgique' };
+  if (c === 'FR') return { country: 'FR', prefix: '+33', label: 'France' };
+  if (c === 'CH') return { country: 'CH', prefix: '+41', label: 'Suisse' };
+  return null;
+};
+
+const getStockQuantityValue = (stockItem: any) => {
+  const stock = stockItem?.stock || stockItem || null;
+  const candidates = [
+    stock?.quantity,
+    stock?.stock_quantity,
+    stock?.available_quantity,
+    stock?.availableQuantity,
+  ];
+  for (const v of candidates) {
+    const n = Number(v ?? NaN);
+    if (Number.isFinite(n)) return n;
+  }
+  return NaN;
 };
 
 interface Store {
@@ -1089,8 +1122,85 @@ export default function CheckoutPage() {
     return hasEmail && hasDeliveryInfo && hasContactInfo;
   };
 
-  const validateCartQuantitiesInStock = async () => {
-    return;
+  const validateCartQuantitiesInStock = async (items: CartItem[]) => {
+    const slug = String((store as any)?.slug || storeName || '').trim();
+    if (!slug) return;
+
+    const itemsToCheck = (items || []).filter(it => {
+      const pid = String(it?.product_stripe_id || '').trim();
+      return pid.startsWith('prod_');
+    });
+    if (itemsToCheck.length === 0) return;
+
+    const refs = Array.from(
+      new Set(
+        itemsToCheck
+          .map(it => String(it.product_reference || '').trim())
+          .filter(Boolean)
+      )
+    );
+    if (refs.length === 0) return;
+
+    const resolvedByRefKey = new Map<string, any | null>();
+    for (const ref of refs) {
+      const key = getRefKey(ref);
+      const cached = Object.prototype.hasOwnProperty.call(
+        cartStockByRefKey,
+        key
+      )
+        ? (cartStockByRefKey as any)[key]
+        : undefined;
+      if (cached !== undefined) resolvedByRefKey.set(key, cached);
+    }
+
+    const missingRefs = refs.filter(ref => {
+      const key = getRefKey(ref);
+      return !resolvedByRefKey.has(key);
+    });
+    if (missingRefs.length > 0) {
+      const maxConcurrent = 4;
+      let idx = 0;
+      const workers = new Array(Math.min(maxConcurrent, missingRefs.length))
+        .fill(null)
+        .map(async () => {
+          while (idx < missingRefs.length) {
+            const current = idx++;
+            const ref = missingRefs[current];
+            const key = getRefKey(ref);
+            try {
+              const item = await fetchStockSearchExactMatch(slug, ref);
+              resolvedByRefKey.set(key, item);
+            } catch {
+              resolvedByRefKey.set(key, null);
+            }
+          }
+        });
+      await Promise.all(workers);
+    }
+
+    for (const it of itemsToCheck) {
+      const ref = String(it.product_reference || '').trim();
+      if (!ref) continue;
+      const key = getRefKey(ref);
+      const stockItem = resolvedByRefKey.get(key);
+      if (!stockItem) {
+        throw new Error(
+          `Les articles ${ref} ne sont plus disponibles. Veuillez les retirer de votre panier.`
+        );
+      }
+      const qtyAvailable = getStockQuantityValue(stockItem);
+      const qtyRequested = Math.max(1, Math.round(Number(it.quantity || 1)));
+      if (Number.isFinite(qtyAvailable)) {
+        if (qtyAvailable <= 0) {
+          throw new Error(`La référence ${ref} n'est plus en stock.`);
+        }
+        if (qtyRequested > qtyAvailable) {
+          throw new Error(
+            `Stock insuffisant pour la référence ${ref} (disponible: ${qtyAvailable}, demandé: ${qtyRequested}).`
+          );
+        }
+      }
+    }
   };
 
   const creditBalanceCents = (() => {
@@ -1168,7 +1278,7 @@ export default function CheckoutPage() {
         return;
       }
 
-      await validateCartQuantitiesInStock();
+      await validateCartQuantitiesInStock(latestCartItems);
 
       // Ajout automatique au panier si référence et montant renseignés
 
@@ -1255,6 +1365,38 @@ export default function CheckoutPage() {
             ? resolvedParcelPoint
             : null,
       };
+
+      const countryForPhoneValidation =
+        effectiveDeliveryMethod === 'home_delivery'
+          ? ((customerInfo.address as any)?.country ??
+            (address as any)?.country ??
+            (customerData as any)?.address?.country)
+          : effectiveDeliveryMethod === 'pickup_point'
+            ? ((resolvedParcelPoint as any)?.location?.countryIsoCode ??
+              (resolvedParcelPoint as any)?.location?.country ??
+              (customerData as any)?.shipping?.address?.countryIsoCode ??
+              (customerData as any)?.shipping?.address?.country)
+            : effectiveDeliveryMethod === 'store_pickup'
+              ? ((address as any)?.country ??
+                (customerData as any)?.address?.country ??
+                (customerData as any)?.shipping?.address?.countryIsoCode ??
+                (customerData as any)?.shipping?.address?.country ??
+                'FR')
+              : undefined;
+      const expectedPhone = getExpectedPhonePrefixForCountry(
+        countryForPhoneValidation
+      );
+      if (expectedPhone) {
+        const normalizedPhone = normalizePhoneForPrefixCheck(
+          customerInfo.phone
+        );
+        if (!normalizedPhone.startsWith(expectedPhone.prefix)) {
+          const msg = `Le numéro de téléphone doit commencer par ${expectedPhone.prefix} (${expectedPhone.label}).`;
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          return;
+        }
+      }
 
       const enteredPromoCodeId = String(promoCodeId || '').trim();
       if (enteredPromoCodeId) {
@@ -2415,8 +2557,17 @@ export default function CheckoutPage() {
                   const parcelPointOk =
                     deliveryMethod !== 'pickup_point' || hasParcelPoint;
 
+                  const needsAddressElementValidation =
+                    deliveryMethod === 'home_delivery' &&
+                    (isEditingDelivery || !savedMethod);
+                  const addressElementOk =
+                    !needsAddressElementValidation || isFormValid;
+
                   const canProceed =
-                    hasItems && deliveryIsValid && parcelPointOk;
+                    hasItems &&
+                    deliveryIsValid &&
+                    parcelPointOk &&
+                    addressElementOk;
 
                   const btnColor = canProceed ? '#0074D4' : '#6B7280';
                   return (
