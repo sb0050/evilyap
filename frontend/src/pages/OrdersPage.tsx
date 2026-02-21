@@ -1476,7 +1476,7 @@ export default function OrdersPage() {
                   <div
                     key={s.id}
                     className={`rounded-lg border border-gray-200 p-3 shadow-sm ${
-                      s.is_cancelled ? 'bg-gray-50 opacity-70' : 'bg-white'
+                      s.is_cancelled ? 'bg-gray-50' : 'bg-white'
                     }`}
                   >
                     <div className='flex items-start justify-between'>
@@ -1675,7 +1675,7 @@ export default function OrdersPage() {
                       key={s.id}
                       className={`border-b border-gray-100 ${
                         s.is_cancelled
-                          ? 'bg-gray-50 opacity-70'
+                          ? 'bg-gray-50'
                           : 'hover:bg-gray-50'
                       }`}
                     >

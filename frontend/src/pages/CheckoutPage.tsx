@@ -1321,7 +1321,7 @@ export default function CheckoutPage() {
         seen.add(r);
       }
       if (hasDuplicate) {
-        const msg = 'Vous avez la m�me r�f�rence plusieurs fois dans le panier';
+        const msg = 'Vous avez la même référence plusieurs fois dans le panier. Supprimez la référence en double et modfiier la quantité de l\'autre';
         setPaymentError(msg);
         showToast(msg, 'error');
         return;
@@ -1477,6 +1477,13 @@ export default function CheckoutPage() {
           return;
         }
         const normalizedPromo = enteredPromoCodeId.toUpperCase();
+        if (normalizedPromo.startsWith('CREDIT-')) {
+          const msg = 'Ce préfixe est réservé.';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
         const isPayliveCode = normalizedPromo.startsWith('PAYLIVE-');
         const isValidChars = /^[A-Z0-9_-]+$/.test(normalizedPromo);
         if (!isPayliveCode && !isValidChars) {
@@ -2353,14 +2360,16 @@ export default function CheckoutPage() {
                           id='cart-promo-code'
                           value={promoCodeId}
                           onChange={e => {
-                            setPromoCodeId(
-                              String(e.target.value || '').toUpperCase()
-                            );
                             const next = String(
                               e.target.value || ''
                             ).toUpperCase();
+                            setPromoCodeId(next);
                             if (!next) {
                               setPromoCodeError(null);
+                              return;
+                            }
+                            if (next.startsWith('CREDIT-')) {
+                              setPromoCodeError('Ce préfixe est réservé.');
                               return;
                             }
                             if (next.startsWith('PAYLIVE-')) {

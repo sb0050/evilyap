@@ -1813,7 +1813,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
             },
             display_name: `Livraison ${formatDeliveryMethod(
               deliveryMethod || "",
-            )} `,
+            )}${
+              deliveryMethod !== "store_pickup" && weightKg > 0
+                ? ` (${Number(weightKg.toFixed(2))} kg)`
+                : ""
+            }`,
             delivery_estimate:
               deliveryMethod !== "store_pickup"
                 ? {
@@ -2579,7 +2583,81 @@ router.delete("/promotion-codes/:id", async (req, res) => {
   }
 });
 
-export default router;
+router.put("/promotion-codes/:id/active", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { id } = req.params as { id?: string };
+    if (!id) {
+      return res.status(400).json({ error: "promotion code id requis" });
+    }
+
+    const { active } = req.body || {};
+    const nextActive = Boolean(active);
+
+    const promotionCode = await stripe.promotionCodes.update(String(id), {
+      active: nextActive,
+    } as Stripe.PromotionCodeUpdateParams);
+
+    const storeSlug = String(
+      (promotionCode as any)?.metadata?.storeSlug || "",
+    ).trim();
+    const promoCodeUpper = String((promotionCode as any)?.code || "")
+      .trim()
+      .toUpperCase();
+    if (storeSlug && promoCodeUpper) {
+      const { data: storeRow, error: storeErr } = await supabase
+        .from("stores")
+        .select("id,promo_code")
+        .eq("slug", storeSlug)
+        .maybeSingle();
+      if (storeErr) {
+        return res.status(500).json({ error: storeErr.message });
+      }
+      if (storeRow) {
+        const currentRaw = String((storeRow as any)?.promo_code || "").trim();
+        const codes = currentRaw
+          ? currentRaw
+              .split(";;")
+              .map((s: any) => String(s || "").trim())
+              .filter(Boolean)
+          : [];
+        const next = (
+          nextActive
+            ? Array.from(
+                new Set(
+                  [...codes, promoCodeUpper].map((c) => c.trim().toUpperCase()),
+                ),
+              )
+            : codes.filter(
+                (c: string) => c.trim().toUpperCase() !== promoCodeUpper,
+              )
+        )
+          .filter(Boolean)
+          .filter((c: string) => !c.startsWith("CREDIT-"))
+          .join(";;");
+        const { error: updErr } = await supabase
+          .from("stores")
+          .update({ promo_code: next })
+          .eq("id", (storeRow as any).id);
+        if (updErr) {
+          return res.status(500).json({ error: updErr.message });
+        }
+      }
+    }
+
+    return res.json({ success: true, promotionCode });
+  } catch (error) {
+    console.error("Erreur lors de la mise à jour du code promo:", error);
+    return res
+      .status(500)
+      .json({ error: error instanceof Error ? error.message : "Erreur" });
+  }
+});
+
 router.get("/coupons", async (req, res) => {
   try {
     const auth = getAuth(req);
@@ -2587,8 +2665,32 @@ router.get("/coupons", async (req, res) => {
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
-    const list = await stripe.coupons.list({ limit: 50 });
-    const data = (list.data || []).map((c) => ({
+    const desiredLimit = 50000;
+    const pageLimit = 100;
+    let startingAfter: string | undefined = undefined;
+    const activeCoupons: Stripe.Coupon[] = [];
+    let hasMore = true;
+
+    while (hasMore && activeCoupons.length < desiredLimit) {
+      const options: Stripe.CouponListParams = {
+        limit: pageLimit,
+      } as Stripe.CouponListParams;
+      if (startingAfter) options.starting_after = startingAfter;
+
+      const list = await stripe.coupons.list(options);
+      const data = Array.isArray(list?.data) ? list.data : [];
+      for (const c of data) {
+        if (c && c.valid === true) activeCoupons.push(c);
+        if (activeCoupons.length >= desiredLimit) break;
+      }
+
+      hasMore = Boolean(list?.has_more);
+      const last = data.length > 0 ? data[data.length - 1] : null;
+      startingAfter = last?.id || undefined;
+      if (!startingAfter) hasMore = false;
+    }
+
+    const data = activeCoupons.slice(0, desiredLimit).map((c) => ({
       id: c.id,
       name: c.name || null,
     }));
@@ -2597,3 +2699,5 @@ router.get("/coupons", async (req, res) => {
     res.status(500).json({ error: (error as any).message || "Internal error" });
   }
 });
+
+export default router;

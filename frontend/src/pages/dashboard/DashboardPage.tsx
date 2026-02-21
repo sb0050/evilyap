@@ -464,7 +464,7 @@ export default function DashboardPage() {
   const [promoCodes, setPromoCodes] = useState<any[]>([]);
   const [promoListLoading, setPromoListLoading] = useState<boolean>(false);
   const [promoSearchTerm, setPromoSearchTerm] = useState<string>('');
-  const [promoDeletingIds, setPromoDeletingIds] = useState<
+  const [promoTogglingIds, setPromoTogglingIds] = useState<
     Record<string, boolean>
   >({});
 
@@ -560,28 +560,29 @@ export default function DashboardPage() {
     return msg || 'Erreur inconnue';
   };
 
-  const handleDeletePromotionCode = async (id: string) => {
+  const handleSetPromotionCodeActive = async (id: string, active: boolean) => {
     try {
       if (!id) return;
-      setPromoDeletingIds(prev => ({ ...prev, [id]: true }));
+      setPromoTogglingIds(prev => ({ ...prev, [id]: true }));
       const token = await getToken();
-      const resp = await apiDelete(
-        `/api/stripe/promotion-codes/${encodeURIComponent(id)}`,
+      const resp = await apiPut(
+        `/api/stripe/promotion-codes/${encodeURIComponent(id)}/active`,
+        { active: !!active },
         {
           headers: { Authorization: token ? `Bearer ${token}` : '' },
         }
       );
       const json = await resp.json().catch(() => ({}));
       if (!resp.ok) {
-        const msg = json?.error || 'Suppression du code promo échouée';
+        const msg = json?.error || 'Mise à jour du code promo échouée';
         throw new Error(typeof msg === 'string' ? msg : 'Erreur');
       }
-      showToast('Code promo archivé', 'success');
+      showToast(active ? 'Code promo activé' : 'Code promo archivé', 'success');
       await fetchPromotionCodes();
     } catch (e: any) {
       showToast(normalizePromoToastError(e?.message || e), 'error');
     } finally {
-      setPromoDeletingIds(prev => ({ ...prev, [id]: false }));
+      setPromoTogglingIds(prev => ({ ...prev, [id]: false }));
     }
   };
 
@@ -1246,8 +1247,21 @@ export default function DashboardPage() {
       const a = document.createElement('a');
       a.href = objectUrl;
       const dispo = resp.headers.get('Content-Disposition') || '';
-      const m = dispo.match(/filename\*?=(?:UTF-8''|")?([^";]+)"?/i);
-      const filename = (m?.[1] || '').trim();
+      const filename = (() => {
+        const rfc5987 = dispo.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+        if (rfc5987?.[1]) {
+          try {
+            return decodeURIComponent(String(rfc5987[1]).trim());
+          } catch {
+            return String(rfc5987[1]).trim();
+          }
+        }
+        const quoted = dispo.match(/filename\s*=\s*"([^"]+)"/i);
+        if (quoted?.[1]) return String(quoted[1]).trim();
+        const bare = dispo.match(/filename\s*=\s*([^;]+)/i);
+        if (bare?.[1]) return String(bare[1]).trim();
+        return '';
+      })();
       const sanitizeFilenamePart = (raw: string) =>
         String(raw || '')
           .trim()
@@ -1264,12 +1278,13 @@ export default function DashboardPage() {
       const customerForFile = sanitizeFilenamePart(
         customerName || customerEmail || stripeId || 'client'
       );
-      const factureIdForFile = String(s.facture_id ?? s.id).replace(
+      const factureIdForFile = String(s.facture_id || '').replace(
         /[^\dA-Za-z_-]+/g,
         '_'
       );
       a.download =
-        filename || `facture_${factureIdForFile}_${customerForFile}.pdf`;
+        filename ||
+        `facture_${factureIdForFile || String(s.id)}_${customerForFile}.pdf`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -3679,7 +3694,8 @@ export default function DashboardPage() {
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
-              <Tag className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <RiDiscountPercentFill className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+
               <span className='truncate'>Code Promo</span>
             </button>
             <button
@@ -5515,9 +5531,29 @@ export default function DashboardPage() {
               </form>
 
               <div className='mt-8'>
-                <h3 className='text-base font-semibold text-gray-900 mb-3'>
-                  Produits en stock
-                </h3>
+                <div className='flex items-center mb-3 gap-2'>
+                  <h3 className='text-base font-semibold text-gray-900'>
+                    Produits en stock
+                  </h3>
+                  <button
+                    type='button'
+                    onClick={() =>
+                      fetchStockProducts({
+                        silent: true,
+                        background: true,
+                      }).catch(() => {})
+                    }
+                    disabled={stockLoading || stockReloading}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${
+                        stockReloading ? 'animate-spin' : ''
+                      }`}
+                    />
+                    <span>Recharger</span>
+                  </button>
+                </div>
 
                 {stockLoading ? (
                   <div className='flex items-center justify-center py-10'>
@@ -5556,24 +5592,6 @@ export default function DashboardPage() {
                     </div>
 
                     <div className='mb-4 flex flex-wrap items-center gap-2'>
-                      <button
-                        type='button'
-                        onClick={() =>
-                          fetchStockProducts({
-                            silent: true,
-                            background: true,
-                          }).catch(() => {})
-                        }
-                        disabled={stockLoading || stockReloading}
-                        className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
-                      >
-                        <RefreshCw
-                          className={`w-4 h-4 mr-1 ${
-                            stockReloading ? 'animate-spin' : ''
-                          }`}
-                        />
-                        <span>Recharger</span>
-                      </button>
                       <div className='flex items-center space-x-2 flex-wrap'>
                         <span className='text-sm text-gray-700'>
                           Filtrer par
@@ -6114,7 +6132,7 @@ export default function DashboardPage() {
                     <div
                       key={s.id}
                       className={`rounded-lg border border-gray-200 p-3 shadow-sm ${
-                        s.is_cancelled ? 'bg-gray-50 opacity-70' : 'bg-white'
+                        s.is_cancelled ? 'bg-gray-50' : 'bg-white'
                       }`}
                     >
                       <div className='flex items-start justify-between'>
@@ -6351,9 +6369,7 @@ export default function DashboardPage() {
                         <tr
                           key={s.id}
                           className={`border-b border-gray-100 ${
-                            s.is_cancelled
-                              ? 'bg-gray-50 opacity-70'
-                              : 'hover:bg-gray-50'
+                            s.is_cancelled ? 'bg-gray-50' : 'hover:bg-gray-50'
                           }`}
                         >
                           <td className='py-4 px-4 text-gray-700'>
@@ -7739,7 +7755,7 @@ export default function DashboardPage() {
                   <label className='block text-sm font-medium text-gray-700 mb-1'>
                     Coupon
                   </label>
-                  <div className='space-y-2'>
+                  <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2'>
                     {couponOptions.map(opt => (
                       <label key={opt.id} className='flex items-center gap-2'>
                         <input
@@ -7767,9 +7783,11 @@ export default function DashboardPage() {
                   <input
                     type='text'
                     value={promoCodeName}
-                    onChange={e =>
-                      setPromoCodeName(e.target.value.toUpperCase())
-                    }
+                    onChange={e => {
+                      const next = String(e.target.value || '').toUpperCase();
+                      if (next.startsWith('CREDIT-')) return;
+                      setPromoCodeName(next);
+                    }}
                     placeholder='Ex: STORE20'
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />
@@ -7786,6 +7804,21 @@ export default function DashboardPage() {
                     value={promoMinAmountEuro}
                     onChange={e => setPromoMinAmountEuro(e.target.value)}
                     placeholder='Ex: 50'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Nombre maximum d’utilisations
+                  </label>
+                  <input
+                    type='number'
+                    min='0'
+                    step='1'
+                    value={promoMaxRedemptions}
+                    onChange={e => setPromoMaxRedemptions(e.target.value)}
+                    placeholder='Ex: 10'
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />
                 </div>
@@ -7820,21 +7853,6 @@ export default function DashboardPage() {
                     L’heure est obligatoire si une date est renseignée.
                   </p>
                 </div>
-
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Nombre maximum d’utilisations
-                  </label>
-                  <input
-                    type='number'
-                    min='0'
-                    step='1'
-                    value={promoMaxRedemptions}
-                    onChange={e => setPromoMaxRedemptions(e.target.value)}
-                    placeholder='Ex: 10'
-                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                  />
-                </div>
               </div>
 
               <div className='flex items-center gap-3 mb-6'>
@@ -7846,7 +7864,7 @@ export default function DashboardPage() {
                   {promoCreating && (
                     <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
                   )}
-                  <RiDiscountPercentFill className='w-4 h-4 mr-1' />
+
                   <span>Créer le code promo</span>
                 </button>
               </div>
@@ -7854,7 +7872,6 @@ export default function DashboardPage() {
               {/* Barre de recherche par libellé du code */}
               <div className='flex items-center justify-between mb-4'>
                 <div className='flex items-center'>
-                  <RiDiscountPercentFill className='w-5 h-5 text-indigo-600 mr-2' />
                   <h2 className='text-lg font-semibold text-gray-900'>
                     Mes Code Promo
                   </h2>
@@ -7906,14 +7923,40 @@ export default function DashboardPage() {
                           <div className='text-base font-semibold text-gray-900'>
                             {p.code}
                           </div>
-                          <button
-                            onClick={() => handleDeletePromotionCode(p.id)}
-                            disabled={!!promoDeletingIds[p.id]}
-                            className='inline-flex items-center px-2 py-1 text-xs rounded-md bg-gray-600 text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                          >
-                            <FaArchive className='w-3 h-3 mr-1' />
-                            Archiver
-                          </button>
+                          {promoTogglingIds[p.id] ? (
+                            <div className='text-sm text-gray-600'>
+                              Chargement...
+                            </div>
+                          ) : (
+                            <label className='inline-flex items-center cursor-pointer select-none'>
+                              <input
+                                type='checkbox'
+                                className='sr-only'
+                                checked={p?.active !== false}
+                                onChange={e =>
+                                  handleSetPromotionCodeActive(
+                                    p.id,
+                                    e.target.checked
+                                  )
+                                }
+                              />
+                              <span
+                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                                  p?.active !== false
+                                    ? 'bg-indigo-600'
+                                    : 'bg-gray-300'
+                                }`}
+                              >
+                                <span
+                                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                    p?.active !== false
+                                      ? 'translate-x-6'
+                                      : 'translate-x-1'
+                                  }`}
+                                />
+                              </span>
+                            </label>
+                          )}
                         </div>
                         <div className='mt-2 text-sm text-gray-700 space-y-1'>
                           <div>
@@ -7993,7 +8036,7 @@ export default function DashboardPage() {
                         Restrictions
                       </th>
                       <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                        Actions
+                        Statut
                       </th>
                     </tr>
                   </thead>
@@ -8001,7 +8044,7 @@ export default function DashboardPage() {
                     {promoListLoading ? (
                       <tr>
                         <td
-                          colSpan={8}
+                          colSpan={7}
                           className='px-4 py-6 text-center text-gray-600'
                         >
                           Chargement...
@@ -8010,7 +8053,7 @@ export default function DashboardPage() {
                     ) : promoCodes.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={8}
+                          colSpan={7}
                           className='px-4 py-6 text-center text-gray-600'
                         >
                           Aucun code promo
@@ -8025,89 +8068,118 @@ export default function DashboardPage() {
                             .toLowerCase()
                             .includes(term);
                         })
-                        .map((p: any) => (
-                          <tr
-                            key={p.id}
-                            className={p?.active === false ? 'opacity-60' : ''}
-                          >
-                            <td className='px-4 py-3 text-gray-900 font-medium'>
-                              {p.code}
-                            </td>
-                            <td
-                              className='px-4 py-3 text-gray-700 truncate max-w-[12rem]'
-                              title={(() => {
-                                const match = couponOptions.find(
-                                  c => c.id === (p?.coupon?.id || '')
-                                );
-                                return (
-                                  match?.name ||
-                                  p?.coupon?.name ||
-                                  p?.coupon?.id ||
-                                  ''
-                                );
-                              })()}
+                        .map((p: any) =>
+                          promoTogglingIds[p.id] ? (
+                            <tr key={p.id}>
+                              <td
+                                colSpan={7}
+                                className='px-4 py-6 text-center text-gray-600'
+                              >
+                                Chargement...
+                              </td>
+                            </tr>
+                          ) : (
+                            <tr
+                              key={p.id}
+                              className={
+                                p?.active === false ? 'opacity-60' : ''
+                              }
                             >
-                              {(() => {
-                                const match = couponOptions.find(
-                                  c => c.id === (p?.coupon?.id || '')
-                                );
-                                return (
-                                  match?.name ||
-                                  p?.coupon?.name ||
-                                  p?.coupon?.id ||
-                                  '—'
-                                );
-                              })()}
-                            </td>
+                              <td className='px-4 py-3 text-gray-900 font-medium'>
+                                {p.code}
+                              </td>
+                              <td
+                                className='px-4 py-3 text-gray-700 truncate max-w-[12rem]'
+                                title={(() => {
+                                  const match = couponOptions.find(
+                                    c => c.id === (p?.coupon?.id || '')
+                                  );
+                                  return (
+                                    match?.name ||
+                                    p?.coupon?.name ||
+                                    p?.coupon?.id ||
+                                    ''
+                                  );
+                                })()}
+                              >
+                                {(() => {
+                                  const match = couponOptions.find(
+                                    c => c.id === (p?.coupon?.id || '')
+                                  );
+                                  return (
+                                    match?.name ||
+                                    p?.coupon?.name ||
+                                    p?.coupon?.id ||
+                                    '—'
+                                  );
+                                })()}
+                              </td>
 
-                            <td className='px-4 py-3 text-gray-700'>
-                              {p.expires_at
-                                ? new Date(p.expires_at * 1000).toLocaleString(
-                                    'fr-FR',
-                                    {
+                              <td className='px-4 py-3 text-gray-700'>
+                                {p.expires_at
+                                  ? new Date(
+                                      p.expires_at * 1000
+                                    ).toLocaleString('fr-FR', {
                                       dateStyle: 'short',
                                       timeStyle: 'short',
+                                    })
+                                  : '—'}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700'>
+                                {p.times_redeemed ?? 0}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700'>
+                                {p.max_redemptions ?? '—'}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700'>
+                                {(() => {
+                                  const r = p?.restrictions || {};
+                                  const parts: string[] = [];
+                                  if (typeof r.minimum_amount === 'number') {
+                                    const eur = (
+                                      r.minimum_amount / 100
+                                    ).toLocaleString('fr-FR', {
+                                      minimumFractionDigits: 2,
+                                      maximumFractionDigits: 2,
+                                    });
+                                    parts.push(`Min: ${eur} €`);
+                                  }
+                                  return parts.length ? parts.join(' • ') : '—';
+                                })()}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700'>
+                                <label className='inline-flex items-center cursor-pointer select-none'>
+                                  <input
+                                    type='checkbox'
+                                    className='sr-only'
+                                    checked={p?.active !== false}
+                                    onChange={e =>
+                                      handleSetPromotionCodeActive(
+                                        p.id,
+                                        e.target.checked
+                                      )
                                     }
-                                  )
-                                : '—'}
-                            </td>
-                            <td className='px-4 py-3 text-gray-700'>
-                              {p.times_redeemed ?? 0}
-                            </td>
-                            <td className='px-4 py-3 text-gray-700'>
-                              {p.max_redemptions ?? '—'}
-                            </td>
-                            <td className='px-4 py-3 text-gray-700'>
-                              {(() => {
-                                const r = p?.restrictions || {};
-                                const parts: string[] = [];
-                                if (typeof r.minimum_amount === 'number') {
-                                  const eur = (
-                                    r.minimum_amount / 100
-                                  ).toLocaleString('fr-FR', {
-                                    minimumFractionDigits: 2,
-                                    maximumFractionDigits: 2,
-                                  });
-                                  parts.push(`Min: ${eur} €`);
-                                }
-                                return parts.length ? parts.join(' • ') : '—';
-                              })()}
-                            </td>
-                            <td className='px-4 py-3 text-gray-700'>
-                              <button
-                                onClick={() => handleDeletePromotionCode(p.id)}
-                                disabled={!!promoDeletingIds[p.id]}
-                                className={`inline-flex items-center p-2 rounded-md border ${promoDeletingIds[p.id] ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-700 border-gray-300'}`}
-                                title={'Archiver'}
-                              >
-                                <FaArchive
-                                  className={`w-4 h-4 ${promoDeletingIds[p.id] ? 'opacity-60' : ''}`}
-                                />
-                                <span className='ml-1'>Archiver</span>
-                              </button>
-                            </td>
-                          </tr>
-                        ))
+                                  />
+                                  <span
+                                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                                      p?.active !== false
+                                        ? 'bg-indigo-600'
+                                        : 'bg-gray-300'
+                                    }`}
+                                  >
+                                    <span
+                                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                        p?.active !== false
+                                          ? 'translate-x-6'
+                                          : 'translate-x-1'
+                                      }`}
+                                    />
+                                  </span>
+                                </label>
+                              </td>
+                            </tr>
+                          )
+                        )
                     )}
                   </tbody>
                 </table>

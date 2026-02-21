@@ -1964,8 +1964,9 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               store_earnings_amount: storeEarningsAmountCents,
               customer_spent_amount: customerSpentAmountCents,
               stripe_fees: stripeFeesCents,
+              boxtal_shipping_creation_failed: boxtalOrderFailed,
               boxtal_shipping_json: boxtalOrderFailed
-                ? JSON.stringify(createOrderPayload)
+                ? createOrderPayload
                 : null,
               delivery_cost:
                 (dataBoxtal?.content?.deliveryPriceExclTax?.value || 0) * 1.2,
