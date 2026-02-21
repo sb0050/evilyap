@@ -1947,6 +1947,30 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 return productReference;
               })() || null;
 
+            const boxtalShippingJsonForDb = (() => {
+              if (!boxtalOrderFailed) return null;
+              if (
+                createOrderPayload &&
+                typeof createOrderPayload === "object" &&
+                !Array.isArray(createOrderPayload)
+              ) {
+                return createOrderPayload;
+              }
+              if (typeof createOrderPayload === "string") {
+                try {
+                  const parsed = JSON.parse(createOrderPayload);
+                  if (
+                    parsed &&
+                    typeof parsed === "object" &&
+                    !Array.isArray(parsed)
+                  ) {
+                    return parsed;
+                  }
+                } catch {}
+              }
+              return null;
+            })();
+
             const shipmentRowData: any = {
               store_id: storeId,
               customer_stripe_id: customerId || null,
@@ -1964,10 +1988,8 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               store_earnings_amount: storeEarningsAmountCents,
               customer_spent_amount: customerSpentAmountCents,
               stripe_fees: stripeFeesCents,
-              boxtal_shipping_creation_failed: boxtalOrderFailed,
-              boxtal_shipping_json: boxtalOrderFailed
-                ? createOrderPayload
-                : null,
+              boxtal_shipment_creation_failed: boxtalOrderFailed,
+              boxtal_shipping_json: boxtalShippingJsonForDb,
               delivery_cost:
                 (dataBoxtal?.content?.deliveryPriceExclTax?.value || 0) * 1.2,
               promo_code: appliedPromoCodes,

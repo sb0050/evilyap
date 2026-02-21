@@ -89,8 +89,14 @@ const normalizePhoneForPrefixCheck = (phone: unknown) => {
   return raw;
 };
 
-const isDeliveryRegulationText = (text: unknown) =>
-  /r[ée]gularisation\s+livraison/i.test(String(text || '').trim());
+const isDeliveryRegulationText = (text: unknown) => {
+  const normalized = String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  return /\b(?:regulation|regularisation)\s+livraison\b/i.test(normalized);
+};
 
 const getExpectedPhonePrefixForCountry = (country: unknown) => {
   const c = String(country || '')
@@ -1303,6 +1309,19 @@ export default function CheckoutPage() {
 
       if (latestCartItems.length === 0) {
         const msg = 'Votre panier est vide';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return;
+      }
+
+      const blockedDeliveryRegulationItems = latestCartItems.filter(
+        it =>
+          isDeliveryRegulationText(it.product_reference) ||
+          isDeliveryRegulationText((it as any)?.description)
+      );
+      if (blockedDeliveryRegulationItems.length > 0) {
+        const msg =
+          "Les articles 'regulation livraison' sont interdits au paiement.";
         setPaymentError(msg);
         showToast(msg, 'error');
         return;

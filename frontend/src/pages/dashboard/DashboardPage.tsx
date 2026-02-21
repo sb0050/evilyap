@@ -95,6 +95,8 @@ type Shipment = {
   promo_code?: string | null;
   estimated_delivery_cost?: number | null;
   facture_id?: number | string | null;
+  boxtal_shipment_creation_failed?: boolean | null;
+  boxtal_shipping_json?: any | null;
 };
 
 type ProductItem = {
@@ -1315,11 +1317,14 @@ export default function DashboardPage() {
   ) => {
     const silent = options?.silent;
     try {
-      if (!s.shipment_id) return false;
+      const canRetryFromFailedBoxtal =
+        Boolean(s.boxtal_shipment_creation_failed) &&
+        Boolean(s.boxtal_shipping_json);
+      if (!s.shipment_id && !canRetryFromFailedBoxtal) return false;
       setDocStatus(prev => ({ ...prev, [s.id]: 'loading' }));
       const token = await getToken();
-      const url = `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
-        s.shipment_id
+      const url = `${apiBase}/api/boxtal/shipments/${encodeURIComponent(
+        String(s.id)
       )}/shipping-document/download`;
       const resp = await fetch(url, {
         method: 'GET',
@@ -1332,7 +1337,7 @@ export default function DashboardPage() {
         const objectUrl = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = objectUrl;
-        a.download = `LABEL_${s.shipment_id}.pdf`;
+        a.download = `LABEL_${s.shipment_id || s.id}.pdf`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -1378,7 +1383,11 @@ export default function DashboardPage() {
 
   const handleBatchShippingDocuments = async () => {
     const targets = selectedSales.filter(
-      s => s.document_created && s.shipment_id && !s.is_cancelled
+      s =>
+        !s.is_cancelled &&
+        (Boolean(s.shipment_id) ||
+          (Boolean(s.boxtal_shipment_creation_failed) &&
+            Boolean(s.boxtal_shipping_json)))
     );
     if (targets.length === 0) {
       showToast('Aucune vente sélectionnée pour le bordereau', 'error');
@@ -2555,7 +2564,11 @@ export default function DashboardPage() {
   );
   const selectedForInvoice = selectedSales.filter(s => !s.is_cancelled);
   const selectedForDoc = selectedSales.filter(
-    s => s.document_created && s.shipment_id && !s.is_cancelled
+    s =>
+      !s.is_cancelled &&
+      (Boolean(s.shipment_id) ||
+        (Boolean(s.boxtal_shipment_creation_failed) &&
+          Boolean(s.boxtal_shipping_json)))
   );
   const selectedForCancel = selectedSales.filter(
     s =>
@@ -6094,9 +6107,9 @@ export default function DashboardPage() {
                       ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                   }`}
-                  title='Annuler la vente'
+                  title='Annuler la commande'
                 >
-                  Annuler la vente
+                  Annuler la commande
                 </button>
                 <button
                   onClick={() => handleOpenHelp(selectedSales)}

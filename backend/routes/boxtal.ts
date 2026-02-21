@@ -2,6 +2,7 @@ import express from "express";
 import { XMLParser } from "fast-xml-parser";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
+import { clerkClient, getAuth } from "@clerk/express";
 import Stripe from "stripe";
 import {
   emailService,
@@ -82,6 +83,42 @@ const verifyAndRefreshBoxtalToken = async () => {
     console.error("Error refreshing Boxtal token:", error);
     throw new Error("Unable to refresh Boxtal token");
   }
+};
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const parseBoxtalShippingPayload = (raw: any): Record<string, any> | null => {
+  if (!raw) return null;
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, any>;
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, any>;
+      }
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+
+const pickPreferredDocument = (payload: any) => {
+  const docs: any[] = Array.isArray(payload?.content) ? payload.content : [];
+  const preferredDoc =
+    docs.find((d) => String(d?.type || "").toUpperCase() === "LABEL") ||
+    docs[0] ||
+    null;
+  return {
+    doc: preferredDoc,
+    url: preferredDoc?.url ? String(preferredDoc.url) : "",
+    type: preferredDoc?.type ? String(preferredDoc.type) : "LABEL",
+  };
 };
 
 // Route pour obtenir le token d'authentification Boxtal
@@ -451,6 +488,265 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
 });
 
 // Proxy de téléchargement du bordereau avec Content-Disposition: attachment
+router.get(
+  "/shipments/:shipmentRowId/shipping-document/download",
+  async (req, res) => {
+    try {
+      const auth = getAuth(req);
+      if (!auth?.isAuthenticated || !auth.userId) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      const shipmentRowId = Number(req.params.shipmentRowId);
+      if (!Number.isFinite(shipmentRowId) || shipmentRowId <= 0) {
+        return res.status(400).json({ error: "Invalid shipment id" });
+      }
+      if (!supabase) {
+        return res.status(500).json({ error: "Database not configured" });
+      }
+
+      const { data: shipment, error: shipmentErr } = await supabase
+        .from("shipments")
+        .select(
+          "id,store_id,customer_stripe_id,shipment_id,document_created,document_url,boxtal_shipment_creation_failed,boxtal_shipping_json,status,estimated_delivery_date,delivery_cost",
+        )
+        .eq("id", shipmentRowId)
+        .maybeSingle();
+      if (shipmentErr) {
+        return res.status(500).json({ error: shipmentErr.message });
+      }
+      if (!shipment) {
+        return res.status(404).json({ error: "Shipment not found" });
+      }
+
+      const requesterUser = await clerkClient.users.getUser(auth.userId);
+      const requesterStripeId = String(
+        (requesterUser?.publicMetadata as any)?.stripe_id || "",
+      ).trim();
+      const shipmentStoreId = Number((shipment as any)?.store_id || 0);
+      const shipmentCustomerStripeId = String(
+        (shipment as any)?.customer_stripe_id || "",
+      ).trim();
+
+      let isOwner = false;
+      if (Number.isFinite(shipmentStoreId) && shipmentStoreId > 0) {
+        const { data: store, error: storeErr } = await supabase
+          .from("stores")
+          .select("id,clerk_id")
+          .eq("id", shipmentStoreId)
+          .maybeSingle();
+        if (storeErr) {
+          return res.status(500).json({ error: storeErr.message });
+        }
+        isOwner =
+          Boolean((store as any)?.clerk_id) &&
+          String((store as any)?.clerk_id) === String(auth.userId);
+      }
+
+      const isCustomer =
+        Boolean(requesterStripeId) &&
+        requesterStripeId === shipmentCustomerStripeId;
+      if (!isOwner && !isCustomer) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      let shippingOrderId = String((shipment as any)?.shipment_id || "").trim();
+      let docPayload: any = null;
+
+      if ((shipment as any)?.boxtal_shipment_creation_failed === true) {
+        const createOrderPayload = parseBoxtalShippingPayload(
+          (shipment as any)?.boxtal_shipping_json,
+        );
+        if (!createOrderPayload) {
+          return res.status(400).json({
+            error:
+              "boxtal_shipping_json absent ou invalide pour recréer l'expédition",
+          });
+        }
+
+        const token = await verifyAndRefreshBoxtalToken();
+        const createUrl = `${BOXTAL_API}/shipping/v3.1/shipping-order`;
+        const createResp = await fetch(createUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(createOrderPayload),
+        });
+
+        if (!createResp.ok) {
+          const createErrorText = await createResp.text();
+          console.error(
+            "retry shipment creation failed:",
+            createResp.status,
+            createErrorText,
+            { shipmentRowId },
+          );
+          return res.status(createResp.status).json({
+            error: "Failed to create shipping order",
+            details: createErrorText,
+          });
+        }
+
+        const createData: any = await createResp.json();
+        shippingOrderId = String(createData?.content?.id || "").trim();
+        if (!shippingOrderId) {
+          return res.status(502).json({
+            error: "Shipping order created but missing id",
+          });
+        }
+
+        // Reprise du flux webhook: attendre la disponibilité du bordereau.
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          await sleep(10000);
+          const retryToken = await verifyAndRefreshBoxtalToken();
+          const docResp = await fetch(
+            `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
+              shippingOrderId,
+            )}/shipping-document`,
+            {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${retryToken}`,
+                "Content-Type": "application/json",
+              },
+            },
+          );
+          if (!docResp.ok) continue;
+          const maybeDocPayload: any = await docResp.json().catch(() => null);
+          const docs: any[] = Array.isArray(maybeDocPayload?.content)
+            ? maybeDocPayload.content
+            : [];
+          if (docs.length > 0) {
+            docPayload = maybeDocPayload;
+            break;
+          }
+        }
+
+        const updateAfterCreate: any = {
+          shipment_id: shippingOrderId,
+          status: (createData?.content?.status as any) || null,
+          estimated_delivery_date:
+            (createData?.content?.estimatedDeliveryDate as any) || null,
+          boxtal_shipment_creation_failed: false,
+          boxtal_shipping_json: null,
+        };
+        const deliveryExclTax = Number(
+          (createData?.content?.deliveryPriceExclTax?.value as any) ?? NaN,
+        );
+        if (Number.isFinite(deliveryExclTax) && deliveryExclTax >= 0) {
+          updateAfterCreate.delivery_cost = deliveryExclTax * 1.2;
+        }
+        const preferred = pickPreferredDocument(docPayload);
+        if (preferred.url) {
+          updateAfterCreate.document_created = true;
+          updateAfterCreate.document_url = preferred.url;
+        }
+
+        const { error: updateAfterCreateErr } = await supabase
+          .from("shipments")
+          .update(updateAfterCreate)
+          .eq("id", shipmentRowId);
+        if (updateAfterCreateErr) {
+          console.error(
+            "Error updating shipment after boxtal recreate:",
+            updateAfterCreateErr,
+          );
+        }
+      }
+
+      if (!shippingOrderId) {
+        return res.status(404).json({ error: "Missing shipping order id" });
+      }
+
+      if (!docPayload) {
+        const token = await verifyAndRefreshBoxtalToken();
+        const docResp = await fetch(
+          `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
+            shippingOrderId,
+          )}/shipping-document`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+        if (!docResp.ok) {
+          const contentType = docResp.headers.get("content-type") || "";
+          if (contentType.includes("application/json")) {
+            const errJson = await docResp.json();
+            return res.status(docResp.status).json(errJson);
+          }
+          const errText = await docResp.text();
+          return res.status(docResp.status).json({
+            error: "Failed to get shipping documents",
+            details: errText,
+          });
+        }
+        docPayload = await docResp.json();
+      }
+
+      const preferredDoc = pickPreferredDocument(docPayload);
+      if (!preferredDoc.url) {
+        return res
+          .status(404)
+          .json({ error: "No shipping document available" });
+      }
+
+      const fileResp = await fetch(preferredDoc.url);
+      if (!fileResp.ok) {
+        const errText = await fileResp.text().catch(() => "");
+        return res.status(fileResp.status).json({
+          error: "Failed to download shipping document",
+          details: errText,
+        });
+      }
+
+      const buf = Buffer.from(await fileResp.arrayBuffer());
+      const ct = fileResp.headers.get("content-type") || "application/pdf";
+      const safeType = String(preferredDoc.type || "DOCUMENT").toUpperCase();
+      const filename = `${safeType}_${shippingOrderId}.pdf`;
+
+      try {
+        const { error: updErr } = await supabase
+          .from("shipments")
+          .update({
+            shipment_id: shippingOrderId,
+            document_created: true,
+            document_url: preferredDoc.url,
+            boxtal_shipment_creation_failed: false,
+            boxtal_shipping_json: null,
+          })
+          .eq("id", shipmentRowId);
+        if (updErr) {
+          console.error("Error updating shipment document fields:", updErr);
+        }
+      } catch (updEx) {
+        console.error("Exception updating shipment document fields:", updEx);
+      }
+
+      res.setHeader("Content-Type", ct);
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`,
+      );
+      return res.status(200).send(buf);
+    } catch (error) {
+      console.error(
+        "Error in /api/boxtal/shipments/:shipmentRowId/shipping-document/download:",
+        error,
+      );
+      return res.status(500).json({
+        error: "Failed to download shipping document",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  },
+);
+
 router.get(
   "/shipping-orders/:id/shipping-document/download",
   async (req, res) => {
