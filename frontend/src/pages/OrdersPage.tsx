@@ -84,9 +84,6 @@ export default function OrdersPage() {
   );
   const [reloadingBalance, setReloadingBalance] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [returnStatus, setReturnStatus] = useState<
-    Record<number, 'idle' | 'loading' | 'success' | 'error'>
-  >({});
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState<number>(1);
   const [estimatedSortOrder, setEstimatedSortOrder] = useState<
@@ -110,6 +107,10 @@ export default function OrdersPage() {
   const [switchShipmentModalOpen, setSwitchShipmentModalOpen] =
     useState<boolean>(false);
   const [switchShipmentTarget, setSwitchShipmentTarget] =
+    useState<Shipment | null>(null);
+  const [returnSwitchShipmentModalOpen, setReturnSwitchShipmentModalOpen] =
+    useState<boolean>(false);
+  const [returnSwitchShipmentTarget, setReturnSwitchShipmentTarget] =
     useState<Shipment | null>(null);
 
   // État pour la popup de contact propriétaire
@@ -701,13 +702,21 @@ export default function OrdersPage() {
     const isOpening = openingShipmentId != null && openingShipmentId !== s.id;
     return okStatus && Boolean(storeSlug) && Boolean(paymentId) && !isOpening;
   })();
-  const selectedForReturn = selectedOrders.filter(
-    s =>
-      s.shipment_id &&
+  const canReturnSelectedOrder = (() => {
+    if (selectedOrders.length !== 1) return false;
+    const s = selectedOrders[0];
+    const storeSlug = String(s.store?.slug || '').trim();
+    const paymentId = String(s.payment_id || '').trim();
+    const isOpening = openingShipmentId != null && openingShipmentId !== s.id;
+    return (
+      Boolean(s.shipment_id) &&
       !s.return_requested &&
-      !!s.is_final_destination &&
-      returnStatus[s.id] !== 'loading'
-  );
+      s.is_final_destination === true &&
+      Boolean(storeSlug) &&
+      Boolean(paymentId) &&
+      !isOpening
+    );
+  })();
   const selectedForContact = selectedOrders.filter(s => !!s.shipment_id);
   const visibleOrderIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
@@ -838,6 +847,51 @@ export default function OrdersPage() {
       const url = `/checkout/${encodeURIComponent(
         storeSlug
       )}?open_shipment=true&payment_id=${encodeURIComponent(paymentId)}`;
+      window.open(url, '_blank');
+      await handleRefreshOrders();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+      showToast(msg, 'error');
+    } finally {
+      setOpeningShipmentId(null);
+    }
+  };
+
+  const handleConfirmReturnSwitchShipment = async () => {
+    const s = returnSwitchShipmentTarget;
+    if (!s) return;
+    if (s.is_final_destination !== true) return;
+    const storeSlug = String(s.store?.slug || '').trim();
+    const paymentId = String(s.payment_id || '').trim();
+    if (!storeSlug || !paymentId) {
+      showToast("Impossible d'ouvrir la commande sélectionnée", 'error');
+      return;
+    }
+    try {
+      showToast('Chargement...', 'info');
+      setOpeningShipmentId(s.id);
+      const apiBase = API_BASE_URL;
+      const token = await getToken();
+      const resp = await fetch(`${apiBase}/api/shipments/open-shipment`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+        body: JSON.stringify({ shipmentId: s.id, force: true }),
+      });
+      const json = await resp.json().catch(() => null as any);
+      if (!resp.ok) {
+        const msg =
+          json?.error || "Impossible d'ouvrir la commande sélectionnée";
+        showToast(msg, 'error');
+        return;
+      }
+      setReturnSwitchShipmentModalOpen(false);
+      setReturnSwitchShipmentTarget(null);
+      const url = `/checkout/${encodeURIComponent(
+        storeSlug
+      )}?return_shipment=true&payment_id=${encodeURIComponent(paymentId)}`;
       window.open(url, '_blank');
       await handleRefreshOrders();
     } catch (e) {
@@ -1032,88 +1086,63 @@ export default function OrdersPage() {
     }
   };
 
-  const handleReturn = async (s: Shipment, options?: { silent?: boolean }) => {
-    const silent = options?.silent;
-    if (!s.shipment_id) {
-      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
-      return false;
+  const handleBatchReturn = async () => {
+    if (selectedOrders.length !== 1) {
+      showToast('Sélectionnez une seule commande pour demander le retour', 'error');
+      return;
+    }
+    const s = selectedOrders[0];
+    if (!canReturnSelectedOrder) {
+      showToast('Cette commande n’est pas éligible au retour', 'error');
+      return;
+    }
+    const storeSlug = String(s.store?.slug || '').trim();
+    const paymentId = String(s.payment_id || '').trim();
+    if (!storeSlug || !paymentId) {
+      showToast("Impossible d'ouvrir la commande sélectionnée", 'error');
+      return;
     }
     try {
-      setReturnStatus(prev => ({ ...prev, [s.id]: 'loading' }));
+      showToast('Chargement...', 'info');
+      setOpeningShipmentId(s.id);
+      const apiBase = API_BASE_URL;
       const token = await getToken();
-      const url = `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
-        s.shipment_id
-      )}/return`;
-      const resp = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: token ? `Bearer ${token}` : '',
-        },
-      });
-      const json = await resp.json().catch(() => ({}));
-      if (resp.ok && json?.success) {
-        setReturnStatus(prev => ({ ...prev, [s.id]: 'success' }));
-        // Marquer localement la demande de retour comme envoyée pour désactiver le bouton
-        setShipments(prev =>
-          (prev || []).map(it =>
-            it.id === s.id ? { ...it, return_requested: true } : it
-          )
-        );
-        if (!silent) {
-          showToast('Demande de retour envoyée avec succès', 'success');
-        }
-        return true;
-      } else {
-        setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
-        const msg =
-          json?.error ||
-          json?.message ||
-          "Erreur lors de l'envoi de la demande";
-        if (!silent) {
-          showToast(typeof msg === 'string' ? msg : "Erreur d'envoi", 'error');
-        }
-        return false;
-      }
-    } catch (e: any) {
-      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
-      const rawMsg = e?.message || "Erreur lors de l'envoi de la demande";
-      if (!silent) {
-        showToast(
-          typeof rawMsg === 'string' ? rawMsg : "Erreur d'envoi",
-          'error'
-        );
-      }
-      return false;
-    }
-  };
+      const doOpen = async (force: boolean) => {
+        const r = await fetch(`${apiBase}/api/shipments/open-shipment`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+          body: JSON.stringify({ shipmentId: s.id, force }),
+        });
+        const j = await r.json().catch(() => null as any);
+        return { resp: r, json: j };
+      };
 
-  const handleBatchReturn = async () => {
-    if (selectedForReturn.length === 0) {
-      showToast('Aucune commande sélectionnée pour le retour', 'error');
-      return;
-    }
-    const references: string[] = [];
-    for (const s of selectedForReturn) {
-      const ok = await handleReturn(s, { silent: true });
-      if (ok) {
-        const ref = String(s.product_reference || s.shipment_id || '').trim();
-        references.push(ref || String(s.shipment_id));
+      const { resp, json } = await doOpen(false);
+      if (!resp.ok && resp.status === 409) {
+        setReturnSwitchShipmentTarget(s);
+        setReturnSwitchShipmentModalOpen(true);
+        return;
       }
+      if (!resp.ok) {
+        const msg =
+          json?.error || "Impossible d'ouvrir la commande sélectionnée";
+        showToast(msg, 'error');
+        return;
+      }
+      const url = `/checkout/${encodeURIComponent(
+        storeSlug
+      )}?return_shipment=true&payment_id=${encodeURIComponent(paymentId)}`;
+      window.open(url, '_blank');
+      await handleRefreshOrders();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+      showToast(msg, 'error');
+    } finally {
+      setOpeningShipmentId(null);
     }
-    if (references.length === 0) {
-      showToast(
-        'Aucune commande traitée pour le retour. Vérifiez l’éligibilité des commandes sélectionnées.',
-        'info'
-      );
-      return;
-    }
-    const msg =
-      references.length <= 3
-        ? `Retours demandés pour : ${references.join(', ')}`
-        : `Retours demandés pour ${references.length} références (${references
-            .slice(0, 3)
-            .join(', ')}...)`;
-    showToast(msg, 'success');
   };
 
   return (
@@ -1161,6 +1190,45 @@ export default function OrdersPage() {
               className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
             >
               Modifier
+            </button>
+          </div>
+        </div>
+      </Modal>
+      <Modal
+        isOpen={returnSwitchShipmentModalOpen}
+        onClose={() => {
+          setReturnSwitchShipmentModalOpen(false);
+          setReturnSwitchShipmentTarget(null);
+        }}
+        title='Commande déjà en modification'
+      >
+        <div className='space-y-4'>
+          <div className='text-sm text-gray-700'>
+            Une autre commande est en cours de modification. Voulez-vous ouvrir
+            cette commande et annuler les modifications de l’autre ?
+          </div>
+          <div className='flex items-center justify-end gap-2'>
+            <button
+              type='button'
+              onClick={() => {
+                setReturnSwitchShipmentModalOpen(false);
+                setReturnSwitchShipmentTarget(null);
+              }}
+              className='px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+            >
+              Annuler
+            </button>
+            <button
+              type='button'
+              onClick={handleConfirmReturnSwitchShipment}
+              disabled={
+                !returnSwitchShipmentTarget ||
+                (openingShipmentId != null &&
+                  openingShipmentId !== returnSwitchShipmentTarget.id)
+              }
+              className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+            >
+              Ouvrir
             </button>
           </div>
         </div>
@@ -1370,9 +1438,9 @@ export default function OrdersPage() {
                 </button>
                 <button
                   onClick={handleBatchReturn}
-                  disabled={selectedForReturn.length === 0}
+                  disabled={!canReturnSelectedOrder}
                   className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
-                    selectedForReturn.length === 0
+                    !canReturnSelectedOrder
                       ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                   }`}

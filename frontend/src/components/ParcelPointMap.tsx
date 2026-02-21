@@ -273,6 +273,7 @@ const homeDeliveryConfig = {
 };
 
 interface ParcelPointMapProps {
+  mode?: 'delivery' | 'return';
   address?: {
     line1?: string;
     line2?: string;
@@ -319,6 +320,7 @@ function MapController({
 }
 
 export default function ParcelPointMap({
+  mode = 'delivery',
   address,
   storePickupAddress,
   storePickupPhone,
@@ -328,6 +330,7 @@ export default function ParcelPointMap({
   disablePopupsOnMobile = false,
   initialDeliveryNetwork,
 }: ParcelPointMapProps) {
+  const isReturnMode = mode === 'return';
   const [parcelPoints, setParcelPoints] = useState<ParcelPointResponse[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -489,8 +492,14 @@ export default function ParcelPointMap({
     const currentLine1 = address?.line1;
     if (currentLine1 && currentLine1 !== lastLine1Ref.current) {
       lastLine1Ref.current = currentLine1;
-      // Ne pas fetch automatiquement, demander un refresh manuel
-      setNeedsRefresh(true);
+      if (isReturnMode) {
+        if (address) {
+          fetchParcelPoints(address);
+        }
+        setNeedsRefresh(false);
+      } else {
+        setNeedsRefresh(true);
+      }
     } else if (!currentLine1) {
       // Réinitialiser quand l'adresse est effacée
       setParcelPoints([]);
@@ -709,7 +718,7 @@ export default function ParcelPointMap({
         <div className='bg-slate-50 px-4 py-3 border-b border-gray-200'>
           <div className='flex items-center justify-between mb-3'>
             <h4 className='text-sm font-medium text-gray-900'>
-              Choisir sa livraison
+              {isReturnMode ? 'Choisir son retour' : 'Choisir sa livraison'}
             </h4>
           </div>
 
@@ -718,7 +727,7 @@ export default function ParcelPointMap({
             {/* Première ligne : Type de livraison */}
             <div className='flex items-center space-x-4'>
               <label className='text-xs font-medium text-gray-700'>
-                Type de livraison:
+                {isReturnMode ? 'Type de retour:' : 'Type de livraison:'}
               </label>
               <div className='flex space-x-4'>
                 <label className='flex items-center space-x-1'>
@@ -731,7 +740,9 @@ export default function ParcelPointMap({
                     disabled={address?.country === 'CH'}
                     className='text-blue-600'
                   />
-                  <span className='text-xs text-gray-700'>Point relais</span>
+                  <span className='text-xs text-gray-700'>
+                    {isReturnMode ? 'Point de relais' : 'Point relais'}
+                  </span>
                 </label>
                 <label className='flex items-center space-x-1'>
                   <input
@@ -756,7 +767,7 @@ export default function ParcelPointMap({
                     className='text-blue-600'
                   />
                   <span className='text-xs text-gray-700'>
-                    Retrait en magasin
+                    {isReturnMode ? 'Retour au magasin' : 'Retrait en magasin'}
                   </span>
                 </label>
               </div>
@@ -767,7 +778,9 @@ export default function ParcelPointMap({
               {deliveryType === 'PICKUP' && (
                 <div className='flex-1'>
                   <div className='text-xs font-medium text-gray-700'>
-                    Choisis le réseau de livraison
+                    {isReturnMode
+                      ? 'Choisis le réseau de retour'
+                      : 'Choisis le réseau de livraison'}
                   </div>
                   <div className='mt-2 space-y-2'>
                     <label className='flex items-center justify-between p-3 bg-white border border-gray-300 rounded'>
@@ -776,7 +789,9 @@ export default function ParcelPointMap({
                           Tous les réseaux
                         </div>
                         <div className='text-xs text-gray-600'>
-                          Affiche tous les points relais disponibles.
+                          {isReturnMode
+                            ? 'Affiche tous les points de relais disponibles.'
+                            : 'Affiche tous les points relais disponibles.'}
                         </div>
                       </div>
                       <input
@@ -821,7 +836,9 @@ export default function ParcelPointMap({
             <div className='flex flex-wrap items-center gap-3 text-xs mb-3'>
               <div className='flex items-center space-x-1'>
                 <div className='w-3 h-3 bg-red-500 rounded-full'></div>
-                <span className='text-gray-600'>Votre adresse</span>
+                <span className='text-gray-600'>
+                  {isReturnMode ? 'Adresse magasin' : 'Votre adresse'}
+                </span>
               </div>
               {Object.entries(
                 (networkConfig as any)[
@@ -844,7 +861,9 @@ export default function ParcelPointMap({
             : address && (
                 <div className='flex items-start justify-between gap-3'>
                   <p className='text-xs text-gray-600'>
-                    <strong>Votre adresse : </strong>
+                    <strong>
+                      {isReturnMode ? 'Adresse magasin : ' : 'Votre adresse : '}
+                    </strong>
                     {address.line1}
                     {address.line2 ? `, ${address.line2}` : ''},{' '}
                     {address.postal_code} {address.city}
@@ -876,7 +895,7 @@ export default function ParcelPointMap({
             <div className='px-4 py-3 bg-gray-50 border-t border-gray-200'>
               <div className='bg-white border border-gray-200 rounded-lg p-4 shadow-sm'>
                 <h5 className='text-lg font-medium text-gray-900 mb-4'>
-                  Retrait en magasin
+                  {isReturnMode ? 'Retour au magasin' : 'Retrait en magasin'}
                 </h5>
                 <div className='text-sm text-gray-700'>
                   {storePickupAddress ? (
@@ -996,7 +1015,11 @@ export default function ParcelPointMap({
                       {!(disablePopupsOnMobile && isMobileTailwind) && (
                         <Popup>
                           <div className='min-w-[200px]'>
-                            <strong>🏠 Adresse de livraison</strong>
+                            <strong>
+                              {isReturnMode
+                                ? '🏬 Adresse magasin'
+                                : '🏠 Adresse de livraison'}
+                            </strong>
                             <br />
                             <div className='mt-1 text-sm'>
                               {address?.line1}
@@ -1119,8 +1142,12 @@ export default function ParcelPointMap({
                                 disabled={isSelected}
                               >
                                 {isSelected
-                                  ? '✓ Point relais sélectionné'
-                                  : 'Sélectionner ce point relais'}
+                                  ? isReturnMode
+                                    ? '✓ Point de relais sélectionné'
+                                    : '✓ Point relais sélectionné'
+                                  : isReturnMode
+                                    ? 'Sélectionner ce point de relais'
+                                    : 'Sélectionner ce point relais'}
                               </button>
                             </div>
                           </Popup>
@@ -1137,7 +1164,9 @@ export default function ParcelPointMap({
             /* Options de livraison à domicile */
             <div className='space-y-3 p-4'>
               <h3 className='text-lg font-medium text-gray-900 mb-4'>
-                Options de livraison à domicile
+                {isReturnMode
+                  ? 'Options de retour à domicile'
+                  : 'Options de livraison à domicile'}
               </h3>
               {Object.entries(
                 (homeDeliveryConfig as any)[
@@ -1227,7 +1256,9 @@ export default function ParcelPointMap({
                           }}
                         ></div>
                         <h5 className='text-sm font-medium text-green-800'>
-                          Point relais sélectionné
+                          {isReturnMode
+                            ? 'Point de relais sélectionné'
+                            : 'Point relais sélectionné'}
                         </h5>
                       </div>
                       <div className='text-sm text-gray-900'>
@@ -1270,7 +1301,8 @@ export default function ParcelPointMap({
                 </div>
               ) : (
                 <p className='text-xs text-gray-500'>
-                  💡 Cliquez sur un marqueur pour sélectionner un point relais
+                  💡 Cliquez sur un marqueur pour sélectionner un point{' '}
+                  {isReturnMode ? 'de relais' : 'relais'}
                 </p>
               )}
             </div>

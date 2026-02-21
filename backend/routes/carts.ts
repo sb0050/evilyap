@@ -269,11 +269,16 @@ router.get("/summary", async (req, res) => {
     const stripeId = (req.query.stripeId as string) || "";
     const paymentIdRaw = (req.query.paymentId as string) || "";
     const paymentId = String(paymentIdRaw || "").trim();
+    const onlyPayment =
+      String((req.query.onlyPayment as string) || "").trim() === "true";
     if (!stripeId) {
       return res.status(400).json({ error: "stripeId requis" });
     }
     if (paymentId && /[,()]/.test(paymentId)) {
       return res.status(400).json({ error: "paymentId invalide" });
+    }
+    if (onlyPayment && !paymentId) {
+      return res.status(400).json({ error: "paymentId requis" });
     }
 
     const baseFields =
@@ -297,6 +302,9 @@ router.get("/summary", async (req, res) => {
         .select(buildSelect())
         .eq("customer_stripe_id", stripeId)
         .order("id", { ascending: false });
+      if (paymentId && paymentIdColumnOk) {
+        q = q.eq("payment_id", paymentId);
+      }
 
       const resp = await q;
       cartRows = resp.data as any;
@@ -317,6 +325,11 @@ router.get("/summary", async (req, res) => {
 
     if (error) {
       return res.status(500).json({ error: error.message });
+    }
+    if (paymentId && !paymentIdColumnOk) {
+      return res
+        .status(500)
+        .json({ error: "Impossible de filtrer: colonne payment_id manquante" });
     }
 
     const validRows = cartRows || [];

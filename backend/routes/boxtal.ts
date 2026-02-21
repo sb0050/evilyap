@@ -273,6 +273,64 @@ router.post("/parcel-points", async (req, res) => {
   }
 });
 
+router.post("/parcel-point-by-shipping-offer", async (req, res) => {
+  try {
+    const token = await verifyAndRefreshBoxtalToken();
+    const url = `${BOXTAL_API}/shipping/v3.2/parcel-point-by-shipping-offer`;
+
+    const params = new URLSearchParams();
+    Object.keys(req.body || {}).forEach((key) => {
+      const v = (req.body as any)[key];
+      if (v !== undefined && v !== null) {
+        params.append(key, String(v));
+      }
+    });
+
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    } as any;
+
+    const doFetch = async (method: "GET" | "POST") => {
+      if (method === "GET") {
+        return fetch(`${url}?${params.toString()}`, { method, headers });
+      }
+      return fetch(url, {
+        method,
+        headers,
+        body: JSON.stringify(req.body || {}),
+      });
+    };
+
+    let response = await doFetch("POST");
+    if (!response.ok) {
+      response = await doFetch("GET");
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(
+        "Erreur API Boxtal (parcel-point-by-shipping-offer):",
+        response.status,
+        errorText,
+      );
+      return res.status(response.status).json({
+        error: "Failed to get parcel point by shipping offer",
+        details: errorText,
+      });
+    }
+
+    const data = await response.json();
+    return res.json(data);
+  } catch (error) {
+    console.error("Error in /api/boxtal/parcel-point-by-shipping-offer:", error);
+    return res.status(500).json({
+      error: "Failed to get parcel point by shipping offer",
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
 //Passer commande
 router.post("/shipping-orders", async (req, res) => {
   try {

@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { clerkClient, getAuth } from "@clerk/express";
 import Stripe from "stripe";
 import PDFDocument from "pdfkit";
+import { emailService } from "../services/emailService";
 
 const router = express.Router();
 
@@ -785,6 +786,235 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
     return res.json({ success: true, count: items.length });
   } catch (e) {
     console.error("Error rebuilding carts from payment:", e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/request-return", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const {
+      paymentId,
+      storeId,
+      items,
+      return_method,
+      return_store_address,
+      return_parcel_point,
+      return_delivery_network,
+    } = req.body || {};
+    const paymentIdStr = String(paymentId || "").trim();
+    const storeIdNum = Number(storeId);
+    const itemsArr: any[] = Array.isArray(items) ? items : [];
+    const returnMethodRaw = String(return_method || "").trim();
+    const returnMethod: "home_delivery" | "pickup_point" | "store_pickup" | null =
+      returnMethodRaw === "home_delivery" ||
+      returnMethodRaw === "pickup_point" ||
+      returnMethodRaw === "store_pickup"
+        ? (returnMethodRaw as "home_delivery" | "pickup_point" | "store_pickup")
+        : null;
+    const returnDeliveryNetwork = String(return_delivery_network || "").trim() || null;
+    const returnStoreAddress =
+      return_store_address && typeof return_store_address === "object"
+        ? {
+            line1: String((return_store_address as any)?.line1 || "").trim() || null,
+            line2: String((return_store_address as any)?.line2 || "").trim() || null,
+            postal_code:
+              String((return_store_address as any)?.postal_code || "").trim() ||
+              null,
+            city: String((return_store_address as any)?.city || "").trim() || null,
+            country:
+              String((return_store_address as any)?.country || "").trim() || null,
+            state: String((return_store_address as any)?.state || "").trim() || null,
+          }
+        : null;
+    const returnParcelPoint = return_parcel_point ?? null;
+
+    if (!paymentIdStr) {
+      return res.status(400).json({ error: "paymentId requis" });
+    }
+    if (!Number.isFinite(storeIdNum) || storeIdNum <= 0) {
+      return res.status(400).json({ error: "storeId requis" });
+    }
+    if (itemsArr.length === 0) {
+      return res.status(400).json({ error: "items requis" });
+    }
+
+    const normalizedItems = itemsArr
+      .map((it) => {
+        const ref = String(it?.product_reference || "").trim();
+        const description = String(it?.description || "").trim();
+        const quantity = Math.max(1, Math.round(Number(it?.quantity || 1)));
+        const value = Number(it?.value ?? 0);
+        const cartItemId = Number(it?.cart_item_id ?? it?.id ?? NaN);
+        return {
+          cart_item_id: Number.isFinite(cartItemId) ? cartItemId : null,
+          product_reference: ref,
+          description: description || null,
+          quantity,
+          value: Number.isFinite(value) ? value : 0,
+        };
+      })
+      .filter((it) => Boolean(it.product_reference));
+
+    if (normalizedItems.length === 0) {
+      return res.status(400).json({ error: "items invalides" });
+    }
+    const cartItemIds = Array.from(
+      new Set(
+        normalizedItems
+          .map((it) => Number(it.cart_item_id || 0))
+          .filter((n) => Number.isFinite(n) && n > 0),
+      ),
+    );
+    if (cartItemIds.length !== normalizedItems.length) {
+      return res.status(400).json({ error: "cart_item_id requis" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const stripeCustomerId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    if (!stripeCustomerId) {
+      return res
+        .status(400)
+        .json({ error: "stripe_id manquant dans les metadata du user" });
+    }
+
+    const { data: shipment, error: shipErr } = await supabase
+      .from("shipments")
+      .select("*")
+      .eq("payment_id", paymentIdStr)
+      .eq("store_id", storeIdNum)
+      .eq("customer_stripe_id", stripeCustomerId)
+      .maybeSingle();
+    if (shipErr) {
+      return res.status(500).json({ error: shipErr.message });
+    }
+    if (!shipment) {
+      return res.status(404).json({ error: "Commande introuvable" });
+    }
+
+    const { data: cartRows, error: cartErr } = await supabase
+      .from("carts")
+      .select(
+        "id,store_id,customer_stripe_id,payment_id,product_reference,description,value,quantity",
+      )
+      .in("id", cartItemIds)
+      .eq("store_id", storeIdNum)
+      .eq("customer_stripe_id", stripeCustomerId)
+      .eq("payment_id", paymentIdStr);
+    if (cartErr) {
+      if (isMissingColumnError(cartErr, "payment_id")) {
+        return res
+          .status(500)
+          .json({ error: "Impossible de valider: colonne payment_id manquante" });
+      }
+      return res.status(500).json({ error: cartErr.message });
+    }
+    const cartById = new Map<number, any>();
+    for (const r of cartRows || []) {
+      const id = Number((r as any)?.id || 0);
+      if (Number.isFinite(id) && id > 0) cartById.set(id, r);
+    }
+    if (cartById.size !== cartItemIds.length) {
+      return res
+        .status(400)
+        .json({ error: "Certains articles sont introuvables" });
+    }
+
+    const validatedItems = normalizedItems.map((it) => {
+      const cartId = Number(it.cart_item_id || 0);
+      const row = cartById.get(cartId) || null;
+      if (!row) {
+        throw new Error("Certains articles sont introuvables");
+      }
+      const rowQty = Math.max(1, Math.round(Number((row as any)?.quantity || 1)));
+      const reqQty = Math.max(1, Math.round(Number(it.quantity || 1)));
+      if (reqQty > rowQty) {
+        throw new Error(
+          `Quantité invalide pour ${String(
+            (row as any)?.product_reference || "",
+          ).trim()}: max ${rowQty}`,
+        );
+      }
+      return {
+        cart_item_id: cartId,
+        product_reference: String((row as any)?.product_reference || "").trim(),
+        description:
+          String((row as any)?.description || "").trim() ||
+          String(it.description || "").trim() ||
+          null,
+        quantity_requested: reqQty,
+        quantity_in_order: rowQty,
+        value: Number((row as any)?.value ?? it.value ?? 0) || 0,
+      };
+    });
+
+    let store: any = null;
+    const { data: storeData, error: storeErr } = await supabase
+      .from("stores")
+      .select("id,name,owner_email,slug")
+      .eq("id", storeIdNum)
+      .maybeSingle();
+    if (storeErr) {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    store = storeData || null;
+
+    const subject = "Demande de retour client (articles sélectionnés)";
+    const message = `Demande de retour pour payment_id=${paymentIdStr}, shipment_id=${String(
+      (shipment as any)?.shipment_id || "",
+    ).trim()}.`;
+    const context = JSON.stringify(
+      {
+        paymentId: paymentIdStr,
+        store,
+        shipment,
+        items: validatedItems,
+        return: {
+          method: returnMethod,
+          delivery_network: returnDeliveryNetwork,
+          store_address: returnStoreAddress,
+          parcel_point: returnParcelPoint,
+        },
+      },
+      null,
+      2,
+    );
+
+    const sent = await emailService.sendAdminError({
+      subject,
+      message,
+      context,
+    });
+
+    if (sent) {
+      try {
+        const { error: updErr } = await supabase
+          .from("shipments")
+          .update({ return_requested: true })
+          .eq("id", Number((shipment as any)?.id || 0))
+          .eq("store_id", storeIdNum)
+          .eq("customer_stripe_id", stripeCustomerId);
+        if (updErr) {
+          console.error("Supabase update return_requested failed:", updErr);
+        }
+      } catch (dbEx) {
+        console.error("DB update return_requested exception:", dbEx);
+      }
+    }
+
+    return res.json({ success: true, emailSent: sent });
+  } catch (e) {
+    if (e instanceof Error) {
+      const msg = String(e.message || "").trim();
+      if (msg) return res.status(400).json({ error: msg });
+    }
+    console.error("Error in /api/shipments/request-return:", e);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
