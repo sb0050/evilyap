@@ -772,6 +772,18 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       product_stripe_id?: string;
       weight?: number;
     }> = Array.isArray(items) ? items : [];
+    const deliveryRegulationRegex = /r[ée]gularisation\s+livraison/i;
+    const forbiddenItem = incomingItems.find((it) => {
+      const ref = String(it?.reference || "").trim();
+      const desc = String(it?.description || "").trim();
+      return (
+        deliveryRegulationRegex.test(ref) || deliveryRegulationRegex.test(desc)
+      );
+    });
+    if (forbiddenItem) {
+      res.status(400).json({ error: "Référence interdite" });
+      return;
+    }
     const refToStripeProductId = new Map<string, string>();
     for (const it of incomingItems) {
       const ref = String(it.reference || "").trim();
@@ -791,6 +803,9 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
 
     const promotionInputTrim = String(promotionCodeId || "").trim();
     const promotionInputUpper = promotionInputTrim.toUpperCase();
+    const openShipmentPaymentIdTrimForPromo = String(
+      openShipmentPaymentId || "",
+    ).trim();
     let promotionCodeIdTrim = "";
     let storeIdForCheck: number | null = null;
     let storePromoCodesUpper: string[] = [];
@@ -824,7 +839,13 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       res.status(400).json({ error: "Boutique introuvable" });
       return;
     }
-    if (promotionInputTrim) {
+    if (
+      promotionInputTrim &&
+      !(
+        openShipmentPaymentIdTrimForPromo &&
+        !promotionInputUpper.startsWith("PAYLIVE-")
+      )
+    ) {
       try {
         let resolvedPromo: any = null;
         if (promotionInputTrim.startsWith("promo_")) {
@@ -968,12 +989,12 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         const raw = (stockRow as any)?.weight;
         if (raw === null || raw === undefined) return null;
         const n = typeof raw === "number" ? raw : Number(raw);
-        return Number.isFinite(n) && n >= 0 ? n : null;
+        return Number.isFinite(n) && n > 0 ? n : null;
       })();
 
       const weightFromItemRaw = Number((it as any)?.weight);
       const weightFromItemKg =
-        Number.isFinite(weightFromItemRaw) && weightFromItemRaw >= 0
+        Number.isFinite(weightFromItemRaw) && weightFromItemRaw > 0
           ? weightFromItemRaw
           : null;
 
@@ -1016,11 +1037,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       for (const it of resolvedItems as any[]) {
         const qty = Math.max(1, Math.round(Number(it.quantity || 1)));
         const itemUnitKg =
-          Number.isFinite(it._item_weight_kg) && it._item_weight_kg >= 0
+          Number.isFinite(it._item_weight_kg) && it._item_weight_kg > 0
             ? Number(it._item_weight_kg)
             : null;
         const stockUnitKg =
-          Number.isFinite(it._stock_weight_kg) && it._stock_weight_kg >= 0
+          Number.isFinite(it._stock_weight_kg) && it._stock_weight_kg > 0
             ? Number(it._stock_weight_kg)
             : null;
         const desc = String(it.description || "");
@@ -1042,7 +1063,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           return DEFAULT_WEIGHT;
         })();
 
-        if (Number.isFinite(computedUnitKg) && computedUnitKg >= 0) {
+        if (Number.isFinite(computedUnitKg) && computedUnitKg > 0) {
           itemsWeightKg += computedUnitKg * qty;
         }
 
@@ -1312,11 +1333,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       }
 
       const itemUnitKg =
-        Number.isFinite(it._item_weight_kg) && it._item_weight_kg >= 0
+        Number.isFinite(it._item_weight_kg) && it._item_weight_kg > 0
           ? Number(it._item_weight_kg)
           : null;
       const stockUnitKg =
-        Number.isFinite(it._stock_weight_kg) && it._stock_weight_kg >= 0
+        Number.isFinite(it._stock_weight_kg) && it._stock_weight_kg > 0
           ? Number(it._stock_weight_kg)
           : null;
       const desc = String(it.description || "");
@@ -1390,7 +1411,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         if (storeIdForCheck && ref) {
           const unitWeight =
             Number.isFinite(computedUnitKg) &&
-            computedUnitKg >= 0 &&
+            computedUnitKg > 0 &&
             computedFromDesc &&
             computedFromDesc.category !== "unknown"
               ? computedUnitKg
@@ -1483,14 +1504,20 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       Number.isFinite(tempCentsParsed) && tempCentsParsed > 0
         ? tempCentsParsed
         : 0;
+    const tempEligibleSubtotalCents =
+      subtotalExclShippingCents +
+      Math.max(0, Math.round(deliveryDebtPaidCents));
     const tempAppliedCents = Math.min(
-      subtotalExclShippingCents,
+      tempEligibleSubtotalCents,
       tempBalanceCents,
     );
     const tempTopupCents = Math.max(
       0,
-      tempBalanceCents - subtotalExclShippingCents,
+      tempBalanceCents - tempEligibleSubtotalCents,
     );
+    const openShipmentPaymentIdTrim = String(
+      openShipmentPaymentId || "",
+    ).trim();
 
     let creditAppliedCents = 0;
     let creditBalanceBeforeCents: number | null = null;
@@ -1498,7 +1525,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     let creditCouponId: string | null = null;
     let creditPromotionCodeId: string | null = null;
 
-    if (customerId && customer) {
+    if (customerId && customer && !openShipmentPaymentIdTrim) {
       const rawCredit = (customer.metadata as any)?.credit_balance;
       const parsedCredit = Number.parseInt(String(rawCredit || "0"), 10);
       const creditBalanceCents =
@@ -1520,14 +1547,29 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
     }
 
     const totalDiscountCents = tempAppliedCents + creditAppliedCents;
-    const totalDiscount = Math.ceil(totalDiscountCents / 100);
+    const couponDiscountCents = openShipmentPaymentIdTrim
+      ? tempBalanceCents
+      : totalDiscountCents;
+    const totalDiscount = Math.ceil(couponDiscountCents / 100);
+    const discountProductIds = Array.from(
+      new Set(
+        stripeProductIdsForShipment
+          .map((s) => String(s || "").trim())
+          .filter((s) => s.startsWith("prod_")),
+      ),
+    );
+    const shouldRestrictCreditCouponToProducts =
+      deliveryDebtPaidCents <= 0 && discountProductIds.length > 0;
 
-    if (customerId && totalDiscountCents > 0) {
+    if (customerId && couponDiscountCents > 0) {
       const coupon = await stripe.coupons.create({
-        amount_off: totalDiscountCents,
+        amount_off: couponDiscountCents,
         currency: currencyLower,
         name: `CREDIT-${totalDiscount}`,
         duration: "once",
+        ...(shouldRestrictCreditCouponToProducts
+          ? { applies_to: { products: discountProductIds } }
+          : {}),
       });
       creditCouponId = coupon.id;
 
@@ -1544,6 +1586,99 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         },
       });
       creditPromotionCodeId = promotionCode.id;
+    }
+
+    let nonCreditPromotionCodeIdForSession = promotionCodeIdTrim;
+    if (
+      !creditPromotionCodeId &&
+      nonCreditPromotionCodeIdForSession &&
+      deliveryDebtPaidCents > 0 &&
+      discountProductIds.length > 0
+    ) {
+      try {
+        const promo: any = await stripe.promotionCodes.retrieve(
+          nonCreditPromotionCodeIdForSession,
+          { expand: ["coupon"] } as any,
+        );
+        const coupon: any = promo?.coupon || null;
+        const appliesProducts: any[] = Array.isArray(
+          coupon?.applies_to?.products,
+        )
+          ? coupon.applies_to.products
+          : [];
+        const isRestrictedToProducts = appliesProducts.length > 0;
+        const hasAmountOff =
+          typeof coupon?.amount_off === "number" &&
+          Number.isFinite(coupon.amount_off) &&
+          coupon.amount_off > 0;
+        const hasPercentOff =
+          typeof coupon?.percent_off === "number" &&
+          Number.isFinite(coupon.percent_off) &&
+          coupon.percent_off > 0;
+
+        if (!isRestrictedToProducts && (hasAmountOff || hasPercentOff)) {
+          const duration = String(coupon?.duration || "once");
+          const durationInMonthsRaw = Number(coupon?.duration_in_months || 0);
+          const duration_in_months =
+            Number.isFinite(durationInMonthsRaw) && durationInMonthsRaw > 0
+              ? Math.floor(durationInMonthsRaw)
+              : undefined;
+          const baseName = String(
+            coupon?.name || promo?.code || "PROMO",
+          ).trim();
+          const name =
+            baseName.length > 0
+              ? baseName.length > 80
+                ? baseName.slice(0, 80)
+                : baseName
+              : undefined;
+
+          const newCoupon = await stripe.coupons.create({
+            ...(hasAmountOff
+              ? {
+                  amount_off: Math.round(Number(coupon.amount_off)),
+                  currency: String(coupon?.currency || currencyLower),
+                }
+              : {}),
+            ...(hasPercentOff
+              ? { percent_off: Number(coupon.percent_off) }
+              : {}),
+            duration: duration as any,
+            ...(duration === "repeating" && duration_in_months
+              ? { duration_in_months }
+              : {}),
+            ...(name ? { name } : {}),
+            applies_to: { products: discountProductIds },
+            metadata: {
+              ...(typeof coupon?.metadata === "object" && coupon.metadata
+                ? coupon.metadata
+                : {}),
+              original_promotion_code_id: String(promo?.id || ""),
+              original_coupon_id: String(coupon?.id || ""),
+              excludes_delivery_regulation: "1",
+            },
+          } as any);
+
+          const codeSeed =
+            (String(promo?.code || "")
+              .trim()
+              .toUpperCase() || "PROMO") +
+            "-" +
+            Date.now().toString(36).toUpperCase();
+          const newPromo = await stripe.promotionCodes.create({
+            coupon: newCoupon.id,
+            max_redemptions: 1,
+            code: `AUTO-${codeSeed}`,
+            metadata: {
+              original_promotion_code_id: String(promo?.id || ""),
+              original_coupon_id: String(coupon?.id || ""),
+              excludes_delivery_regulation: "1",
+            },
+          } as any);
+
+          nonCreditPromotionCodeIdForSession = newPromo.id;
+        }
+      } catch (_e) {}
     }
 
     // Créer la session de checkout intégrée
@@ -1580,7 +1715,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
               : String(creditBalanceAfterCents),
           credit_coupon_id: creditCouponId || "",
           credit_promo_code_id: creditPromotionCodeId || "",
-          open_shipment_payment_id: String(openShipmentPaymentId || "").trim(),
+          open_shipment_payment_id: openShipmentPaymentIdTrim,
         },
       },
       // Duplicate useful metadata at the session level for easier retrieval
@@ -1638,7 +1773,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
             : String(creditBalanceAfterCents),
         credit_coupon_id: creditCouponId || "",
         credit_promo_code_id: creditPromotionCodeId || "",
-        open_shipment_payment_id: String(openShipmentPaymentId || "").trim(),
+        open_shipment_payment_id: openShipmentPaymentIdTrim,
       },
       line_items: finalLineItems as any,
       mode: "payment",
@@ -1648,10 +1783,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         slugify(storeName, { lower: true, strict: true }) || "default",
       )}`,
       discounts:
-        creditPromotionCodeId || promotionCodeIdTrim
+        creditPromotionCodeId || nonCreditPromotionCodeIdForSession
           ? ([
               {
-                promotion_code: creditPromotionCodeId || promotionCodeIdTrim,
+                promotion_code:
+                  creditPromotionCodeId || nonCreditPromotionCodeIdForSession,
               },
             ] as any)
           : undefined,

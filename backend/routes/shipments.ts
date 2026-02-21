@@ -176,6 +176,7 @@ router.post("/open-shipment", async (req, res) => {
       .from("shipments")
       .select("id,store_id,customer_stripe_id,is_open_shipment")
       .eq("id", shipmentIdNum)
+      .neq("is_cancelled", true)
       .maybeSingle();
     if (shipErr) {
       return res.status(500).json({ error: shipErr.message });
@@ -196,6 +197,7 @@ router.post("/open-shipment", async (req, res) => {
       .eq("customer_stripe_id", stripeCustomerId)
       .eq("store_id", storeIdNum)
       .eq("is_open_shipment", true)
+      .neq("is_cancelled", true)
       .neq("id", shipmentIdNum)
       .limit(1);
     if (otherErr) {
@@ -287,6 +289,7 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       )
       .eq("payment_id", paymentIdStr)
       .eq("store_id", storeIdNum)
+      .neq("is_cancelled", true)
       .maybeSingle();
     if (shipmentErr) {
       return res.status(500).json({ error: shipmentErr.message });
@@ -360,13 +363,78 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       return res.status(500).json({ error: updErr.message });
     }
 
+    const spentRaw = Number((shipment as any)?.customer_spent_amount ?? 0);
+    let paidItemsCents = Number.isFinite(spentRaw)
+      ? Math.max(0, Math.round(spentRaw))
+      : 0;
+
+    if (stripe) {
+      try {
+        const sessions: any = await stripe.checkout.sessions.list({
+          payment_intent: paymentIdStr,
+          limit: 1,
+        });
+        const session: any = Array.isArray(sessions?.data)
+          ? sessions.data[0]
+          : null;
+        const sessionId = String(session?.id || "").trim();
+        const sessionTotalCents =
+          typeof session?.amount_total === "number" &&
+          Number.isFinite(session.amount_total)
+            ? Math.max(0, Math.round(session.amount_total))
+            : null;
+        if (sessionId) {
+          const lineItemsResp: any =
+            await stripe.checkout.sessions.listLineItems(sessionId, {
+              limit: 100,
+              expand: ["data.price.product"],
+            } as any);
+          const regulationRegex = /r[ée]gularisation\s+livraison/i;
+          const regulationAmountCents = (lineItemsResp?.data || []).reduce(
+            (sum: number, item: any) => {
+              const prod = item?.price?.product as any;
+              const name =
+                typeof prod === "string"
+                  ? String(
+                      item?.description || item?.price?.nickname || "",
+                    ).trim()
+                  : String(prod?.name || "").trim();
+              const description =
+                typeof prod === "string"
+                  ? String(item?.description || "").trim()
+                  : String(prod?.description || "").trim();
+              const isReg =
+                regulationRegex.test(name) || regulationRegex.test(description);
+              if (!isReg) return sum;
+              const vRaw =
+                item?.amount_total ??
+                item?.amount_subtotal ??
+                item?.amount ??
+                0;
+              const v = Math.max(0, Math.round(Number(vRaw || 0)));
+              return sum + (Number.isFinite(v) ? v : 0);
+            },
+            0,
+          );
+          if (
+            regulationAmountCents > 0 &&
+            sessionTotalCents !== null &&
+            Math.abs(paidItemsCents - sessionTotalCents) <= 2
+          ) {
+            paidItemsCents = Math.max(
+              0,
+              paidItemsCents - regulationAmountCents,
+            );
+          }
+        }
+      } catch {}
+    }
+
     return res.json({
       success: true,
       shipmentId: shipmentIdNum,
       shipmentDisplayId: String((shipment as any)?.shipment_id || "").trim(),
-      paidValue:
-        Math.max(0, Number((shipment as any)?.customer_spent_amount || 0)) /
-        100,
+      paidValue: Math.max(0, paidItemsCents) / 100,
     });
   } catch (e) {
     console.error("Error opening shipment by payment:", e);
@@ -667,6 +735,9 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
               const description = String(
                 prodObj?.description || li?.description || "",
               ).trim();
+              const isDeliveryRegulation =
+                /r[ée]gularisation\s+livraison/i.test(ref) ||
+                /r[ée]gularisation\s+livraison/i.test(description);
               const rawMetaWeight =
                 (prodObj?.metadata as any)?.weight ??
                 (prodObj?.metadata as any)?.weight_kg;
@@ -683,10 +754,13 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
                 value,
                 quantity,
                 weight,
+                _is_delivery_regulation: isDeliveryRegulation,
               };
             })
-            .filter((it: any) =>
-              Boolean(String(it.product_reference || "").trim()),
+            .filter(
+              (it: any) =>
+                Boolean(String(it.product_reference || "").trim()) &&
+                !Boolean((it as any)?._is_delivery_regulation),
             );
         }
         console.log("******************", items);

@@ -49,6 +49,9 @@ import { AddressElement } from '@stripe/react-stripe-js';
 import { Address } from '@stripe/stripe-js';
 import StripeWrapper from '../../components/StripeWrapper';
 
+const isDeliveryRegulationText = (text: unknown) =>
+  /r[ée]gularisation\s+livraison/i.test(String(text || '').trim());
+
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
 
@@ -72,6 +75,7 @@ type Shipment = {
   shipment_id: string | null;
   document_created: boolean;
   document_url?: string | null;
+  is_cancelled?: boolean | null;
   delivery_method: string | null;
   delivery_network: string | null;
   dropoff_point: any | null;
@@ -1359,7 +1363,7 @@ export default function DashboardPage() {
 
   const handleBatchShippingDocuments = async () => {
     const targets = selectedSales.filter(
-      s => s.document_created && s.shipment_id
+      s => s.document_created && s.shipment_id && !s.is_cancelled
     );
     if (targets.length === 0) {
       showToast('Aucune vente sélectionnée pour le bordereau', 'error');
@@ -1388,7 +1392,11 @@ export default function DashboardPage() {
 
   const handleBatchCancel = async () => {
     const targets = selectedSales.filter(
-      s => s.shipment_id && !s.is_final_destination && !s.cancel_requested
+      s =>
+        s.shipment_id &&
+        !s.is_final_destination &&
+        !s.cancel_requested &&
+        !s.is_cancelled
     );
     if (targets.length === 0) {
       showToast("Aucune vente sélectionnée pour l'annulation", 'error');
@@ -1416,7 +1424,7 @@ export default function DashboardPage() {
   };
 
   const handleBatchInvoice = async () => {
-    const targets = selectedSales;
+    const targets = selectedSales.filter(s => !s.is_cancelled);
     if (targets.length === 0) {
       showToast('Aucune vente sélectionnée pour la facture', 'error');
       return;
@@ -1647,6 +1655,13 @@ export default function DashboardPage() {
       );
       return;
     }
+    if (
+      isDeliveryRegulationText(titleTrim) ||
+      isDeliveryRegulationText(referenceTrim)
+    ) {
+      showToast('Référence interdite', 'error');
+      return;
+    }
 
     let existing: StockApiItem | null = null;
     try {
@@ -1783,6 +1798,13 @@ export default function DashboardPage() {
         'Veuillez renseigner le titre, la référence et la description',
         'error'
       );
+      return;
+    }
+    if (
+      isDeliveryRegulationText(titleTrim) ||
+      isDeliveryRegulationText(referenceTrim)
+    ) {
+      showToast('Référence interdite', 'error');
       return;
     }
 
@@ -2439,10 +2461,7 @@ export default function DashboardPage() {
               : '';
           return (
             <div key={`${s.id}-${idx}`} className='space-y-0.5'>
-              <div
-                className='font-medium truncate max-w-[280px]'
-                title={label}
-              >
+              <div className='font-medium truncate max-w-[280px]' title={label}>
                 {label}
               </div>
               {d || price || qtyText ? (
@@ -2503,8 +2522,9 @@ export default function DashboardPage() {
         email.includes(term)
       );
     }
-    const refStr = (s.product_reference || '').toLowerCase();
-    return refStr.includes(term);
+    const refStr = formatShipmentProductReference(s).toLowerCase();
+    const rawRefStr = String(s.product_reference || '').toLowerCase();
+    return refStr.includes(term) || rawRefStr.includes(term);
   });
   const totalPages = Math.max(
     1,
@@ -2518,11 +2538,16 @@ export default function DashboardPage() {
   const selectedSales = (shipments || []).filter(s =>
     selectedSaleIds.has(s.id)
   );
+  const selectedForInvoice = selectedSales.filter(s => !s.is_cancelled);
   const selectedForDoc = selectedSales.filter(
-    s => s.document_created && s.shipment_id
+    s => s.document_created && s.shipment_id && !s.is_cancelled
   );
   const selectedForCancel = selectedSales.filter(
-    s => s.shipment_id && !s.is_final_destination && !s.cancel_requested
+    s =>
+      s.shipment_id &&
+      !s.is_final_destination &&
+      !s.cancel_requested &&
+      !s.is_cancelled
   );
   const visibleSaleIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
@@ -2590,8 +2615,9 @@ export default function DashboardPage() {
           email.includes(term)
         );
       }
-      const refStr = (s.product_reference || '').toLowerCase();
-      return refStr.includes(term);
+      const refStr = formatShipmentProductReference(s).toLowerCase();
+      const rawRefStr = String(s.product_reference || '').toLowerCase();
+      return refStr.includes(term) || rawRefStr.includes(term);
     }).length;
     const newTotal = Math.max(1, Math.ceil(filteredLength / pageSize));
     if (page > newTotal) setPage(newTotal);
@@ -2910,6 +2936,10 @@ export default function DashboardPage() {
       }
       if (!ref) {
         showToast('Veuillez saisir la référence', 'error');
+        return;
+      }
+      if (isDeliveryRegulationText(ref) || isDeliveryRegulationText(desc)) {
+        showToast('Référence interdite', 'error');
         return;
       }
       if (!desc) {
@@ -4548,6 +4578,8 @@ export default function DashboardPage() {
                     !cartSelectedUser ||
                     !(cartReference || '').trim() ||
                     !(cartDescription || '').trim() ||
+                    isDeliveryRegulationText(cartReference) ||
+                    isDeliveryRegulationText(cartDescription) ||
                     !(
                       parseFloat((cartAmountEuro || '').replace(',', '.')) > 0
                     ) ||
@@ -5451,6 +5483,8 @@ export default function DashboardPage() {
                         : !stockImagePreview) ||
                       !stockTitle.trim() ||
                       !stockReference.trim() ||
+                      isDeliveryRegulationText(stockTitle) ||
+                      isDeliveryRegulationText(stockReference) ||
                       !stockDescription.trim() ||
                       !String(stockQuantity || '').trim() ||
                       !String(stockWeight || '').trim() ||
@@ -5950,7 +5984,7 @@ export default function DashboardPage() {
                     >
                       <option value='id'>ID</option>
                       <option value='client'>Client</option>
-                      <option value='reference'>Référence produit</option>
+                      <option value='reference'>Référence</option>
                     </select>
                     <input
                       type='text'
@@ -5993,7 +6027,7 @@ export default function DashboardPage() {
                   >
                     <option value='id'>ID</option>
                     <option value='client'>Client</option>
-                    <option value='reference'>Référence produit</option>
+                    <option value='reference'>Référence</option>
                   </select>
                   <input
                     type='text'
@@ -6021,6 +6055,19 @@ export default function DashboardPage() {
                 >
                   Créer le bordereau
                 </button>
+
+                <button
+                  onClick={handleBatchInvoice}
+                  disabled={selectedForInvoice.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedForInvoice.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Créer la facture'
+                >
+                  Créer la facture
+                </button>
                 <button
                   onClick={handleBatchCancel}
                   disabled={selectedForCancel.length === 0}
@@ -6029,21 +6076,9 @@ export default function DashboardPage() {
                       ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                   }`}
-                  title="Demander l'annulation"
+                  title='Annuler la vente'
                 >
-                  Demander l'annulation
-                </button>
-                <button
-                  onClick={handleBatchInvoice}
-                  disabled={selectedSales.length === 0}
-                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
-                    selectedSales.length === 0
-                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                  }`}
-                  title='Envoyer la facture'
-                >
-                  Envoyer la facture
+                  Annuler la vente
                 </button>
                 <button
                   onClick={() => handleOpenHelp(selectedSales)}
@@ -6078,7 +6113,9 @@ export default function DashboardPage() {
                   visibleShipments.map(s => (
                     <div
                       key={s.id}
-                      className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
+                      className={`rounded-lg border border-gray-200 p-3 shadow-sm ${
+                        s.is_cancelled ? 'bg-gray-50 opacity-70' : 'bg-white'
+                      }`}
                     >
                       <div className='flex items-start justify-between'>
                         <div>
@@ -6313,7 +6350,11 @@ export default function DashboardPage() {
                       visibleShipments.map(s => (
                         <tr
                           key={s.id}
-                          className='border-b border-gray-100 hover:bg-gray-50'
+                          className={`border-b border-gray-100 ${
+                            s.is_cancelled
+                              ? 'bg-gray-50 opacity-70'
+                              : 'hover:bg-gray-50'
+                          }`}
                         >
                           <td className='py-4 px-4 text-gray-700'>
                             <input

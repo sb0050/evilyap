@@ -282,6 +282,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             String(session.metadata?.credit_applied_cents || "0"),
             10,
           );
+          const tempBalanceCentsParsed = Number.parseInt(
+            String(session.metadata?.temp_credit_balance_cents || "0"),
+            10,
+          );
           const tempAppliedCentsParsed = Number.parseInt(
             String(session.metadata?.temp_credit_applied_cents || "0"),
             10,
@@ -336,10 +340,16 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               ? tempAppliedCentsParsed
               : 0;
           let effectiveTempAppliedCents = tempAppliedCents;
+          const tempBalanceCents =
+            Number.isFinite(tempBalanceCentsParsed) &&
+            tempBalanceCentsParsed > 0
+              ? tempBalanceCentsParsed
+              : 0;
           const tempTopupCents =
             Number.isFinite(tempTopupCentsParsed) && tempTopupCentsParsed > 0
               ? tempTopupCentsParsed
               : 0;
+          let effectiveTempTopupCents = tempTopupCents;
 
           const deliveryDebtPaidCentsParsed = Number.parseInt(
             String(session.metadata?.delivery_debt_paid_cents || "0"),
@@ -351,7 +361,9 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               ? deliveryDebtPaidCentsParsed
               : 0;
 
-          let deliveryDebtLineItemAmountCents = 0;
+          let deliveryDebtLineItemOriginalCents = 0;
+          let deliveryDebtLineItemTotalCents = 0;
+          let hasDeliveryDebtLineItem = false;
           if (expectedDeliveryDebtCents > 0 && lineItemsResp?.data) {
             const items: any[] = Array.isArray(lineItemsResp.data)
               ? lineItemsResp.data
@@ -363,23 +375,39 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               return name === "régularisation livraison";
             });
             if (debtItem) {
-              const raw = Number(
-                debtItem?.amount_total ??
+              hasDeliveryDebtLineItem = true;
+              const originalRaw = Number(
+                debtItem?.amount_subtotal ??
                   debtItem?.price?.unit_amount ??
-                  debtItem?.amount_subtotal ??
+                  debtItem?.amount_total ??
                   0,
               );
-              deliveryDebtLineItemAmountCents = Number.isFinite(raw) ? raw : 0;
+              const totalRaw = Number(
+                debtItem?.amount_total ??
+                  debtItem?.amount_subtotal ??
+                  debtItem?.price?.unit_amount ??
+                  0,
+              );
+              deliveryDebtLineItemOriginalCents = Number.isFinite(originalRaw)
+                ? Math.max(0, Math.round(originalRaw))
+                : 0;
+              deliveryDebtLineItemTotalCents = Number.isFinite(totalRaw)
+                ? Math.max(0, Math.round(totalRaw))
+                : 0;
             }
           }
 
           const shouldResetDebtBalance =
             expectedDeliveryDebtCents > 0 &&
-            deliveryDebtLineItemAmountCents === expectedDeliveryDebtCents;
-          const deliveryRegulationPaidCents =
-            deliveryDebtLineItemAmountCents > 0
-              ? deliveryDebtLineItemAmountCents
-              : deliveryDebtPaidCents;
+            (hasDeliveryDebtLineItem
+              ? deliveryDebtLineItemOriginalCents === expectedDeliveryDebtCents
+              : deliveryDebtPaidCents === expectedDeliveryDebtCents);
+          const deliveryRegulationPaidCents = hasDeliveryDebtLineItem
+            ? deliveryDebtLineItemOriginalCents
+            : deliveryDebtPaidCents;
+          const deliveryRegulationCashDueCents = hasDeliveryDebtLineItem
+            ? deliveryDebtLineItemTotalCents
+            : deliveryDebtPaidCents;
 
           if (expectedDeliveryDebtCents > 0 && !shouldResetDebtBalance) {
             console.warn(
@@ -389,7 +417,8 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 customerId,
                 expectedDeliveryDebtCents,
                 deliveryDebtPaidCents,
-                deliveryDebtLineItemAmountCents,
+                deliveryDebtLineItemOriginalCents,
+                deliveryDebtLineItemTotalCents,
               },
             );
           }
@@ -551,6 +580,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             ).join(";;") || null;
 
           const regulationName = "Régularisation livraison";
+          const regulationRegex = /r[ée]gularisation\s+livraison/i;
 
           console.log(
             "checkout.session.completed webhook: lineItemsResp bis",
@@ -586,9 +616,12 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 price_id: item.price?.id,
               };
             })
-            .filter(
-              (p: any) => String(p?.name || "").trim() !== regulationName,
-            );
+            .filter((p: any) => {
+              const name = String(p?.name || "").trim();
+              if (!name) return true;
+              if (name === regulationName) return false;
+              return !regulationRegex.test(name);
+            });
 
           console.log(
             "checkout.session.completed webhook: products 0000",
@@ -603,7 +636,8 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                       item?.description || item?.price?.nickname || "",
                     ).trim()
                   : String(prod?.name || "").trim();
-              if (name === regulationName) return sum;
+              if (name === regulationName || regulationRegex.test(name))
+                return sum;
               const vRaw =
                 item?.amount_subtotal ??
                 item?.amount_total ??
@@ -655,6 +689,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
           let customerSpentAmountCents = Math.max(
             0,
             nonRegItemsSubtotalCents +
+              Math.max(
+                0,
+                Math.round(Number(deliveryRegulationPaidCents || 0)),
+              ) +
               shippingCostCents -
               (storePromoDiscountCents + paylivePromoDiscountCents),
           );
@@ -720,6 +758,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
           const openShipmentPaymentId = String(
             session.metadata?.open_shipment_payment_id || "",
           ).trim();
+          let previousBoxtalId: string | null = null;
+          let previousShipmentId: string | null = null;
+          let openShipmentRowId: number | null = null;
+          let oldBoxtalShipmentId: string | null = null;
           if (openShipmentPaymentId) {
             try {
               const openShipmentQuery = supabase
@@ -743,53 +785,14 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 Array.isArray(openShipments) && openShipments.length > 0
                   ? openShipments[0]
                   : null;
-              const oldBoxtalShipmentId = String(
-                openShipmentRow?.shipment_id || "",
-              ).trim();
-              if (openShipmentRow && oldBoxtalShipmentId) {
-                const apiBase = getInternalBase();
-                const cancelResp = await fetch(
-                  `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
-                    oldBoxtalShipmentId,
-                  )}?skipAdminRefundEmail=true`,
-                  { method: "DELETE" },
-                );
-                if (!cancelResp.ok) {
-                  const body = await cancelResp.text().catch(() => "");
-                  await emailService.sendAdminError({
-                    subject: "Annulation Boxtal échouée (modification)",
-                    message: `Echec annulation Boxtal shipment_id=${oldBoxtalShipmentId} (payment_id=${openShipmentPaymentId}). 
-                    Statut=${cancelResp.status}.`,
-                    context: body,
-                  });
-                  res.json({ received: true });
-                  return;
-                }
-
-                const { error: delErr } = await supabase
-                  .from("shipments")
-                  .delete()
-                  .eq("id", openShipmentRow.id);
-                if (delErr) {
-                  await emailService.sendAdminError({
-                    subject: "Suppression shipment open_shipment échouée",
-                    message: `Boxtal annulé mais suppression shipments échouée (id=${openShipmentRow.id}, payment_id=${openShipmentPaymentId}).`,
-                    context: JSON.stringify(delErr),
-                  });
-                }
-              } else if (openShipmentRow && !oldBoxtalShipmentId) {
-                const { error: delErr } = await supabase
-                  .from("shipments")
-                  .delete()
-                  .eq("id", openShipmentRow.id);
-                if (delErr) {
-                  await emailService.sendAdminError({
-                    subject: "Suppression shipment open_shipment échouée",
-                    message: `Suppression shipments échouée (id=${openShipmentRow.id}, payment_id=${openShipmentPaymentId}).`,
-                    context: JSON.stringify(delErr),
-                  });
-                }
-              }
+              openShipmentRowId =
+                openShipmentRow && Number.isFinite(Number(openShipmentRow.id))
+                  ? Number(openShipmentRow.id)
+                  : null;
+              oldBoxtalShipmentId =
+                String(openShipmentRow?.shipment_id || "").trim() || null;
+              previousBoxtalId = oldBoxtalShipmentId || null;
+              previousShipmentId = oldBoxtalShipmentId || null;
             } catch (e) {
               await emailService.sendAdminError({
                 subject: "Annulation Boxtal exception (modification)",
@@ -1081,9 +1084,23 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                     0,
                     Math.round(storePromoDiscountCents * ratio),
                   );
+                  const paylivePromoAppliedCents = Math.max(
+                    0,
+                    Math.round(paylivePromoDiscountCents * ratio),
+                  );
                   storeEarningsAmountCents = Math.max(
                     0,
                     adjustedItemsSubtotalCents - storePromoAppliedCents,
+                  );
+                  customerSpentAmountCents = Math.max(
+                    0,
+                    adjustedItemsSubtotalCents +
+                      Math.max(
+                        0,
+                        Math.round(Number(deliveryRegulationPaidCents || 0)),
+                      ) +
+                      adjustedShippingCostCents -
+                      (storePromoAppliedCents + paylivePromoAppliedCents),
                   );
                 }
 
@@ -1233,6 +1250,23 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                     effectiveCustomerCreditAppliedCents,
                 );
 
+                const regulationDiscountAppliedCents = Math.max(
+                  0,
+                  Math.round(
+                    Number(deliveryRegulationPaidCents || 0) -
+                      Number(deliveryRegulationCashDueCents || 0),
+                  ),
+                );
+                effectiveTempTopupCents =
+                  tempBalanceCents > 0
+                    ? Math.max(
+                        0,
+                        tempBalanceCents -
+                          effectiveTempAppliedCents -
+                          regulationDiscountAppliedCents,
+                      )
+                    : 0;
+
                 if (paymentIntent?.id) {
                   try {
                     const unfulfilledItemCents = Math.max(
@@ -1247,10 +1281,64 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                       0,
                       unfulfilledItemCents + unfulfilledShippingCents,
                     );
-                    const amountToCapture = Math.max(
-                      0,
-                      Math.round(netAmount || 0) - unfulfilledCents,
-                    );
+                    const amountToCapture = (() => {
+                      if (
+                        openShipmentPaymentId ||
+                        creditBalanceRefundCents > 0 ||
+                        effectiveTempTopupCents > 0
+                      ) {
+                        const ratio = (() => {
+                          if (orderedItemsSubtotalExclShippingCents <= 0)
+                            return 0;
+                          return Math.min(
+                            1,
+                            Math.max(
+                              0,
+                              fulfilledItemsSubtotalExclShippingCents /
+                                orderedItemsSubtotalExclShippingCents,
+                            ),
+                          );
+                        })();
+                        const storePromoAppliedCents = Math.max(
+                          0,
+                          Math.round(storePromoDiscountCents * ratio),
+                        );
+                        const paylivePromoAppliedCents = Math.max(
+                          0,
+                          Math.round(paylivePromoDiscountCents * ratio),
+                        );
+                        const fulfilledItemsAfterPromoCents = Math.max(
+                          0,
+                          fulfilledItemsSubtotalExclShippingCents -
+                            storePromoAppliedCents -
+                            paylivePromoAppliedCents,
+                        );
+                        const itemsDueCents = Math.max(
+                          0,
+                          fulfilledItemsAfterPromoCents -
+                            effectiveTempAppliedCents -
+                            effectiveCustomerCreditAppliedCents,
+                        );
+                        const shippingDueCents = Math.max(
+                          0,
+                          Math.round(shippingToCaptureCents || 0),
+                        );
+                        const debtDueCents = Math.max(
+                          0,
+                          Math.round(deliveryRegulationCashDueCents || 0),
+                        );
+                        return Math.max(
+                          0,
+                          Math.round(
+                            itemsDueCents + shippingDueCents + debtDueCents,
+                          ),
+                        );
+                      }
+                      return Math.max(
+                        0,
+                        Math.round(netAmount || 0) - unfulfilledCents,
+                      );
+                    })();
                     if (amountToCapture <= 0) {
                       try {
                         await stripe.paymentIntents.update(paymentIntent.id, {
@@ -1311,6 +1399,12 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                         temp_credit_applied_cents_effective: String(
                           effectiveTempAppliedCents,
                         ),
+                        temp_credit_topup_cents_effective: String(
+                          effectiveTempTopupCents,
+                        ),
+                        open_shipment_payment_id: String(
+                          openShipmentPaymentId || "",
+                        ),
                         ord_items_sub_ex_ship_cents: String(
                           orderedItemsSubtotalExclShippingCents,
                         ),
@@ -1339,11 +1433,12 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                         },
                       );
                       netAmount = amountToCapture;
-                      customerSpentAmountCents = Math.max(
-                        0,
-                        Math.round(netAmount || 0) +
-                          effectiveCustomerCreditAppliedCents,
-                      );
+                      if (!openShipmentPaymentId) {
+                        customerSpentAmountCents = Math.max(
+                          0,
+                          Math.round(netAmount || 0),
+                        );
+                      }
                     } else if (fresh && fresh.status === "succeeded") {
                       console.log(
                         "checkout.session.completed webhook: already captured",
@@ -1355,11 +1450,12 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                         },
                       );
                       const ar = Number((fresh as any)?.amount_received || 0);
-                      if (Number.isFinite(ar) && ar > 0) {
-                        customerSpentAmountCents = Math.max(
-                          0,
-                          Math.round(ar) + effectiveCustomerCreditAppliedCents,
-                        );
+                      if (
+                        !openShipmentPaymentId &&
+                        Number.isFinite(ar) &&
+                        ar > 0
+                      ) {
+                        customerSpentAmountCents = Math.max(0, Math.round(ar));
                       }
                     } else {
                       console.warn(
@@ -1384,11 +1480,8 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   const ar = Number(
                     (paymentIntent as any)?.amount_received || 0,
                   );
-                  if (Number.isFinite(ar) && ar > 0) {
-                    customerSpentAmountCents = Math.max(
-                      0,
-                      Math.round(ar) + effectiveCustomerCreditAppliedCents,
-                    );
+                  if (!openShipmentPaymentId && Number.isFinite(ar) && ar > 0) {
+                    customerSpentAmountCents = Math.max(0, Math.round(ar));
                   }
                 }
 
@@ -1565,6 +1658,50 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               return;
             }
             paymentIntent = succeededPi;
+          }
+
+          if (openShipmentPaymentId && openShipmentRowId) {
+            try {
+              if (oldBoxtalShipmentId) {
+                const apiBase = getInternalBase();
+                const cancelResp = await fetch(
+                  `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
+                    oldBoxtalShipmentId,
+                  )}?skipAdminRefundEmail=true`,
+                  { method: "DELETE" },
+                );
+                if (!cancelResp.ok) {
+                  const body = await cancelResp.text().catch(() => "");
+                  await emailService.sendAdminError({
+                    subject: "Annulation Boxtal échouée (modification)",
+                    message: `Echec annulation Boxtal shipment_id=${oldBoxtalShipmentId} (payment_id=${openShipmentPaymentId}). 
+                    Statut=${cancelResp.status}.`,
+                    context: body,
+                  });
+                  res.json({ received: true });
+                  return;
+                }
+              }
+              const { error: delErr } = await supabase
+                .from("shipments")
+                .update({ is_cancelled: true, is_open_shipment: false })
+                .eq("id", openShipmentRowId);
+              if (delErr) {
+                await emailService.sendAdminError({
+                  subject: "Annulation shipment open_shipment échouée",
+                  message: `Annulation shipments échouée (id=${openShipmentRowId}, payment_id=${openShipmentPaymentId}).`,
+                  context: JSON.stringify(delErr),
+                });
+              }
+            } catch (e) {
+              await emailService.sendAdminError({
+                subject: "Annulation Boxtal exception (modification)",
+                message: `Exception lors de l'annulation Boxtal pour payment_id=${openShipmentPaymentId}.`,
+                context: JSON.stringify(e),
+              });
+              res.json({ received: true });
+              return;
+            }
           }
 
           if (paymentIntent?.id) {
@@ -1939,6 +2076,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             console.log(
               "checkout.session.completed webhook: send customer confirmation email",
             );
+            const isModification = Boolean(openShipmentPaymentId);
             if (paymentId) {
               const succeededPi =
                 await ensurePaymentIntentSucceededForFulfillment(paymentId);
@@ -1966,11 +2104,25 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   String(
                     (pi?.metadata as any)?.credit_balance_finalized || "",
                   ) === "1";
+                const alreadyTopupFinalized =
+                  String(
+                    (pi?.metadata as any)
+                      ?.credit_modification_topup_finalized || "",
+                  ) === "1";
                 if (
                   !alreadyFinalized &&
                   (shouldResetDebtBalance ||
-                    effectiveCustomerCreditAppliedCents > 0)
+                    effectiveCustomerCreditAppliedCents > 0 ||
+                    (openShipmentPaymentId &&
+                      Number.isFinite(effectiveTempTopupCents) &&
+                      effectiveTempTopupCents > 0))
                 ) {
+                  const topupCents = openShipmentPaymentId
+                    ? Math.max(
+                        0,
+                        Math.round(Number(effectiveTempTopupCents || 0)),
+                      )
+                    : 0;
                   const latestCustomer = (await stripe.customers.retrieve(
                     customerId,
                   )) as Stripe.Customer;
@@ -1986,10 +2138,26 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                     const baseBalanceCents = shouldResetDebtBalance
                       ? 0
                       : prevBalanceCents;
+                    const usedCents = Math.max(
+                      0,
+                      Math.round(
+                        Number(effectiveCustomerCreditAppliedCents || 0),
+                      ),
+                    );
+                    const afterUsedCents = Math.max(
+                      0,
+                      baseBalanceCents - usedCents,
+                    );
+                    const addTopupCents = openShipmentPaymentId
+                      ? shouldResetDebtBalance
+                        ? topupCents
+                        : alreadyTopupFinalized
+                          ? 0
+                          : topupCents
+                      : 0;
                     const nextBalanceCents = Math.max(
                       0,
-                      baseBalanceCents -
-                        Math.max(0, effectiveCustomerCreditAppliedCents),
+                      afterUsedCents + addTopupCents,
                     );
                     await stripe.customers.update(
                       customerId,
@@ -2011,9 +2179,14 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                             String(prevBalanceCents),
                           credit_balance_after_cents_effective:
                             String(nextBalanceCents),
-                          credit_balance_used_cents_effective: String(
-                            effectiveCustomerCreditAppliedCents,
-                          ),
+                          credit_balance_used_cents_effective:
+                            String(usedCents),
+                          credit_modification_topup_amount_cents_effective:
+                            String(addTopupCents),
+                          credit_modification_topup_finalized:
+                            addTopupCents > 0 || alreadyTopupFinalized
+                              ? "1"
+                              : "0",
                           credit_balance_finalized: "1",
                         }),
                       });
@@ -2046,7 +2219,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 };
               })
               .filter((p: any) => String(p?.product_reference || "").trim());
-            await emailService.sendCustomerConfirmation({
+            const customerEmailPayload = {
               customerEmail:
                 paymentIntent?.receipt_email || customerEmail || "",
               customerName: customerName,
@@ -2057,10 +2230,14 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               productReference: productReference,
               products: emailProducts,
               creditUsedAmount: effectiveCustomerCreditAppliedCents / 100,
+              refundCreditAmount: effectiveTempTopupCents / 100,
               deliveryRegulationPaidAmount: deliveryRegulationPaidCents / 100,
               amount: customerSpentAmountCents / 100,
               currency: currency,
               paymentId: paymentId,
+              previousPaymentId: openShipmentPaymentId || undefined,
+              previousBoxtalId: previousBoxtalId || undefined,
+              previousShipmentId: previousShipmentId || undefined,
               boxtalId: boxtalId,
               shipmentId: shipmentId,
               deliveryMethod: deliveryMethod,
@@ -2076,7 +2253,14 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               productValue: (products?.[0]?.unit_price || 0) / 100,
               estimatedDeliveryCost:
                 Math.max(0, Number(adjustedShippingCostCents || 0)) / 100,
-            });
+            };
+            if (isModification) {
+              await emailService.sendCustomerOrderModified(
+                customerEmailPayload,
+              );
+            } else {
+              await emailService.sendCustomerConfirmation(customerEmailPayload);
+            }
           } catch (emailErr) {
             console.error(
               "Error sending customer confirmation email:",
@@ -2086,6 +2270,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
 
           try {
             console.log("Stripe webhook: send store owner notification");
+            const isModification = Boolean(openShipmentPaymentId);
             if (storeOwnerEmail) {
               if (paymentIntent?.status !== "succeeded") {
                 res.json({ received: true });
@@ -2114,7 +2299,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   };
                 })
                 .filter((p: any) => String(p?.product_reference || "").trim());
-              const sentOwner = await emailService.sendStoreOwnerNotification({
+              const ownerEmailPayload = {
                 ownerEmail: storeOwnerEmail,
                 storeName: storeName || "Votre Boutique",
                 customerEmail: customerEmail || "",
@@ -2143,6 +2328,9 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 weight,
                 currency,
                 paymentId,
+                previousPaymentId: openShipmentPaymentId || undefined,
+                previousBoxtalId: previousBoxtalId || undefined,
+                previousShipmentId: previousShipmentId || undefined,
                 boxtalId,
                 shipmentId,
                 promoCodes:
@@ -2157,7 +2345,16 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   attachments?.length === 0
                     ? "Vous pourrez télécharger votre bordereau d'envoi depuis votre tableau de bord dans quelques minutes."
                     : undefined,
-              });
+              };
+              if (isModification) {
+                await emailService.sendStoreOwnerOrderModified(
+                  ownerEmailPayload,
+                );
+              } else {
+                await emailService.sendStoreOwnerNotification(
+                  ownerEmailPayload,
+                );
+              }
             }
           } catch (ownerEmailErr) {
             console.error(

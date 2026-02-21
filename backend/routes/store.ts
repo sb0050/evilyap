@@ -630,6 +630,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
           "id, payment_id, created_at, customer_stripe_id, product_reference, promo_code, store_earnings_amount",
         )
         .eq("store_id", storeId)
+        .neq("is_cancelled", true)
         .not("payment_id", "is", null)
         .order("created_at", { ascending: false })
         .range(from, from + pageSizeDb - 1);
@@ -647,7 +648,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
 
     const grossCents = payoutShipments.reduce((sum, r) => {
       const v = Number((r as any)?.store_earnings_amount || 0);
-      return sum + (Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0);
+      return sum + (Number.isFinite(v) ? Math.round(v) : 0);
     }, 0);
 
     if (!Number.isFinite(grossCents) || grossCents <= 0) {
@@ -759,10 +760,9 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       const customerId =
         String((r as any)?.customer_stripe_id || "").trim() || null;
       const netCentsRaw = Number((r as any)?.store_earnings_amount || 0);
-      const netCents =
-        Number.isFinite(netCentsRaw) && netCentsRaw > 0
-          ? Math.round(netCentsRaw)
-          : 0;
+      const netCents = Number.isFinite(netCentsRaw)
+        ? Math.round(netCentsRaw)
+        : 0;
       return {
         payment_id: paymentId,
         created,
@@ -1441,6 +1441,7 @@ router.get("/:storeSlug/transactions", async (req, res) => {
           "payment_id, created_at, customer_stripe_id, product_reference, promo_code, store_earnings_amount",
         )
         .eq("store_id", storeId)
+        .neq("is_cancelled", true)
         .not("payment_id", "is", null)
         .order("created_at", { ascending: false })
         .range(from, from + pageSizeDb - 1);
@@ -1457,10 +1458,7 @@ router.get("/:storeSlug/transactions", async (req, res) => {
       for (const r of rows) {
         totalCount += 1;
         const netCentsRaw = Number((r as any)?.store_earnings_amount || 0);
-        const netEur =
-          Number.isFinite(netCentsRaw) && netCentsRaw > 0
-            ? netCentsRaw / 100
-            : 0;
+        const netEur = Number.isFinite(netCentsRaw) ? netCentsRaw / 100 : 0;
         totalNet += netEur;
 
         if (limitAll || transactions.length < limit) {
