@@ -57,6 +57,9 @@ export default function Header() {
   const apiBase = API_BASE_URL;
   const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
   const hasEnsuredStripeCustomerRef = useRef<boolean>(false);
+  const [ownerStoreInfo, setOwnerStoreInfo] = useState<OwnerStoreInfo | null>(
+      null
+    );
   const [cartSummaryLoading, setCartSummaryLoading] = useState(false);
   const [cartItemsByStore, setCartItemsByStore] = useState<
     Array<{
@@ -131,6 +134,25 @@ export default function Header() {
     };
     ensureStripeCustomer();
   }, [user?.primaryEmailAddress?.emailAddress, stripeCustomerId]);
+
+  useEffect(() => {
+    const loadOwnerStoreInfo = async () => {
+      try {
+        if (!stripeCustomerId) return;
+        const resp = await fetch(
+          `${apiBase}/api/stores/check-owner-by-stripe/${encodeURIComponent(
+            stripeCustomerId
+          )}`
+        );
+        const json = (await resp.json().catch(() => null)) as OwnerStoreInfo;
+        if (!resp.ok) return;
+        setOwnerStoreInfo(json && typeof json === 'object' ? json : null);
+      } catch {
+        // ignore
+      }
+    };
+    loadOwnerStoreInfo();
+  }, [stripeCustomerId]);
 
   const formatEur = (value: number) =>
     new Intl.NumberFormat('fr-FR', {
@@ -275,19 +297,32 @@ export default function Header() {
 
       // Vérification spécifique du dashboard sans slug: s'assurer que l'utilisateur a une boutique
       if (path === '/dashboard') {
-        const email = user?.primaryEmailAddress?.emailAddress;
-        if (!email) {
-          // Email non prêt: rester en pending jusqu'à Clerk
-          return;
-        }
         try {
-          const resp = await fetch(
-            `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
-          );
-          const json: OwnerStoreInfo = await resp.json();
-          if (!resp.ok) {
-            throw new Error(json as any);
+          let json: OwnerStoreInfo | null = null;
+          if (stripeCustomerId) {
+            const resp = await fetch(
+              `${apiBase}/api/stores/check-owner-by-stripe/${encodeURIComponent(
+                stripeCustomerId
+              )}`
+            );
+            json = (await resp.json().catch(() => null)) as OwnerStoreInfo;
+            if (!resp.ok) {
+              throw new Error((json as any) || 'Erreur');
+            }
+          } else {
+            const email = user?.primaryEmailAddress?.emailAddress;
+            if (!email) {
+              return;
+            }
+            const resp = await fetch(
+              `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
+            );
+            json = (await resp.json().catch(() => null)) as OwnerStoreInfo;
+            if (!resp.ok) {
+              throw new Error((json as any) || 'Erreur');
+            }
           }
+          setOwnerStoreInfo(json && typeof json === 'object' ? json : null);
           if (!json?.exists || !json?.slug) {
             setDashboardGuardError({
               title: 'Aucune boutique',
@@ -316,7 +351,7 @@ export default function Header() {
       setGuardStatus('ok');
     };
     checkDashboardGuard();
-  }, [user, location.pathname]); // check si on doit pas mettre: user?.primaryEmailAddress?.emailAddress
+  }, [user, stripeCustomerId, location.pathname]); // check si on doit pas mettre: user?.primaryEmailAddress?.emailAddress
 
   // Garde Onboarding: vérifier si l'utilisateur possède déjà une boutique
   useLayoutEffect(() => {
@@ -335,19 +370,30 @@ export default function Header() {
         (location.state as any)?.skipOnboardingRedirect
       );
 
-      const email = user?.primaryEmailAddress?.emailAddress;
-      if (!email) {
-        // Si l'email n'est pas disponible (chargement Clerk), rester en pending
-        return;
-      }
-
       try {
-        const resp = await fetch(
-          `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
-        );
-        const json = await resp.json();
-        if (!resp.ok) {
-          throw new Error(json?.error || 'Vérification propriétaire échouée');
+        let json: any = null;
+        if (stripeCustomerId) {
+          const resp = await fetch(
+            `${apiBase}/api/stores/check-owner-by-stripe/${encodeURIComponent(
+              stripeCustomerId
+            )}`
+          );
+          json = await resp.json().catch(() => null);
+          if (!resp.ok) {
+            throw new Error(json?.error || 'Vérification propriétaire échouée');
+          }
+        } else {
+          const email = user?.primaryEmailAddress?.emailAddress;
+          if (!email) {
+            return;
+          }
+          const resp = await fetch(
+            `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
+          );
+          json = await resp.json().catch(() => null);
+          if (!resp.ok) {
+            throw new Error(json?.error || 'Vérification propriétaire échouée');
+          }
         }
         if (json?.exists && json?.slug) {
           // Déjà propriétaire
@@ -376,7 +422,11 @@ export default function Header() {
       }
     };
     checkOnboardingGuard();
-  }, [user?.primaryEmailAddress?.emailAddress, location.pathname]);
+  }, [
+    user?.primaryEmailAddress?.emailAddress,
+    stripeCustomerId,
+    location.pathname,
+  ]);
 
   // Redirections centralisées selon le statut des gardes et les slugs connus
   useEffect(() => {
@@ -440,12 +490,7 @@ export default function Header() {
                 <span className='inline-flex items-center'>Mes commandes</span>
               </button>
 
-              <Protect
-                condition={() => {
-                  const role = (user?.publicMetadata as any)?.role;
-                  return role === 'owner';
-                }}
-              >
+              {Boolean(ownerStoreInfo?.exists) && (
                 <button
                   className='mr-2 sm:mr-4 px-2 py-2 sm:px-3 sm:py-2 rounded-md text-xs sm:text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700'
                   onClick={() => navigate(`/dashboard`)}
@@ -454,7 +499,7 @@ export default function Header() {
                     Tableau de bord
                   </span>
                 </button>
-              </Protect>
+              )}
 
               <div className='flex items-center gap-2'>
                 <Popover className='relative'>

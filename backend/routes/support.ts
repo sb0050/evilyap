@@ -64,13 +64,6 @@ router.post("/contact", upload.single("attachment"), async (req, res) => {
       return res.status(404).json({ error: "Boutique non trouvée" });
     }
 
-    try {
-      const user = await clerkClient.users.getUser(requesterId);
-      const role = (user?.publicMetadata as any)?.role;
-    } catch (_e) {
-      // default false
-    }
-
     const isOwner =
       (store as any)?.clerk_id && (store as any).clerk_id === requesterId;
     if (!isOwner) {
@@ -145,21 +138,75 @@ router.post(
       if (!shipmentId) {
         return res.status(400).json({ error: "Shipment ID requis" });
       }
+      const shipmentIdTrimmed = String(shipmentId || "").trim();
+      if (!shipmentIdTrimmed) {
+        return res.status(400).json({ error: "Shipment ID requis" });
+      }
+
+      // Info client depuis Clerk (email, nom + stripe_id pour autorisation)
+      let customerEmail: string | undefined;
+      let customerName: string | undefined;
+      let stripeCustomerId: string | undefined;
+      try {
+        const user = await clerkClient.users.getUser(requesterId);
+        customerEmail =
+          (user?.primaryEmailAddress as any)?.emailAddress || undefined;
+        const first = (user as any)?.firstName || "";
+        const last = (user as any)?.lastName || "";
+        const full = `${first} ${last}`.trim();
+        customerName = full || undefined;
+        stripeCustomerId = String(
+          (user?.publicMetadata as any)?.stripe_id || "",
+        ).trim();
+      } catch (_e) {
+        // ignore
+      }
+      if (!stripeCustomerId) {
+        return res
+          .status(400)
+          .json({ error: "stripe_id manquant dans les metadata du user" });
+      }
 
       // Rechercher le shipment et le store associé
-      const { data: shipment, error: shipErr } = await supabase
-        .from("shipments")
-        .select(
-          "id, store_id, shipment_id, tracking_url, product_reference, customer_spent_amount, promo_code, delivery_method, delivery_network"
-        )
-        .eq("shipment_id", shipmentId)
-        .maybeSingle();
+      const baseSelect =
+        "id, store_id, shipment_id, customer_stripe_id, tracking_url, product_reference, customer_spent_amount, promo_code, delivery_method, delivery_network";
 
-      if (shipErr) {
-        return res.status(500).json({ error: shipErr.message });
+      let shipment: any = null;
+      {
+        const { data, error: shipErr } = await supabase
+          .from("shipments")
+          .select(baseSelect)
+          .eq("shipment_id", shipmentIdTrimmed)
+          .maybeSingle();
+        if (shipErr) {
+          return res.status(500).json({ error: shipErr.message });
+        }
+        shipment = data;
       }
+
+      if (!shipment) {
+        const asNum = Number(shipmentIdTrimmed);
+        if (Number.isFinite(asNum) && asNum > 0) {
+          const { data, error: shipErr2 } = await supabase
+            .from("shipments")
+            .select(baseSelect)
+            .eq("id", asNum)
+            .maybeSingle();
+          if (shipErr2) {
+            return res.status(500).json({ error: shipErr2.message });
+          }
+          shipment = data;
+        }
+      }
+
       if (!shipment) {
         return res.status(404).json({ error: "Expédition non trouvée" });
+      }
+      if (
+        String((shipment as any)?.customer_stripe_id || "").trim() !==
+        stripeCustomerId
+      ) {
+        return res.status(403).json({ error: "Accès interdit à cette commande" });
       }
       if (!shipment.store_id) {
         return res
@@ -179,21 +226,6 @@ router.post(
         return res
           .status(404)
           .json({ error: "Boutique introuvable ou email propriétaire absent" });
-      }
-
-      // Info client depuis Clerk
-      let customerEmail: string | undefined;
-      let customerName: string | undefined;
-      try {
-        const user = await clerkClient.users.getUser(requesterId);
-        customerEmail =
-          (user?.primaryEmailAddress as any)?.emailAddress || undefined;
-        const first = (user as any)?.firstName || "";
-        const last = (user as any)?.lastName || "";
-        const full = `${first} ${last}`.trim();
-        customerName = full || undefined;
-      } catch (_e) {
-        // ignore
       }
 
       // Pièce jointe
@@ -229,7 +261,8 @@ router.post(
           productReference: (shipment as any).product_reference || undefined,
           value:
             typeof (shipment as any).customer_spent_amount === "number"
-              ? Math.max(0, Number((shipment as any).customer_spent_amount)) / 100
+              ? Math.max(0, Number((shipment as any).customer_spent_amount)) /
+                100
               : undefined,
           deliveryMethod: (shipment as any).delivery_method || undefined,
           deliveryNetwork: (shipment as any).delivery_network || undefined,
@@ -252,5 +285,5 @@ router.post(
       console.error("Erreur serveur (customer-contact):", err);
       return res.status(500).json({ error: "Erreur interne du serveur" });
     }
-  }
+  },
 );

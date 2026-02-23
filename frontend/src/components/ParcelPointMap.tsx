@@ -251,15 +251,22 @@ const homeDeliveryConfig = {
       color: '#FFD60A',
       delay: '3 à 5 jours',
       shippingOfferCode: 'DLVG-DelivengoEasy',
-      disabled: false,
+      disabled: true,
     },
   },
-  CE: {
+  CH: {
     DLVG_HOME: {
       name: 'Delivengo - Delivengo easy',
       color: '#FFD60A',
       delay: '3 à 5 jours',
       shippingOfferCode: 'DLVG-DelivengoEasy',
+      disabled: true,
+    },
+    FEDEX_HOME: {
+      name: 'Fedex - Fedex Regional Economy',
+      color: '#007AFF',
+      delay: '1 à 4 jours',
+      shippingOfferCode: 'FEDX-FedexRegionalEconomy',
       disabled: false,
     },
   },
@@ -319,6 +326,7 @@ export default function ParcelPointMap({
   onParcelPointSelect,
   defaultDeliveryMethod = 'pickup_point',
   disablePopupsOnMobile = false,
+  initialDeliveryNetwork,
 }: ParcelPointMapProps) {
   const [parcelPoints, setParcelPoints] = useState<ParcelPointResponse[]>([]);
   const [loading, setLoading] = useState(false);
@@ -413,11 +421,11 @@ export default function ParcelPointMap({
       }
 
       const countryCodeRaw = searchAddress.country || 'FR';
-      const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
+      const countryCode = countryCodeRaw;
       const availableNetworks = Object.keys(
         (networkConfig as any)[countryCode] || {}
       );
-      if (countryCode === 'CE' || availableNetworks.length === 0) {
+      if (countryCode === 'CH' || availableNetworks.length === 0) {
         setParcelPoints([]);
         return;
       }
@@ -534,20 +542,43 @@ export default function ParcelPointMap({
             : 'HOME'
       );
     }
+    setSelectedPoint(null);
+    setSelectedHomeDelivery('');
   }, [defaultDeliveryMethod]);
 
   useEffect(() => {
-    if (
-      (address?.country === 'CE' || address?.country === 'CH') &&
-      deliveryType === 'PICKUP'
-    ) {
+    const code = String(initialDeliveryNetwork || '').trim();
+    if (!code) {
+      setSelectedHomeDelivery('');
+    }
+  }, [initialDeliveryNetwork]);
+
+  useEffect(() => {
+    if (selectedHomeDelivery) return;
+    const code = String(initialDeliveryNetwork || '').trim();
+    if (!code) return;
+    const countryCodeRaw = address?.country || 'FR';
+    const countryKey = countryCodeRaw as keyof typeof homeDeliveryConfig;
+    const cfgByKey = (homeDeliveryConfig as any)[countryKey] || {};
+    const target = code.toUpperCase();
+    const matchKey = Object.keys(cfgByKey).find(k => {
+      const offer = String(cfgByKey?.[k]?.shippingOfferCode || '').trim();
+      return offer && offer.toUpperCase() === target;
+    });
+    if (matchKey && cfgByKey?.[matchKey]?.disabled !== true) {
+      setSelectedHomeDelivery(matchKey);
+    }
+  }, [address?.country, initialDeliveryNetwork, selectedHomeDelivery]);
+
+  useEffect(() => {
+    if (address?.country === 'CH' && deliveryType === 'PICKUP') {
       setDeliveryType('HOME');
     }
   }, [address?.country, deliveryType]);
 
   useEffect(() => {
     const countryCodeRaw = address?.country || 'FR';
-    const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
+    const countryCode = countryCodeRaw;
     const keys = Object.keys((networkConfig as any)[countryCode] || {});
     if (networkFilter !== 'ALL' && !keys.includes(networkFilter)) {
       setNetworkFilter('ALL');
@@ -558,7 +589,7 @@ export default function ParcelPointMap({
   const handleMarkerClick = (parcelPoint: ParcelPointData) => {
     setSelectedPoint(parcelPoint);
     const countryCodeRaw = address?.country || 'FR';
-    const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
+    const countryCode = countryCodeRaw;
     const shippingOfferCode = (networkConfig as any)[countryCode]?.[
       parcelPoint.network
     ]?.shippingOfferCode;
@@ -596,9 +627,7 @@ export default function ParcelPointMap({
   // Gestion de la sélection d'une option de livraison à domicile
   const handleHomeDeliverySelect = (deliveryKey: string) => {
     const countryCodeRaw = address?.country || 'FR';
-    const countryKey = (
-      countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw
-    ) as keyof typeof homeDeliveryConfig;
+    const countryKey = countryCodeRaw as keyof typeof homeDeliveryConfig;
     const config = (homeDeliveryConfig as any)[countryKey]?.[deliveryKey];
     if (config?.disabled) {
       return;
@@ -627,7 +656,7 @@ export default function ParcelPointMap({
     isHomeDelivery: boolean = false
   ): string => {
     const countryCodeRaw = address?.country || 'FR';
-    const countryCode = countryCodeRaw === 'CH' ? 'CE' : countryCodeRaw;
+    const countryCode = countryCodeRaw;
     if (isHomeDelivery) {
       const homeKey = `${network}_HOME`;
       const config = (homeDeliveryConfig as any)[countryCode]?.[homeKey];
@@ -682,14 +711,6 @@ export default function ParcelPointMap({
             <h4 className='text-sm font-medium text-gray-900'>
               Choisir sa livraison
             </h4>
-            <div className='flex items-center space-x-2'>
-              <div className='flex items-center space-x-2 text-xs text-gray-500'>
-                {loading && (
-                  <span className='text-blue-600'>🔄 Chargement...</span>
-                )}
-                {error && <span className='text-red-600'>❌ Erreur</span>}
-              </div>
-            </div>
           </div>
 
           {/* Filtres */}
@@ -707,9 +728,7 @@ export default function ParcelPointMap({
                     value='PICKUP'
                     checked={deliveryType === 'PICKUP'}
                     onChange={e => handleDeliveryTypeChange(e.target.value)}
-                    disabled={
-                      address?.country === 'CE' || address?.country === 'CH'
-                    }
+                    disabled={address?.country === 'CH'}
                     className='text-blue-600'
                   />
                   <span className='text-xs text-gray-700'>Point relais</span>
@@ -770,10 +789,7 @@ export default function ParcelPointMap({
                     </label>
                     {Object.entries(
                       (networkConfig as any)[
-                        ((address?.country === 'CH'
-                          ? 'CE'
-                          : address?.country) ||
-                          'FR') as keyof typeof networkConfig
+                        (address?.country || 'FR') as keyof typeof networkConfig
                       ] || {}
                     ).map(([key, cfg]: any) => (
                       <label
@@ -809,8 +825,7 @@ export default function ParcelPointMap({
               </div>
               {Object.entries(
                 (networkConfig as any)[
-                  ((address?.country === 'CH' ? 'CE' : address?.country) ||
-                    'FR') as keyof typeof networkConfig
+                  (address?.country || 'FR') as keyof typeof networkConfig
                 ] || {}
               ).map(([key, cfg]: any) => (
                 <div key={key} className='flex items-center space-x-1'>
@@ -827,13 +842,31 @@ export default function ParcelPointMap({
           {deliveryType === 'STORE'
             ? storePickupAddress && <div></div>
             : address && (
-                <p className='text-xs text-gray-600'>
-                  <strong>Votre adresse : </strong>
-                  {address.line1}
-                  {address.line2 ? `, ${address.line2}` : ''},{' '}
-                  {address.postal_code} {address.city}
-                  {address.country ? `, ${address.country}` : ''}
-                </p>
+                <div className='flex items-start justify-between gap-3'>
+                  <p className='text-xs text-gray-600'>
+                    <strong>Votre adresse : </strong>
+                    {address.line1}
+                    {address.line2 ? `, ${address.line2}` : ''},{' '}
+                    {address.postal_code} {address.city}
+                    {address.country ? `, ${address.country}` : ''}
+                  </p>
+                  <div className='flex items-center justify-end gap-3'>
+                    <div className='flex items-center space-x-2 text-xs text-gray-500'>
+                      {loading && (
+                        <span className='text-blue-600'>🔄 Chargement...</span>
+                      )}
+                      {error && <span className='text-red-600'>❌ Erreur</span>}
+                    </div>
+                    {!loading && (
+                      <button
+                        onClick={handleManualRefresh}
+                        className='px-4 py-2 text-sm rounded border transition-colors bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+                      >
+                        🔄 Rafraîchir
+                      </button>
+                    )}
+                  </div>
+                </div>
               )}
         </div>
 
@@ -1108,8 +1141,7 @@ export default function ParcelPointMap({
               </h3>
               {Object.entries(
                 (homeDeliveryConfig as any)[
-                  ((address?.country === 'CH' ? 'CE' : address?.country) ||
-                    'FR') as keyof typeof homeDeliveryConfig
+                  (address?.country || 'FR') as keyof typeof homeDeliveryConfig
                 ] || {}
               )
                 .filter(([, cfg]) => (cfg as any)?.disabled !== true)
