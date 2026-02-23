@@ -86,38 +86,91 @@ const parseProductReferenceItems = (raw: string): ProductReferenceItem[] => {
     .map((p) => String(p || "").trim())
     .filter(Boolean);
 
-  const items: ProductReferenceItem[] = [];
+  const onlyStripeIds =
+    parts.length > 0 && parts.every((p) => String(p || "").startsWith("prod_"));
+  if (onlyStripeIds) {
+    const counts = new Map<string, number>();
+    for (const pid of parts) {
+      const id = String(pid || "").trim();
+      if (!id) continue;
+      counts.set(id, (counts.get(id) || 0) + 1);
+    }
+    return Array.from(counts.entries()).map(([reference, quantity]) => ({
+      reference,
+      quantity,
+      description: undefined,
+    }));
+  }
+
+  const acc = new Map<
+    string,
+    { reference: string; quantity: number; description?: string }
+  >();
+
+  const add = (
+    referenceRaw: string,
+    quantityRaw: number,
+    descriptionRaw?: any,
+  ) => {
+    const reference = String(referenceRaw || "").trim();
+    if (!reference) return;
+    const quantity =
+      Number.isFinite(quantityRaw) && quantityRaw > 0
+        ? Math.floor(quantityRaw)
+        : 1;
+    const description = String(descriptionRaw || "").trim() || undefined;
+    const cur = acc.get(reference);
+    if (!cur) {
+      acc.set(reference, { reference, quantity, description });
+      return;
+    }
+    cur.quantity += quantity;
+    if (!cur.description && description) cur.description = description;
+  };
+
   for (const p of parts) {
-    const [refRaw, tailRaw] = p.split("**", 2);
-    const reference = String(refRaw || "").trim();
-    const tail = String(tailRaw || "").trim();
-    if (!reference) continue;
+    const seg = String(p || "").trim();
+    if (!seg) continue;
 
-    let quantity = 1;
-    let description = "";
+    if (seg.includes("**")) {
+      const [refRaw, tailRaw] = seg.split("**", 2);
+      const ref = String(refRaw || "").trim();
+      const tail = String(tailRaw || "").trim();
+      if (!ref) continue;
 
-    if (tail) {
-      const m = tail.match(/^(\d+)?(?:@(\d+))?\s*(?:\((.*)\))?$/);
-      if (m?.[1]) {
-        const q = Number(m[1]);
-        if (Number.isFinite(q) && q > 0) quantity = Math.floor(q);
+      let quantity = 1;
+      let description: string | undefined = undefined;
+      if (tail) {
+        const m = tail.match(/^(\d+)?(?:@(\d+))?\s*(?:\((.*)\))?$/);
+        if (m?.[1]) {
+          const q = Number(m[1]);
+          if (Number.isFinite(q) && q > 0) quantity = Math.floor(q);
+        }
+        if (typeof m?.[3] === "string") {
+          const d = String(m[3] || "").trim();
+          if (d) description = d;
+        }
       }
-      if (typeof m?.[3] === "string") description = m[3];
-    } else {
-      const m = reference.match(/^(.*?)(?:@(\d+))?\s*(?:\((.*)\))?$/);
-      if (m?.[3]) {
-        description = m[3];
-      }
+
+      add(
+        ref.replace(/(?:@(\d+))?\s*\((.*)\)$/, "").trim(),
+        quantity,
+        description,
+      );
+      continue;
     }
 
-    const descClean = String(description || "").trim();
-    items.push({
-      reference: reference.replace(/(?:@(\d+))?\s*\((.*)\)$/, "").trim(),
-      quantity,
-      description: descClean || undefined,
-    });
+    const mDesc = seg.match(/^(.*)\(([^()]*)\)\s*$/);
+    const base = mDesc ? String(mDesc[1] || "").trim() : seg;
+    const desc =
+      mDesc && typeof mDesc[2] === "string"
+        ? String(mDesc[2] || "").trim()
+        : "";
+    const ref = base.replace(/@(\d+)\s*$/, "").trim();
+    add(ref, 1, desc || undefined);
   }
-  return items;
+
+  return Array.from(acc.values());
 };
 
 function isMissingColumnError(err: any, column: string): boolean {
@@ -174,7 +227,7 @@ router.post("/open-shipment", async (req, res) => {
 
     const { data: shipment, error: shipErr } = await supabase
       .from("shipments")
-      .select("id,store_id,customer_stripe_id,is_open_shipment")
+      .select("id,store_id,customer_stripe_id,is_open_shipment,status")
       .eq("id", shipmentIdNum)
       .maybeSingle();
     if (shipErr) {
@@ -188,6 +241,10 @@ router.post("/open-shipment", async (req, res) => {
     ) {
       return res.status(403).json({ error: "Accès interdit à cette commande" });
     }
+    const currentStatus = (shipment as any)?.status;
+    if (String(currentStatus || "").toUpperCase() === "CANCELLED") {
+      return res.status(400).json({ error: "Commande déjà annulée" });
+    }
 
     const storeIdNum = Number((shipment as any)?.store_id || 0);
     const { data: otherOpen, error: otherErr } = await supabase
@@ -196,6 +253,7 @@ router.post("/open-shipment", async (req, res) => {
       .eq("customer_stripe_id", stripeCustomerId)
       .eq("store_id", storeIdNum)
       .eq("is_open_shipment", true)
+      .or("status.is.null,status.neq.CANCELLED")
       .neq("id", shipmentIdNum)
       .limit(1);
     if (otherErr) {
@@ -283,10 +341,11 @@ router.post("/open-shipment-by-payment", async (req, res) => {
     const { data: shipment, error: shipmentErr } = await supabase
       .from("shipments")
       .select(
-        "id,shipment_id,store_id,customer_stripe_id,payment_id,customer_spent_amount",
+        "id,shipment_id,store_id,customer_stripe_id,payment_id,customer_spent_amount,status",
       )
       .eq("payment_id", paymentIdStr)
       .eq("store_id", storeIdNum)
+      .or("status.is.null,status.neq.CANCELLED")
       .maybeSingle();
     if (shipmentErr) {
       return res.status(500).json({ error: shipmentErr.message });
@@ -298,6 +357,10 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       String((shipment as any)?.customer_stripe_id || "") !== stripeCustomerId
     ) {
       return res.status(403).json({ error: "Accès interdit à cette commande" });
+    }
+    const currentStatus = (shipment as any)?.status;
+    if (String(currentStatus || "").toUpperCase() === "CANCELLED") {
+      return res.status(400).json({ error: "Commande déjà annulée" });
     }
 
     const shipmentIdNum = Number((shipment as any)?.id || 0);
@@ -360,13 +423,78 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       return res.status(500).json({ error: updErr.message });
     }
 
+    const spentRaw = Number((shipment as any)?.customer_spent_amount ?? 0);
+    let paidItemsCents = Number.isFinite(spentRaw)
+      ? Math.max(0, Math.round(spentRaw))
+      : 0;
+
+    if (stripe) {
+      try {
+        const sessions: any = await stripe.checkout.sessions.list({
+          payment_intent: paymentIdStr,
+          limit: 1,
+        });
+        const session: any = Array.isArray(sessions?.data)
+          ? sessions.data[0]
+          : null;
+        const sessionId = String(session?.id || "").trim();
+        const sessionTotalCents =
+          typeof session?.amount_total === "number" &&
+          Number.isFinite(session.amount_total)
+            ? Math.max(0, Math.round(session.amount_total))
+            : null;
+        if (sessionId) {
+          const lineItemsResp: any =
+            await stripe.checkout.sessions.listLineItems(sessionId, {
+              limit: 100,
+              expand: ["data.price.product"],
+            } as any);
+          const regulationRegex = /r[ée]gularisation\s+livraison/i;
+          const regulationAmountCents = (lineItemsResp?.data || []).reduce(
+            (sum: number, item: any) => {
+              const prod = item?.price?.product as any;
+              const name =
+                typeof prod === "string"
+                  ? String(
+                      item?.description || item?.price?.nickname || "",
+                    ).trim()
+                  : String(prod?.name || "").trim();
+              const description =
+                typeof prod === "string"
+                  ? String(item?.description || "").trim()
+                  : String(prod?.description || "").trim();
+              const isReg =
+                regulationRegex.test(name) || regulationRegex.test(description);
+              if (!isReg) return sum;
+              const vRaw =
+                item?.amount_total ??
+                item?.amount_subtotal ??
+                item?.amount ??
+                0;
+              const v = Math.max(0, Math.round(Number(vRaw || 0)));
+              return sum + (Number.isFinite(v) ? v : 0);
+            },
+            0,
+          );
+          if (
+            regulationAmountCents > 0 &&
+            sessionTotalCents !== null &&
+            Math.abs(paidItemsCents - sessionTotalCents) <= 2
+          ) {
+            paidItemsCents = Math.max(
+              0,
+              paidItemsCents - regulationAmountCents,
+            );
+          }
+        }
+      } catch {}
+    }
+
     return res.json({
       success: true,
       shipmentId: shipmentIdNum,
       shipmentDisplayId: String((shipment as any)?.shipment_id || "").trim(),
-      paidValue:
-        Math.max(0, Number((shipment as any)?.customer_spent_amount || 0)) /
-        100,
+      paidValue: Math.max(0, paidItemsCents) / 100,
     });
   } catch (e) {
     console.error("Error opening shipment by payment:", e);
@@ -667,6 +795,9 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
               const description = String(
                 prodObj?.description || li?.description || "",
               ).trim();
+              const isDeliveryRegulation =
+                /r[ée]gularisation\s+livraison/i.test(ref) ||
+                /r[ée]gularisation\s+livraison/i.test(description);
               const rawMetaWeight =
                 (prodObj?.metadata as any)?.weight ??
                 (prodObj?.metadata as any)?.weight_kg;
@@ -683,10 +814,13 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
                 value,
                 quantity,
                 weight,
+                _is_delivery_regulation: isDeliveryRegulation,
               };
             })
-            .filter((it: any) =>
-              Boolean(String(it.product_reference || "").trim()),
+            .filter(
+              (it: any) =>
+                Boolean(String(it.product_reference || "").trim()) &&
+                !Boolean((it as any)?._is_delivery_regulation),
             );
         }
         console.log("******************", items);
@@ -980,6 +1114,107 @@ router.get("/store/:storeSlug", async (req, res) => {
   }
 });
 
+router.post("/:id/cancel", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid shipment id" });
+    }
+
+    const { data: shipment, error: shipErr } = await supabase
+      .from("shipments")
+      .select("id,store_id,customer_stripe_id,status")
+      .eq("id", id)
+      .maybeSingle();
+    if (shipErr) {
+      if ((shipErr as any)?.code === "PGRST116") {
+        return res.status(404).json({ error: "Shipment not found" });
+      }
+      return res.status(500).json({ error: shipErr.message });
+    }
+    if (!shipment) {
+      return res.status(404).json({ error: "Shipment not found" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const requesterStripeId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+
+    const storeId = Number((shipment as any)?.store_id || 0);
+    if (!Number.isFinite(storeId) || storeId <= 0) {
+      return res.status(400).json({ error: "Shipment has no store_id" });
+    }
+
+    const { data: store, error: storeErr } = await supabase
+      .from("stores")
+      .select("id,clerk_id")
+      .eq("id", storeId)
+      .maybeSingle();
+    if (storeErr) {
+      if ((storeErr as any)?.code === "PGRST116") {
+        return res.status(404).json({ error: "Store not found" });
+      }
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!store) {
+      return res.status(404).json({ error: "Store not found" });
+    }
+
+    const isOwner =
+      Boolean((store as any)?.clerk_id) &&
+      String((store as any)?.clerk_id) === String(auth.userId);
+    const shipmentCustomerStripeId = String(
+      (shipment as any)?.customer_stripe_id || "",
+    ).trim();
+    const isCustomer =
+      Boolean(requesterStripeId) &&
+      requesterStripeId === shipmentCustomerStripeId;
+
+    if (!isOwner && !isCustomer) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const stRaw = (shipment as any)?.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || "")
+            .trim()
+            .toUpperCase();
+    if (st !== null && st !== "PENDING") {
+      return res.status(400).json({ error: "Annulation non autorisée" });
+    }
+
+    const { error: updErr } = await supabase
+      .from("shipments")
+      .update({ status: "CANCELLED" })
+      .eq("id", id);
+    if (updErr) {
+      return res.status(500).json({ error: updErr.message });
+    }
+
+    const { data: updated, error: rereadErr } = await supabase
+      .from("shipments")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+    if (rereadErr) {
+      return res.status(500).json({ error: rereadErr.message });
+    }
+
+    return res.json({ shipment: updated });
+  } catch (e) {
+    console.error("Error cancelling shipment:", e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 router.get("/:id/invoice", async (req, res) => {
   try {
     const auth = getAuth(req);
@@ -995,7 +1230,7 @@ router.get("/:id/invoice", async (req, res) => {
     const { data: shipment, error: shipmentErr } = await supabase
       .from("shipments")
       .select(
-        "id,store_id,customer_stripe_id,shipment_id,product_reference,customer_spent_amount,store_earnings_amount,delivery_cost,estimated_delivery_cost,created_at,facture_id,payment_id",
+        "id,store_id,customer_stripe_id,shipment_id,product_reference,customer_spent_amount,store_earnings_amount,delivery_cost,estimated_delivery_cost,created_at,facture_id,payment_id,promo_code",
       )
       .eq("id", id)
       .single();
@@ -1100,154 +1335,265 @@ router.get("/:id/invoice", async (req, res) => {
     };
 
     let issueDate = new Date();
-    const paymentIntentId = String((shipment as any)?.payment_id || "").trim();
-    let checkoutSession: any = null;
-    let checkoutLineItems: any[] = [];
-    let checkoutShippingTtc: number | null = null;
-    if (stripe && paymentIntentId) {
-      try {
-        const paymentIntent: any =
-          await stripe.paymentIntents.retrieve(paymentIntentId);
-        const created = Number(paymentIntent?.created || 0);
-        if (Number.isFinite(created) && created > 0) {
-          issueDate = new Date(created * 1000);
-        }
-      } catch {}
-
-      try {
-        const sessions: any = await stripe.checkout.sessions.list({
-          payment_intent: paymentIntentId,
-          limit: 1,
-        });
-        const foundId = String(sessions?.data?.[0]?.id || "").trim();
-        if (foundId) {
-          try {
-            checkoutSession = await stripe.checkout.sessions.retrieve(foundId, {
-              expand: ["shipping_cost", "shipping_details"],
-            } as any);
-          } catch {
-            checkoutSession = sessions?.data?.[0] || null;
-          }
-        } else {
-          checkoutSession = null;
-        }
-
-        if (checkoutSession?.id) {
-          try {
-            const lineItemsResp: any =
-              await stripe.checkout.sessions.listLineItems(
-                String(checkoutSession.id),
-                { limit: 100, expand: ["data.price.product"] } as any,
-              );
-            checkoutLineItems = Array.isArray(lineItemsResp?.data)
-              ? lineItemsResp.data
-              : [];
-          } catch {}
-        }
-        const shipCents =
-          checkoutSession?.shipping_cost?.amount_total ??
-          checkoutSession?.shipping_cost?.amount_subtotal ??
-          null;
-        checkoutShippingTtc =
-          typeof shipCents === "number" && Number.isFinite(shipCents)
-            ? shipCents / 100
-            : null;
-      } catch {}
+    {
+      const createdAt = String((shipment as any)?.created_at || "").trim();
+      const createdMs = createdAt ? new Date(createdAt).getTime() : NaN;
+      if (Number.isFinite(createdMs) && createdMs > 0) {
+        issueDate = new Date(createdMs);
+      }
     }
 
     const invoiceRows: Array<{
-      description: string;
+      reference: string;
+      description?: string;
       qty: number;
       unitHt: number;
       vatPct: number;
       totalHt: number;
     }> = [];
 
-    let totalHt = 0;
-    let totalVat = 0;
-    let totalTtc = 0;
+    const storeEarningsCents = Math.max(
+      0,
+      Math.round(Number((shipment as any)?.store_earnings_amount || 0)),
+    );
+    const storeEarningsTtc = storeEarningsCents / 100;
+    const regulationRegex = /r[ée]gularisation\s+livraison/i;
+    const shippingRegex = /frais\s+de\s+livraison/i;
+    const storePromoCodes = String((shipment as any)?.promo_code || "")
+      .split(";;")
+      .map((t) => String(t || "").trim())
+      .filter(Boolean)
+      .filter((t) => {
+        const up = t.toUpperCase();
+        return !up.startsWith("PAYLIVE-") && !up.startsWith("CREDIT-");
+      });
 
-    if (checkoutLineItems.length > 0) {
-      for (const li of checkoutLineItems) {
-        const qty = Math.max(1, Number(li?.quantity || 1));
-        const amountCents = Number(
-          li?.amount_total ?? li?.amount_subtotal ?? 0,
-        );
-        const lineTtc = Number.isFinite(amountCents) ? amountCents / 100 : 0;
-        const { ht, vat, ttc } = splitTtc(lineTtc);
-        const unitHt = qty > 0 ? round2(ht / qty) : 0;
-        const prod: any = li?.price?.product || null;
-        const name = String(prod?.name || li?.description || "Produit").trim();
-        const desc = String(prod?.description || "").trim();
-        invoiceRows.push({
-          description: `${name} Qté: ${qty}${desc ? ` — ${desc}` : ""}`,
-          qty,
-          unitHt,
-          vatPct,
-          totalHt: ht,
-        });
-        totalHt = round2(totalHt + ht);
-        totalVat = round2(totalVat + vat);
-        totalTtc = round2(totalTtc + ttc);
+    const productLines: Array<{
+      reference: string;
+      description?: string;
+      qty: number;
+      grossCents: number;
+      netCents: number;
+    }> = [];
+
+    const productRefRaw = String((shipment as any)?.product_reference || "");
+    const parts = productRefRaw
+      .split(";")
+      .map((p) => String(p || "").trim())
+      .filter(Boolean);
+    const onlyStripeIds =
+      parts.length > 0 &&
+      parts.every((p) => String(p || "").startsWith("prod_"));
+
+    const stripeProductCache = new Map<
+      string,
+      {
+        id: string;
+        name?: string | null;
+        description?: string | null;
+        unit_amount_cents?: number | null;
+      }
+    >();
+    const getStripeProductInvoiceDetails = async (pid: string) => {
+      const id = String(pid || "").trim();
+      if (!id || !id.startsWith("prod_")) return null;
+      const cached = stripeProductCache.get(id);
+      if (cached) return cached;
+      if (!stripe) return null;
+
+      let p: any = null;
+      try {
+        p = await stripe.products.retrieve(id, {
+          expand: ["default_price"],
+        } as any);
+      } catch {
+        p = null;
+      }
+      if (!p || p.deleted) return null;
+
+      let unitAmountCents: number | null = null;
+      const dp: any = (p as any)?.default_price || null;
+      if (dp && typeof dp === "object") {
+        const ua = Number((dp as any)?.unit_amount ?? NaN);
+        if (Number.isFinite(ua) && ua > 0) unitAmountCents = Math.round(ua);
+      }
+      if (unitAmountCents === null) {
+        try {
+          const list = await stripe.prices.list({
+            product: id,
+            active: true,
+            limit: 100,
+          } as any);
+          const prices = Array.isArray((list as any)?.data)
+            ? (list as any).data
+            : [];
+          const eur = prices.find(
+            (pr: any) =>
+              String(pr?.currency || "").toLowerCase() === "eur" &&
+              Number(pr?.unit_amount || 0) > 0,
+          );
+          const anyActive = prices.find(
+            (pr: any) => Number(pr?.unit_amount || 0) > 0,
+          );
+          const picked = eur || anyActive || null;
+          const ua = Number((picked as any)?.unit_amount ?? NaN);
+          if (Number.isFinite(ua) && ua > 0) unitAmountCents = Math.round(ua);
+        } catch {}
       }
 
-      const shipTtc = checkoutShippingTtc != null ? checkoutShippingTtc : 0;
-      const shipSplit = splitTtc(shipTtc);
-      if (shipSplit.ttc > 0) {
-        invoiceRows.push({
-          description: "Frais de livraison",
-          qty: 1,
-          unitHt: shipSplit.ht,
-          vatPct,
-          totalHt: shipSplit.ht,
+      const row = {
+        id,
+        name: String(p?.name || "").trim() || null,
+        description: String(p?.description || "").trim() || null,
+        unit_amount_cents: unitAmountCents,
+      };
+      stripeProductCache.set(id, row);
+      return row;
+    };
+
+    if (onlyStripeIds) {
+      const counts = new Map<string, number>();
+      for (const pid of parts) {
+        const id = String(pid || "").trim();
+        if (!id) continue;
+        counts.set(id, (counts.get(id) || 0) + 1);
+      }
+
+      for (const [pid, qtyRaw] of counts.entries()) {
+        const qty = Math.max(1, Number(qtyRaw || 1));
+        const details = await getStripeProductInvoiceDetails(pid);
+        const name = String(details?.name || pid).trim();
+        const desc = String(details?.description || "").trim();
+        if (
+          regulationRegex.test(name) ||
+          regulationRegex.test(desc) ||
+          shippingRegex.test(name) ||
+          shippingRegex.test(desc)
+        )
+          continue;
+        const unitCents = Math.max(
+          0,
+          Math.round(Number(details?.unit_amount_cents || 0)),
+        );
+        productLines.push({
+          reference: name || "Produit",
+          description: desc || undefined,
+          qty,
+          grossCents: unitCents * qty,
+          netCents: 0,
         });
-        totalHt = round2(totalHt + shipSplit.ht);
-        totalVat = round2(totalVat + shipSplit.vat);
-        totalTtc = round2(totalTtc + shipSplit.ttc);
       }
     } else {
-      const productRefRaw = String((shipment as any)?.product_reference || "");
       const productItems = parseProductReferenceItems(productRefRaw);
       if (productItems.length === 0) {
-        invoiceRows.push({
-          description: "Produit",
+        productLines.push({
+          reference: "Produit",
           qty: 1,
-          unitHt: 0,
-          vatPct,
-          totalHt: 0,
+          grossCents: 0,
+          netCents: 0,
         });
       } else {
         for (let i = 0; i < productItems.length; i++) {
           const it = productItems[i];
           const qty = Math.max(1, Number(it.quantity || 1));
-          invoiceRows.push({
-            description: `${it.reference} Qté: ${qty}${it.description ? ` — ${it.description}` : ""}`,
+          const ref = String(it.reference || "").trim();
+          const desc = String(it.description || "").trim();
+          if (
+            regulationRegex.test(ref) ||
+            regulationRegex.test(desc) ||
+            shippingRegex.test(ref) ||
+            shippingRegex.test(desc)
+          )
+            continue;
+          productLines.push({
+            reference: ref || "Produit",
+            description: desc || undefined,
             qty,
-            unitHt: 0,
-            vatPct,
-            totalHt: 0,
+            grossCents: 0,
+            netCents: 0,
           });
         }
       }
+    }
 
-      const shipTtc = checkoutShippingTtc != null ? checkoutShippingTtc : 0;
-      const shipSplit = splitTtc(shipTtc);
-      if (shipSplit.ttc > 0) {
-        invoiceRows.push({
-          description: "Frais de livraison",
-          qty: 1,
-          unitHt: shipSplit.ht,
-          vatPct,
-          totalHt: shipSplit.ht,
-        });
+    const totalGrossCents = productLines.reduce(
+      (sum, l) => sum + l.grossCents,
+      0,
+    );
+    if (productLines.length > 0) {
+      const baseCents = totalGrossCents > 0 ? totalGrossCents : null;
+      if (baseCents && baseCents > 0) {
+        let allocated = 0;
+        for (let i = 0; i < productLines.length; i++) {
+          const l = productLines[i];
+          if (i === productLines.length - 1) {
+            l.netCents = Math.max(0, storeEarningsCents - allocated);
+          } else {
+            const ratio = Math.min(1, Math.max(0, l.grossCents / baseCents));
+            const net = Math.round(storeEarningsCents * ratio);
+            l.netCents = Math.max(0, net);
+            allocated += l.netCents;
+          }
+        }
+      } else {
+        const totalQty = productLines.reduce(
+          (sum, l) => sum + Math.max(1, l.qty),
+          0,
+        );
+        let allocated = 0;
+        for (let i = 0; i < productLines.length; i++) {
+          const l = productLines[i];
+          if (i === productLines.length - 1) {
+            l.netCents = Math.max(0, storeEarningsCents - allocated);
+          } else {
+            const ratio =
+              totalQty > 0 ? Math.min(1, Math.max(0, l.qty / totalQty)) : 0;
+            const net = Math.round(storeEarningsCents * ratio);
+            l.netCents = Math.max(0, net);
+            allocated += l.netCents;
+          }
+        }
       }
+    }
 
-      totalHt = round2(
+    for (const l of productLines) {
+      const lineTtc = Math.max(0, l.netCents) / 100;
+      const { ht } = splitTtc(lineTtc);
+      const qty = Math.max(1, l.qty);
+      const unitHt = qty > 0 ? round2(ht / qty) : 0;
+      invoiceRows.push({
+        reference: l.reference,
+        description: l.description,
+        qty,
+        unitHt,
+        vatPct,
+        totalHt: ht,
+      });
+    }
+
+    const totalsSplit = splitTtc(storeEarningsTtc);
+    let totalHt = totalsSplit.ht;
+    let totalVat = totalsSplit.vat;
+    let totalTtc = totalsSplit.ttc;
+
+    if (invoiceRows.length > 0) {
+      const sumRowsHt = round2(
         invoiceRows.reduce((sum, r) => sum + (r.totalHt || 0), 0),
       );
-      totalVat = round2(totalHt * (vatPct / 100));
-      totalTtc = round2(totalHt + totalVat);
+      const diff = round2(totalHt - sumRowsHt);
+      if (Math.abs(diff) >= 0.01) {
+        const last = invoiceRows[invoiceRows.length - 1];
+        last.totalHt = round2(Math.max(0, last.totalHt + diff));
+        last.unitHt = round2(last.totalHt / Math.max(1, last.qty));
+      }
     }
+
+    const storeDiscountCents =
+      storePromoCodes.length > 0
+        ? Math.max(0, totalGrossCents - storeEarningsCents)
+        : 0;
+    const grossSplit = splitTtc(Math.max(0, totalGrossCents) / 100);
+    const discountSplit = splitTtc(storeDiscountCents / 100);
 
     let customerName = "";
     let customerEmail = "";
@@ -1275,29 +1621,6 @@ router.get("/:id/invoice", async (req, res) => {
           .filter(Boolean)
           .join(", ");
       } catch {}
-    }
-
-    if (checkoutSession) {
-      const cd: any = checkoutSession?.customer_details || null;
-      if (!customerName) customerName = String(cd?.name || "").trim();
-      if (!customerEmail) customerEmail = String(cd?.email || "").trim();
-      if (!customerPhone) customerPhone = String(cd?.phone || "").trim();
-
-      const sd: any = checkoutSession?.shipping_details || null;
-      const a: any = sd?.address || cd?.address || null;
-      if (!customerAddressLine && a) {
-        const line1 = String(a?.line1 || "").trim();
-        const postal = String(a?.postal_code || "").trim();
-        const city = String(a?.city || "").trim();
-        const country = String(a?.country || "").trim();
-        customerAddressLine = [
-          line1,
-          [postal, city].filter(Boolean).join(" "),
-          country,
-        ]
-          .filter(Boolean)
-          .join(", ");
-      }
     }
 
     const storeAddress: any = (store as any)?.address || null;
@@ -1426,7 +1749,7 @@ router.get("/:id/invoice", async (req, res) => {
     const colUnitX = x + Math.round(tableW * 0.7);
     const colVatX = x + Math.round(tableW * 0.83);
     const colTotalX = x + Math.round(tableW * 0.91);
-    doc.text("Description", colDescX, y + 6);
+    doc.text("Article", colDescX, y + 6);
     doc.text("Qté", colQtyX, y + 6);
     doc.text("Prix unitaire", colUnitX, y + 6);
     doc.text("TVA %", colVatX, y + 6);
@@ -1436,9 +1759,17 @@ router.get("/:id/invoice", async (req, res) => {
     const rows = invoiceRows;
 
     doc.fillColor("#111827").fontSize(9);
-    const rowH = 18;
     for (const r of rows) {
-      doc.text(r.description, colDescX, y, { width: colQtyX - colDescX - 8 });
+      doc.fillColor("#111827").fontSize(9);
+      doc.text(r.reference, colDescX, y, { width: colQtyX - colDescX - 8 });
+      const hasDesc = Boolean(String(r.description || "").trim());
+      if (hasDesc) {
+        doc.fillColor("#6B7280").fontSize(8);
+        doc.text(String(r.description || "").trim(), colDescX, y + 10, {
+          width: colQtyX - colDescX - 8,
+        });
+      }
+      doc.fillColor("#111827").fontSize(9);
       doc.text(String(r.qty), colQtyX, y, { width: colUnitX - colQtyX - 6 });
       doc.text(formatMoneyFr(r.unitHt), colUnitX, y, {
         width: colVatX - colUnitX - 6,
@@ -1447,12 +1778,31 @@ router.get("/:id/invoice", async (req, res) => {
       doc.text(formatMoneyFr(r.totalHt), colTotalX, y, {
         width: x + tableW - colTotalX - 8,
       });
-      y += rowH;
+      y += hasDesc ? 28 : 18;
     }
 
     y += 16;
     const totalsX = x + tableW - 200;
     doc.fillColor("#111827").fontSize(10);
+    if (storeDiscountCents > 0) {
+      doc.text("Total brut HT", totalsX, y, { width: 120 });
+      doc.text(formatMoneyFr(grossSplit.ht), totalsX, y, {
+        width: 200,
+        align: "right",
+      });
+      y += 16;
+      const codeLabel =
+        storePromoCodes.length > 0 ? ` (${storePromoCodes.join(", ")})` : "";
+      const discountLabel = `Remise boutique${codeLabel}`;
+      const discountLabelH = doc.heightOfString(discountLabel, { width: 120 });
+      const discountRowH = Math.max(16, Math.ceil(discountLabelH));
+      doc.text(discountLabel, totalsX, y, { width: 120 });
+      doc.text(`-${formatMoneyFr(discountSplit.ht)}`, totalsX, y, {
+        width: 200,
+        align: "right",
+      });
+      y += discountRowH;
+    }
     doc.text("Total HT", totalsX, y, { width: 120 });
     doc.text(formatMoneyFr(totalHt), totalsX, y, {
       width: 200,
@@ -1497,6 +1847,7 @@ router.get("/:id/invoice", async (req, res) => {
     const pdfBuffer = await collectPdf(doc);
 
     res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
     const customerForFile = sanitizeFilenamePart(
       customerName || customerEmail || customerId || "client",
     );

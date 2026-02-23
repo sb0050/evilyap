@@ -49,6 +49,9 @@ import { AddressElement } from '@stripe/react-stripe-js';
 import { Address } from '@stripe/stripe-js';
 import StripeWrapper from '../../components/StripeWrapper';
 
+const isDeliveryRegulationText = (text: unknown) =>
+  /r[ée]gularisation\s+livraison/i.test(String(text || '').trim());
+
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
 
@@ -81,16 +84,17 @@ type Shipment = {
   description?: string | null;
   store_earnings_amount?: number | null;
   customer_spent_amount?: number | null;
+  stripe_fees?: number | null;
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
-  cancel_requested?: boolean | null;
   is_final_destination?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
   promo_code?: string | null;
   estimated_delivery_cost?: number | null;
   facture_id?: number | string | null;
+  boxtal_shipping_json?: any | null;
 };
 
 type ProductItem = {
@@ -460,7 +464,7 @@ export default function DashboardPage() {
   const [promoCodes, setPromoCodes] = useState<any[]>([]);
   const [promoListLoading, setPromoListLoading] = useState<boolean>(false);
   const [promoSearchTerm, setPromoSearchTerm] = useState<string>('');
-  const [promoDeletingIds, setPromoDeletingIds] = useState<
+  const [promoTogglingIds, setPromoTogglingIds] = useState<
     Record<string, boolean>
   >({});
 
@@ -556,28 +560,29 @@ export default function DashboardPage() {
     return msg || 'Erreur inconnue';
   };
 
-  const handleDeletePromotionCode = async (id: string) => {
+  const handleSetPromotionCodeActive = async (id: string, active: boolean) => {
     try {
       if (!id) return;
-      setPromoDeletingIds(prev => ({ ...prev, [id]: true }));
+      setPromoTogglingIds(prev => ({ ...prev, [id]: true }));
       const token = await getToken();
-      const resp = await apiDelete(
-        `/api/stripe/promotion-codes/${encodeURIComponent(id)}`,
+      const resp = await apiPut(
+        `/api/stripe/promotion-codes/${encodeURIComponent(id)}/active`,
+        { active: !!active },
         {
           headers: { Authorization: token ? `Bearer ${token}` : '' },
         }
       );
       const json = await resp.json().catch(() => ({}));
       if (!resp.ok) {
-        const msg = json?.error || 'Suppression du code promo échouée';
+        const msg = json?.error || 'Mise à jour du code promo échouée';
         throw new Error(typeof msg === 'string' ? msg : 'Erreur');
       }
-      showToast('Code promo archivé', 'success');
+      showToast(active ? 'Code promo activé' : 'Code promo archivé', 'success');
       await fetchPromotionCodes();
     } catch (e: any) {
       showToast(normalizePromoToastError(e?.message || e), 'error');
     } finally {
-      setPromoDeletingIds(prev => ({ ...prev, [id]: false }));
+      setPromoTogglingIds(prev => ({ ...prev, [id]: false }));
     }
   };
 
@@ -1161,18 +1166,28 @@ export default function DashboardPage() {
 
   const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
     const silent = options?.silent;
-    if (!s.shipment_id) {
+    const stRaw = s.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || '')
+            .trim()
+            .toUpperCase();
+    if (st !== null && st !== 'PENDING') {
       setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) {
+        showToast('Annulation non autorisée pour ce statut', 'error');
+      }
       return false;
     }
     try {
       setCancelStatus(prev => ({ ...prev, [s.id]: 'loading' }));
       const token = await getToken();
-      const url = `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
-        s.shipment_id
-      )}`;
+      const url = `${apiBase}/api/shipments/${encodeURIComponent(
+        String(s.id)
+      )}/cancel`;
       const resp = await fetch(url, {
-        method: 'DELETE',
+        method: 'POST',
         headers: {
           Authorization: token ? `Bearer ${token}` : '',
         },
@@ -1180,13 +1195,21 @@ export default function DashboardPage() {
       const json = await resp.json().catch(() => ({}));
       if (resp.ok) {
         setCancelStatus(prev => ({ ...prev, [s.id]: 'success' }));
+        const updated = json?.shipment;
         setShipments(prev =>
-          (prev || []).map(it =>
-            it.id === s.id ? { ...it, cancel_requested: true } : it
-          )
+          (prev || []).map(it => {
+            if (it.id !== s.id) return it;
+            if (updated && typeof updated === 'object')
+              return { ...it, ...updated };
+            return { ...it, status: 'CANCELLED' };
+          })
         );
         if (!silent) {
-          showToast("Demande d'annulation envoyée", 'success');
+          const refs = formatProductReferenceForToast(s.product_reference);
+          showToast(
+            refs ? `Commande annulée : ${refs}` : 'Commande annulée',
+            'success'
+          );
         }
         return true;
       } else {
@@ -1242,8 +1265,21 @@ export default function DashboardPage() {
       const a = document.createElement('a');
       a.href = objectUrl;
       const dispo = resp.headers.get('Content-Disposition') || '';
-      const m = dispo.match(/filename\*?=(?:UTF-8''|")?([^";]+)"?/i);
-      const filename = (m?.[1] || '').trim();
+      const filename = (() => {
+        const rfc5987 = dispo.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+        if (rfc5987?.[1]) {
+          try {
+            return decodeURIComponent(String(rfc5987[1]).trim());
+          } catch {
+            return String(rfc5987[1]).trim();
+          }
+        }
+        const quoted = dispo.match(/filename\s*=\s*"([^"]+)"/i);
+        if (quoted?.[1]) return String(quoted[1]).trim();
+        const bare = dispo.match(/filename\s*=\s*([^;]+)/i);
+        if (bare?.[1]) return String(bare[1]).trim();
+        return '';
+      })();
       const sanitizeFilenamePart = (raw: string) =>
         String(raw || '')
           .trim()
@@ -1260,12 +1296,13 @@ export default function DashboardPage() {
       const customerForFile = sanitizeFilenamePart(
         customerName || customerEmail || stripeId || 'client'
       );
-      const factureIdForFile = String(s.facture_id ?? s.id).replace(
+      const factureIdForFile = String(s.facture_id || '').replace(
         /[^\dA-Za-z_-]+/g,
         '_'
       );
       a.download =
-        filename || `facture_${factureIdForFile}_${customerForFile}.pdf`;
+        filename ||
+        `facture_${factureIdForFile || String(s.id)}_${customerForFile}.pdf`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -1296,11 +1333,11 @@ export default function DashboardPage() {
   ) => {
     const silent = options?.silent;
     try {
-      if (!s.shipment_id) return false;
+      if (!s.shipment_id && s.status != null) return false;
       setDocStatus(prev => ({ ...prev, [s.id]: 'loading' }));
       const token = await getToken();
-      const url = `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
-        s.shipment_id
+      const url = `${apiBase}/api/boxtal/shipments/${encodeURIComponent(
+        String(s.id)
       )}/shipping-document/download`;
       const resp = await fetch(url, {
         method: 'GET',
@@ -1313,14 +1350,14 @@ export default function DashboardPage() {
         const objectUrl = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = objectUrl;
-        a.download = `LABEL_${s.shipment_id}.pdf`;
+        a.download = `LABEL_${s.shipment_id || s.id}.pdf`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         window.URL.revokeObjectURL(objectUrl);
         setDocStatus(prev => ({ ...prev, [s.id]: 'success' }));
         if (!silent) {
-          showToast('Bordereau créé', 'success');
+          showToast('Bordereau téléchargé', 'success');
         }
         return true;
       } else {
@@ -1358,9 +1395,14 @@ export default function DashboardPage() {
   };
 
   const handleBatchShippingDocuments = async () => {
-    const targets = selectedSales.filter(
-      s => s.document_created && s.shipment_id
-    );
+    if (hasBlockedDocSelection) {
+      showToast(
+        "Bordereau indisponible : autorisé seulement si status = null ou (status = 'PENDING' et document_created = true).",
+        'error'
+      );
+      return;
+    }
+    const targets = selectedForDoc;
     if (targets.length === 0) {
       showToast('Aucune vente sélectionnée pour le bordereau', 'error');
       return;
@@ -1387,36 +1429,50 @@ export default function DashboardPage() {
   };
 
   const handleBatchCancel = async () => {
-    const targets = selectedSales.filter(
-      s => s.shipment_id && !s.is_final_destination && !s.cancel_requested
-    );
+    const targets = selectedForCancel;
     if (targets.length === 0) {
       showToast("Aucune vente sélectionnée pour l'annulation", 'error');
       return;
     }
-    const references: string[] = [];
+    const counts = new Map<string, number>();
     for (const s of targets) {
       const ok = await handleCancel(s, { silent: true });
       if (ok) {
-        const ref = String(s.product_reference || s.shipment_id || '').trim();
-        references.push(ref || String(s.shipment_id));
+        const items = parseProductReferenceItems(s.product_reference);
+        if (items.length === 0) {
+          const fallback = String(s.product_reference || '').trim();
+          if (fallback) counts.set(fallback, (counts.get(fallback) || 0) + 1);
+        } else {
+          for (const it of items) {
+            const ref = String(it.reference || '').trim();
+            if (!ref) continue;
+            const qty = Math.max(1, Number(it.quantity || 1));
+            counts.set(ref, (counts.get(ref) || 0) + qty);
+          }
+        }
       }
     }
-    if (references.length === 0) {
+    if (counts.size === 0) {
       showToast("Aucune vente traitée pour l'annulation", 'error');
       return;
     }
+    const parts = Array.from(counts.entries()).map(([ref, qty]) => {
+      const label = ref.startsWith('prod_')
+        ? stripeProductsLiteById[ref]?.name || ref
+        : ref;
+      return `${label}(x${qty})`;
+    });
     const msg =
-      references.length <= 3
-        ? `Annulations envoyées pour : ${references.join(', ')}`
-        : `Annulations envoyées pour ${references.length} références (${references
-            .slice(0, 3)
-            .join(', ')}...)`;
+      parts.length <= 3
+        ? `Commandes annulées : ${parts.join(', ')}`
+        : `Commandes annulées : ${parts.slice(0, 3).join(', ')}...`;
     showToast(msg, 'success');
   };
 
   const handleBatchInvoice = async () => {
-    const targets = selectedSales;
+    const targets = selectedSales.filter(
+      s => String(s.status || '').toUpperCase() !== 'CANCELLED'
+    );
     if (targets.length === 0) {
       showToast('Aucune vente sélectionnée pour la facture', 'error');
       return;
@@ -1647,6 +1703,25 @@ export default function DashboardPage() {
       );
       return;
     }
+    if (
+      isDeliveryRegulationText(titleTrim) ||
+      isDeliveryRegulationText(referenceTrim)
+    ) {
+      showToast('Référence interdite', 'error');
+      return;
+    }
+
+    let existing: StockApiItem | null = null;
+    try {
+      existing = await fetchStockSearchExactMatch(slug, referenceTrim);
+    } catch {
+      showToast('Erreur vérification de la référence', 'error');
+      return;
+    }
+    if (existing) {
+      showToast('Cette référence existe déjà dans le stock', 'error');
+      return;
+    }
 
     let existing: StockApiItem | null = null;
     try {
@@ -1783,6 +1858,26 @@ export default function DashboardPage() {
         'Veuillez renseigner le titre, la référence et la description',
         'error'
       );
+      return;
+    }
+    if (
+      isDeliveryRegulationText(titleTrim) ||
+      isDeliveryRegulationText(referenceTrim)
+    ) {
+      showToast('Référence interdite', 'error');
+      return;
+    }
+
+    let existing: StockApiItem | null = null;
+    try {
+      existing = await fetchStockSearchExactMatch(slug, referenceTrim);
+    } catch {
+      showToast('Erreur vérification de la référence', 'error');
+      return;
+    }
+    const existingId = Number((existing as any)?.stock?.id ?? 0);
+    if (existing && existingId !== stockId) {
+      showToast('Cette référence existe déjà dans le stock', 'error');
       return;
     }
 
@@ -2394,9 +2489,9 @@ export default function DashboardPage() {
         const label = ref.startsWith('prod_')
           ? stripeProductsLiteById[ref]?.name || ref
           : ref;
-        return `${label} Qté: ${Math.max(1, Number(it.quantity || 1))}`;
+        return `${label}(x${Math.max(1, Number(it.quantity || 1))})`;
       })
-      .join('; ');
+      .join(', ');
   };
 
   const getShipmentProductItems = (s: Shipment): ProductItem[] =>
@@ -2430,6 +2525,7 @@ export default function DashboardPage() {
           const d =
             String(sp?.description || '').trim() ||
             String(it.description || '').trim();
+          const qtyText = `qté: ${Math.max(1, Number(it.quantity || 1))}`;
           const price =
             sp?.unit_amount_cents != null
               ? formatValue(
@@ -2438,18 +2534,59 @@ export default function DashboardPage() {
               : '';
           return (
             <div key={`${s.id}-${idx}`} className='space-y-0.5'>
-              <div
-                className='font-medium truncate max-w-[280px]'
-                title={`${label}(x${it.quantity})`}
-              >
-                {label}(x{it.quantity})
+              <div className='font-medium truncate max-w-[280px]' title={label}>
+                {label}
               </div>
-              {d || price ? (
+              {d || price || qtyText ? (
                 <div
                   className='text-xs text-gray-500 truncate max-w-[280px]'
-                  title={[d, price].filter(Boolean).join(' — ')}
+                  title={[d, qtyText, price].filter(Boolean).join(' — ')}
                 >
-                  {[d, price].filter(Boolean).join(' — ')}
+                  {[d, qtyText, price].filter(Boolean).join(' — ')}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderProductReferenceFromRaw = (
+    raw: string | null | undefined,
+    keyPrefix: string
+  ) => {
+    const items = parseProductReferenceItems(raw);
+    if (items.length === 0) return '—';
+    return (
+      <div className='space-y-2'>
+        {items.map((it, idx) => {
+          const ref = String(it.reference || '').trim();
+          const sp = ref.startsWith('prod_')
+            ? stripeProductsLiteById[ref]
+            : null;
+          const label = sp?.name || ref;
+          const d =
+            String(sp?.description || '').trim() ||
+            String(it.description || '').trim();
+          const qtyText = `qté: ${Math.max(1, Number(it.quantity || 1))}`;
+          const price =
+            sp?.unit_amount_cents != null
+              ? formatValue(
+                  Math.max(0, Number(sp.unit_amount_cents || 0)) / 100
+                )
+              : '';
+          return (
+            <div key={`${keyPrefix}-${idx}`} className='space-y-0.5'>
+              <div className='font-medium truncate max-w-[280px]' title={label}>
+                {label}
+              </div>
+              {d || price || qtyText ? (
+                <div
+                  className='text-xs text-gray-500 truncate max-w-[280px]'
+                  title={[d, qtyText, price].filter(Boolean).join(' — ')}
+                >
+                  {[d, qtyText, price].filter(Boolean).join(' — ')}
                 </div>
               ) : null}
             </div>
@@ -2502,8 +2639,9 @@ export default function DashboardPage() {
         email.includes(term)
       );
     }
-    const refStr = (s.product_reference || '').toLowerCase();
-    return refStr.includes(term);
+    const refStr = formatShipmentProductReference(s).toLowerCase();
+    const rawRefStr = String(s.product_reference || '').toLowerCase();
+    return refStr.includes(term) || rawRefStr.includes(term);
   });
   const totalPages = Math.max(
     1,
@@ -2517,11 +2655,35 @@ export default function DashboardPage() {
   const selectedSales = (shipments || []).filter(s =>
     selectedSaleIds.has(s.id)
   );
-  const selectedForDoc = selectedSales.filter(
-    s => s.document_created && s.shipment_id
+  const selectedForInvoice = selectedSales.filter(
+    s => String(s.status || '').toUpperCase() !== 'CANCELLED'
   );
+  const selectedForDoc = selectedSales.filter(s => {
+    const stRaw = s.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || '')
+            .trim()
+            .toUpperCase();
+    return st === null || (st === 'PENDING' && s.document_created === true);
+  });
+  const hasBlockedDocSelection = selectedSales.some(s => {
+    const stRaw = s.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || '')
+            .trim()
+            .toUpperCase();
+    return !(st === null || (st === 'PENDING' && s.document_created === true));
+  });
+  const shippingDocDisabled =
+    selectedSales.length === 0 || hasBlockedDocSelection;
   const selectedForCancel = selectedSales.filter(
-    s => s.shipment_id && !s.is_final_destination && !s.cancel_requested
+    s =>
+      !s.is_final_destination &&
+      (s.status == null || String(s.status).toUpperCase() === 'PENDING')
   );
   const visibleSaleIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
@@ -2534,6 +2696,10 @@ export default function DashboardPage() {
       else next.add(id);
       return next;
     });
+  };
+  const isInteractiveRowClick = (target: EventTarget | null) => {
+    const el = target as HTMLElement | null;
+    return Boolean(el?.closest?.('button,a,input,select,textarea,label'));
   };
   const toggleSelectAllVisible = () => {
     setSelectedSaleIds(prev => {
@@ -2589,8 +2755,9 @@ export default function DashboardPage() {
           email.includes(term)
         );
       }
-      const refStr = (s.product_reference || '').toLowerCase();
-      return refStr.includes(term);
+      const refStr = formatShipmentProductReference(s).toLowerCase();
+      const rawRefStr = String(s.product_reference || '').toLowerCase();
+      return refStr.includes(term) || rawRefStr.includes(term);
     }).length;
     const newTotal = Math.max(1, Math.ceil(filteredLength / pageSize));
     if (page > newTotal) setPage(newTotal);
@@ -2599,10 +2766,24 @@ export default function DashboardPage() {
 
   // Chargement des clients Stripe basés sur les customer_stripe_id des shipments
   useEffect(() => {
-    if (section !== 'clients' && section !== 'sales') return;
-    const ids = Array.from(
-      new Set((shipments || []).map(s => s.customer_stripe_id).filter(Boolean))
-    ) as string[];
+    if (section !== 'clients' && section !== 'sales' && section !== 'wallet')
+      return;
+    const ids = (() => {
+      if (section === 'wallet') {
+        return Array.from(
+          new Set(
+            (walletTransactions || [])
+              .map(t => (t as any)?.customer?.id)
+              .filter(Boolean)
+          )
+        ) as string[];
+      }
+      return Array.from(
+        new Set(
+          (shipments || []).map(s => s.customer_stripe_id).filter(Boolean)
+        )
+      ) as string[];
+    })();
     const idsToFetch = ids.filter(id => !(id in customersMap));
     if (idsToFetch.length === 0) return;
     setCustomersLoading(true);
@@ -2637,7 +2818,7 @@ export default function DashboardPage() {
         });
       })
       .finally(() => setCustomersLoading(false));
-  }, [section, shipments]);
+  }, [section, shipments, walletTransactions]);
 
   // Charger les réseaux sociaux (comptes externes) Clerk pour les clients Stripe qui exposent clerkUserId
   useEffect(() => {
@@ -2909,6 +3090,10 @@ export default function DashboardPage() {
       }
       if (!ref) {
         showToast('Veuillez saisir la référence', 'error');
+        return;
+      }
+      if (isDeliveryRegulationText(ref) || isDeliveryRegulationText(desc)) {
+        showToast('Référence interdite', 'error');
         return;
       }
       if (!desc) {
@@ -3648,7 +3833,8 @@ export default function DashboardPage() {
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
-              <Tag className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <RiDiscountPercentFill className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+
               <span className='truncate'>Code Promo</span>
             </button>
             <button
@@ -4366,10 +4552,6 @@ export default function DashboardPage() {
                         const v = e.target.value;
                         setCartSelectedStockItem(null);
                         setCartReference(v);
-                        setCartDescription('');
-                        setCartWeightKg('');
-                        setCartAmountEuro('');
-                        setCartQuantity('1');
                         setCartStockSuggestionsOpen(
                           Boolean(String(v || '').trim())
                         );
@@ -4547,6 +4729,8 @@ export default function DashboardPage() {
                     !cartSelectedUser ||
                     !(cartReference || '').trim() ||
                     !(cartDescription || '').trim() ||
+                    isDeliveryRegulationText(cartReference) ||
+                    isDeliveryRegulationText(cartDescription) ||
                     !(
                       parseFloat((cartAmountEuro || '').replace(',', '.')) > 0
                     ) ||
@@ -4989,7 +5173,51 @@ export default function DashboardPage() {
               </p>
               <div className='flex items-baseline space-x-2 mb-4'>
                 <span className='text-2xl font-bold text-gray-900'>
-                  {Number(walletTransactionsTotalNet || 0).toFixed(2)}
+                  {(() => {
+                    const payoutRaw = String(
+                      store?.payout_created_at || ''
+                    ).trim();
+                    const payoutMs = payoutRaw
+                      ? new Date(payoutRaw).getTime()
+                      : NaN;
+                    const hasStart =
+                      Number.isFinite(payoutMs) && Number(payoutMs) > 0;
+
+                    let storeEarningsCents = 0;
+                    let stripeFeesCents = 0;
+                    (shipments || []).forEach(s => {
+                      if (!Boolean((s as any)?.is_final_destination)) return;
+                      const createdAt = String(s.created_at || '').trim();
+                      const createdMs = createdAt
+                        ? new Date(createdAt).getTime()
+                        : NaN;
+                      if (hasStart) {
+                        if (!Number.isFinite(createdMs)) return;
+                        if (createdMs < Number(payoutMs)) return;
+                      }
+
+                      const status = String(s.status || '').toUpperCase();
+                      const earningsRaw = Number(s.store_earnings_amount || 0);
+                      const earnings = Number.isFinite(earningsRaw)
+                        ? Math.max(0, Math.round(earningsRaw))
+                        : 0;
+                      if (status !== 'CANCELLED')
+                        storeEarningsCents += earnings;
+
+                      const feesRaw = Number(s.stripe_fees || 0);
+                      const fees = Number.isFinite(feesRaw)
+                        ? Math.max(0, Math.round(feesRaw))
+                        : 0;
+                      stripeFeesCents += fees;
+                    });
+
+                    const payliveFeeCents = Math.round(
+                      storeEarningsCents * 0.015
+                    );
+                    const finalCents =
+                      storeEarningsCents - stripeFeesCents - payliveFeeCents;
+                    return (finalCents / 100).toFixed(2);
+                  })()}
                 </span>
                 <span className='text-gray-700'>€ total net</span>
               </div>
@@ -5155,8 +5383,7 @@ export default function DashboardPage() {
                               [u?.firstName, u?.lastName]
                                 .filter(Boolean)
                                 .join(' ') ||
-                              stripeId ||
-                              '—';
+                              (customer ? stripeId : '—');
                             const email = (
                               u?.emailAddress ||
                               customer?.email ||
@@ -5172,25 +5399,42 @@ export default function DashboardPage() {
                                   <div>{formatDateEpoch(tx.created)}</div>
                                 </td>
                                 <td className='py-3 px-4 text-gray-700'>
-                                  <div className='font-medium text-gray-900'>
-                                    {name}
-                                  </div>
-                                  {email ? (
-                                    <div className='text-xs text-gray-500'>
-                                      {email}
+                                  <div className='flex items-center space-x-2'>
+                                    {u?.hasImage && u?.imageUrl ? (
+                                      <img
+                                        src={u.imageUrl}
+                                        alt='avatar'
+                                        className='w-6 h-6 rounded-full object-cover'
+                                      />
+                                    ) : (
+                                      <span className='inline-block w-6 h-6 rounded-full bg-gray-200' />
+                                    )}
+                                    <div className='space-y-0.5'>
+                                      <div
+                                        className='font-medium truncate max-w-[180px] text-gray-900'
+                                        title={name}
+                                      >
+                                        {name}
+                                      </div>
+                                      <div className='text-xs text-gray-500 truncate max-w-[180px]'>
+                                        {email || '—'}
+                                      </div>
                                     </div>
-                                  ) : null}
+                                  </div>
                                 </td>
                                 <td className='py-3 px-4 text-gray-700'>
-                                  {String(
-                                    tx.articles || tx.product_reference || ''
-                                  ).trim() || '—'}
+                                  {renderProductReferenceFromRaw(
+                                    tx.product_reference || tx.articles,
+                                    String(tx.payment_id || tx.created)
+                                  )}
                                 </td>
                                 <td className='py-3 px-4 text-gray-700 whitespace-nowrap'>
                                   {String(tx.promo_code || '').trim() || '—'}
                                 </td>
                                 <td className='py-3 px-4 text-right text-gray-900 font-semibold whitespace-nowrap'>
-                                  {formatValue(tx.net_total)}
+                                  {formatValue(
+                                    Math.max(0, Number(tx.net_total || 0))
+                                  )}
                                 </td>
                               </tr>
                             );
@@ -5450,6 +5694,8 @@ export default function DashboardPage() {
                         : !stockImagePreview) ||
                       !stockTitle.trim() ||
                       !stockReference.trim() ||
+                      isDeliveryRegulationText(stockTitle) ||
+                      isDeliveryRegulationText(stockReference) ||
                       !stockDescription.trim() ||
                       !String(stockQuantity || '').trim() ||
                       !String(stockWeight || '').trim() ||
@@ -5480,9 +5726,29 @@ export default function DashboardPage() {
               </form>
 
               <div className='mt-8'>
-                <h3 className='text-base font-semibold text-gray-900 mb-3'>
-                  Produits en stock
-                </h3>
+                <div className='flex items-center mb-3 gap-2'>
+                  <h3 className='text-base font-semibold text-gray-900'>
+                    Produits en stock
+                  </h3>
+                  <button
+                    type='button'
+                    onClick={() =>
+                      fetchStockProducts({
+                        silent: true,
+                        background: true,
+                      }).catch(() => {})
+                    }
+                    disabled={stockLoading || stockReloading}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${
+                        stockReloading ? 'animate-spin' : ''
+                      }`}
+                    />
+                    <span>Recharger</span>
+                  </button>
+                </div>
 
                 {stockLoading ? (
                   <div className='flex items-center justify-center py-10'>
@@ -5521,24 +5787,6 @@ export default function DashboardPage() {
                     </div>
 
                     <div className='mb-4 flex flex-wrap items-center gap-2'>
-                      <button
-                        type='button'
-                        onClick={() =>
-                          fetchStockProducts({
-                            silent: true,
-                            background: true,
-                          }).catch(() => {})
-                        }
-                        disabled={stockLoading || stockReloading}
-                        className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
-                      >
-                        <RefreshCw
-                          className={`w-4 h-4 mr-1 ${
-                            stockReloading ? 'animate-spin' : ''
-                          }`}
-                        />
-                        <span>Recharger</span>
-                      </button>
                       <div className='flex items-center space-x-2 flex-wrap'>
                         <span className='text-sm text-gray-700'>
                           Filtrer par
@@ -5949,7 +6197,7 @@ export default function DashboardPage() {
                     >
                       <option value='id'>ID</option>
                       <option value='client'>Client</option>
-                      <option value='reference'>Référence produit</option>
+                      <option value='reference'>Référence</option>
                     </select>
                     <input
                       type='text'
@@ -5992,7 +6240,7 @@ export default function DashboardPage() {
                   >
                     <option value='id'>ID</option>
                     <option value='client'>Client</option>
-                    <option value='reference'>Référence produit</option>
+                    <option value='reference'>Référence</option>
                   </select>
                   <input
                     type='text'
@@ -6010,15 +6258,28 @@ export default function DashboardPage() {
               <div className='mb-4 flex flex-wrap items-center gap-2'>
                 <button
                   onClick={handleBatchShippingDocuments}
-                  disabled={selectedForDoc.length === 0}
+                  disabled={shippingDocDisabled}
                   className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
-                    selectedForDoc.length === 0
+                    shippingDocDisabled
                       ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                   }`}
                   title='Créer le bordereau'
                 >
                   Créer le bordereau
+                </button>
+
+                <button
+                  onClick={handleBatchInvoice}
+                  disabled={selectedForInvoice.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedForInvoice.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Créer la facture'
+                >
+                  Créer la facture
                 </button>
                 <button
                   onClick={handleBatchCancel}
@@ -6028,21 +6289,9 @@ export default function DashboardPage() {
                       ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                   }`}
-                  title="Demander l'annulation"
+                  title='Annuler la commande'
                 >
-                  Demander l'annulation
-                </button>
-                <button
-                  onClick={handleBatchInvoice}
-                  disabled={selectedSales.length === 0}
-                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
-                    selectedSales.length === 0
-                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                  }`}
-                  title='Envoyer la facture'
-                >
-                  Envoyer la facture
+                  Annuler la commande
                 </button>
                 <button
                   onClick={() => handleOpenHelp(selectedSales)}
@@ -6077,7 +6326,19 @@ export default function DashboardPage() {
                   visibleShipments.map(s => (
                     <div
                       key={s.id}
-                      className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
+                      onClick={e => {
+                        if (isInteractiveRowClick(e.target)) return;
+                        toggleSaleSelection(s.id);
+                      }}
+                      className={`rounded-lg border p-3 shadow-sm cursor-pointer ${
+                        selectedSaleIds.has(s.id)
+                          ? 'ring-2 ring-indigo-500 ring-inset'
+                          : ''
+                      } ${
+                        String(s.status || '').toUpperCase() === 'CANCELLED'
+                          ? 'border-red-200 bg-red-50'
+                          : 'border-gray-200 bg-white'
+                      }`}
                     >
                       <div className='flex items-start justify-between'>
                         <div>
@@ -6183,7 +6444,14 @@ export default function DashboardPage() {
                         </div>
                         <div>
                           <span className='font-medium'>Statut:</span>{' '}
-                          {s.status || '—'}
+                          {String(s.status || '').toUpperCase() ===
+                          'CANCELLED' ? (
+                            <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
+                              Annulée
+                            </span>
+                          ) : (
+                            s.status || '—'
+                          )}
                         </div>
                       </div>
 
@@ -6312,7 +6580,19 @@ export default function DashboardPage() {
                       visibleShipments.map(s => (
                         <tr
                           key={s.id}
-                          className='border-b border-gray-100 hover:bg-gray-50'
+                          onClick={e => {
+                            if (isInteractiveRowClick(e.target)) return;
+                            toggleSaleSelection(s.id);
+                          }}
+                          className={`border-b border-gray-100 cursor-pointer ${
+                            selectedSaleIds.has(s.id)
+                              ? 'outline outline-2 outline-indigo-500 outline-offset-[-2px]'
+                              : ''
+                          } ${
+                            String(s.status || '').toUpperCase() === 'CANCELLED'
+                              ? 'bg-red-50'
+                              : 'hover:bg-gray-50'
+                          }`}
                         >
                           <td className='py-4 px-4 text-gray-700'>
                             <input
@@ -6423,8 +6703,18 @@ export default function DashboardPage() {
                           </td>
                           <td className='py-4 px-4 text-gray-700'>
                             <div className='space-y-1'>
-                              <div className='font-medium'>
-                                {s.status || '—'}
+                              <div
+                                className={`font-medium ${
+                                  String(s.status || '').toUpperCase() ===
+                                  'CANCELLED'
+                                    ? 'text-red-700'
+                                    : ''
+                                }`}
+                              >
+                                {String(s.status || '').toUpperCase() ===
+                                'CANCELLED'
+                                  ? 'ANNULÉE'
+                                  : s.status || '—'}
                               </div>
                               <div className='text-xs text-gray-500'>
                                 {getStatusDescription(s.status)}
@@ -6716,9 +7006,11 @@ export default function DashboardPage() {
                   (shipments || []).forEach(s => {
                     const id = s.customer_stripe_id || '';
                     if (!id) return;
+                    if (String(s.status || '').toUpperCase() === 'CANCELLED')
+                      return;
                     const v = Math.max(
                       0,
-                      Number(s.store_earnings_amount || 0) / 100
+                      Number(s.customer_spent_amount || 0) / 100
                     );
                     spentMap[id] = (spentMap[id] || 0) + v;
                   });
@@ -6804,7 +7096,15 @@ export default function DashboardPage() {
                           return (
                             <div
                               key={r.id}
-                              className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
+                              onClick={e => {
+                                if (isInteractiveRowClick(e.target)) return;
+                                toggleSelectId(r.id);
+                              }}
+                              className={`rounded-lg border p-3 shadow-sm cursor-pointer ${
+                                selectedIds.has(r.id)
+                                  ? 'ring-2 ring-indigo-500 ring-inset'
+                                  : ''
+                              } border-gray-200 bg-white`}
                             >
                               <div className='flex items-start justify-between'>
                                 <div className='flex items-center space-x-2'>
@@ -6813,7 +7113,7 @@ export default function DashboardPage() {
                                     checked={selectedIds.has(r.id)}
                                     onChange={() => toggleSelectId(r.id)}
                                     aria-label='Sélectionner'
-                                    className='h-4 w-4'
+                                    className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                                   />
                                   {u?.hasImage && u?.imageUrl ? (
                                     <img
@@ -7146,9 +7446,14 @@ export default function DashboardPage() {
                                   (shipments || []).forEach(s => {
                                     const id = s.customer_stripe_id || '';
                                     if (!id) return;
+                                    if (
+                                      String(s.status || '').toUpperCase() ===
+                                      'CANCELLED'
+                                    )
+                                      return;
                                     const v = Math.max(
                                       0,
-                                      Number(s.store_earnings_amount || 0) / 100
+                                      Number(s.customer_spent_amount || 0) / 100
                                     );
                                     spentMap[id] = (spentMap[id] || 0) + v;
                                   });
@@ -7193,6 +7498,7 @@ export default function DashboardPage() {
                                             });
                                           }}
                                           aria-label='Sélectionner tout'
+                                          className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                                         />
                                         <span>Sélectionner tout</span>
                                       </div>
@@ -7255,7 +7561,15 @@ export default function DashboardPage() {
                               return (
                                 <tr
                                   key={r.id}
-                                  className='border-b border-gray-100 hover:bg-gray-50'
+                                  onClick={e => {
+                                    if (isInteractiveRowClick(e.target)) return;
+                                    toggleSelectId(r.id);
+                                  }}
+                                  className={`border-b border-gray-100 cursor-pointer ${
+                                    selectedIds.has(r.id)
+                                      ? 'outline outline-2 outline-indigo-500 outline-offset-[-2px]'
+                                      : ''
+                                  } hover:bg-gray-50`}
                                 >
                                   <td className='py-4 px-4'>
                                     <input
@@ -7263,6 +7577,7 @@ export default function DashboardPage() {
                                       checked={selectedIds.has(r.id)}
                                       onChange={() => toggleSelectId(r.id)}
                                       aria-label='Sélectionner'
+                                      className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                                     />
                                   </td>
                                   <td className='py-4 px-4 text-gray-700'>
@@ -7294,7 +7609,9 @@ export default function DashboardPage() {
                                               alt='avatar'
                                               className='w-8 h-8 rounded-full object-cover'
                                             />
-                                          ) : null}
+                                          ) : (
+                                            <span className='inline-block w-8 h-8 rounded-full bg-gray-200' />
+                                          )}
                                           <span>{name}</span>
                                         </div>
                                       );
@@ -7697,7 +8014,7 @@ export default function DashboardPage() {
                   <label className='block text-sm font-medium text-gray-700 mb-1'>
                     Coupon
                   </label>
-                  <div className='space-y-2'>
+                  <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2'>
                     {couponOptions.map(opt => (
                       <label key={opt.id} className='flex items-center gap-2'>
                         <input
@@ -7725,9 +8042,11 @@ export default function DashboardPage() {
                   <input
                     type='text'
                     value={promoCodeName}
-                    onChange={e =>
-                      setPromoCodeName(e.target.value.toUpperCase())
-                    }
+                    onChange={e => {
+                      const next = String(e.target.value || '').toUpperCase();
+                      if (next.startsWith('CREDIT-')) return;
+                      setPromoCodeName(next);
+                    }}
                     placeholder='Ex: STORE20'
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />
@@ -7744,6 +8063,21 @@ export default function DashboardPage() {
                     value={promoMinAmountEuro}
                     onChange={e => setPromoMinAmountEuro(e.target.value)}
                     placeholder='Ex: 50'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Nombre maximum d’utilisations
+                  </label>
+                  <input
+                    type='number'
+                    min='0'
+                    step='1'
+                    value={promoMaxRedemptions}
+                    onChange={e => setPromoMaxRedemptions(e.target.value)}
+                    placeholder='Ex: 10'
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />
                 </div>
@@ -7778,21 +8112,6 @@ export default function DashboardPage() {
                     L’heure est obligatoire si une date est renseignée.
                   </p>
                 </div>
-
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Nombre maximum d’utilisations
-                  </label>
-                  <input
-                    type='number'
-                    min='0'
-                    step='1'
-                    value={promoMaxRedemptions}
-                    onChange={e => setPromoMaxRedemptions(e.target.value)}
-                    placeholder='Ex: 10'
-                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                  />
-                </div>
               </div>
 
               <div className='flex items-center gap-3 mb-6'>
@@ -7804,7 +8123,7 @@ export default function DashboardPage() {
                   {promoCreating && (
                     <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
                   )}
-                  <RiDiscountPercentFill className='w-4 h-4 mr-1' />
+
                   <span>Créer le code promo</span>
                 </button>
               </div>
@@ -7812,7 +8131,6 @@ export default function DashboardPage() {
               {/* Barre de recherche par libellé du code */}
               <div className='flex items-center justify-between mb-4'>
                 <div className='flex items-center'>
-                  <RiDiscountPercentFill className='w-5 h-5 text-indigo-600 mr-2' />
                   <h2 className='text-lg font-semibold text-gray-900'>
                     Mes Code Promo
                   </h2>
@@ -7864,14 +8182,40 @@ export default function DashboardPage() {
                           <div className='text-base font-semibold text-gray-900'>
                             {p.code}
                           </div>
-                          <button
-                            onClick={() => handleDeletePromotionCode(p.id)}
-                            disabled={!!promoDeletingIds[p.id]}
-                            className='inline-flex items-center px-2 py-1 text-xs rounded-md bg-gray-600 text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                          >
-                            <FaArchive className='w-3 h-3 mr-1' />
-                            Archiver
-                          </button>
+                          {promoTogglingIds[p.id] ? (
+                            <div className='text-sm text-gray-600'>
+                              Chargement...
+                            </div>
+                          ) : (
+                            <label className='inline-flex items-center cursor-pointer select-none'>
+                              <input
+                                type='checkbox'
+                                className='sr-only'
+                                checked={p?.active !== false}
+                                onChange={e =>
+                                  handleSetPromotionCodeActive(
+                                    p.id,
+                                    e.target.checked
+                                  )
+                                }
+                              />
+                              <span
+                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                                  p?.active !== false
+                                    ? 'bg-indigo-600'
+                                    : 'bg-gray-300'
+                                }`}
+                              >
+                                <span
+                                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                    p?.active !== false
+                                      ? 'translate-x-6'
+                                      : 'translate-x-1'
+                                  }`}
+                                />
+                              </span>
+                            </label>
+                          )}
                         </div>
                         <div className='mt-2 text-sm text-gray-700 space-y-1'>
                           <div>
@@ -7951,7 +8295,7 @@ export default function DashboardPage() {
                         Restrictions
                       </th>
                       <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                        Actions
+                        Statut
                       </th>
                     </tr>
                   </thead>
@@ -7959,7 +8303,7 @@ export default function DashboardPage() {
                     {promoListLoading ? (
                       <tr>
                         <td
-                          colSpan={8}
+                          colSpan={7}
                           className='px-4 py-6 text-center text-gray-600'
                         >
                           Chargement...
@@ -7968,7 +8312,7 @@ export default function DashboardPage() {
                     ) : promoCodes.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={8}
+                          colSpan={7}
                           className='px-4 py-6 text-center text-gray-600'
                         >
                           Aucun code promo
@@ -7983,89 +8327,118 @@ export default function DashboardPage() {
                             .toLowerCase()
                             .includes(term);
                         })
-                        .map((p: any) => (
-                          <tr
-                            key={p.id}
-                            className={p?.active === false ? 'opacity-60' : ''}
-                          >
-                            <td className='px-4 py-3 text-gray-900 font-medium'>
-                              {p.code}
-                            </td>
-                            <td
-                              className='px-4 py-3 text-gray-700 truncate max-w-[12rem]'
-                              title={(() => {
-                                const match = couponOptions.find(
-                                  c => c.id === (p?.coupon?.id || '')
-                                );
-                                return (
-                                  match?.name ||
-                                  p?.coupon?.name ||
-                                  p?.coupon?.id ||
-                                  ''
-                                );
-                              })()}
+                        .map((p: any) =>
+                          promoTogglingIds[p.id] ? (
+                            <tr key={p.id}>
+                              <td
+                                colSpan={7}
+                                className='px-4 py-6 text-center text-gray-600'
+                              >
+                                Chargement...
+                              </td>
+                            </tr>
+                          ) : (
+                            <tr
+                              key={p.id}
+                              className={
+                                p?.active === false ? 'opacity-60' : ''
+                              }
                             >
-                              {(() => {
-                                const match = couponOptions.find(
-                                  c => c.id === (p?.coupon?.id || '')
-                                );
-                                return (
-                                  match?.name ||
-                                  p?.coupon?.name ||
-                                  p?.coupon?.id ||
-                                  '—'
-                                );
-                              })()}
-                            </td>
+                              <td className='px-4 py-3 text-gray-900 font-medium'>
+                                {p.code}
+                              </td>
+                              <td
+                                className='px-4 py-3 text-gray-700 truncate max-w-[12rem]'
+                                title={(() => {
+                                  const match = couponOptions.find(
+                                    c => c.id === (p?.coupon?.id || '')
+                                  );
+                                  return (
+                                    match?.name ||
+                                    p?.coupon?.name ||
+                                    p?.coupon?.id ||
+                                    ''
+                                  );
+                                })()}
+                              >
+                                {(() => {
+                                  const match = couponOptions.find(
+                                    c => c.id === (p?.coupon?.id || '')
+                                  );
+                                  return (
+                                    match?.name ||
+                                    p?.coupon?.name ||
+                                    p?.coupon?.id ||
+                                    '—'
+                                  );
+                                })()}
+                              </td>
 
-                            <td className='px-4 py-3 text-gray-700'>
-                              {p.expires_at
-                                ? new Date(p.expires_at * 1000).toLocaleString(
-                                    'fr-FR',
-                                    {
+                              <td className='px-4 py-3 text-gray-700'>
+                                {p.expires_at
+                                  ? new Date(
+                                      p.expires_at * 1000
+                                    ).toLocaleString('fr-FR', {
                                       dateStyle: 'short',
                                       timeStyle: 'short',
+                                    })
+                                  : '—'}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700'>
+                                {p.times_redeemed ?? 0}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700'>
+                                {p.max_redemptions ?? '—'}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700'>
+                                {(() => {
+                                  const r = p?.restrictions || {};
+                                  const parts: string[] = [];
+                                  if (typeof r.minimum_amount === 'number') {
+                                    const eur = (
+                                      r.minimum_amount / 100
+                                    ).toLocaleString('fr-FR', {
+                                      minimumFractionDigits: 2,
+                                      maximumFractionDigits: 2,
+                                    });
+                                    parts.push(`Min: ${eur} €`);
+                                  }
+                                  return parts.length ? parts.join(' • ') : '—';
+                                })()}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700'>
+                                <label className='inline-flex items-center cursor-pointer select-none'>
+                                  <input
+                                    type='checkbox'
+                                    className='sr-only'
+                                    checked={p?.active !== false}
+                                    onChange={e =>
+                                      handleSetPromotionCodeActive(
+                                        p.id,
+                                        e.target.checked
+                                      )
                                     }
-                                  )
-                                : '—'}
-                            </td>
-                            <td className='px-4 py-3 text-gray-700'>
-                              {p.times_redeemed ?? 0}
-                            </td>
-                            <td className='px-4 py-3 text-gray-700'>
-                              {p.max_redemptions ?? '—'}
-                            </td>
-                            <td className='px-4 py-3 text-gray-700'>
-                              {(() => {
-                                const r = p?.restrictions || {};
-                                const parts: string[] = [];
-                                if (typeof r.minimum_amount === 'number') {
-                                  const eur = (
-                                    r.minimum_amount / 100
-                                  ).toLocaleString('fr-FR', {
-                                    minimumFractionDigits: 2,
-                                    maximumFractionDigits: 2,
-                                  });
-                                  parts.push(`Min: ${eur} €`);
-                                }
-                                return parts.length ? parts.join(' • ') : '—';
-                              })()}
-                            </td>
-                            <td className='px-4 py-3 text-gray-700'>
-                              <button
-                                onClick={() => handleDeletePromotionCode(p.id)}
-                                disabled={!!promoDeletingIds[p.id]}
-                                className={`inline-flex items-center p-2 rounded-md border ${promoDeletingIds[p.id] ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-700 border-gray-300'}`}
-                                title={'Archiver'}
-                              >
-                                <FaArchive
-                                  className={`w-4 h-4 ${promoDeletingIds[p.id] ? 'opacity-60' : ''}`}
-                                />
-                                <span className='ml-1'>Archiver</span>
-                              </button>
-                            </td>
-                          </tr>
-                        ))
+                                  />
+                                  <span
+                                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                                      p?.active !== false
+                                        ? 'bg-indigo-600'
+                                        : 'bg-gray-300'
+                                    }`}
+                                  >
+                                    <span
+                                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                        p?.active !== false
+                                          ? 'translate-x-6'
+                                          : 'translate-x-1'
+                                      }`}
+                                    />
+                                  </span>
+                                </label>
+                              </td>
+                            </tr>
+                          )
+                        )
                     )}
                   </tbody>
                 </table>
