@@ -84,6 +84,7 @@ type Shipment = {
   description?: string | null;
   store_earnings_amount?: number | null;
   customer_spent_amount?: number | null;
+  stripe_fees?: number | null;
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
@@ -2526,6 +2527,50 @@ export default function DashboardPage() {
     );
   };
 
+  const renderProductReferenceFromRaw = (
+    raw: string | null | undefined,
+    keyPrefix: string
+  ) => {
+    const items = parseProductReferenceItems(raw);
+    if (items.length === 0) return '—';
+    return (
+      <div className='space-y-2'>
+        {items.map((it, idx) => {
+          const ref = String(it.reference || '').trim();
+          const sp = ref.startsWith('prod_')
+            ? stripeProductsLiteById[ref]
+            : null;
+          const label = sp?.name || ref;
+          const d =
+            String(sp?.description || '').trim() ||
+            String(it.description || '').trim();
+          const qtyText = `qté: ${Math.max(1, Number(it.quantity || 1))}`;
+          const price =
+            sp?.unit_amount_cents != null
+              ? formatValue(
+                  Math.max(0, Number(sp.unit_amount_cents || 0)) / 100
+                )
+              : '';
+          return (
+            <div key={`${keyPrefix}-${idx}`} className='space-y-0.5'>
+              <div className='font-medium truncate max-w-[280px]' title={label}>
+                {label}
+              </div>
+              {d || price || qtyText ? (
+                <div
+                  className='text-xs text-gray-500 truncate max-w-[280px]'
+                  title={[d, qtyText, price].filter(Boolean).join(' — ')}
+                >
+                  {[d, qtyText, price].filter(Boolean).join(' — ')}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   useEffect(() => {
     const ids = Array.from(
       new Set(
@@ -2696,10 +2741,24 @@ export default function DashboardPage() {
 
   // Chargement des clients Stripe basés sur les customer_stripe_id des shipments
   useEffect(() => {
-    if (section !== 'clients' && section !== 'sales') return;
-    const ids = Array.from(
-      new Set((shipments || []).map(s => s.customer_stripe_id).filter(Boolean))
-    ) as string[];
+    if (section !== 'clients' && section !== 'sales' && section !== 'wallet')
+      return;
+    const ids = (() => {
+      if (section === 'wallet') {
+        return Array.from(
+          new Set(
+            (walletTransactions || [])
+              .map(t => (t as any)?.customer?.id)
+              .filter(Boolean)
+          )
+        ) as string[];
+      }
+      return Array.from(
+        new Set(
+          (shipments || []).map(s => s.customer_stripe_id).filter(Boolean)
+        )
+      ) as string[];
+    })();
     const idsToFetch = ids.filter(id => !(id in customersMap));
     if (idsToFetch.length === 0) return;
     setCustomersLoading(true);
@@ -2734,7 +2793,7 @@ export default function DashboardPage() {
         });
       })
       .finally(() => setCustomersLoading(false));
-  }, [section, shipments]);
+  }, [section, shipments, walletTransactions]);
 
   // Charger les réseaux sociaux (comptes externes) Clerk pour les clients Stripe qui exposent clerkUserId
   useEffect(() => {
@@ -5089,7 +5148,51 @@ export default function DashboardPage() {
               </p>
               <div className='flex items-baseline space-x-2 mb-4'>
                 <span className='text-2xl font-bold text-gray-900'>
-                  {Number(walletTransactionsTotalNet || 0).toFixed(2)}
+                  {(() => {
+                    const payoutRaw = String(
+                      store?.payout_created_at || ''
+                    ).trim();
+                    const payoutMs = payoutRaw
+                      ? new Date(payoutRaw).getTime()
+                      : NaN;
+                    const hasStart =
+                      Number.isFinite(payoutMs) && Number(payoutMs) > 0;
+
+                    let storeEarningsCents = 0;
+                    let stripeFeesCents = 0;
+                    (shipments || []).forEach(s => {
+                      if (!Boolean((s as any)?.is_final_destination)) return;
+                      const createdAt = String(s.created_at || '').trim();
+                      const createdMs = createdAt
+                        ? new Date(createdAt).getTime()
+                        : NaN;
+                      if (hasStart) {
+                        if (!Number.isFinite(createdMs)) return;
+                        if (createdMs < Number(payoutMs)) return;
+                      }
+
+                      const status = String(s.status || '').toUpperCase();
+                      const earningsRaw = Number(s.store_earnings_amount || 0);
+                      const earnings = Number.isFinite(earningsRaw)
+                        ? Math.max(0, Math.round(earningsRaw))
+                        : 0;
+                      if (status !== 'CANCELLED')
+                        storeEarningsCents += earnings;
+
+                      const feesRaw = Number(s.stripe_fees || 0);
+                      const fees = Number.isFinite(feesRaw)
+                        ? Math.max(0, Math.round(feesRaw))
+                        : 0;
+                      stripeFeesCents += fees;
+                    });
+
+                    const payliveFeeCents = Math.round(
+                      storeEarningsCents * 0.015
+                    );
+                    const finalCents =
+                      storeEarningsCents - stripeFeesCents - payliveFeeCents;
+                    return (finalCents / 100).toFixed(2);
+                  })()}
                 </span>
                 <span className='text-gray-700'>€ total net</span>
               </div>
@@ -5255,8 +5358,7 @@ export default function DashboardPage() {
                               [u?.firstName, u?.lastName]
                                 .filter(Boolean)
                                 .join(' ') ||
-                              stripeId ||
-                              '—';
+                              (customer ? stripeId : '—');
                             const email = (
                               u?.emailAddress ||
                               customer?.email ||
@@ -5272,25 +5374,42 @@ export default function DashboardPage() {
                                   <div>{formatDateEpoch(tx.created)}</div>
                                 </td>
                                 <td className='py-3 px-4 text-gray-700'>
-                                  <div className='font-medium text-gray-900'>
-                                    {name}
-                                  </div>
-                                  {email ? (
-                                    <div className='text-xs text-gray-500'>
-                                      {email}
+                                  <div className='flex items-center space-x-2'>
+                                    {u?.hasImage && u?.imageUrl ? (
+                                      <img
+                                        src={u.imageUrl}
+                                        alt='avatar'
+                                        className='w-6 h-6 rounded-full object-cover'
+                                      />
+                                    ) : (
+                                      <span className='inline-block w-6 h-6 rounded-full bg-gray-200' />
+                                    )}
+                                    <div className='space-y-0.5'>
+                                      <div
+                                        className='font-medium truncate max-w-[180px] text-gray-900'
+                                        title={name}
+                                      >
+                                        {name}
+                                      </div>
+                                      <div className='text-xs text-gray-500 truncate max-w-[180px]'>
+                                        {email || '—'}
+                                      </div>
                                     </div>
-                                  ) : null}
+                                  </div>
                                 </td>
                                 <td className='py-3 px-4 text-gray-700'>
-                                  {String(
-                                    tx.articles || tx.product_reference || ''
-                                  ).trim() || '—'}
+                                  {renderProductReferenceFromRaw(
+                                    tx.product_reference || tx.articles,
+                                    String(tx.payment_id || tx.created)
+                                  )}
                                 </td>
                                 <td className='py-3 px-4 text-gray-700 whitespace-nowrap'>
                                   {String(tx.promo_code || '').trim() || '—'}
                                 </td>
                                 <td className='py-3 px-4 text-right text-gray-900 font-semibold whitespace-nowrap'>
-                                  {formatValue(tx.net_total)}
+                                  {formatValue(
+                                    Math.max(0, Number(tx.net_total || 0))
+                                  )}
                                 </td>
                               </tr>
                             );

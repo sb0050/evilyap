@@ -1176,6 +1176,13 @@ class EmailService {
               imageFile: "delivengo.jpg",
             };
           }
+          if (code.startsWith("FEDX")) {
+            return {
+              name: "Fedex",
+              link: "https://www.fedex.com/en-us.html",
+              imageFile: "fedex.jpg",
+            };
+          }
 
           return null;
         };

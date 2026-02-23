@@ -1083,82 +1083,81 @@ router.delete("/shipping-orders/:id", async (req, res) => {
       return res.status(400).json({ error: "Missing shipping order id" });
     }
 
-    const token = await verifyAndRefreshBoxtalToken();
-    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
-      id,
-    )}`;
+    let boxtalOk = false;
+    let boxtalStatus: number | null = null;
+    let boxtalPayload: any = null;
+    let boxtalError: any = null;
 
-    const options = {
-      method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-    } as any;
+    try {
+      const token = await verifyAndRefreshBoxtalToken();
+      const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
+        id,
+      )}`;
 
-    const response = await fetch(url, options);
+      const options = {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      } as any;
 
-    const contentType = response.headers.get("content-type") || "";
-    let payload: any = null;
-    if (response.ok) {
-      payload = await response.json();
-    } else if (contentType.includes("application/json")) {
-      const errJson = await response.json();
+      const response = await fetch(url, options);
+      boxtalStatus = response.status;
+
+      const contentType = response.headers.get("content-type") || "";
+      if (response.ok) {
+        boxtalOk = true;
+        boxtalPayload = await response.json().catch(() => null);
+      } else if (contentType.includes("application/json")) {
+        boxtalError = await response.json().catch(() => null);
+        try {
+          await emailService.sendAdminError({
+            subject: "Boxtal cancel échec",
+            message: `Echec annulation Boxtal shipment_id=${id}`,
+            context: JSON.stringify(boxtalError),
+          });
+        } catch {}
+      } else {
+        const errText = await response.text().catch(() => "");
+        boxtalError = {
+          error: "Failed to cancel shipping order",
+          details: errText,
+        };
+        try {
+          await emailService.sendAdminError({
+            subject: "Boxtal cancel échec",
+            message: `Echec annulation Boxtal shipment_id=${id}`,
+            context: errText,
+          });
+        } catch {}
+      }
+    } catch (boxtalEx) {
+      boxtalError = {
+        error: "Boxtal cancel request failed",
+        message:
+          boxtalEx instanceof Error ? boxtalEx.message : String(boxtalEx),
+      };
       try {
         await emailService.sendAdminError({
-          subject: "Boxtal cancel échec",
-          message: `Echec annulation Boxtal shipment_id=${id}`,
-          context: JSON.stringify(errJson),
+          subject: "Boxtal cancel exception",
+          message: `Exception annulation Boxtal shipment_id=${id}`,
+          context: JSON.stringify(boxtalError),
         });
       } catch {}
-      try {
-        if (supabase) {
-          await supabase
-            .from("shipments")
-            .update({
-              status: "CANCELLED",
-            })
-            .eq("shipment_id", id);
-        }
-      } catch {}
-      return res.status(response.status).json(errJson);
-    } else {
-      const errText = await response.text();
-      try {
-        await emailService.sendAdminError({
-          subject: "Boxtal cancel échec",
-          message: `Echec annulation Boxtal shipment_id=${id}`,
-          context: errText,
-        });
-      } catch {}
-      try {
-        if (supabase) {
-          await supabase
-            .from("shipments")
-            .update({
-              status: "CANCELLED",
-            })
-            .eq("shipment_id", id);
-        }
-      } catch {}
-      return res.status(response.status).json({
-        error: "Failed to cancel shipping order",
-        details: errText,
-      });
     }
 
-    // Mettre à jour le statut en base de données si possible
+    let dbUpdated = false;
     try {
       if (supabase) {
-        const nextUpdate: any = {
-          status: "CANCELLED",
-        };
         const { error: updError } = await supabase
           .from("shipments")
-          .update(nextUpdate)
+          .update({ status: "CANCELLED" })
           .eq("shipment_id", id);
         if (updError) {
           console.error("Supabase update shipments status failed:", updError);
+        } else {
+          dbUpdated = true;
         }
       }
     } catch (dbErr) {
@@ -1170,158 +1169,195 @@ router.delete("/shipping-orders/:id", async (req, res) => {
         "true" ||
       String((req.query as any)?.silent || "").toLowerCase() === "true";
 
-    // Envoi d'un email à l'admin avec les infos nécessaires pour remboursement
+    let shipment: any = null;
     try {
-      if (!skipAdminRefundEmail && supabase) {
-        const { data: shipment, error: shipErr } = await supabase
+      if (supabase) {
+        const { data, error: shipErr } = await supabase
           .from("shipments")
           .select("*")
           .eq("shipment_id", id)
-          .single();
+          .maybeSingle();
+        shipment = data || null;
+        if (shipErr) console.warn("Supabase fetch shipment failed:", shipErr);
+      }
+    } catch (shipEx) {
+      console.warn("Supabase fetch shipment exception:", shipEx);
+    }
 
-        if (shipErr) {
-          console.warn("Supabase fetch shipment failed:", shipErr);
+    let storeName = "Votre Boutique";
+    let storeOwnerEmail: string | undefined = undefined;
+    let storeSlug: string | undefined = undefined;
+    try {
+      if (supabase && shipment?.store_id) {
+        const { data: store, error: storeErr } = await supabase
+          .from("stores")
+          .select("name, owner_email, slug")
+          .eq("id", shipment.store_id)
+          .maybeSingle();
+        if (storeErr) {
+          console.warn("Supabase fetch store failed:", storeErr);
+        } else if (store) {
+          storeName = (store as any)?.name || storeName;
+          storeOwnerEmail = (store as any)?.owner_email || undefined;
+          storeSlug = (store as any)?.slug || undefined;
         }
+      }
+    } catch (storeEx) {
+      console.warn("Supabase fetch store exception:", storeEx);
+    }
 
-        let storeName = "Votre Boutique";
-        let storeOwnerEmail: string | undefined = undefined;
-        let storeSlug: string | undefined = undefined;
-        if (shipment?.store_id) {
-          const { data: store, error: storeErr } = await supabase
-            .from("stores")
-            .select("name, owner_email, slug")
-            .eq("id", shipment.store_id)
-            .single();
-          if (storeErr) {
-            console.warn("Supabase fetch store failed:", storeErr);
-          } else {
-            storeName = (store as any)?.name || storeName;
-            storeOwnerEmail = (store as any)?.owner_email || undefined;
-            storeSlug = (store as any)?.slug || undefined;
-          }
-        }
+    let customerName: string | undefined = undefined;
+    let customerEmail: string | undefined = undefined;
+    const customerStripeId: string | undefined =
+      shipment?.customer_stripe_id || undefined;
+    if (stripe && customerStripeId) {
+      try {
+        const customer = await stripe.customers.retrieve(customerStripeId);
+        customerEmail = (customer as any)?.email || undefined;
+        customerName = (customer as any)?.name || undefined;
+      } catch (cErr) {
+        console.warn("Stripe retrieve customer failed:", cErr);
+      }
+    }
 
-        let customerName: string | undefined = undefined;
-        let customerEmail: string | undefined = undefined;
-        const customerStripeId: string | undefined =
-          shipment?.customer_stripe_id || undefined;
-        if (stripe && customerStripeId) {
+    const paymentId = String(shipment?.payment_id || "").trim();
+    const customerSpentAmountCents = Math.max(
+      0,
+      Math.round(Number((shipment as any)?.customer_spent_amount || 0)),
+    );
+    const creditCents = Number.isFinite(customerSpentAmountCents)
+      ? customerSpentAmountCents
+      : 0;
+
+    if (stripe && customerStripeId && creditCents > 0) {
+      try {
+        let alreadyIssued = false;
+        if (paymentId) {
           try {
-            const customer = await stripe.customers.retrieve(customerStripeId);
-            customerEmail = (customer as any)?.email || undefined;
-            customerName = (customer as any)?.name || undefined;
-          } catch (cErr) {
-            console.warn("Stripe retrieve customer failed:", cErr);
-          }
+            const pi = await stripe.paymentIntents.retrieve(paymentId);
+            const issuedParsed = Number.parseInt(
+              String((pi.metadata as any)?.boxtal_cancel_credit_cents || "0"),
+              10,
+            );
+            alreadyIssued =
+              Number.isFinite(issuedParsed) && issuedParsed === creditCents;
+          } catch (_e) {}
         }
 
-        const paymentId = String(shipment?.payment_id || "").trim();
-        const customerSpentAmountCents = Math.max(
-          0,
-          Math.round(Number((shipment as any)?.customer_spent_amount || 0)),
-        );
-        const creditCents = Number.isFinite(customerSpentAmountCents)
-          ? customerSpentAmountCents
-          : 0;
-
-        if (stripe && customerStripeId && creditCents > 0) {
-          let alreadyIssued = false;
-          if (paymentId) {
-            try {
-              const pi = await stripe.paymentIntents.retrieve(paymentId);
-              const issuedParsed = Number.parseInt(
-                String((pi.metadata as any)?.boxtal_cancel_credit_cents || "0"),
-                10,
-              );
-              alreadyIssued =
-                Number.isFinite(issuedParsed) && issuedParsed === creditCents;
-            } catch (_e) {}
-          }
-
-          if (!alreadyIssued) {
-            const cust = (await stripe.customers.retrieve(
+        if (!alreadyIssued) {
+          const cust = (await stripe.customers.retrieve(
+            customerStripeId,
+          )) as Stripe.Customer;
+          if (cust && !("deleted" in cust)) {
+            const meta = (cust as any)?.metadata || {};
+            const prevBalanceParsed = Number.parseInt(
+              String(meta?.credit_balance || "0"),
+              10,
+            );
+            const prevBalanceCents = Number.isFinite(prevBalanceParsed)
+              ? prevBalanceParsed
+              : 0;
+            const nextBalanceCents = prevBalanceCents + creditCents;
+            await stripe.customers.update(
               customerStripeId,
-            )) as Stripe.Customer;
-            if (cust && !("deleted" in cust)) {
-              const meta = (cust as any)?.metadata || {};
-              const prevBalanceParsed = Number.parseInt(
-                String(meta?.credit_balance || "0"),
-                10,
-              );
-              const prevBalanceCents = Number.isFinite(prevBalanceParsed)
-                ? prevBalanceParsed
-                : 0;
-              const nextBalanceCents = prevBalanceCents + creditCents;
-              await stripe.customers.update(
-                customerStripeId,
-                {
+              {
+                metadata: {
+                  ...meta,
+                  credit_balance: String(nextBalanceCents),
+                },
+              } as any,
+              { idempotencyKey: `credit-boxtal-cancel-${id}` } as any,
+            );
+            if (paymentId) {
+              try {
+                await stripe.paymentIntents.update(paymentId, {
                   metadata: {
-                    ...meta,
-                    credit_balance: String(nextBalanceCents),
+                    boxtal_cancel_credit_cents: String(creditCents),
+                    boxtal_cancel_shipping_order_id: String(id),
                   },
-                } as any,
-                { idempotencyKey: `credit-boxtal-cancel-${id}` } as any,
-              );
-              if (paymentId) {
-                try {
-                  await stripe.paymentIntents.update(paymentId, {
-                    metadata: {
-                      boxtal_cancel_credit_cents: String(creditCents),
-                      boxtal_cancel_shipping_order_id: String(id),
-                    },
-                  });
-                } catch (_e) {}
-              }
+                });
+              } catch (_e) {}
             }
           }
         }
-
-        const orderAmount =
-          Number.isFinite(customerSpentAmountCents) && customerSpentAmountCents
-            ? customerSpentAmountCents / 100
-            : 0;
-        const refundCreditAmount =
-          Number.isFinite(creditCents) && creditCents > 0
-            ? creditCents / 100
-            : 0;
-
-        if (storeOwnerEmail) {
-          try {
-            await emailService.sendStoreOwnerOrderCancelled({
-              ownerEmail: storeOwnerEmail,
-              storeName,
-              customerName,
-              customerEmail,
-              amount: orderAmount,
-              currency: "EUR",
-              shipmentId: id,
-            });
-          } catch (e) {
-            console.warn("sendStoreOwnerOrderCancelled failed:", e);
-          }
-        }
-
-        if (customerEmail) {
-          try {
-            await emailService.sendCustomerOrderCancelled({
-              customerEmail,
-              customerName,
-              storeName,
-              amount: orderAmount,
-              currency: "EUR",
-              refundCreditAmount,
-              shipmentId: id,
-            });
-          } catch (e) {
-            console.warn("sendCustomerOrderCancelled failed:", e);
-          }
-        }
+      } catch (creditErr) {
+        console.error("Failed to issue credit after Boxtal cancel:", creditErr);
       }
-    } catch (creditErr) {
-      console.error("Failed to issue credit after Boxtal cancel:", creditErr);
     }
 
-    return res.status(200).json(payload);
+    const orderAmount =
+      Number.isFinite(customerSpentAmountCents) && customerSpentAmountCents
+        ? customerSpentAmountCents / 100
+        : 0;
+    const refundCreditAmount =
+      Number.isFinite(creditCents) && creditCents > 0 ? creditCents / 100 : 0;
+
+    if (!skipAdminRefundEmail) {
+      try {
+        await emailService.sendAdminError({
+          subject: "Commande annulée (crédit client)",
+          message: `Commande annulée shipment_id=${id}`,
+          context: JSON.stringify(
+            {
+              shipment_id: id,
+              storeName,
+              storeSlug,
+              storeOwnerEmail,
+              paymentId: paymentId || null,
+              customerStripeId: customerStripeId || null,
+              creditCents,
+              boxtal: {
+                ok: boxtalOk,
+                status: boxtalStatus,
+                error: boxtalError,
+              },
+              dbUpdated,
+            },
+            null,
+            2,
+          ),
+        });
+      } catch {}
+    }
+
+    if (storeOwnerEmail) {
+      try {
+        await emailService.sendStoreOwnerOrderCancelled({
+          ownerEmail: storeOwnerEmail,
+          storeName,
+          customerName,
+          customerEmail,
+          amount: orderAmount,
+          currency: "EUR",
+          shipmentId: id,
+        });
+      } catch (e) {
+        console.warn("sendStoreOwnerOrderCancelled failed:", e);
+      }
+    }
+
+    if (customerEmail) {
+      try {
+        await emailService.sendCustomerOrderCancelled({
+          customerEmail,
+          customerName,
+          storeName,
+          amount: orderAmount,
+          currency: "EUR",
+          refundCreditAmount,
+          shipmentId: id,
+        });
+      } catch (e) {
+        console.warn("sendCustomerOrderCancelled failed:", e);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      boxtal: { ok: boxtalOk, status: boxtalStatus, error: boxtalError },
+      dbUpdated,
+      payload: boxtalPayload,
+    });
   } catch (error) {
     console.error("Error in DELETE /api/boxtal/shipping-orders/:id:", error);
     try {
