@@ -1789,6 +1789,212 @@ class EmailService {
     return false;
   }
 
+  async sendCustomerOrderCancelled(data: {
+    customerEmail: string;
+    customerName?: string;
+    storeName: string;
+    amount: number;
+    currency: string;
+    refundCreditAmount?: number;
+    shipmentId?: string;
+  }): Promise<boolean> {
+    try {
+      const escapeHtml = (raw: string) =>
+        String(raw || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+
+      const to = String(data.customerEmail || "").trim();
+      if (!to) return false;
+
+      const formattedAmount = this.formatAmount(data.amount, data.currency);
+      const refundCredit =
+        typeof data.refundCreditAmount === "number" &&
+        Number.isFinite(data.refundCreditAmount) &&
+        data.refundCreditAmount > 0
+          ? data.refundCreditAmount
+          : 0;
+      const formattedRefundCredit =
+        refundCredit > 0
+          ? this.formatAmount(refundCredit, data.currency) ||
+            String(refundCredit)
+          : "";
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Commande annulée</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #ef4444 0%, #f97316 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .order-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ef4444; }
+            .amount { font-size: 22px; font-weight: bold; color: #ef4444; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>Commande annulée</h1>
+              <p>${escapeHtml(data.storeName)}</p>
+            </div>
+            <div class="content">
+              <h2>Bonjour ${escapeHtml(data.customerName || "Client")},</h2>
+              <p>Votre commande a été annulée.</p>
+              <div class="order-details">
+                <p><strong>Boutique :</strong> ${escapeHtml(data.storeName)}</p>
+                ${
+                  data.shipmentId
+                    ? `<p><strong>Commande :</strong> ${escapeHtml(
+                        data.shipmentId,
+                      )}</p>`
+                    : ""
+                }
+                <p><strong>Montant :</strong> <span class="amount">${
+                  formattedAmount || ""
+                }</span></p>
+              </div>
+              <p>
+                ${
+                  formattedRefundCredit
+                    ? `Le montant payé a été reversé à votre cagnotte : <strong>${escapeHtml(
+                        formattedRefundCredit,
+                      )}</strong>.`
+                    : "Le montant payé a été reversé à votre cagnotte."
+                }
+              </p>
+              <div class="footer">
+                <p>Merci pour votre compréhension.</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const info = await this.transporter.sendMail({
+        from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
+        to,
+        subject: `Commande annulée - ${data.storeName}`,
+        html: htmlContent,
+      });
+      console.log("✅ Email annulation client envoyé:", {
+        to,
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email annulation client:", error);
+      return false;
+    }
+  }
+
+  async sendStoreOwnerOrderCancelled(data: {
+    ownerEmail: string;
+    storeName: string;
+    customerName?: string;
+    customerEmail?: string;
+    amount: number;
+    currency: string;
+    shipmentId?: string;
+  }): Promise<boolean> {
+    try {
+      const escapeHtml = (raw: string) =>
+        String(raw || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+
+      const to = String(data.ownerEmail || "").trim();
+      if (!to) return false;
+
+      const formattedAmount = this.formatAmount(data.amount, data.currency);
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Commande annulée</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #ef4444 0%, #f97316 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .order-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ef4444; }
+            .amount { font-size: 22px; font-weight: bold; color: #ef4444; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>Commande annulée</h1>
+              <p>${escapeHtml(data.storeName)}</p>
+            </div>
+            <div class="content">
+              <h2>Bonjour,</h2>
+              <p>Une commande a été annulée.</p>
+              <div class="order-details">
+                <p><strong>Client :</strong> ${escapeHtml(
+                  data.customerName || "Client",
+                )}</p>
+                ${
+                  data.customerEmail
+                    ? `<p><strong>Email :</strong> ${escapeHtml(
+                        data.customerEmail,
+                      )}</p>`
+                    : ""
+                }
+                ${
+                  data.shipmentId
+                    ? `<p><strong>Commande :</strong> ${escapeHtml(
+                        data.shipmentId,
+                      )}</p>`
+                    : ""
+                }
+                <p><strong>Montant :</strong> <span class="amount">${
+                  formattedAmount || ""
+                }</span></p>
+              </div>
+              <div class="footer">
+                <p>Le montant a été reversé à la cagnotte du client.</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const info = await this.transporter.sendMail({
+        from: `"PayLive - ${data.storeName}" <${process.env.SMTP_USER}>`,
+        to,
+        subject: `Commande annulée - ${data.storeName}`,
+        html: htmlContent,
+      });
+      console.log("✅ Email annulation propriétaire envoyé:", {
+        to,
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email annulation propriétaire:", error);
+      return false;
+    }
+  }
+
   async sendCustomerTrackingUpdate(
     data: CustomerTrackingEmailData,
   ): Promise<boolean> {

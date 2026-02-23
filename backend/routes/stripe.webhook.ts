@@ -1684,7 +1684,10 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               }
               const { error: delErr } = await supabase
                 .from("shipments")
-                .update({ is_cancelled: true, is_open_shipment: false })
+                .update({
+                  is_open_shipment: false,
+                  status: "CANCELLED",
+                })
                 .eq("id", openShipmentRowId);
               if (delErr) {
                 await emailService.sendAdminError({
@@ -1988,7 +1991,6 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               store_earnings_amount: storeEarningsAmountCents,
               customer_spent_amount: customerSpentAmountCents,
               stripe_fees: stripeFeesCents,
-              boxtal_shipment_creation_failed: boxtalOrderFailed,
               boxtal_shipping_json: boxtalShippingJsonForDb,
               delivery_cost:
                 (dataBoxtal?.content?.deliveryPriceExclTax?.value || 0) * 1.2,

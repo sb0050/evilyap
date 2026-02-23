@@ -101,6 +101,12 @@ const parseBoxtalShippingPayload = (raw: any): Record<string, any> | null => {
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         return parsed as Record<string, any>;
       }
+      if (typeof parsed === "string") {
+        const parsed2 = JSON.parse(parsed);
+        if (parsed2 && typeof parsed2 === "object" && !Array.isArray(parsed2)) {
+          return parsed2 as Record<string, any>;
+        }
+      }
     } catch {
       return null;
     }
@@ -508,7 +514,7 @@ router.get(
       const { data: shipment, error: shipmentErr } = await supabase
         .from("shipments")
         .select(
-          "id,store_id,customer_stripe_id,shipment_id,document_created,document_url,boxtal_shipment_creation_failed,boxtal_shipping_json,status,estimated_delivery_date,delivery_cost",
+          "id,store_id,customer_stripe_id,shipment_id,document_created,document_url,boxtal_shipping_json,status,estimated_delivery_date,delivery_cost",
         )
         .eq("id", shipmentRowId)
         .maybeSingle();
@@ -553,14 +559,14 @@ router.get(
       let shippingOrderId = String((shipment as any)?.shipment_id || "").trim();
       let docPayload: any = null;
 
-      if ((shipment as any)?.boxtal_shipment_creation_failed === true) {
+      if ((shipment as any)?.status == null) {
         const createOrderPayload = parseBoxtalShippingPayload(
           (shipment as any)?.boxtal_shipping_json,
         );
         if (!createOrderPayload) {
           return res.status(400).json({
             error:
-              "boxtal_shipping_json absent ou invalide pour recréer l'expédition",
+              "boxtal_shipping_json absent ou invalide pour créer l'expédition",
           });
         }
 
@@ -629,7 +635,6 @@ router.get(
           status: (createData?.content?.status as any) || null,
           estimated_delivery_date:
             (createData?.content?.estimatedDeliveryDate as any) || null,
-          boxtal_shipment_creation_failed: false,
           boxtal_shipping_json: null,
         };
         const deliveryExclTax = Number(
@@ -717,7 +722,6 @@ router.get(
             shipment_id: shippingOrderId,
             document_created: true,
             document_url: preferredDoc.url,
-            boxtal_shipment_creation_failed: false,
             boxtal_shipping_json: null,
           })
           .eq("id", shipmentRowId);
@@ -746,6 +750,105 @@ router.get(
     }
   },
 );
+
+router.post("/shipments/:shipmentRowId/cancel", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const shipmentRowId = Number(req.params.shipmentRowId);
+    if (!Number.isFinite(shipmentRowId) || shipmentRowId <= 0) {
+      return res.status(400).json({ error: "Invalid shipment id" });
+    }
+    if (!supabase) {
+      return res.status(500).json({ error: "Database not configured" });
+    }
+
+    const { data: shipment, error: shipmentErr } = await supabase
+      .from("shipments")
+      .select("*")
+      .eq("id", shipmentRowId)
+      .maybeSingle();
+    if (shipmentErr) {
+      return res.status(500).json({ error: shipmentErr.message });
+    }
+    if (!shipment) {
+      return res.status(404).json({ error: "Shipment not found" });
+    }
+
+    const requesterUser = await clerkClient.users.getUser(auth.userId);
+    const requesterStripeId = String(
+      (requesterUser?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    const shipmentStoreId = Number((shipment as any)?.store_id || 0);
+    const shipmentCustomerStripeId = String(
+      (shipment as any)?.customer_stripe_id || "",
+    ).trim();
+
+    let isOwner = false;
+    if (Number.isFinite(shipmentStoreId) && shipmentStoreId > 0) {
+      const { data: store, error: storeErr } = await supabase
+        .from("stores")
+        .select("id,clerk_id")
+        .eq("id", shipmentStoreId)
+        .maybeSingle();
+      if (storeErr) {
+        return res.status(500).json({ error: storeErr.message });
+      }
+      isOwner =
+        Boolean((store as any)?.clerk_id) &&
+        String((store as any)?.clerk_id) === String(auth.userId);
+    }
+
+    const isCustomer =
+      Boolean(requesterStripeId) &&
+      requesterStripeId === shipmentCustomerStripeId;
+    if (!isOwner && !isCustomer) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const stRaw = (shipment as any)?.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || "")
+            .trim()
+            .toUpperCase();
+    if (st !== null && st !== "PENDING") {
+      return res.status(400).json({ error: "Annulation non autorisée" });
+    }
+
+    const { error: updErr } = await supabase
+      .from("shipments")
+      .update({ status: "CANCELLED" })
+      .eq("id", shipmentRowId);
+    if (updErr) {
+      return res.status(500).json({ error: updErr.message });
+    }
+
+    const { data: updated, error: rereadErr } = await supabase
+      .from("shipments")
+      .select("*")
+      .eq("id", shipmentRowId)
+      .maybeSingle();
+    if (rereadErr) {
+      return res.status(500).json({ error: rereadErr.message });
+    }
+
+    return res.json({ shipment: updated });
+  } catch (e) {
+    console.error("Error cancelling shipment:", e);
+    try {
+      await emailService.sendAdminError({
+        subject: "Cancel shipment exception",
+        message: `Exception annulation shipmentRowId=${String(req?.params?.shipmentRowId || "").trim()}`,
+        context: JSON.stringify(e),
+      });
+    } catch {}
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 router.get(
   "/shipping-orders/:id/shipping-document/download",
@@ -1001,9 +1104,43 @@ router.delete("/shipping-orders/:id", async (req, res) => {
       payload = await response.json();
     } else if (contentType.includes("application/json")) {
       const errJson = await response.json();
+      try {
+        await emailService.sendAdminError({
+          subject: "Boxtal cancel échec",
+          message: `Echec annulation Boxtal shipment_id=${id}`,
+          context: JSON.stringify(errJson),
+        });
+      } catch {}
+      try {
+        if (supabase) {
+          await supabase
+            .from("shipments")
+            .update({
+              status: "CANCELLED",
+            })
+            .eq("shipment_id", id);
+        }
+      } catch {}
       return res.status(response.status).json(errJson);
     } else {
       const errText = await response.text();
+      try {
+        await emailService.sendAdminError({
+          subject: "Boxtal cancel échec",
+          message: `Echec annulation Boxtal shipment_id=${id}`,
+          context: errText,
+        });
+      } catch {}
+      try {
+        if (supabase) {
+          await supabase
+            .from("shipments")
+            .update({
+              status: "CANCELLED",
+            })
+            .eq("shipment_id", id);
+        }
+      } catch {}
       return res.status(response.status).json({
         error: "Failed to cancel shipping order",
         details: errText,
@@ -1012,11 +1149,13 @@ router.delete("/shipping-orders/:id", async (req, res) => {
 
     // Mettre à jour le statut en base de données si possible
     try {
-      if (supabase && payload?.content?.status) {
-        const newStatus = String(payload.content.status);
+      if (supabase) {
+        const nextUpdate: any = {
+          status: "CANCELLED",
+        };
         const { error: updError } = await supabase
           .from("shipments")
-          .update({ status: newStatus, cancel_requested: true })
+          .update(nextUpdate)
           .eq("shipment_id", id);
         if (updError) {
           console.error("Supabase update shipments status failed:", updError);
@@ -1136,6 +1275,47 @@ router.delete("/shipping-orders/:id", async (req, res) => {
             }
           }
         }
+
+        const orderAmount =
+          Number.isFinite(customerSpentAmountCents) && customerSpentAmountCents
+            ? customerSpentAmountCents / 100
+            : 0;
+        const refundCreditAmount =
+          Number.isFinite(creditCents) && creditCents > 0
+            ? creditCents / 100
+            : 0;
+
+        if (storeOwnerEmail) {
+          try {
+            await emailService.sendStoreOwnerOrderCancelled({
+              ownerEmail: storeOwnerEmail,
+              storeName,
+              customerName,
+              customerEmail,
+              amount: orderAmount,
+              currency: "EUR",
+              shipmentId: id,
+            });
+          } catch (e) {
+            console.warn("sendStoreOwnerOrderCancelled failed:", e);
+          }
+        }
+
+        if (customerEmail) {
+          try {
+            await emailService.sendCustomerOrderCancelled({
+              customerEmail,
+              customerName,
+              storeName,
+              amount: orderAmount,
+              currency: "EUR",
+              refundCreditAmount,
+              shipmentId: id,
+            });
+          } catch (e) {
+            console.warn("sendCustomerOrderCancelled failed:", e);
+          }
+        }
       }
     } catch (creditErr) {
       console.error("Failed to issue credit after Boxtal cancel:", creditErr);
@@ -1144,6 +1324,13 @@ router.delete("/shipping-orders/:id", async (req, res) => {
     return res.status(200).json(payload);
   } catch (error) {
     console.error("Error in DELETE /api/boxtal/shipping-orders/:id:", error);
+    try {
+      await emailService.sendAdminError({
+        subject: "Boxtal cancel exception",
+        message: `Exception annulation Boxtal shipment_id=${String(req?.params?.id || "").trim()}`,
+        context: JSON.stringify(error),
+      });
+    } catch {}
     return res.status(500).json({
       error: "Failed to cancel shipping order",
       message: error instanceof Error ? error.message : "Unknown error",

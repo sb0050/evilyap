@@ -75,7 +75,6 @@ type Shipment = {
   shipment_id: string | null;
   document_created: boolean;
   document_url?: string | null;
-  is_cancelled?: boolean | null;
   delivery_method: string | null;
   delivery_network: string | null;
   dropoff_point: any | null;
@@ -88,14 +87,12 @@ type Shipment = {
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
-  cancel_requested?: boolean | null;
   is_final_destination?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
   promo_code?: string | null;
   estimated_delivery_cost?: number | null;
   facture_id?: number | string | null;
-  boxtal_shipment_creation_failed?: boolean | null;
   boxtal_shipping_json?: any | null;
 };
 
@@ -1168,18 +1165,28 @@ export default function DashboardPage() {
 
   const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
     const silent = options?.silent;
-    if (!s.shipment_id) {
+    const stRaw = s.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || '')
+            .trim()
+            .toUpperCase();
+    if (st !== null && st !== 'PENDING') {
       setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) {
+        showToast('Annulation non autorisée pour ce statut', 'error');
+      }
       return false;
     }
     try {
       setCancelStatus(prev => ({ ...prev, [s.id]: 'loading' }));
       const token = await getToken();
-      const url = `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
-        s.shipment_id
-      )}`;
+      const url = `${apiBase}/api/shipments/${encodeURIComponent(
+        String(s.id)
+      )}/cancel`;
       const resp = await fetch(url, {
-        method: 'DELETE',
+        method: 'POST',
         headers: {
           Authorization: token ? `Bearer ${token}` : '',
         },
@@ -1187,13 +1194,21 @@ export default function DashboardPage() {
       const json = await resp.json().catch(() => ({}));
       if (resp.ok) {
         setCancelStatus(prev => ({ ...prev, [s.id]: 'success' }));
+        const updated = json?.shipment;
         setShipments(prev =>
-          (prev || []).map(it =>
-            it.id === s.id ? { ...it, cancel_requested: true } : it
-          )
+          (prev || []).map(it => {
+            if (it.id !== s.id) return it;
+            if (updated && typeof updated === 'object')
+              return { ...it, ...updated };
+            return { ...it, status: 'CANCELLED' };
+          })
         );
         if (!silent) {
-          showToast("Demande d'annulation envoyée", 'success');
+          const refs = formatProductReferenceForToast(s.product_reference);
+          showToast(
+            refs ? `Commande annulée : ${refs}` : 'Commande annulée',
+            'success'
+          );
         }
         return true;
       } else {
@@ -1317,10 +1332,7 @@ export default function DashboardPage() {
   ) => {
     const silent = options?.silent;
     try {
-      const canRetryFromFailedBoxtal =
-        Boolean(s.boxtal_shipment_creation_failed) &&
-        Boolean(s.boxtal_shipping_json);
-      if (!s.shipment_id && !canRetryFromFailedBoxtal) return false;
+      if (!s.shipment_id && s.status != null) return false;
       setDocStatus(prev => ({ ...prev, [s.id]: 'loading' }));
       const token = await getToken();
       const url = `${apiBase}/api/boxtal/shipments/${encodeURIComponent(
@@ -1344,7 +1356,7 @@ export default function DashboardPage() {
         window.URL.revokeObjectURL(objectUrl);
         setDocStatus(prev => ({ ...prev, [s.id]: 'success' }));
         if (!silent) {
-          showToast('Bordereau créé', 'success');
+          showToast('Bordereau téléchargé', 'success');
         }
         return true;
       } else {
@@ -1382,13 +1394,14 @@ export default function DashboardPage() {
   };
 
   const handleBatchShippingDocuments = async () => {
-    const targets = selectedSales.filter(
-      s =>
-        !s.is_cancelled &&
-        (Boolean(s.shipment_id) ||
-          (Boolean(s.boxtal_shipment_creation_failed) &&
-            Boolean(s.boxtal_shipping_json)))
-    );
+    if (hasBlockedDocSelection) {
+      showToast(
+        "Bordereau indisponible : autorisé seulement si status = null ou (status = 'PENDING' et document_created = true).",
+        'error'
+      );
+      return;
+    }
+    const targets = selectedForDoc;
     if (targets.length === 0) {
       showToast('Aucune vente sélectionnée pour le bordereau', 'error');
       return;
@@ -1415,40 +1428,50 @@ export default function DashboardPage() {
   };
 
   const handleBatchCancel = async () => {
-    const targets = selectedSales.filter(
-      s =>
-        s.shipment_id &&
-        !s.is_final_destination &&
-        !s.cancel_requested &&
-        !s.is_cancelled
-    );
+    const targets = selectedForCancel;
     if (targets.length === 0) {
       showToast("Aucune vente sélectionnée pour l'annulation", 'error');
       return;
     }
-    const references: string[] = [];
+    const counts = new Map<string, number>();
     for (const s of targets) {
       const ok = await handleCancel(s, { silent: true });
       if (ok) {
-        const ref = String(s.product_reference || s.shipment_id || '').trim();
-        references.push(ref || String(s.shipment_id));
+        const items = parseProductReferenceItems(s.product_reference);
+        if (items.length === 0) {
+          const fallback = String(s.product_reference || '').trim();
+          if (fallback) counts.set(fallback, (counts.get(fallback) || 0) + 1);
+        } else {
+          for (const it of items) {
+            const ref = String(it.reference || '').trim();
+            if (!ref) continue;
+            const qty = Math.max(1, Number(it.quantity || 1));
+            counts.set(ref, (counts.get(ref) || 0) + qty);
+          }
+        }
       }
     }
-    if (references.length === 0) {
+    if (counts.size === 0) {
       showToast("Aucune vente traitée pour l'annulation", 'error');
       return;
     }
+    const parts = Array.from(counts.entries()).map(([ref, qty]) => {
+      const label = ref.startsWith('prod_')
+        ? stripeProductsLiteById[ref]?.name || ref
+        : ref;
+      return `${label}(x${qty})`;
+    });
     const msg =
-      references.length <= 3
-        ? `Annulations envoyées pour : ${references.join(', ')}`
-        : `Annulations envoyées pour ${references.length} références (${references
-            .slice(0, 3)
-            .join(', ')}...)`;
+      parts.length <= 3
+        ? `Commandes annulées : ${parts.join(', ')}`
+        : `Commandes annulées : ${parts.slice(0, 3).join(', ')}...`;
     showToast(msg, 'success');
   };
 
   const handleBatchInvoice = async () => {
-    const targets = selectedSales.filter(s => !s.is_cancelled);
+    const targets = selectedSales.filter(
+      s => String(s.status || '').toUpperCase() !== 'CANCELLED'
+    );
     if (targets.length === 0) {
       showToast('Aucune vente sélectionnée pour la facture', 'error');
       return;
@@ -2440,9 +2463,9 @@ export default function DashboardPage() {
         const label = ref.startsWith('prod_')
           ? stripeProductsLiteById[ref]?.name || ref
           : ref;
-        return `${label} Qté: ${Math.max(1, Number(it.quantity || 1))}`;
+        return `${label}(x${Math.max(1, Number(it.quantity || 1))})`;
       })
-      .join('; ');
+      .join(', ');
   };
 
   const getShipmentProductItems = (s: Shipment): ProductItem[] =>
@@ -2562,20 +2585,35 @@ export default function DashboardPage() {
   const selectedSales = (shipments || []).filter(s =>
     selectedSaleIds.has(s.id)
   );
-  const selectedForInvoice = selectedSales.filter(s => !s.is_cancelled);
-  const selectedForDoc = selectedSales.filter(
-    s =>
-      !s.is_cancelled &&
-      (Boolean(s.shipment_id) ||
-        (Boolean(s.boxtal_shipment_creation_failed) &&
-          Boolean(s.boxtal_shipping_json)))
+  const selectedForInvoice = selectedSales.filter(
+    s => String(s.status || '').toUpperCase() !== 'CANCELLED'
   );
+  const selectedForDoc = selectedSales.filter(s => {
+    const stRaw = s.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || '')
+            .trim()
+            .toUpperCase();
+    return st === null || (st === 'PENDING' && s.document_created === true);
+  });
+  const hasBlockedDocSelection = selectedSales.some(s => {
+    const stRaw = s.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || '')
+            .trim()
+            .toUpperCase();
+    return !(st === null || (st === 'PENDING' && s.document_created === true));
+  });
+  const shippingDocDisabled =
+    selectedSales.length === 0 || hasBlockedDocSelection;
   const selectedForCancel = selectedSales.filter(
     s =>
-      s.shipment_id &&
       !s.is_final_destination &&
-      !s.cancel_requested &&
-      !s.is_cancelled
+      (s.status == null || String(s.status).toUpperCase() === 'PENDING')
   );
   const visibleSaleIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
@@ -2588,6 +2626,10 @@ export default function DashboardPage() {
       else next.add(id);
       return next;
     });
+  };
+  const isInteractiveRowClick = (target: EventTarget | null) => {
+    const el = target as HTMLElement | null;
+    return Boolean(el?.closest?.('button,a,input,select,textarea,label'));
   };
   const toggleSelectAllVisible = () => {
     setSelectedSaleIds(prev => {
@@ -4426,10 +4468,6 @@ export default function DashboardPage() {
                         const v = e.target.value;
                         setCartSelectedStockItem(null);
                         setCartReference(v);
-                        setCartDescription('');
-                        setCartWeightKg('');
-                        setCartAmountEuro('');
-                        setCartQuantity('1');
                         setCartStockSuggestionsOpen(
                           Boolean(String(v || '').trim())
                         );
@@ -6076,9 +6114,9 @@ export default function DashboardPage() {
               <div className='mb-4 flex flex-wrap items-center gap-2'>
                 <button
                   onClick={handleBatchShippingDocuments}
-                  disabled={selectedForDoc.length === 0}
+                  disabled={shippingDocDisabled}
                   className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
-                    selectedForDoc.length === 0
+                    shippingDocDisabled
                       ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                   }`}
@@ -6144,8 +6182,18 @@ export default function DashboardPage() {
                   visibleShipments.map(s => (
                     <div
                       key={s.id}
-                      className={`rounded-lg border border-gray-200 p-3 shadow-sm ${
-                        s.is_cancelled ? 'bg-gray-50' : 'bg-white'
+                      onClick={e => {
+                        if (isInteractiveRowClick(e.target)) return;
+                        toggleSaleSelection(s.id);
+                      }}
+                      className={`rounded-lg border p-3 shadow-sm cursor-pointer ${
+                        selectedSaleIds.has(s.id)
+                          ? 'ring-2 ring-indigo-500 ring-inset'
+                          : ''
+                      } ${
+                        String(s.status || '').toUpperCase() === 'CANCELLED'
+                          ? 'border-red-200 bg-red-50'
+                          : 'border-gray-200 bg-white'
                       }`}
                     >
                       <div className='flex items-start justify-between'>
@@ -6252,7 +6300,14 @@ export default function DashboardPage() {
                         </div>
                         <div>
                           <span className='font-medium'>Statut:</span>{' '}
-                          {s.status || '—'}
+                          {String(s.status || '').toUpperCase() ===
+                          'CANCELLED' ? (
+                            <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
+                              Annulée
+                            </span>
+                          ) : (
+                            s.status || '—'
+                          )}
                         </div>
                       </div>
 
@@ -6381,8 +6436,18 @@ export default function DashboardPage() {
                       visibleShipments.map(s => (
                         <tr
                           key={s.id}
-                          className={`border-b border-gray-100 ${
-                            s.is_cancelled ? 'bg-gray-50' : 'hover:bg-gray-50'
+                          onClick={e => {
+                            if (isInteractiveRowClick(e.target)) return;
+                            toggleSaleSelection(s.id);
+                          }}
+                          className={`border-b border-gray-100 cursor-pointer ${
+                            selectedSaleIds.has(s.id)
+                              ? 'outline outline-2 outline-indigo-500 outline-offset-[-2px]'
+                              : ''
+                          } ${
+                            String(s.status || '').toUpperCase() === 'CANCELLED'
+                              ? 'bg-red-50'
+                              : 'hover:bg-gray-50'
                           }`}
                         >
                           <td className='py-4 px-4 text-gray-700'>
@@ -6494,8 +6559,18 @@ export default function DashboardPage() {
                           </td>
                           <td className='py-4 px-4 text-gray-700'>
                             <div className='space-y-1'>
-                              <div className='font-medium'>
-                                {s.status || '—'}
+                              <div
+                                className={`font-medium ${
+                                  String(s.status || '').toUpperCase() ===
+                                  'CANCELLED'
+                                    ? 'text-red-700'
+                                    : ''
+                                }`}
+                              >
+                                {String(s.status || '').toUpperCase() ===
+                                'CANCELLED'
+                                  ? 'ANNULÉE'
+                                  : s.status || '—'}
                               </div>
                               <div className='text-xs text-gray-500'>
                                 {getStatusDescription(s.status)}
@@ -6787,9 +6862,11 @@ export default function DashboardPage() {
                   (shipments || []).forEach(s => {
                     const id = s.customer_stripe_id || '';
                     if (!id) return;
+                    if (String(s.status || '').toUpperCase() === 'CANCELLED')
+                      return;
                     const v = Math.max(
                       0,
-                      Number(s.store_earnings_amount || 0) / 100
+                      Number(s.customer_spent_amount || 0) / 100
                     );
                     spentMap[id] = (spentMap[id] || 0) + v;
                   });
@@ -6875,7 +6952,15 @@ export default function DashboardPage() {
                           return (
                             <div
                               key={r.id}
-                              className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
+                              onClick={e => {
+                                if (isInteractiveRowClick(e.target)) return;
+                                toggleSelectId(r.id);
+                              }}
+                              className={`rounded-lg border p-3 shadow-sm cursor-pointer ${
+                                selectedIds.has(r.id)
+                                  ? 'ring-2 ring-indigo-500 ring-inset'
+                                  : ''
+                              } border-gray-200 bg-white`}
                             >
                               <div className='flex items-start justify-between'>
                                 <div className='flex items-center space-x-2'>
@@ -6884,7 +6969,7 @@ export default function DashboardPage() {
                                     checked={selectedIds.has(r.id)}
                                     onChange={() => toggleSelectId(r.id)}
                                     aria-label='Sélectionner'
-                                    className='h-4 w-4'
+                                    className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                                   />
                                   {u?.hasImage && u?.imageUrl ? (
                                     <img
@@ -7217,9 +7302,14 @@ export default function DashboardPage() {
                                   (shipments || []).forEach(s => {
                                     const id = s.customer_stripe_id || '';
                                     if (!id) return;
+                                    if (
+                                      String(s.status || '').toUpperCase() ===
+                                      'CANCELLED'
+                                    )
+                                      return;
                                     const v = Math.max(
                                       0,
-                                      Number(s.store_earnings_amount || 0) / 100
+                                      Number(s.customer_spent_amount || 0) / 100
                                     );
                                     spentMap[id] = (spentMap[id] || 0) + v;
                                   });
@@ -7264,6 +7354,7 @@ export default function DashboardPage() {
                                             });
                                           }}
                                           aria-label='Sélectionner tout'
+                                          className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                                         />
                                         <span>Sélectionner tout</span>
                                       </div>
@@ -7326,7 +7417,15 @@ export default function DashboardPage() {
                               return (
                                 <tr
                                   key={r.id}
-                                  className='border-b border-gray-100 hover:bg-gray-50'
+                                  onClick={e => {
+                                    if (isInteractiveRowClick(e.target)) return;
+                                    toggleSelectId(r.id);
+                                  }}
+                                  className={`border-b border-gray-100 cursor-pointer ${
+                                    selectedIds.has(r.id)
+                                      ? 'outline outline-2 outline-indigo-500 outline-offset-[-2px]'
+                                      : ''
+                                  } hover:bg-gray-50`}
                                 >
                                   <td className='py-4 px-4'>
                                     <input
@@ -7334,6 +7433,7 @@ export default function DashboardPage() {
                                       checked={selectedIds.has(r.id)}
                                       onChange={() => toggleSelectId(r.id)}
                                       aria-label='Sélectionner'
+                                      className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                                     />
                                   </td>
                                   <td className='py-4 px-4 text-gray-700'>
@@ -7365,7 +7465,9 @@ export default function DashboardPage() {
                                               alt='avatar'
                                               className='w-8 h-8 rounded-full object-cover'
                                             />
-                                          ) : null}
+                                          ) : (
+                                            <span className='inline-block w-8 h-8 rounded-full bg-gray-200' />
+                                          )}
                                           <span>{name}</span>
                                         </div>
                                       );

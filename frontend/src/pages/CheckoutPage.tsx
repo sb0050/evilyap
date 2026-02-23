@@ -1340,7 +1340,21 @@ export default function CheckoutPage() {
         seen.add(r);
       }
       if (hasDuplicate) {
-        const msg = 'Vous avez la même référence plusieurs fois dans le panier. Supprimez la référence en double et modfiier la quantité de l\'autre';
+        const msg =
+          "Vous avez la même référence plusieurs fois dans le panier. Supprimez la référence en double et modfiier la quantité de l'autre";
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return;
+      }
+
+      const forbiddenItems = (latestCartItems || []).filter(
+        it =>
+          isDeliveryRegulationText(it.product_reference) ||
+          isDeliveryRegulationText((it as any)?.description)
+      );
+      if (forbiddenItems.length > 0) {
+        const msg =
+          'Votre panier contient un article interdit (régulation livraison). Veuillez le retirer.';
         setPaymentError(msg);
         showToast(msg, 'error');
         return;

@@ -227,9 +227,8 @@ router.post("/open-shipment", async (req, res) => {
 
     const { data: shipment, error: shipErr } = await supabase
       .from("shipments")
-      .select("id,store_id,customer_stripe_id,is_open_shipment")
+      .select("id,store_id,customer_stripe_id,is_open_shipment,status")
       .eq("id", shipmentIdNum)
-      .neq("is_cancelled", true)
       .maybeSingle();
     if (shipErr) {
       return res.status(500).json({ error: shipErr.message });
@@ -242,6 +241,10 @@ router.post("/open-shipment", async (req, res) => {
     ) {
       return res.status(403).json({ error: "Accès interdit à cette commande" });
     }
+    const currentStatus = (shipment as any)?.status;
+    if (String(currentStatus || "").toUpperCase() === "CANCELLED") {
+      return res.status(400).json({ error: "Commande déjà annulée" });
+    }
 
     const storeIdNum = Number((shipment as any)?.store_id || 0);
     const { data: otherOpen, error: otherErr } = await supabase
@@ -250,7 +253,7 @@ router.post("/open-shipment", async (req, res) => {
       .eq("customer_stripe_id", stripeCustomerId)
       .eq("store_id", storeIdNum)
       .eq("is_open_shipment", true)
-      .neq("is_cancelled", true)
+      .or("status.is.null,status.neq.CANCELLED")
       .neq("id", shipmentIdNum)
       .limit(1);
     if (otherErr) {
@@ -338,11 +341,11 @@ router.post("/open-shipment-by-payment", async (req, res) => {
     const { data: shipment, error: shipmentErr } = await supabase
       .from("shipments")
       .select(
-        "id,shipment_id,store_id,customer_stripe_id,payment_id,customer_spent_amount",
+        "id,shipment_id,store_id,customer_stripe_id,payment_id,customer_spent_amount,status",
       )
       .eq("payment_id", paymentIdStr)
       .eq("store_id", storeIdNum)
-      .neq("is_cancelled", true)
+      .or("status.is.null,status.neq.CANCELLED")
       .maybeSingle();
     if (shipmentErr) {
       return res.status(500).json({ error: shipmentErr.message });
@@ -354,6 +357,10 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       String((shipment as any)?.customer_stripe_id || "") !== stripeCustomerId
     ) {
       return res.status(403).json({ error: "Accès interdit à cette commande" });
+    }
+    const currentStatus = (shipment as any)?.status;
+    if (String(currentStatus || "").toUpperCase() === "CANCELLED") {
+      return res.status(400).json({ error: "Commande déjà annulée" });
     }
 
     const shipmentIdNum = Number((shipment as any)?.id || 0);
@@ -1103,6 +1110,107 @@ router.get("/store/:storeSlug", async (req, res) => {
     });
   } catch (e) {
     console.error("Error fetching store shipments:", e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/:id/cancel", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid shipment id" });
+    }
+
+    const { data: shipment, error: shipErr } = await supabase
+      .from("shipments")
+      .select("id,store_id,customer_stripe_id,status")
+      .eq("id", id)
+      .maybeSingle();
+    if (shipErr) {
+      if ((shipErr as any)?.code === "PGRST116") {
+        return res.status(404).json({ error: "Shipment not found" });
+      }
+      return res.status(500).json({ error: shipErr.message });
+    }
+    if (!shipment) {
+      return res.status(404).json({ error: "Shipment not found" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const requesterStripeId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+
+    const storeId = Number((shipment as any)?.store_id || 0);
+    if (!Number.isFinite(storeId) || storeId <= 0) {
+      return res.status(400).json({ error: "Shipment has no store_id" });
+    }
+
+    const { data: store, error: storeErr } = await supabase
+      .from("stores")
+      .select("id,clerk_id")
+      .eq("id", storeId)
+      .maybeSingle();
+    if (storeErr) {
+      if ((storeErr as any)?.code === "PGRST116") {
+        return res.status(404).json({ error: "Store not found" });
+      }
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!store) {
+      return res.status(404).json({ error: "Store not found" });
+    }
+
+    const isOwner =
+      Boolean((store as any)?.clerk_id) &&
+      String((store as any)?.clerk_id) === String(auth.userId);
+    const shipmentCustomerStripeId = String(
+      (shipment as any)?.customer_stripe_id || "",
+    ).trim();
+    const isCustomer =
+      Boolean(requesterStripeId) &&
+      requesterStripeId === shipmentCustomerStripeId;
+
+    if (!isOwner && !isCustomer) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const stRaw = (shipment as any)?.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || "")
+            .trim()
+            .toUpperCase();
+    if (st !== null && st !== "PENDING") {
+      return res.status(400).json({ error: "Annulation non autorisée" });
+    }
+
+    const { error: updErr } = await supabase
+      .from("shipments")
+      .update({ status: "CANCELLED" })
+      .eq("id", id);
+    if (updErr) {
+      return res.status(500).json({ error: updErr.message });
+    }
+
+    const { data: updated, error: rereadErr } = await supabase
+      .from("shipments")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+    if (rereadErr) {
+      return res.status(500).json({ error: rereadErr.message });
+    }
+
+    return res.json({ shipment: updated });
+  } catch (e) {
+    console.error("Error cancelling shipment:", e);
     return res.status(500).json({ error: "Internal server error" });
   }
 });

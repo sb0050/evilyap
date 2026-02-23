@@ -630,7 +630,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
           "id, payment_id, created_at, customer_stripe_id, product_reference, promo_code, store_earnings_amount",
         )
         .eq("store_id", storeId)
-        .neq("is_cancelled", true)
+        .or("status.is.null,status.neq.CANCELLED")
         .not("payment_id", "is", null)
         .order("created_at", { ascending: false })
         .range(from, from + pageSizeDb - 1);
@@ -1441,7 +1441,7 @@ router.get("/:storeSlug/transactions", async (req, res) => {
           "payment_id, created_at, customer_stripe_id, product_reference, promo_code, store_earnings_amount",
         )
         .eq("store_id", storeId)
-        .neq("is_cancelled", true)
+        .or("status.is.null,status.neq.CANCELLED")
         .not("payment_id", "is", null)
         .order("created_at", { ascending: false })
         .range(from, from + pageSizeDb - 1);

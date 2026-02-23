@@ -41,7 +41,6 @@ type Shipment = {
   shipment_id: string | null;
   payment_id?: string | null;
   is_open_shipment?: boolean | null;
-  is_cancelled?: boolean | null;
   document_created: boolean;
   delivery_method: string | null;
   delivery_network: string | null;
@@ -54,7 +53,6 @@ type Shipment = {
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
-  cancel_requested?: boolean | null;
   return_requested?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
@@ -87,6 +85,9 @@ export default function OrdersPage() {
   const [reloadingBalance, setReloadingBalance] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [returnStatus, setReturnStatus] = useState<
+    Record<number, 'idle' | 'loading' | 'success' | 'error'>
+  >({});
+  const [cancelStatus, setCancelStatus] = useState<
     Record<number, 'idle' | 'loading' | 'success' | 'error'>
   >({});
   const [pageSize, setPageSize] = useState<number>(10);
@@ -609,6 +610,20 @@ export default function OrdersPage() {
     }));
   };
 
+  const formatProductReferenceForToast = (raw: string | null | undefined) => {
+    const items = parseProductReferenceItems(raw);
+    if (items.length === 0) return '';
+    return items
+      .map(it => {
+        const ref = String(it.reference || '').trim();
+        const label = ref.startsWith('prod_')
+          ? stripeProductsLiteById[ref]?.name || ref
+          : ref;
+        return `${label}(x${Math.max(1, Number(it.quantity || 1))})`;
+      })
+      .join(', ');
+  };
+
   type ProductItem = {
     reference: string;
     quantity: number;
@@ -750,7 +765,7 @@ export default function OrdersPage() {
       Boolean(storeSlug) &&
       Boolean(paymentId) &&
       !isOpening &&
-      !s.is_cancelled
+      String(s.status || '').toUpperCase() !== 'CANCELLED'
     );
   })();
   const selectedForReturn = selectedOrders.filter(
@@ -758,10 +773,16 @@ export default function OrdersPage() {
       s.shipment_id &&
       !s.return_requested &&
       !!s.is_final_destination &&
-      !s.is_cancelled &&
+      String(s.status || '').toUpperCase() !== 'CANCELLED' &&
       returnStatus[s.id] !== 'loading'
   );
   const selectedForContact = selectedOrders.filter(s => !!s.store_id);
+  const selectedForCancel = selectedOrders.filter(
+    s =>
+      !s.is_final_destination &&
+      (s.status == null || String(s.status).toUpperCase() === 'PENDING') &&
+      cancelStatus[s.id] !== 'loading'
+  );
   const visibleOrderIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
     visibleOrderIds.length > 0 &&
@@ -773,6 +794,10 @@ export default function OrdersPage() {
       else next.add(id);
       return next;
     });
+  };
+  const isInteractiveRowClick = (target: EventTarget | null) => {
+    const el = target as HTMLElement | null;
+    return Boolean(el?.closest?.('button,a,input,select,textarea,label'));
   };
   const toggleSelectAllVisible = () => {
     setSelectedOrderIds(prev => {
@@ -1172,6 +1197,119 @@ export default function OrdersPage() {
     showToast(msg, 'success');
   };
 
+  const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
+    const silent = options?.silent;
+    const stRaw = s.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || '')
+            .trim()
+            .toUpperCase();
+    if (st !== null && st !== 'PENDING') {
+      setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) {
+        showToast('Annulation non autorisée pour ce statut', 'error');
+      }
+      return false;
+    }
+    try {
+      setCancelStatus(prev => ({ ...prev, [s.id]: 'loading' }));
+      const token = await getToken();
+      const url = `${apiBase}/api/shipments/${encodeURIComponent(
+        String(s.id)
+      )}/cancel`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        setCancelStatus(prev => ({ ...prev, [s.id]: 'success' }));
+        const updated = json?.shipment;
+        setShipments(prev =>
+          (prev || []).map(it => {
+            if (it.id !== s.id) return it;
+            if (updated && typeof updated === 'object')
+              return { ...it, ...updated };
+            return { ...it, status: 'CANCELLED' };
+          })
+        );
+        if (!silent) {
+          const refs = formatProductReferenceForToast(s.product_reference);
+          showToast(
+            refs ? `Commande annulée : ${refs}` : 'Commande annulée',
+            'success'
+          );
+        }
+        return true;
+      } else {
+        setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+        const msg =
+          json?.error || json?.message || "Erreur lors de l'annulation";
+        if (!silent) {
+          showToast(
+            typeof msg === 'string' ? msg : "Erreur d'annulation",
+            'error'
+          );
+        }
+        return false;
+      }
+    } catch (e: any) {
+      setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      const rawMsg = e?.message || "Erreur lors de l'annulation";
+      if (!silent) {
+        showToast(
+          typeof rawMsg === 'string' ? rawMsg : "Erreur d'annulation",
+          'error'
+        );
+      }
+      return false;
+    }
+  };
+
+  const handleBatchCancel = async () => {
+    if (selectedForCancel.length === 0) {
+      showToast("Aucune commande sélectionnée pour l'annulation", 'error');
+      return;
+    }
+    const counts = new Map<string, number>();
+    for (const s of selectedForCancel) {
+      const ok = await handleCancel(s, { silent: true });
+      if (ok) {
+        const items = parseProductReferenceItems(s.product_reference);
+        if (items.length === 0) {
+          const fallback = String(s.product_reference || '').trim();
+          if (fallback) counts.set(fallback, (counts.get(fallback) || 0) + 1);
+        } else {
+          for (const it of items) {
+            const ref = String(it.reference || '').trim();
+            if (!ref) continue;
+            const qty = Math.max(1, Number(it.quantity || 1));
+            counts.set(ref, (counts.get(ref) || 0) + qty);
+          }
+        }
+      }
+    }
+    if (counts.size === 0) {
+      showToast("Aucune commande n'a été annulée", 'error');
+      return;
+    }
+    const parts = Array.from(counts.entries()).map(([ref, qty]) => {
+      const label = ref.startsWith('prod_')
+        ? stripeProductsLiteById[ref]?.name || ref
+        : ref;
+      return `${label}(x${qty})`;
+    });
+    const msg =
+      parts.length <= 3
+        ? `Commandes annulées : ${parts.join(', ')}`
+        : `Commandes annulées : ${parts.slice(0, 3).join(', ')}...`;
+    showToast(msg, 'success');
+  };
+
   return (
     <div className='min-h-screen bg-gray-50'>
       <Header />
@@ -1435,6 +1573,18 @@ export default function OrdersPage() {
                   Modifier la commande
                 </button>
                 <button
+                  onClick={handleBatchCancel}
+                  disabled={selectedForCancel.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedForCancel.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Annuler la commande'
+                >
+                  Annuler la commande
+                </button>
+                <button
                   onClick={handleBatchReturn}
                   disabled={selectedForReturn.length === 0}
                   className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
@@ -1475,8 +1625,18 @@ export default function OrdersPage() {
                 {sortedShipments.map((s, idx) => (
                   <div
                     key={s.id}
-                    className={`rounded-lg border border-gray-200 p-3 shadow-sm ${
-                      s.is_cancelled ? 'bg-gray-50' : 'bg-white'
+                    onClick={e => {
+                      if (isInteractiveRowClick(e.target)) return;
+                      toggleOrderSelection(s.id);
+                    }}
+                    className={`rounded-lg border p-3 shadow-sm cursor-pointer ${
+                      selectedOrderIds.has(s.id)
+                        ? 'ring-2 ring-indigo-500 ring-inset'
+                        : ''
+                    } ${
+                      String(s.status || '').toUpperCase() === 'CANCELLED'
+                        ? 'border-red-200 bg-red-50'
+                        : 'border-gray-200 bg-white'
                     }`}
                   >
                     <div className='flex items-start justify-between'>
@@ -1548,7 +1708,14 @@ export default function OrdersPage() {
                       </div>
                       <div>
                         <span className='font-medium'>Statut:</span>{' '}
-                        {s.status || '—'}
+                        {String(s.status || '').toUpperCase() ===
+                        'CANCELLED' ? (
+                          <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
+                            Annulée
+                          </span>
+                        ) : (
+                          s.status || '—'
+                        )}
                       </div>
                       <div>
                         <span className='font-medium'>Méthode:</span>{' '}
@@ -1673,9 +1840,17 @@ export default function OrdersPage() {
                   {visibleShipments.map((s, idx) => (
                     <tr
                       key={s.id}
-                      className={`border-b border-gray-100 ${
-                        s.is_cancelled
-                          ? 'bg-gray-50'
+                      onClick={e => {
+                        if (isInteractiveRowClick(e.target)) return;
+                        toggleOrderSelection(s.id);
+                      }}
+                      className={`border-b border-gray-100 cursor-pointer ${
+                        selectedOrderIds.has(s.id)
+                          ? 'outline outline-2 outline-indigo-500 outline-offset-[-2px]'
+                          : ''
+                      } ${
+                        String(s.status || '').toUpperCase() === 'CANCELLED'
+                          ? 'bg-red-50'
                           : 'hover:bg-gray-50'
                       }`}
                     >
@@ -1740,7 +1915,16 @@ export default function OrdersPage() {
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
                         <div className='space-y-1'>
-                          <div className='font-medium'>{s.status || '—'}</div>
+                          <div className='font-medium'>
+                            {String(s.status || '').toUpperCase() ===
+                            'CANCELLED' ? (
+                              <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-red-700'>
+                                ANNULÉE
+                              </span>
+                            ) : (
+                              s.status || '—'
+                            )}
+                          </div>
                           <div className='text-xs text-gray-500'>
                             {getStatusDescription(s.status)}
                           </div>
