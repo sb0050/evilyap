@@ -1723,6 +1723,18 @@ export default function DashboardPage() {
       return;
     }
 
+    let existing: StockApiItem | null = null;
+    try {
+      existing = await fetchStockSearchExactMatch(slug, referenceTrim);
+    } catch {
+      showToast('Erreur vérification de la référence', 'error');
+      return;
+    }
+    if (existing) {
+      showToast('Cette référence existe déjà dans le stock', 'error');
+      return;
+    }
+
     const qtyRaw = parseInt(String(stockQuantity || '').trim(), 10);
     const quantity = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : NaN;
     if (!Number.isFinite(quantity) || quantity <= 0) {
@@ -1853,6 +1865,19 @@ export default function DashboardPage() {
       isDeliveryRegulationText(referenceTrim)
     ) {
       showToast('Référence interdite', 'error');
+      return;
+    }
+
+    let existing: StockApiItem | null = null;
+    try {
+      existing = await fetchStockSearchExactMatch(slug, referenceTrim);
+    } catch {
+      showToast('Erreur vérification de la référence', 'error');
+      return;
+    }
+    const existingId = Number((existing as any)?.stock?.id ?? 0);
+    if (existing && existingId !== stockId) {
+      showToast('Cette référence existe déjà dans le stock', 'error');
       return;
     }
 

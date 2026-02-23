@@ -211,6 +211,39 @@ class EmailService {
     return false;
   }
 
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private isRetryableSmtpError(err: any): boolean {
+    const code = String(err?.code || "").toUpperCase();
+    const responseCode = Number(err?.responseCode || 0);
+    if (
+      [
+        "EAUTH",
+        "ECONNECTION",
+        "ETIMEDOUT",
+        "EAI_AGAIN",
+        "ECONNRESET",
+        "ENOTFOUND",
+        "ESOCKET",
+      ].includes(code)
+    ) {
+      return true;
+    }
+    if ([421, 450, 451, 452, 454].includes(responseCode)) return true;
+    const response = String(err?.response || "").toLowerCase();
+    if (
+      response.includes("temporary") ||
+      response.includes("try again") ||
+      response.includes("connection lost") ||
+      response.includes("rate limit")
+    ) {
+      return true;
+    }
+    return false;
+  }
+
   private formatAmount(amount?: number, currency?: string): string | undefined {
     if (typeof amount !== "number" || !currency) return undefined;
     try {
@@ -381,12 +414,12 @@ class EmailService {
               <h1>🎉 Merci pour votre commande !</h1>
               <p>✅ Votre paiement a été traité avec succès</p>
             </div>
-            
+
             <div class="content">
               <h2>Bonjour ${data.customerName},</h2>
-              
+
               <p>Nous vous confirmons que votre commande a été validée et que votre paiement a été traité avec succès.</p>
-              
+
               <div class="order-details">
                 <h3>📦 Détails de votre commande</h3>
                 <p><strong>Boutique :</strong> ${data.storeName}</p>
@@ -464,7 +497,7 @@ class EmailService {
                     minute: "2-digit",
                   },
                 )}</p>
-                
+
                 <p><strong>Méthode de livraison :</strong> ${
                   data.deliveryMethod === "pickup_point"
                     ? `Point relais (${data.pickupPointCode})`
@@ -490,15 +523,15 @@ class EmailService {
                     : ""
                 }
               </div>
-              
+
               <p>📬 Vous recevrez prochainement un email avec les détails de livraison de votre commande.</p>
-              
+
               <p>❓ Si vous avez des questions, n'hésitez pas à nous contacter.</p>
-              
+
               <p>🙏 Merci de votre confiance !</p>
               <p><strong>L'équipe ${data.storeName}</strong></p>
             </div>
-            
+
             <div class="footer">
               <p>© ${new Date().getFullYear()} ${
                 data.storeName
@@ -703,12 +736,12 @@ class EmailService {
               <h1>✏️ Votre commande a été modifiée</h1>
               <p>✅ Votre paiement a été traité avec succès</p>
             </div>
-            
+
             <div class="content">
               <h2>Bonjour ${data.customerName},</h2>
-              
+
               <p>Nous vous confirmons que la modification de votre commande a été validée et que le paiement associé a été traité avec succès.</p>
-              
+
               <div class="order-details">
                 <h3>📦 Détails de la commande modifiée</h3>
                 <p><strong>Boutique :</strong> ${data.storeName}</p>
@@ -796,7 +829,7 @@ class EmailService {
                     minute: "2-digit",
                   },
                 )}</p>
-                
+
                 <p><strong>Méthode de livraison :</strong> ${
                   data.deliveryMethod === "pickup_point"
                     ? `Point relais (${data.pickupPointCode})`
@@ -822,15 +855,15 @@ class EmailService {
                     : ""
                 }
               </div>
-              
+
               <p>📬 Vous recevrez prochainement un email avec les détails de livraison de votre commande.</p>
-              
+
               <p>❓ Si vous avez des questions, n'hésitez pas à nous contacter.</p>
-              
+
               <p>🙏 Merci de votre confiance !</p>
               <p><strong>L'équipe ${data.storeName}</strong></p>
             </div>
-            
+
             <div class="footer">
               <p>© ${new Date().getFullYear()} ${
                 data.storeName
@@ -1244,14 +1277,14 @@ class EmailService {
               <h1>🎉 Nouvelle commande !</h1>
               <p>Vous avez reçu une nouvelle commande sur ${data.storeName}</p>
             </div>
-            
+
             <div class="content">
               <h2>Bonjour,</h2>
-              
+
               <p>Excellente nouvelle ! Vous venez de recevoir une nouvelle commande sur votre boutique <strong>${
                 data.storeName
               }</strong>.</p>
-              
+
               <div class="order-details">
                 <h3>📦 Détails de la commande</h3>
                 <p><strong>Montant reçu :</strong> <span class="amount">${formattedAmount}</span></p>
@@ -1307,7 +1340,7 @@ class EmailService {
                      : ""
                  }
               </div>
-              
+
               <div class="customer-details">
                 <h3>👤 Informations client</h3>
                 <p><strong>Nom :</strong> ${data.customerName}</p>
@@ -1356,15 +1389,15 @@ class EmailService {
                 }
               </div>
 
-      
-              
+
+
               <p>Le client a été automatiquement notifié par email de la confirmation de sa commande.</p>
-              
+
               <p><strong>Action requise :</strong> Veuillez préparer et expédier la commande dans les plus brefs délais.</p>
-        
+
               <p><strong>L'équipe PayLive</strong></p>
             </div>
-            
+
             <div class="footer">
               <p>Cet email a été envoyé automatiquement depuis votre boutique ${
                 data.storeName
@@ -1620,12 +1653,12 @@ class EmailService {
               <h1>✏️ Commande modifiée</h1>
               <p>Une commande a été modifiée sur ${data.storeName}</p>
             </div>
-            
+
             <div class="content">
               <h2>Bonjour,</h2>
-              
+
               <p>Le client a modifié une commande. Cette nouvelle transaction remplace la précédente.</p>
-              
+
               <div class="order-details">
                 <h3>📦 Détails de la commande modifiée</h3>
                 <p><strong>Montant net :</strong> <span class="amount">${formattedAmount}</span></p>
@@ -1681,7 +1714,7 @@ class EmailService {
                   },
                 )}</p>
               </div>
-              
+
               <div class="customer-details">
                 <h3>👤 Informations client</h3>
                 <p><strong>Nom :</strong> ${data.customerName}</p>
@@ -1732,7 +1765,7 @@ class EmailService {
 
               <p><strong>L'équipe PayLive</strong></p>
             </div>
-            
+
             <div class="footer">
               <p>Cet email a été envoyé automatiquement depuis votre boutique ${
                 data.storeName
@@ -2625,7 +2658,7 @@ class EmailService {
                 ${ribDetailsHtml}
               </div>
 
-              
+
 
               <p>Merci de traiter cette demande de versement.</p>
               <p><strong>PayLive - Service SAV</strong></p>

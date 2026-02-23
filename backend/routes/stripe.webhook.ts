@@ -1674,7 +1674,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   const body = await cancelResp.text().catch(() => "");
                   await emailService.sendAdminError({
                     subject: "Annulation Boxtal échouée (modification)",
-                    message: `Echec annulation Boxtal shipment_id=${oldBoxtalShipmentId} (payment_id=${openShipmentPaymentId}). 
+                    message: `Echec annulation Boxtal shipment_id=${oldBoxtalShipmentId} (payment_id=${openShipmentPaymentId}).
                     Statut=${cancelResp.status}.`,
                     context: body,
                   });
