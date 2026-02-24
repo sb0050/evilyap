@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import Header from '../components/Header';
 import { Toast } from '../components/Toast';
+import Modal from '../components/Modal';
 import {
   Package,
   ArrowUpDown,
@@ -9,6 +10,7 @@ import {
   RefreshCw,
   ExternalLink,
   ShoppingCart,
+  Info,
 } from 'lucide-react';
 import { Popover, Transition } from '@headlessui/react';
 import { apiPostForm, API_BASE_URL } from '../utils/api';
@@ -37,36 +39,55 @@ type Shipment = {
   store_id: number | null;
   customer_stripe_id: string | null;
   shipment_id: string | null;
+  payment_id?: string | null;
+  is_open_shipment?: boolean | null;
   document_created: boolean;
   delivery_method: string | null;
   delivery_network: string | null;
   dropoff_point: any | null;
   pickup_point: any | null;
-  weight: string | null;
+  weight: number | null;
   product_reference: string | null;
-  paid_value: number | null;
+  description?: string | null;
+  customer_spent_amount?: number | null;
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
-  cancel_requested?: boolean | null;
   return_requested?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
   store?: StoreInfo | null;
   is_final_destination?: boolean | null;
-  promo_codes?: string | null;
-  product_value?: number | null;
+  promo_code?: string | null;
   estimated_delivery_cost?: number | null;
+};
+
+type StripeProductLite = {
+  id: string;
+  name: string | null;
+  description: string | null;
+  unit_amount_cents: number | null;
 };
 
 export default function OrdersPage() {
   const { user } = useUser();
   const { getToken } = useAuth();
   const [shipments, setShipments] = useState<Shipment[]>([]);
+  const [stripeProductsLiteById, setStripeProductsLiteById] = useState<
+    Record<string, StripeProductLite>
+  >({});
+  const requestedStripeProductIdsRef = useRef<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [reloadingOrders, setReloadingOrders] = useState(false);
+  const [creditBalanceCents, setCreditBalanceCents] = useState<number | null>(
+    null
+  );
+  const [reloadingBalance, setReloadingBalance] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [returnStatus, setReturnStatus] = useState<
+    Record<number, 'idle' | 'loading' | 'success' | 'error'>
+  >({});
+  const [cancelStatus, setCancelStatus] = useState<
     Record<number, 'idle' | 'loading' | 'success' | 'error'>
   >({});
   const [pageSize, setPageSize] = useState<number>(10);
@@ -86,6 +107,13 @@ export default function OrdersPage() {
     type: 'error' | 'info' | 'success';
     visible?: boolean;
   } | null>(null);
+  const [openingShipmentId, setOpeningShipmentId] = useState<number | null>(
+    null
+  );
+  const [switchShipmentModalOpen, setSwitchShipmentModalOpen] =
+    useState<boolean>(false);
+  const [switchShipmentTarget, setSwitchShipmentTarget] =
+    useState<Shipment | null>(null);
 
   // État pour la popup de contact propriétaire
   const [contactOpen, setContactOpen] = useState<boolean>(false);
@@ -253,7 +281,68 @@ export default function OrdersPage() {
     );
   }
 
+  function BalanceInfoPopover({ message }: { message: string }) {
+    const [pos, setPos] = useState<{ top: number; left: number }>({
+      top: 0,
+      left: 0,
+    });
+
+    const computePos = (el: HTMLElement) => {
+      const rect = el.getBoundingClientRect();
+      const panelWidth = 320;
+      const margin = 8;
+      const maxLeft = window.innerWidth - panelWidth - margin;
+      const left = Math.max(margin, Math.min(rect.left, maxLeft));
+      const top = rect.bottom + margin;
+      setPos({ top, left });
+    };
+
+    return (
+      <Popover className='relative inline-flex items-center'>
+        <Popover.Button
+          aria-label='Informations sur le solde'
+          onClick={e => computePos(e.currentTarget)}
+          className='inline-flex items-center justify-center text-gray-500 hover:text-gray-700 leading-none'
+        >
+          <Info className='w-4 h-4' />
+        </Popover.Button>
+        <Transition
+          enter='transition ease-out duration-150'
+          enterFrom='opacity-0 translate-y-1'
+          enterTo='opacity-100 translate-y-0'
+          leave='transition ease-in duration-100'
+          leaveFrom='opacity-100 translate-y-0'
+          leaveTo='opacity-0 translate-y-1'
+        >
+          <Popover.Panel
+            style={{ top: pos.top, left: pos.left, position: 'fixed' }}
+            className='mt-0 w-80 rounded-md border border-gray-200 bg-white shadow-lg p-3 z-50'
+          >
+            <div className='text-xs text-gray-700 leading-snug'>{message}</div>
+          </Popover.Panel>
+        </Transition>
+      </Popover>
+    );
+  }
+
   // Popover Headless UI gère la fermeture extérieure et via Esc
+
+  const loadCreditBalance = async (stripeId: string, token: string | null) => {
+    const url = `${apiBase}/api/stripe/customer-credit-balance?customerId=${encodeURIComponent(
+      stripeId
+    )}`;
+    const resp = await fetch(url, {
+      headers: {
+        Authorization: token ? `Bearer ${token}` : '',
+      },
+    });
+    const json = await resp.json();
+    if (!resp.ok) {
+      throw new Error(json?.error || 'Erreur lors du chargement du solde');
+    }
+    const cents = Number(json?.credit_balance_cents ?? 0);
+    setCreditBalanceCents(Number.isFinite(cents) ? cents : 0);
+  };
 
   useEffect(() => {
     const run = async () => {
@@ -283,6 +372,7 @@ export default function OrdersPage() {
           );
         }
         setShipments(Array.isArray(json?.shipments) ? json.shipments : []);
+        await loadCreditBalance(stripeId, token || null);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Erreur inconnue');
       } finally {
@@ -295,6 +385,7 @@ export default function OrdersPage() {
   const handleRefreshOrders = async () => {
     try {
       setReloadingOrders(true);
+      setReloadingBalance(true);
       setError(null);
       const token = await getToken();
       await (user as any).reload();
@@ -319,11 +410,13 @@ export default function OrdersPage() {
         );
       }
       setShipments(Array.isArray(json?.shipments) ? json.shipments : []);
+      await loadCreditBalance(stripeId, token || null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Erreur inconnue';
       setError(msg);
     } finally {
       setReloadingOrders(false);
+      setReloadingBalance(false);
     }
   };
 
@@ -364,6 +457,253 @@ export default function OrdersPage() {
     }
   };
 
+  const extractStripeProductIds = useCallback(
+    (raw: string | null | undefined): string[] =>
+      String(raw || '')
+        .split(';')
+        .map(s => String(s || '').trim())
+        .filter(s => s.startsWith('prod_')),
+    []
+  );
+
+  const ensureStripeProductsLoaded = useCallback(
+    async (ids: string[]) => {
+      const unique = Array.from(
+        new Set(
+          (ids || [])
+            .map(s => String(s || '').trim())
+            .filter(s => s.startsWith('prod_'))
+        )
+      );
+      if (unique.length === 0) return;
+
+      const toFetch: string[] = [];
+      for (const id of unique) {
+        if (stripeProductsLiteById[id]) continue;
+        if (requestedStripeProductIdsRef.current.has(id)) continue;
+        requestedStripeProductIdsRef.current.add(id);
+        toFetch.push(id);
+      }
+      if (toFetch.length === 0) return;
+
+      const token = await getToken();
+      const resp = await fetch(`${apiBase}/api/stripe/products/by-ids`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+        body: JSON.stringify({ ids: toFetch }),
+      });
+      const json = await resp.json().catch(() => ({}) as any);
+      if (!resp.ok) {
+        const msg = json?.error || json?.message || 'Erreur produits Stripe';
+        throw new Error(
+          typeof msg === 'string' ? msg : 'Erreur produits Stripe'
+        );
+      }
+      const products: StripeProductLite[] = Array.isArray(json?.products)
+        ? json.products
+        : [];
+      if (products.length === 0) return;
+
+      setStripeProductsLiteById(prev => {
+        const next = { ...prev };
+        for (const p of products) {
+          const id = String((p as any)?.id || '').trim();
+          if (!id || !id.startsWith('prod_')) continue;
+          next[id] = {
+            id,
+            name: String((p as any)?.name || '').trim() || null,
+            description: String((p as any)?.description || '').trim() || null,
+            unit_amount_cents:
+              typeof (p as any)?.unit_amount_cents === 'number' &&
+              Number.isFinite((p as any).unit_amount_cents)
+                ? (p as any).unit_amount_cents
+                : null,
+          };
+        }
+        return next;
+      });
+    },
+    [apiBase, getToken, stripeProductsLiteById]
+  );
+
+  const parseProductReferenceItems = (raw: string | null | undefined) => {
+    const txt = String(raw || '').trim();
+    if (!txt)
+      return [] as Array<{
+        reference: string;
+        quantity: number;
+        description?: string | null;
+      }>;
+    const parts = txt
+      .split(';')
+      .map(s => String(s || '').trim())
+      .filter(Boolean);
+
+    const onlyStripeIds =
+      parts.length > 0 && parts.every(p => String(p || '').startsWith('prod_'));
+    if (onlyStripeIds) {
+      const counts = new Map<string, number>();
+      for (const pid of parts) {
+        const id = String(pid || '').trim();
+        if (!id) continue;
+        counts.set(id, (counts.get(id) || 0) + 1);
+      }
+      return Array.from(counts.entries()).map(([reference, quantity]) => ({
+        reference,
+        quantity,
+        description: null,
+      }));
+    }
+
+    const m = new Map<
+      string,
+      { quantity: number; description?: string | null }
+    >();
+    for (const p of parts) {
+      const seg = String(p || '').trim();
+      if (!seg) continue;
+
+      let reference = '';
+      let quantity = 1;
+      let description: string | null = null;
+
+      if (seg.includes('**')) {
+        const [refRaw, restRaw] = seg.split('**');
+        reference = String(refRaw || '').trim();
+        const rest = String(restRaw || '').trim();
+        const match = rest.match(/^(\d+)(?:@(\d+))?\s*(?:\((.*)\))?$/);
+        if (match) {
+          const qNum = Number(match[1]);
+          quantity = Number.isFinite(qNum) && qNum > 0 ? Math.round(qNum) : 1;
+          const d = String(match[3] || '').trim();
+          description = d || null;
+        } else {
+          const qNum = Number(String(rest).split('@')[0]);
+          quantity = Number.isFinite(qNum) && qNum > 0 ? Math.round(qNum) : 1;
+        }
+      } else {
+        const match = seg.match(/^(.+?)(?:@(\d+))?\s*\((.*)\)\s*$/);
+        if (match) {
+          reference = String(match[1] || '').trim();
+          const d = String(match[3] || '').trim();
+          description = d || null;
+        } else {
+          reference = String(seg).split('@')[0] || seg;
+        }
+      }
+
+      if (!reference) continue;
+      const prev = m.get(reference) || { quantity: 0, description: null };
+      m.set(reference, {
+        quantity: prev.quantity + quantity,
+        description: prev.description || description || null,
+      });
+    }
+
+    return Array.from(m.entries()).map(([reference, info]) => ({
+      reference,
+      quantity: info.quantity,
+      description: info.description || null,
+    }));
+  };
+
+  const formatProductReferenceForToast = (raw: string | null | undefined) => {
+    const items = parseProductReferenceItems(raw);
+    if (items.length === 0) return '';
+    return items
+      .map(it => {
+        const ref = String(it.reference || '').trim();
+        const label = ref.startsWith('prod_')
+          ? stripeProductsLiteById[ref]?.name || ref
+          : ref;
+        return `${label}(x${Math.max(1, Number(it.quantity || 1))})`;
+      })
+      .join(', ');
+  };
+
+  type ProductItem = {
+    reference: string;
+    quantity: number;
+    description?: string | null;
+  };
+
+  const getShipmentProductItems = (s: Shipment): ProductItem[] =>
+    parseProductReferenceItems(s.product_reference).map(it => ({
+      reference: it.reference,
+      quantity: it.quantity,
+      description: it.description || null,
+    }));
+
+  const formatShipmentProductReference = (s: Shipment) => {
+    const items = getShipmentProductItems(s);
+    if (items.length === 0) return '—';
+    return items
+      .map(it => {
+        const ref = String(it.reference || '').trim();
+        const label = ref.startsWith('prod_')
+          ? stripeProductsLiteById[ref]?.name || ref
+          : ref;
+        return `${label}(x${it.quantity})`;
+      })
+      .join(', ');
+  };
+
+  const renderShipmentProductReference = (s: Shipment) => {
+    const items = getShipmentProductItems(s);
+    if (items.length === 0) return '—';
+    return (
+      <div className='space-y-2'>
+        {items.map((it, idx) => {
+          const ref = String(it.reference || '').trim();
+          const sp = ref.startsWith('prod_')
+            ? stripeProductsLiteById[ref]
+            : null;
+          const label = sp?.name || ref;
+          const d =
+            String(sp?.description || '').trim() ||
+            String(it.description || '').trim();
+          const qtyText = `qté: ${Math.max(1, Number(it.quantity || 1))}`;
+          const price =
+            sp?.unit_amount_cents != null
+              ? formatValue(
+                  Math.max(0, Number(sp.unit_amount_cents || 0)) / 100
+                )
+              : '';
+          return (
+            <div key={`${s.id}-${idx}`} className='space-y-0.5'>
+              <div className='font-medium truncate max-w-[280px]' title={label}>
+                {label}
+              </div>
+              {d || price || qtyText ? (
+                <div
+                  className='text-xs text-gray-500 truncate max-w-[280px]'
+                  title={[d, qtyText, price].filter(Boolean).join(' — ')}
+                >
+                  {[d, qtyText, price].filter(Boolean).join(' — ')}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  useEffect(() => {
+    const ids = Array.from(
+      new Set(
+        (shipments || []).flatMap(s =>
+          extractStripeProductIds(s.product_reference)
+        )
+      )
+    );
+    if (ids.length === 0) return;
+    ensureStripeProductsLoaded(ids).catch(() => {});
+  }, [extractStripeProductIds, ensureStripeProductsLoaded, shipments]);
+
   // Tri par date estimée (prochain colis)
   const sortedShipments = (() => {
     const toTime = (d?: string | null) => {
@@ -385,9 +725,11 @@ export default function OrdersPage() {
           (s.store?.name || '').toLowerCase().includes(term)
         );
       } else {
-        arr = arr.filter(s =>
-          (s.product_reference || '').toLowerCase().includes(term)
-        );
+        arr = arr.filter(s => {
+          const formatted = formatShipmentProductReference(s).toLowerCase();
+          const raw = String(s.product_reference || '').toLowerCase();
+          return formatted.includes(term) || raw.includes(term);
+        });
       }
     }
     if (estimatedSortOrder) {
@@ -410,14 +752,37 @@ export default function OrdersPage() {
   const selectedOrders = (shipments || []).filter(s =>
     selectedOrderIds.has(s.id)
   );
+  const canModifySelectedOrder = (() => {
+    if (selectedOrders.length !== 1) return false;
+    const s = selectedOrders[0];
+    const status = String(s.status || '').trim();
+    const okStatus = status === 'PENDING' || status === 'ANNOUNCED';
+    const storeSlug = String(s.store?.slug || '').trim();
+    const paymentId = String(s.payment_id || '').trim();
+    const isOpening = openingShipmentId != null && openingShipmentId !== s.id;
+    return (
+      okStatus &&
+      Boolean(storeSlug) &&
+      Boolean(paymentId) &&
+      !isOpening &&
+      String(s.status || '').toUpperCase() !== 'CANCELLED'
+    );
+  })();
   const selectedForReturn = selectedOrders.filter(
     s =>
       s.shipment_id &&
       !s.return_requested &&
       !!s.is_final_destination &&
+      String(s.status || '').toUpperCase() !== 'CANCELLED' &&
       returnStatus[s.id] !== 'loading'
   );
-  const selectedForContact = selectedOrders.filter(s => !!s.shipment_id);
+  const selectedForContact = selectedOrders.filter(s => !!s.store_id);
+  const selectedForCancel = selectedOrders.filter(
+    s =>
+      !s.is_final_destination &&
+      (s.status == null || String(s.status).toUpperCase() === 'PENDING') &&
+      cancelStatus[s.id] !== 'loading'
+  );
   const visibleOrderIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
     visibleOrderIds.length > 0 &&
@@ -429,6 +794,10 @@ export default function OrdersPage() {
       else next.add(id);
       return next;
     });
+  };
+  const isInteractiveRowClick = (target: EventTarget | null) => {
+    const el = target as HTMLElement | null;
+    return Boolean(el?.closest?.('button,a,input,select,textarea,label'));
   };
   const toggleSelectAllVisible = () => {
     setSelectedOrderIds(prev => {
@@ -455,6 +824,106 @@ export default function OrdersPage() {
       }
       return next;
     });
+  };
+
+  const handleModifySelectedOrder = async () => {
+    if (selectedOrders.length !== 1) return;
+    const s = selectedOrders[0];
+    const status = String(s.status || '').trim();
+    if (status !== 'PENDING' && status !== 'ANNOUNCED') return;
+    const storeSlug = String(s.store?.slug || '').trim();
+    const paymentId = String(s.payment_id || '').trim();
+    if (!storeSlug || !paymentId) {
+      showToast("Impossible d'ouvrir la commande sélectionnée", 'error');
+      return;
+    }
+    try {
+      showToast('Chargement...', 'info');
+      setOpeningShipmentId(s.id);
+      const apiBase = API_BASE_URL;
+      const token = await getToken();
+      const doOpen = async (force: boolean) => {
+        const r = await fetch(`${apiBase}/api/shipments/open-shipment`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+          body: JSON.stringify({ shipmentId: s.id, force }),
+        });
+        const j = await r.json().catch(() => null as any);
+        return { resp: r, json: j };
+      };
+
+      const { resp, json } = await doOpen(false);
+      if (!resp.ok && resp.status === 409) {
+        setSwitchShipmentTarget(s);
+        setSwitchShipmentModalOpen(true);
+        return;
+      }
+      if (!resp.ok) {
+        const msg =
+          json?.error || "Impossible d'ouvrir la commande sélectionnée";
+        showToast(msg, 'error');
+        return;
+      }
+      const url = `/checkout/${encodeURIComponent(
+        storeSlug
+      )}?open_shipment=true&payment_id=${encodeURIComponent(paymentId)}`;
+      window.open(url, '_blank');
+      await handleRefreshOrders();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+      showToast(msg, 'error');
+    } finally {
+      setOpeningShipmentId(null);
+    }
+  };
+
+  const handleConfirmSwitchShipment = async () => {
+    const s = switchShipmentTarget;
+    if (!s) return;
+    const status = String(s.status || '').trim();
+    if (status !== 'PENDING' && status !== 'ANNOUNCED') return;
+    const storeSlug = String(s.store?.slug || '').trim();
+    const paymentId = String(s.payment_id || '').trim();
+    if (!storeSlug || !paymentId) {
+      showToast("Impossible d'ouvrir la commande sélectionnée", 'error');
+      return;
+    }
+    try {
+      showToast('Chargement...', 'info');
+      setOpeningShipmentId(s.id);
+      const apiBase = API_BASE_URL;
+      const token = await getToken();
+      const resp = await fetch(`${apiBase}/api/shipments/open-shipment`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+        body: JSON.stringify({ shipmentId: s.id, force: true }),
+      });
+      const json = await resp.json().catch(() => null as any);
+      if (!resp.ok) {
+        const msg =
+          json?.error || "Impossible d'ouvrir la commande sélectionnée";
+        showToast(msg, 'error');
+        return;
+      }
+      setSwitchShipmentModalOpen(false);
+      setSwitchShipmentTarget(null);
+      const url = `/checkout/${encodeURIComponent(
+        storeSlug
+      )}?open_shipment=true&payment_id=${encodeURIComponent(paymentId)}`;
+      window.open(url, '_blank');
+      await handleRefreshOrders();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+      showToast(msg, 'error');
+    } finally {
+      setOpeningShipmentId(null);
+    }
   };
 
   useEffect(() => {
@@ -551,9 +1020,38 @@ export default function OrdersPage() {
     return map[c] || code || '—';
   };
 
+  const renderNetwork = (s: Shipment) => {
+    const network = getNetworkDescription(s.delivery_network);
+    if (String(s.delivery_method || '') !== 'pickup_point') return network;
+    const p: any = s.pickup_point || null;
+    const name = String(p?.name || '').trim();
+    const street = String(p?.street || p?.line1 || '').trim();
+    const city = String(p?.city || '').trim();
+    const postal = String(p?.postal_code || p?.postalCode || '').trim();
+    const country = String(p?.country || p?.countryIsoCode || '').trim();
+    const line3 = [city, postal, country].filter(Boolean).join(' ');
+    const lines = [name, street, line3].filter(Boolean);
+    if (lines.length === 0) return network;
+    return (
+      <span>
+        {network}{' '}
+        <span>
+          (
+          {lines.map((l, i) => (
+            <span key={`${s.id}-pp-${i}`}>
+              {l}
+              {i < lines.length - 1 ? <br /> : null}
+            </span>
+          ))}
+          )
+        </span>
+      </span>
+    );
+  };
+
   const handleOpenContact = (s?: Shipment | Shipment[]) => {
     const list = Array.isArray(s) ? s : s ? [s] : selectedForContact;
-    const effective = (list || []).filter(it => !!it?.shipment_id);
+    const effective = (list || []).filter(it => !!it?.store_id);
     if (effective.length === 0) {
       showToast('Sélectionnez au moins une commande', 'error');
       return;
@@ -578,16 +1076,19 @@ export default function OrdersPage() {
       const token = await getToken();
       const references: string[] = [];
       for (const s of contactShipments) {
-        if (!s?.shipment_id) continue;
+        const shipmentId = String(s?.shipment_id || s?.id || '').trim();
+        if (!shipmentId) continue;
         const fd = new FormData();
-        fd.append('shipmentId', s.shipment_id);
+        fd.append('shipmentId', shipmentId);
         fd.append('message', msg);
         if (contactFile) fd.append('attachment', contactFile);
         await apiPostForm('/api/support/customer-contact', fd, {
           headers: { Authorization: token ? `Bearer ${token}` : '' },
         });
-        const ref = String(s.product_reference || s.shipment_id || '').trim();
-        references.push(ref || String(s.shipment_id));
+        const ref = String(
+          s.product_reference || s.shipment_id || String(s.id || '')
+        ).trim();
+        references.push(ref || shipmentId);
       }
       if (references.length === 0) {
         showToast("Aucune commande n'a été traitée", 'error');
@@ -696,6 +1197,119 @@ export default function OrdersPage() {
     showToast(msg, 'success');
   };
 
+  const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
+    const silent = options?.silent;
+    const stRaw = s.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || '')
+            .trim()
+            .toUpperCase();
+    if (st !== null && st !== 'PENDING') {
+      setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) {
+        showToast('Annulation non autorisée pour ce statut', 'error');
+      }
+      return false;
+    }
+    try {
+      setCancelStatus(prev => ({ ...prev, [s.id]: 'loading' }));
+      const token = await getToken();
+      const url = `${apiBase}/api/shipments/${encodeURIComponent(
+        String(s.id)
+      )}/cancel`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        setCancelStatus(prev => ({ ...prev, [s.id]: 'success' }));
+        const updated = json?.shipment;
+        setShipments(prev =>
+          (prev || []).map(it => {
+            if (it.id !== s.id) return it;
+            if (updated && typeof updated === 'object')
+              return { ...it, ...updated };
+            return { ...it, status: 'CANCELLED' };
+          })
+        );
+        if (!silent) {
+          const refs = formatProductReferenceForToast(s.product_reference);
+          showToast(
+            refs ? `Commande annulée : ${refs}` : 'Commande annulée',
+            'success'
+          );
+        }
+        return true;
+      } else {
+        setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+        const msg =
+          json?.error || json?.message || "Erreur lors de l'annulation";
+        if (!silent) {
+          showToast(
+            typeof msg === 'string' ? msg : "Erreur d'annulation",
+            'error'
+          );
+        }
+        return false;
+      }
+    } catch (e: any) {
+      setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      const rawMsg = e?.message || "Erreur lors de l'annulation";
+      if (!silent) {
+        showToast(
+          typeof rawMsg === 'string' ? rawMsg : "Erreur d'annulation",
+          'error'
+        );
+      }
+      return false;
+    }
+  };
+
+  const handleBatchCancel = async () => {
+    if (selectedForCancel.length === 0) {
+      showToast("Aucune commande sélectionnée pour l'annulation", 'error');
+      return;
+    }
+    const counts = new Map<string, number>();
+    for (const s of selectedForCancel) {
+      const ok = await handleCancel(s, { silent: true });
+      if (ok) {
+        const items = parseProductReferenceItems(s.product_reference);
+        if (items.length === 0) {
+          const fallback = String(s.product_reference || '').trim();
+          if (fallback) counts.set(fallback, (counts.get(fallback) || 0) + 1);
+        } else {
+          for (const it of items) {
+            const ref = String(it.reference || '').trim();
+            if (!ref) continue;
+            const qty = Math.max(1, Number(it.quantity || 1));
+            counts.set(ref, (counts.get(ref) || 0) + qty);
+          }
+        }
+      }
+    }
+    if (counts.size === 0) {
+      showToast("Aucune commande n'a été annulée", 'error');
+      return;
+    }
+    const parts = Array.from(counts.entries()).map(([ref, qty]) => {
+      const label = ref.startsWith('prod_')
+        ? stripeProductsLiteById[ref]?.name || ref
+        : ref;
+      return `${label}(x${qty})`;
+    });
+    const msg =
+      parts.length <= 3
+        ? `Commandes annulées : ${parts.join(', ')}`
+        : `Commandes annulées : ${parts.slice(0, 3).join(', ')}...`;
+    showToast(msg, 'success');
+  };
+
   return (
     <div className='min-h-screen bg-gray-50'>
       <Header />
@@ -706,12 +1320,84 @@ export default function OrdersPage() {
           visible={toast.visible !== false}
         />
       )}
+      <Modal
+        isOpen={switchShipmentModalOpen}
+        onClose={() => {
+          setSwitchShipmentModalOpen(false);
+          setSwitchShipmentTarget(null);
+        }}
+        title='Commande déjà en cours de modification'
+      >
+        <div className='space-y-4'>
+          <div className='text-sm text-gray-700'>
+            Vous modifiez actuellement une autre commande. Si vous continuez,
+            les modifications en cours seront annulées. Souhaitez-vous
+            poursuivre avec cette nouvelle commande ?
+          </div>
+          <div className='flex items-center justify-end gap-2'>
+            <button
+              type='button'
+              onClick={() => {
+                setSwitchShipmentModalOpen(false);
+                setSwitchShipmentTarget(null);
+              }}
+              className='px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+            >
+              Annuler
+            </button>
+            <button
+              type='button'
+              onClick={handleConfirmSwitchShipment}
+              disabled={
+                !switchShipmentTarget ||
+                (openingShipmentId != null &&
+                  openingShipmentId !== switchShipmentTarget.id)
+              }
+              className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+            >
+              Continuer
+            </button>
+          </div>
+        </div>
+      </Modal>
       <div className='max-w-fit mx-auto px-4 py-1'>
         <div className='text-center mb-6 sm:m'>
           <Package className='hidden sm:block h-12 w-12 text-amber-600 mx-auto mb-4' />
           <h1 className='hidden sm:block text-xl sm:text-3xl font-bold text-gray-900 mb-2'>
             Suivi de mes commandes
           </h1>
+        </div>
+        <div className='text-center mb-4'>
+          <div className='inline-flex items-center gap-2 rounded-md bg-gray-100 px-3 py-2 text-sm font-semibold text-gray-900'>
+            <span>Solde</span>
+            <span className='text-gray-400'>—</span>
+            {creditBalanceCents === null ? (
+              <span className='text-gray-700'>
+                {reloadingBalance ? 'Chargement…' : '—'}
+              </span>
+            ) : (
+              <span
+                className={
+                  creditBalanceCents < 0
+                    ? 'text-red-600'
+                    : creditBalanceCents > 0
+                      ? 'text-green-600'
+                      : 'text-gray-700'
+                }
+              >
+                {formatValue(creditBalanceCents / 100)}
+              </span>
+            )}
+            {creditBalanceCents != null && creditBalanceCents !== 0 ? (
+              <BalanceInfoPopover
+                message={
+                  creditBalanceCents > 0
+                    ? 'Ce montant correspond à un remboursement. Il sera automatiquement appliqué lors de votre prochain achat, dans n’importe quelle boutique.'
+                    : 'Ce montant correspond à un écart constaté lors de la livraison. Il sera automatiquement appliqué lors de votre prochain achat, dans n’importe quelle boutique.'
+                }
+              />
+            ) : null}
+          </div>
         </div>
 
         <div className='bg-white rounded-lg shadow-md p-6'>
@@ -809,7 +1495,7 @@ export default function OrdersPage() {
                       className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
                     >
                       <option value='store'>Boutique</option>
-                      <option value='reference'>Référence produit</option>
+                      <option value='reference'>Référence</option>
                     </select>
                     <input
                       type='text'
@@ -875,6 +1561,30 @@ export default function OrdersPage() {
 
               <div className='mb-4 flex flex-wrap items-center gap-2'>
                 <button
+                  onClick={handleModifySelectedOrder}
+                  disabled={!canModifySelectedOrder}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    !canModifySelectedOrder
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Modifier la commande'
+                >
+                  Modifier la commande
+                </button>
+                <button
+                  onClick={handleBatchCancel}
+                  disabled={selectedForCancel.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedForCancel.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Annuler la commande'
+                >
+                  Annuler la commande
+                </button>
+                <button
                   onClick={handleBatchReturn}
                   disabled={selectedForReturn.length === 0}
                   className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
@@ -915,7 +1625,19 @@ export default function OrdersPage() {
                 {sortedShipments.map((s, idx) => (
                   <div
                     key={s.id}
-                    className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
+                    onClick={e => {
+                      if (isInteractiveRowClick(e.target)) return;
+                      toggleOrderSelection(s.id);
+                    }}
+                    className={`rounded-lg border p-3 shadow-sm cursor-pointer ${
+                      selectedOrderIds.has(s.id)
+                        ? 'ring-2 ring-indigo-500 ring-inset'
+                        : ''
+                    } ${
+                      String(s.status || '').toUpperCase() === 'CANCELLED'
+                        ? 'border-red-200 bg-red-50'
+                        : 'border-gray-200 bg-white'
+                    }`}
                   >
                     <div className='flex items-start justify-between'>
                       <div className='flex items-center space-x-2'>
@@ -958,7 +1680,12 @@ export default function OrdersPage() {
                           className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                         />
                         <div className='text-sm font-semibold text-gray-900'>
-                          {formatValue(s.paid_value)}
+                          {formatValue(
+                            Math.max(
+                              0,
+                              Number(s.customer_spent_amount || 0) / 100
+                            )
+                          )}
                         </div>
                       </div>
                     </div>
@@ -966,46 +1693,33 @@ export default function OrdersPage() {
                     <div className='mt-3 text-sm text-gray-700'>
                       <div>
                         <span className='font-medium'>Référence:</span>{' '}
-                        {s.product_reference ?? '—'}
+                        {renderShipmentProductReference(s)}
+                      </div>
+                      <div>
+                        <span className='font-medium'>Code promo:</span>{' '}
+                        {(() => {
+                          const promo = String(s.promo_code || '')
+                            .split(';;')
+                            .map(t => String(t || '').trim())
+                            .filter(Boolean)
+                            .join(', ');
+                          return promo || '—';
+                        })()}
                       </div>
                       <div>
                         <span className='font-medium'>Statut:</span>{' '}
-                        {s.status || '—'}
+                        {String(s.status || '').toUpperCase() ===
+                        'CANCELLED' ? (
+                          <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
+                            Annulée
+                          </span>
+                        ) : (
+                          s.status || '—'
+                        )}
                       </div>
                       <div>
                         <span className='font-medium'>Méthode:</span>{' '}
                         {formatMethod(s.delivery_method)}
-                      </div>
-                      <div>
-                        <span className='font-medium'>Valeur produit:</span>{' '}
-                        {(() => {
-                          const hasPromo = !!s.promo_codes;
-                          const finalValue = hasPromo
-                            ? (s.paid_value ?? 0) -
-                              (s.estimated_delivery_cost ?? 0)
-                            : s.product_value;
-                          return (
-                            <>
-                              {formatValue(finalValue)}
-                              {hasPromo && (
-                                <div className='text-xs text-gray-500'>
-                                  <span className='line-through'>
-                                    {formatValue(s.product_value)}
-                                  </span>{' '}
-                                  (
-                                  {formatValue(
-                                    Math.max(
-                                      0,
-                                      (s.product_value ?? 0) - (finalValue ?? 0)
-                                    )
-                                  )}{' '}
-                                  de remise avec le code:{' '}
-                                  {s.promo_codes!.replace(';', ', ')})
-                                </div>
-                              )}
-                            </>
-                          );
-                        })()}
                       </div>
                     </div>
 
@@ -1046,21 +1760,7 @@ export default function OrdersPage() {
 
                       <div>
                         <span className='font-medium'>Réseau:</span>{' '}
-                        {getNetworkDescription(s.delivery_network)}
-                      </div>
-
-                      <div>
-                        <span className='font-medium'>Point Retrait:</span>{' '}
-                        {s.pickup_point?.code ? (
-                          <span>
-                            <strong>{s.pickup_point?.name}</strong>{' '}
-                            {s.pickup_point?.street}, {s.pickup_point?.city}{' '}
-                            {s.pickup_point?.postal_code}{' '}
-                            {s.pickup_point?.country}
-                          </span>
-                        ) : (
-                          '—'
-                        )}
+                        {renderNetwork(s)}
                       </div>
 
                       <div className='flex items-center gap-2'>
@@ -1104,20 +1804,17 @@ export default function OrdersPage() {
                       Référence Produit
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Valeur Produit
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Payé
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Méthode
+                      Code Promo
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Statut
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       <div className='flex items-center space-x-2'>
-                        <span>Estimée</span>
+                        <span>Livraison</span>
                         <button
                           onClick={() =>
                             setEstimatedSortOrder(o =>
@@ -1132,13 +1829,10 @@ export default function OrdersPage() {
                       </div>
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Écart Livraison
+                      Méthode
                     </th>
                     <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                       Réseau
-                    </th>
-                    <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                      Point Retrait
                     </th>
                   </tr>
                 </thead>
@@ -1146,7 +1840,19 @@ export default function OrdersPage() {
                   {visibleShipments.map((s, idx) => (
                     <tr
                       key={s.id}
-                      className='border-b border-gray-100 hover:bg-gray-50'
+                      onClick={e => {
+                        if (isInteractiveRowClick(e.target)) return;
+                        toggleOrderSelection(s.id);
+                      }}
+                      className={`border-b border-gray-100 cursor-pointer ${
+                        selectedOrderIds.has(s.id)
+                          ? 'outline outline-2 outline-indigo-500 outline-offset-[-2px]'
+                          : ''
+                      } ${
+                        String(s.status || '').toUpperCase() === 'CANCELLED'
+                          ? 'bg-red-50'
+                          : 'hover:bg-gray-50'
+                      }`}
                     >
                       <td className='py-4 px-4 text-gray-700'>
                         <input
@@ -1187,49 +1893,38 @@ export default function OrdersPage() {
                         />
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
-                        {s.product_reference ?? '—'}
+                        {renderShipmentProductReference(s)}
                       </td>
                       <td className='py-4 px-4 text-gray-900 font-semibold'>
-                        {(() => {
-                          const hasPromo = !!s.promo_codes;
-                          const finalValue = hasPromo
-                            ? (s.paid_value ?? 0) -
-                              (s.estimated_delivery_cost ?? 0)
-                            : s.product_value;
-                          return (
-                            <>
-                              {formatValue(finalValue)}
-                              {hasPromo && (
-                                <div className='text-xs text-gray-500 mt-1'>
-                                  <span className='line-through'>
-                                    {formatValue(s.product_value)}
-                                  </span>{' '}
-                                  (
-                                  {formatValue(
-                                    Math.max(
-                                      0,
-                                      (s.product_value ?? 0) - (finalValue ?? 0)
-                                    )
-                                  )}{' '}
-                                  de remise avec le code:{' '}
-                                  {s.promo_codes!.replace(';', ', ')})
-                                </div>
-                              )}
-                            </>
-                          );
-                        })()}
-                      </td>
-                      <td className='py-4 px-4 text-gray-900 font-semibold'>
-                        {formatValue(s.paid_value)}
+                        {formatValue(
+                          Math.max(
+                            0,
+                            Number(s.customer_spent_amount || 0) / 100
+                          )
+                        )}
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
-                        <div className='flex items-center space-x-2'>
-                          <span>{formatMethod(s.delivery_method)}</span>
-                        </div>
+                        {(() => {
+                          const promo = String(s.promo_code || '')
+                            .split(';;')
+                            .map(t => String(t || '').trim())
+                            .filter(Boolean)
+                            .join(', ');
+                          return promo || '—';
+                        })()}
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
                         <div className='space-y-1'>
-                          <div className='font-medium'>{s.status || '—'}</div>
+                          <div className='font-medium'>
+                            {String(s.status || '').toUpperCase() ===
+                            'CANCELLED' ? (
+                              <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-red-700'>
+                                ANNULÉE
+                              </span>
+                            ) : (
+                              s.status || '—'
+                            )}
+                          </div>
                           <div className='text-xs text-gray-500'>
                             {getStatusDescription(s.status)}
                           </div>
@@ -1250,38 +1945,13 @@ export default function OrdersPage() {
                       <td className='py-4 px-4 text-gray-700'>
                         {formatDate(s.estimated_delivery_date)}
                       </td>
-                      <td className='py-4 px-4 text-gray-900 font-semibold'>
-                        {(() => {
-                          const diff =
-                            (s.estimated_delivery_cost ?? 0) -
-                            (s.delivery_cost ?? 0);
-                          const color =
-                            diff > 0
-                              ? 'text-green-600'
-                              : diff < 0
-                                ? 'text-red-600'
-                                : 'text-gray-900';
-                          return (
-                            <span className={color}>{formatValue(diff)}</span>
-                          );
-                        })()}
+                      <td className='py-4 px-4 text-gray-700'>
+                        <div className='flex items-center space-x-2'>
+                          <span>{formatMethod(s.delivery_method)}</span>
+                        </div>
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
-                        {getNetworkDescription(s.delivery_network)}
-                      </td>
-                      <td className='py-4 px-4 text-gray-700'>
-                        {s.pickup_point?.code ? (
-                          <div>
-                            <strong>{s.pickup_point?.name}</strong>
-                            <br />
-                            {s.pickup_point?.street}
-                            <br />
-                            {s.pickup_point?.city} {s.pickup_point?.postal_code}{' '}
-                            {s.pickup_point?.country}
-                          </div>
-                        ) : (
-                          '—'
-                        )}
+                        {renderNetwork(s)}
                       </td>
                     </tr>
                   ))}
@@ -1325,7 +1995,7 @@ export default function OrdersPage() {
                               {s.store?.name || '—'}
                             </div>
                             <div className='text-xs text-gray-600'>
-                              Réf: {s.product_reference || '—'}
+                              Réf: {formatShipmentProductReference(s)}
                             </div>
                             <div className='text-xs text-gray-600'>
                               Shipment: {s.shipment_id || '—'}
@@ -1333,7 +2003,12 @@ export default function OrdersPage() {
                           </div>
                           <div className='text-right'>
                             <div className='text-xs font-semibold text-gray-900'>
-                              {formatValue(s.paid_value)}
+                              {formatValue(
+                                Math.max(
+                                  0,
+                                  Number(s.customer_spent_amount || 0) / 100
+                                )
+                              )}
                             </div>
                             <div className='text-xs text-gray-600'>
                               {s.status || '—'}

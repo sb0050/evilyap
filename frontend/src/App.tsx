@@ -14,20 +14,20 @@ import {
 } from 'react-router-dom';
 import { dark, neobrutalism } from '@clerk/themes';
 
-import LandingPageBis from './pages/LandingPageBis';
+import LandingPage from './pages/LandingPage';
 import CheckoutPage from './pages/CheckoutPage';
-import AccountPage from './pages/AccountPage';
 import OrdersPage from './pages/OrdersPage';
 import OnboardingPage from './pages/OnboardingPage';
-import AuthRedirect from './components/AuthRedirect';
 import PaymentReturnPage from './pages/PaymentReturnPage';
 import { frFR } from '@clerk/localizations';
-import DashboardPage from './pages/DashboardPage';
 
-import PrivacyPolicy from './pages/PrivacyPolicy';
-import TermsAndConditions from './pages/TermsAndConditions';
-import AdminPage from './pages/AdminPage';
+import PrivacyPolicy from './pages/public/PrivacyPolicy';
+import TermsAndConditions from './pages/public/TermsAndConditions';
+import AdminPage from './pages/admin/AdminPage';
 import { useEffect } from 'react';
+import DashboardPage from './pages/dashboard/DashboardPage';
+import StorePage from './pages/StorePage';
+import NeedADemoPage from './pages/NeedADemoPage';
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -64,7 +64,7 @@ function App() {
         <div className='min-h-screen bg-gray-50'>
           <LocationTracker />
           <Routes>
-            <Route path='/' element={<LandingPageBis />} />
+            <Route path='/' element={<LandingPage />} />
             {/* Pages publiques: PDF */}
             <Route path='/privacy_policy' element={<PrivacyPolicy />} />
             <Route
@@ -99,11 +99,28 @@ function App() {
               }
             />
             <Route
+              path='/store/:storeName'
+              element={<StorePage />}
+            />
+            <Route
               path='/onboarding'
               element={
                 <>
                   <SignedIn>
                     <OnboardingPage />
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path='/needademo'
+              element={
+                <>
+                  <SignedIn>
+                    <NeedADemoPage />
                   </SignedIn>
                   <SignedOut>
                     <RedirectToSignUp />
@@ -159,7 +176,7 @@ function App() {
                     <PaymentReturnPage />
                   </SignedIn>
                   <SignedOut>
-                    <LandingPageBis />
+                    <LandingPage />
                   </SignedOut>
                 </>
               }
@@ -168,7 +185,7 @@ function App() {
               path='/*'
               element={
                 <>
-                  <LandingPageBis />
+                  <LandingPage />
                 </>
               }
             />

@@ -20,9 +20,22 @@ interface CustomerEmailData {
   storeLogo?: string;
   storeAddress?: any;
   productReference: string;
+  products?: Array<{
+    product_reference: string;
+    description?: string;
+    quantity: number;
+    unit_price: number;
+    currency?: string;
+  }>;
+  creditUsedAmount?: number;
+  refundCreditAmount?: number;
+  deliveryRegulationPaidAmount?: number;
   amount: number;
   currency: string;
   paymentId: string;
+  previousPaymentId?: string;
+  previousBoxtalId?: string;
+  previousShipmentId?: string;
   boxtalId: string;
   shipmentId: string;
   deliveryMethod: "pickup_point" | "home_delivery" | "store_pickup";
@@ -65,10 +78,20 @@ interface StoreOwnerEmailData {
   };
   pickupPointCode: string;
   productReference: string;
+  products?: Array<{
+    product_reference: string;
+    description?: string;
+    quantity: number;
+    unit_price: number;
+    currency?: string;
+  }>;
   amount: number;
   weight: number;
   currency: string;
   paymentId: string;
+  previousPaymentId?: string;
+  previousBoxtalId?: string;
+  previousShipmentId?: string;
   boxtalId: string;
   shipmentId?: string;
   promoCodes?: string;
@@ -127,36 +150,6 @@ interface SupportShippingDocMissingData {
   additionalNote?: string;
 }
 
-interface AdminRefundRequestData {
-  storeName: string;
-  storeOwnerEmail?: string;
-  storeSlug?: string;
-  shippingOrderId: string;
-  boxtalStatus?: string;
-  shipmentId?: string;
-  customerName?: string;
-  customerEmail?: string;
-  customerStripeId?: string;
-  productReference?: string;
-  amount?: number; // Montant produit (référence)
-  deliveryCost?: number; // Frais de livraison
-  total?: number; // Total à rembourser si applicable
-  currency?: string; // ex: EUR
-  paymentId?: string; // si disponible
-}
-
-interface CustomerRefundEmailData {
-  customerEmail: string;
-  customerName?: string;
-  storeName: string;
-  paymentId: string;
-  refundId: string;
-  amount?: number;
-  currency?: string;
-  productReference?: string | number;
-  shipmentId?: string;
-}
-
 class EmailService {
   private transporter: nodemailer.Transporter;
 
@@ -183,6 +176,39 @@ class EmailService {
       console.error("SMTP verification failed:", error);
       return false;
     }
+  }
+
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private isRetryableSmtpError(err: any): boolean {
+    const code = String(err?.code || "").toUpperCase();
+    const responseCode = Number(err?.responseCode || 0);
+    if (
+      [
+        "EAUTH",
+        "ECONNECTION",
+        "ETIMEDOUT",
+        "EAI_AGAIN",
+        "ECONNRESET",
+        "ENOTFOUND",
+        "ESOCKET",
+      ].includes(code)
+    ) {
+      return true;
+    }
+    if ([421, 450, 451, 452, 454].includes(responseCode)) return true;
+    const response = String(err?.response || "").toLowerCase();
+    if (
+      response.includes("temporary") ||
+      response.includes("try again") ||
+      response.includes("connection lost") ||
+      response.includes("rate limit")
+    ) {
+      return true;
+    }
+    return false;
   }
 
   private formatAmount(amount?: number, currency?: string): string | undefined {
@@ -221,33 +247,113 @@ class EmailService {
 
   // Email de confirmation pour le client
   async sendCustomerConfirmation(data: CustomerEmailData): Promise<boolean> {
-    try {
-      const formattedAmount = this.formatAmount(data.amount, data.currency);
-      const netProductValue =
-        (data.amount ?? 0) - (data.estimatedDeliveryCost ?? 0);
-      const formattedNetProduct =
-        this.formatAmount(netProductValue, data.currency) ||
-        String(netProductValue);
-      const formattedOriginalProduct =
-        this.formatAmount(data.productValue, data.currency) ||
-        String(data.productValue ?? 0);
-      const discountValue = Math.max(
-        0,
-        (data.productValue ?? 0) - netProductValue,
-      );
-      const formattedDiscount =
-        this.formatAmount(discountValue, data.currency) ||
-        String(discountValue);
-      const promoNote = data.promoCodes
-        ? ` <span style="color:#666; font-size:12px;"><span style="text-decoration: line-through;">${formattedOriginalProduct}</span> (${formattedDiscount} de remise avec le code : ${String(
-            data.promoCodes || "",
-          ).replace(/;/g, ", ")})</span>`
-        : "";
-      const formattedEstimatedDate = this.formatEstimatedDate(
-        data.estimatedDeliveryDate,
-      );
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const formattedAmount = this.formatAmount(data.amount, data.currency);
+        const promoCodes = String(data.promoCodes || "")
+          .split(/[;,]+/g)
+          .map((s) => String(s || "").trim())
+          .filter(Boolean);
+        const creditCodes = promoCodes.filter((c) => /^CREDIT-/i.test(c));
+        const otherCodes = promoCodes.filter((c) => !/^CREDIT-/i.test(c));
+        const creditUsed =
+          typeof data.creditUsedAmount === "number" &&
+          Number.isFinite(data.creditUsedAmount) &&
+          data.creditUsedAmount > 0
+            ? data.creditUsedAmount
+            : 0;
+        const formattedCreditUsed =
+          creditUsed > 0
+            ? this.formatAmount(creditUsed, data.currency) || String(creditUsed)
+            : "";
+        const shippingFee =
+          typeof data.estimatedDeliveryCost === "number" &&
+          Number.isFinite(data.estimatedDeliveryCost) &&
+          data.estimatedDeliveryCost > 0
+            ? data.estimatedDeliveryCost
+            : 0;
+        const formattedShippingFee =
+          shippingFee > 0
+            ? this.formatAmount(shippingFee, data.currency) ||
+              String(shippingFee)
+            : "";
+        const deliveryRegulationPaid =
+          typeof data.deliveryRegulationPaidAmount === "number" &&
+          Number.isFinite(data.deliveryRegulationPaidAmount) &&
+          data.deliveryRegulationPaidAmount > 0
+            ? data.deliveryRegulationPaidAmount
+            : 0;
+        const formattedDeliveryRegulationPaid =
+          deliveryRegulationPaid > 0
+            ? this.formatAmount(deliveryRegulationPaid, data.currency) ||
+              String(deliveryRegulationPaid)
+            : "";
+        const itemsRowsHtml = (() => {
+          const products = Array.isArray(data.products) ? data.products : [];
+          if (products.length > 0) {
+            return products
+              .map((p) => {
+                const ref = String(p.product_reference || "").trim();
+                const desc = String(p.description || "").trim();
+                const qRaw = Number(p.quantity || 1);
+                const qty =
+                  Number.isFinite(qRaw) && qRaw > 0 ? Math.floor(qRaw) : 1;
+                const unitRaw = Number(p.unit_price || 0);
+                const unit =
+                  Number.isFinite(unitRaw) && unitRaw >= 0 ? unitRaw : 0;
+                const unitFormatted =
+                  this.formatAmount(unit, data.currency) || String(unit);
+                return `
+                  <tr>
+                    <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                      <div style="font-weight:700; color:#111;">${ref || "—"}</div>
+                      ${
+                        desc
+                          ? `<div style="margin-top:4px; font-size:13px; color:#555;">${desc}</div>`
+                          : ""
+                      }
+                    </td>
+                    <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                      ${unitFormatted}
+                    </td>
+                    <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                      ${qty}
+                    </td>
+                  </tr>
+                `;
+              })
+              .join("");
+          }
 
-      const htmlContent = `
+          const refs = String(data.productReference || "")
+            .split(/[;,]+/g)
+            .map((s) => String(s || "").trim())
+            .filter(Boolean);
+          if (refs.length === 0) return "";
+          return refs
+            .map((ref) => {
+              return `
+                <tr>
+                  <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                    <div style="font-weight:700; color:#111;">${ref}</div>
+                  </td>
+                  <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                    —
+                  </td>
+                  <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                    1
+                  </td>
+                </tr>
+              `;
+            })
+            .join("");
+        })();
+        const formattedEstimatedDate = this.formatEstimatedDate(
+          data.estimatedDeliveryDate,
+        );
+
+        const htmlContent = `
         <!DOCTYPE html>
         <html>
         <head>
@@ -275,12 +381,12 @@ class EmailService {
               <h1>🎉 Merci pour votre commande !</h1>
               <p>✅ Votre paiement a été traité avec succès</p>
             </div>
-            
+
             <div class="content">
               <h2>Bonjour ${data.customerName},</h2>
-              
+
               <p>Nous vous confirmons que votre commande a été validée et que votre paiement a été traité avec succès.</p>
-              
+
               <div class="order-details">
                 <h3>📦 Détails de votre commande</h3>
                 <p><strong>Boutique :</strong> ${data.storeName}</p>
@@ -289,11 +395,59 @@ class EmailService {
                     ? `<p><strong>Description :</strong> ${data.storeDescription}</p>`
                     : ""
                 }
-                <p><strong>Référence produit :</strong> ${
-                  data.productReference
-                }</p>
                 <p><strong>Montant payé :</strong> <span class="amount">${formattedAmount}</span> (frais de livraison inclus)</p>
-                <p><strong>Valeur des produits :</strong> <span class="amount">${formattedNetProduct}</span>${promoNote}</p>
+                ${
+                  creditCodes.length > 0
+                    ? `<p><strong>Code${
+                        creditCodes.length > 1 ? "s" : ""
+                      } avoir :</strong> ${creditCodes.join(", ")}</p>`
+                    : ""
+                }
+                ${
+                  creditCodes.length > 0 && formattedCreditUsed
+                    ? `<p><strong>Solde utilisé :</strong> ${formattedCreditUsed}</p>`
+                    : ""
+                }
+                ${
+                  formattedDeliveryRegulationPaid
+                    ? `<p><strong>Régularisation livraison :</strong> ${formattedDeliveryRegulationPaid}</p>`
+                    : ""
+                }
+                ${
+                  formattedShippingFee
+                    ? `<p><strong>Frais de livraison :</strong> ${formattedShippingFee}</p>`
+                    : ""
+                }
+                ${
+                  otherCodes.length > 0
+                    ? `<p><strong>Code${
+                        otherCodes.length > 1 ? "s" : ""
+                      } promo utilisé${
+                        otherCodes.length > 1 ? "s" : ""
+                      } :</strong> ${otherCodes.join(", ")}</p>`
+                    : ""
+                }
+                ${
+                  itemsRowsHtml
+                    ? `
+                      <div style="margin-top:16px;">
+                        <p style="margin:0 0 10px 0;"><strong>Articles :</strong></p>
+                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                          <thead>
+                            <tr>
+                              <th align="left" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Référence</th>
+                              <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Prix unitaire</th>
+                              <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Qté</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            ${itemsRowsHtml}
+                          </tbody>
+                        </table>
+                      </div>
+                    `
+                    : ""
+                }
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
                 ${
                   data.deliveryMethod !== "store_pickup"
@@ -310,7 +464,7 @@ class EmailService {
                     minute: "2-digit",
                   },
                 )}</p>
-                
+
                 <p><strong>Méthode de livraison :</strong> ${
                   data.deliveryMethod === "pickup_point"
                     ? `Point relais (${data.pickupPointCode})`
@@ -336,17 +490,16 @@ class EmailService {
                     : ""
                 }
               </div>
-              
+
               <p>📬 Vous recevrez prochainement un email avec les détails de livraison de votre commande.</p>
-              
+
               <p>❓ Si vous avez des questions, n'hésitez pas à nous contacter.</p>
-              
+
               <p>🙏 Merci de votre confiance !</p>
               <p><strong>L'équipe ${data.storeName}</strong></p>
             </div>
-            
+
             <div class="footer">
-              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
               <p>© ${new Date().getFullYear()} ${
                 data.storeName
               } - Tous droits réservés</p>
@@ -356,16 +509,527 @@ class EmailService {
         </html>
       `;
 
+        const mailOptions = {
+          from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
+          to: data.customerEmail,
+          subject: `🎉 Confirmation de commande - ${data.storeName}`,
+          html: htmlContent,
+        };
+
+        const info = await this.transporter.sendMail(mailOptions);
+        console.log(`✅ Email de confirmation envoyé à ${data.customerEmail}`);
+        console.log("📨 sendMail result (customer):", {
+          messageId: info.messageId,
+          accepted: info.accepted,
+          rejected: info.rejected,
+          response: info.response,
+        });
+        return true;
+      } catch (error: any) {
+        const retryable = this.isRetryableSmtpError(error);
+        const code = String(error?.code || "");
+        const responseCode = Number(error?.responseCode || 0);
+        const response = String(error?.response || "");
+        console.error("❌ Erreur envoi email client:", {
+          attempt,
+          maxAttempts,
+          retryable,
+          code,
+          responseCode,
+          response,
+        });
+        if (!retryable || attempt >= maxAttempts) {
+          try {
+            await this.sendAdminError({
+              subject: "Email client échoué (confirmation commande)",
+              message: `Echec d'envoi au client après ${attempt} tentative(s). to=${data.customerEmail} store=${data.storeName} paymentId=${data.paymentId}`,
+              context: JSON.stringify({ code, responseCode, response }),
+            });
+          } catch {}
+          return false;
+        }
+        const baseMs = 800;
+        const backoffMs = baseMs * attempt * attempt;
+        const jitterMs = Math.floor(Math.random() * 250);
+        await this.sleep(backoffMs + jitterMs);
+      }
+    }
+    return false;
+  }
+
+  async sendCustomerOrderModified(data: CustomerEmailData): Promise<boolean> {
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const formattedAmount = this.formatAmount(data.amount, data.currency);
+        const promoCodes = String(data.promoCodes || "")
+          .split(/[;,]+/g)
+          .map((s) => String(s || "").trim())
+          .filter(Boolean);
+        const creditCodes = promoCodes.filter((c) => /^CREDIT-/i.test(c));
+        const otherCodes = promoCodes.filter((c) => !/^CREDIT-/i.test(c));
+        const creditUsed =
+          typeof data.creditUsedAmount === "number" &&
+          Number.isFinite(data.creditUsedAmount) &&
+          data.creditUsedAmount > 0
+            ? data.creditUsedAmount
+            : 0;
+        const formattedCreditUsed =
+          creditUsed > 0
+            ? this.formatAmount(creditUsed, data.currency) || String(creditUsed)
+            : "";
+        const refundCredit =
+          typeof data.refundCreditAmount === "number" &&
+          Number.isFinite(data.refundCreditAmount) &&
+          data.refundCreditAmount > 0
+            ? data.refundCreditAmount
+            : 0;
+        const formattedRefundCredit =
+          refundCredit > 0
+            ? this.formatAmount(refundCredit, data.currency) ||
+              String(refundCredit)
+            : "";
+        const shippingFee =
+          typeof data.estimatedDeliveryCost === "number" &&
+          Number.isFinite(data.estimatedDeliveryCost) &&
+          data.estimatedDeliveryCost > 0
+            ? data.estimatedDeliveryCost
+            : 0;
+        const formattedShippingFee =
+          shippingFee > 0
+            ? this.formatAmount(shippingFee, data.currency) ||
+              String(shippingFee)
+            : "";
+        const deliveryRegulationPaid =
+          typeof data.deliveryRegulationPaidAmount === "number" &&
+          Number.isFinite(data.deliveryRegulationPaidAmount) &&
+          data.deliveryRegulationPaidAmount > 0
+            ? data.deliveryRegulationPaidAmount
+            : 0;
+        const formattedDeliveryRegulationPaid =
+          deliveryRegulationPaid > 0
+            ? this.formatAmount(deliveryRegulationPaid, data.currency) ||
+              String(deliveryRegulationPaid)
+            : "";
+        const itemsRowsHtml = (() => {
+          const products = Array.isArray(data.products) ? data.products : [];
+          if (products.length > 0) {
+            return products
+              .map((p) => {
+                const ref = String(p.product_reference || "").trim();
+                const desc = String(p.description || "").trim();
+                const qRaw = Number(p.quantity || 1);
+                const qty =
+                  Number.isFinite(qRaw) && qRaw > 0 ? Math.floor(qRaw) : 1;
+                const unitRaw = Number(p.unit_price || 0);
+                const unit =
+                  Number.isFinite(unitRaw) && unitRaw >= 0 ? unitRaw : 0;
+                const unitFormatted =
+                  this.formatAmount(unit, data.currency) || String(unit);
+                return `
+                  <tr>
+                    <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                      <div style="font-weight:700; color:#111;">${ref || "—"}</div>
+                      ${
+                        desc
+                          ? `<div style="margin-top:4px; font-size:13px; color:#555;">${desc}</div>`
+                          : ""
+                      }
+                    </td>
+                    <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                      ${unitFormatted}
+                    </td>
+                    <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                      ${qty}
+                    </td>
+                  </tr>
+                `;
+              })
+              .join("");
+          }
+
+          const refs = String(data.productReference || "")
+            .split(/[;,]+/g)
+            .map((s) => String(s || "").trim())
+            .filter(Boolean);
+          if (refs.length === 0) return "";
+          return refs
+            .map((ref) => {
+              return `
+                <tr>
+                  <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                    <div style="font-weight:700; color:#111;">${ref}</div>
+                  </td>
+                  <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                    —
+                  </td>
+                  <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                    1
+                  </td>
+                </tr>
+              `;
+            })
+            .join("");
+        })();
+        const formattedEstimatedDate = this.formatEstimatedDate(
+          data.estimatedDeliveryDate,
+        );
+
+        const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>✏️ Modification de commande</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .order-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b; }
+            .amount { font-size: 24px; font-weight: bold; color: #f59e0b; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+            .logo { max-width: 100px; margin-bottom: 20px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              ${
+                data.storeLogo
+                  ? `<img src="${data.storeLogo}" alt="${data.storeName}" class="logo">`
+                  : ""
+              }
+              <h1>✏️ Votre commande a été modifiée</h1>
+              <p>✅ Votre paiement a été traité avec succès</p>
+            </div>
+
+            <div class="content">
+              <h2>Bonjour ${data.customerName},</h2>
+
+              <p>Nous vous confirmons que la modification de votre commande a été validée et que le paiement associé a été traité avec succès.</p>
+
+              <div class="order-details">
+                <h3>📦 Détails de la commande modifiée</h3>
+                <p><strong>Boutique :</strong> ${data.storeName}</p>
+                ${
+                  data.storeDescription
+                    ? `<p><strong>Description :</strong> ${data.storeDescription}</p>`
+                    : ""
+                }
+                <p><strong>Montant payé :</strong> <span class="amount">${formattedAmount}</span> (frais de livraison inclus)</p>
+                ${
+                  creditCodes.length > 0
+                    ? `<p><strong>Code${
+                        creditCodes.length > 1 ? "s" : ""
+                      } avoir :</strong> ${creditCodes.join(", ")}</p>`
+                    : ""
+                }
+                ${
+                  creditCodes.length > 0 && formattedCreditUsed
+                    ? `<p><strong>Solde utilisé :</strong> ${formattedCreditUsed}</p>`
+                    : ""
+                }
+                ${
+                  formattedRefundCredit
+                    ? `<p><strong>Avoir remboursé sur votre solde :</strong> ${formattedRefundCredit}</p>`
+                    : ""
+                }
+                ${
+                  formattedDeliveryRegulationPaid
+                    ? `<p><strong>Régularisation livraison :</strong> ${formattedDeliveryRegulationPaid}</p>`
+                    : ""
+                }
+                ${
+                  formattedShippingFee
+                    ? `<p><strong>Frais de livraison :</strong> ${formattedShippingFee}</p>`
+                    : ""
+                }
+                ${
+                  otherCodes.length > 0
+                    ? `<p><strong>Code${
+                        otherCodes.length > 1 ? "s" : ""
+                      } promo utilisé${
+                        otherCodes.length > 1 ? "s" : ""
+                      } :</strong> ${otherCodes.join(", ")}</p>`
+                    : ""
+                }
+                ${
+                  itemsRowsHtml
+                    ? `
+                      <div style="margin-top:16px;">
+                        <p style="margin:0 0 10px 0;"><strong>Articles :</strong></p>
+                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                          <thead>
+                            <tr>
+                              <th align="left" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Référence</th>
+                              <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Prix unitaire</th>
+                              <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Qté</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            ${itemsRowsHtml}
+                          </tbody>
+                        </table>
+                      </div>
+                    `
+                    : ""
+                }
+                ${
+                  data.previousPaymentId
+                    ? `<p><strong>Transaction précédente :</strong> ${data.previousPaymentId}</p>`
+                    : ""
+                }
+                <p><strong>Nouvelle transaction :</strong> ${data.paymentId}</p>
+                ${
+                  data.deliveryMethod !== "store_pickup"
+                    ? `<p><strong>ID de commande :</strong> ${data.boxtalId}</p>`
+                    : `<p><strong>ID de commande interne :</strong> ${data.shipmentId}</p>`
+                }
+                <p><strong>Date :</strong> ${new Date().toLocaleDateString(
+                  "fr-FR",
+                  {
+                    year: "numeric",
+                    month: "long",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  },
+                )}</p>
+
+                <p><strong>Méthode de livraison :</strong> ${
+                  data.deliveryMethod === "pickup_point"
+                    ? `Point relais (${data.pickupPointCode})`
+                    : data.deliveryMethod === "home_delivery"
+                      ? "À domicile"
+                      : "Retrait en Magasin"
+                }</p>
+                ${
+                  data.deliveryMethod === "store_pickup"
+                    ? `<p><strong>Adresse de la boutique :</strong> ${data.storeAddress.line1}, ${data.storeAddress.postal_code} ${data.storeAddress.city} ${data.storeAddress.country}</p>
+                   <p><strong>Numéro de téléphone de la boutique :</strong> ${data.storeAddress.phone}</p>
+                   `
+                    : ""
+                }
+                ${
+                  data.deliveryMethod !== "store_pickup"
+                    ? `<p><strong>Date de livraison estimée :</strong> ${formattedEstimatedDate}</p>`
+                    : ""
+                }
+                ${
+                  data.deliveryMethod !== "store_pickup"
+                    ? `<p><strong>Lien de suivi de la livraison :</strong> <a href="${data.trackingUrl}">Cliquez ici</a></p>`
+                    : ""
+                }
+              </div>
+
+              <p>📬 Vous recevrez prochainement un email avec les détails de livraison de votre commande.</p>
+
+              <p>❓ Si vous avez des questions, n'hésitez pas à nous contacter.</p>
+
+              <p>🙏 Merci de votre confiance !</p>
+              <p><strong>L'équipe ${data.storeName}</strong></p>
+            </div>
+
+            <div class="footer">
+              <p>© ${new Date().getFullYear()} ${
+                data.storeName
+              } - Tous droits réservés</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+        const mailOptions = {
+          from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
+          to: data.customerEmail,
+          subject: `✏️ Modification de commande - ${data.storeName}`,
+          html: htmlContent,
+        };
+
+        const info = await this.transporter.sendMail(mailOptions);
+        console.log(`✅ Email de modification envoyé à ${data.customerEmail}`);
+        console.log("📨 sendMail result (customer modified):", {
+          messageId: info.messageId,
+          accepted: info.accepted,
+          rejected: info.rejected,
+          response: info.response,
+        });
+        return true;
+      } catch (error: any) {
+        const retryable = this.isRetryableSmtpError(error);
+        const code = String(error?.code || "");
+        const responseCode = Number(error?.responseCode || 0);
+        const response = String(error?.response || "");
+        console.error("❌ Erreur envoi email modification client:", {
+          attempt,
+          maxAttempts,
+          retryable,
+          code,
+          responseCode,
+          response,
+        });
+        if (!retryable || attempt >= maxAttempts) {
+          try {
+            await this.sendAdminError({
+              subject: "Email client échoué (modification commande)",
+              message: `Echec d'envoi au client après ${attempt} tentative(s). to=${data.customerEmail} store=${data.storeName} paymentId=${data.paymentId}`,
+              context: JSON.stringify({ code, responseCode, response }),
+            });
+          } catch {}
+          return false;
+        }
+        const baseMs = 800;
+        const backoffMs = baseMs * attempt * attempt;
+        const jitterMs = Math.floor(Math.random() * 250);
+        await this.sleep(backoffMs + jitterMs);
+      }
+    }
+    return false;
+  }
+
+  async sendCartRecap(data: {
+    customerEmail: string;
+    customerName: string;
+    storeName: string;
+    storeLogo?: string;
+    carts: Array<{
+      product_reference: string;
+      value: number;
+      description?: string;
+      quantity?: number;
+    }>;
+    checkoutLink: string;
+  }): Promise<boolean> {
+    try {
+      const shouldShowLogo =
+        typeof data.storeLogo === "string" &&
+        data.storeLogo.trim().length > 0 &&
+        !data.storeLogo.trim().toLowerCase().startsWith("data:") &&
+        data.storeLogo.trim().length < 2000;
+
+      const total = (data.carts || []).reduce((acc, c) => {
+        const unit = typeof c.value === "number" ? c.value : 0;
+        const qty =
+          typeof c.quantity === "number" &&
+          Number.isFinite(c.quantity) &&
+          c.quantity > 0
+            ? Math.floor(c.quantity)
+            : 1;
+        return acc + unit * qty;
+      }, 0);
+      const formattedTotal = this.formatAmount(total, "EUR") || String(total);
+
+      const itemsRowsHtml = (data.carts || [])
+        .map((c) => {
+          const ref = String(c.product_reference || "").trim();
+          const desc = String(c.description || "").trim();
+          const qty =
+            typeof c.quantity === "number" &&
+            Number.isFinite(c.quantity) &&
+            c.quantity > 0
+              ? Math.floor(c.quantity)
+              : 1;
+          const unit = typeof c.value === "number" ? c.value : 0;
+          const unitFormatted = this.formatAmount(unit, "EUR") || String(unit);
+          const lineTotal = unit * qty;
+          const lineTotalFormatted =
+            this.formatAmount(lineTotal, "EUR") || String(lineTotal);
+          return `
+            <tr>
+              <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                <div style="font-weight:700; color:#111;">${ref || "—"}</div>
+                ${
+                  desc
+                    ? `<div style="margin-top:4px; font-size:13px; color:#555;">${desc}</div>`
+                    : ""
+                }
+              </td>
+              <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                ${unitFormatted}
+              </td>
+              <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                ${qty}
+              </td>
+              <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:800; white-space:nowrap;">
+                ${lineTotalFormatted}
+              </td>
+            </tr>
+          `;
+        })
+        .join("");
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>🧾 Récapitulatif de votre panier</title>
+        </head>
+        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin:0; padding:0;">
+          <div style="max-width:600px;margin:0 auto;padding:20px;">
+            <div style="background:linear-gradient(135deg,#28a745 0%,#20c997 100%);color:#ffffff;padding:30px;text-align:center;border-radius:10px 10px 0 0;">
+              ${
+                shouldShowLogo
+                  ? `<img src="${data.storeLogo}" alt="${data.storeName}" style="max-width:100px;margin-bottom:20px;">`
+                  : ""
+              }
+              <h1>🧾 Récapitulatif de votre panier</h1>
+              <p>${data.storeName}</p>
+            </div>
+            <div style="background:#f9f9f9;padding:30px;border-radius:0 0 10px 10px;">
+              <h2>Bonjour ${data.customerName},</h2>
+              <p>Voici le récapitulatif de votre panier chez <strong>${data.storeName}</strong>.</p>
+
+              <div style="background:#ffffff;padding:20px;border-radius:8px;margin:20px 0;border-left:4px solid #28a745;">
+                <h3>🛍️ Détail du panier</h3>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                  <thead>
+                    <tr>
+                      <th align="left" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Article</th>
+                      <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Prix unitaire</th>
+                      <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Qté</th>
+                      <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${itemsRowsHtml}
+                  </tbody>
+                </table>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse; margin-top:16px;">
+                  <tr>
+                    <td style="padding-top:14px; border-top:2px solid #eee; font-size:14px; color:#333; font-weight:700;">
+                      Total du panier
+                    </td>
+                    <td align="right" style="padding-top:14px; border-top:2px solid #eee; white-space:nowrap;font-size:22px;font-weight:800;color:#28a745;">
+                      ${formattedTotal}
+                    </td>
+                  </tr>
+                </table>
+              </div>
+
+              <div style="margin-top:24px;">
+                <a href="${data.checkoutLink}" style="display:block;width:94%;margin:0 auto;text-align:center;padding:16px 0;background:#0074d4;background-color:#0074d4;color:#ffffff !important;border-radius:8px;text-decoration:none;font-weight:700;font-size:18px;">Procéder au paiement</a>
+              </div>
+
+              <div style="text-align:center;margin-top:30px;color:#666;font-size:14px;">
+                © ${new Date().getFullYear()} ${data.storeName} - Tous droits réservés
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
       const mailOptions = {
         from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
         to: data.customerEmail,
-        subject: `🎉 Confirmation de commande - ${data.storeName}`,
+        subject: `🧾 Récapitulatif de votre panier - ${data.storeName}`,
         html: htmlContent,
       };
-
       const info = await this.transporter.sendMail(mailOptions);
-      console.log(`✅ Email de confirmation envoyé à ${data.customerEmail}`);
-      console.log("📨 sendMail result (customer):", {
+      console.log("cart recap email:", {
         messageId: info.messageId,
         accepted: info.accepted,
         rejected: info.rejected,
@@ -373,7 +1037,7 @@ class EmailService {
       });
       return true;
     } catch (error) {
-      console.error("❌ Erreur envoi email client:", error);
+      console.error("Erreur envoi email recap:", error);
       return false;
     }
   }
@@ -382,123 +1046,177 @@ class EmailService {
   async sendStoreOwnerNotification(
     data: StoreOwnerEmailData,
   ): Promise<boolean> {
-    try {
-      const formattedAmount = this.formatAmount(data.amount, data.currency);
-      const netProductValue =
-        (data.amount ?? 0) - (data.estimatedDeliveryCost ?? 0);
-      const formattedNetProduct =
-        this.formatAmount(netProductValue, data.currency) ||
-        String(netProductValue);
-      const formattedOriginalProduct =
-        this.formatAmount(data.productValue, data.currency) ||
-        String(data.productValue ?? 0);
-      const discountValue = Math.max(
-        0,
-        (data.productValue ?? 0) - netProductValue,
-      );
-      const formattedDiscount =
-        this.formatAmount(discountValue, data.currency) ||
-        String(discountValue);
-      const promoNote = data.promoCodes
-        ? ` <span style="color:#666; font-size:12px;"><span style="text-decoration: line-through;">${formattedOriginalProduct}</span> (${formattedDiscount} de remise avec le code : ${String(
-            data.promoCodes || "",
-          ).replace(/;/g, ", ")})</span>`
-        : "";
-
-      // Préparer les infos réseau (lien carte + image dimensions) selon deliveryNetwork
-      const getNetworkInfo = (
-        networkCode?: string,
-      ): {
-        name: string;
-        link?: string;
-        imageFile?: string;
-      } | null => {
-        if (!networkCode) return null;
-        const code = (networkCode || "").toUpperCase();
-        // Mapping par préfixe
-        if (code.startsWith("MONR")) {
-          return {
-            name: "Mondial Relay",
-            link: "https://www.mondialrelay.fr/trouver-le-point-relais-le-plus-proche-de-chez-moi/",
-            imageFile: "mondial_relay.jpg",
-          };
-        }
-        if (code.startsWith("CHRP")) {
-          return {
-            name: "Chronopost",
-            link: "https://www.chronopost.fr/expeditionAvanceeSec/ounoustrouver.html",
-            imageFile: "chronopost.png",
-          };
-        }
-        if (code.startsWith("POFR")) {
-          return {
-            name: "Colissimo (La Poste)",
-            link: "https://localiser.laposte.fr/",
-            imageFile: "colissimo.jpg",
-          };
-        }
-        if (code.startsWith("SOGP")) {
-          return {
-            name: "Relais Colis",
-            link: "https://www.relaiscolis.com/relais/trouver",
-            imageFile: "relais_colis.jpg",
-          };
-        }
-        if (code.startsWith("UPSE")) {
-          return {
-            name: "UPS Access Point",
-            link: "https://www.ups.com/fr/fr/business-solutions/expand-your-online-business/ups-access-point",
-            imageFile: "ups.jpg",
-          };
-        }
-        if (code.startsWith("COPR")) {
-          return {
-            name: "Colis Privé",
-            link: "https://client.colisprive-store.com/relais",
-            imageFile: "colis_prive.jpg",
-          };
-        }
-        if (code.startsWith("DLVG")) {
-          return {
-            name: "Delivengo",
-            link: "https://localiser.laposte.fr/",
-            imageFile: "delivengo.jpg",
-          };
-        }
-
-        return null;
-      };
-
-      const networkInfo =
-        data.deliveryMethod === "pickup_point" ||
-        data.deliveryMethod === "home_delivery"
-          ? getNetworkInfo(data.deliveryNetwork)
-          : null;
-
-      // Attachement image dimensions (cid) si disponible
-      const networkImageCid = "network-dimensions-img";
-      const networkImageAttachment = (() => {
-        try {
-          if (networkInfo?.imageFile) {
-            const imgPath = path.join(
-              __dirname,
-              "..",
-              "public",
-              networkInfo.imageFile,
-            );
-            if (fs.existsSync(imgPath)) {
-              return {
-                filename: networkInfo.imageFile,
-                path: imgPath,
-                cid: networkImageCid,
-              } as any;
-            }
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const formattedAmount = this.formatAmount(data.amount, data.currency);
+        const promoCodes = String(data.promoCodes || "")
+          .split(/[;,]+/g)
+          .map((s) => String(s || "").trim())
+          .filter(Boolean);
+        const ownerPromoCodes = promoCodes.filter((c) => !/^CREDIT-/i.test(c));
+        const itemsRowsHtml = (() => {
+          const products = Array.isArray(data.products) ? data.products : [];
+          if (products.length > 0) {
+            return products
+              .map((p) => {
+                const ref = String(p.product_reference || "").trim();
+                const desc = String(p.description || "").trim();
+                const qRaw = Number(p.quantity || 1);
+                const qty =
+                  Number.isFinite(qRaw) && qRaw > 0 ? Math.floor(qRaw) : 1;
+                const unitRaw = Number(p.unit_price || 0);
+                const unit =
+                  Number.isFinite(unitRaw) && unitRaw >= 0 ? unitRaw : 0;
+                const unitFormatted =
+                  this.formatAmount(unit, data.currency) || String(unit);
+                return `
+                  <tr>
+                    <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                      <div style="font-weight:700; color:#111;">${ref || "—"}</div>
+                      ${
+                        desc
+                          ? `<div style="margin-top:4px; font-size:13px; color:#555;">${desc}</div>`
+                          : ""
+                      }
+                    </td>
+                    <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                      ${unitFormatted}
+                    </td>
+                    <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                      ${qty}
+                    </td>
+                  </tr>
+                `;
+              })
+              .join("");
           }
-        } catch (_) {}
-        return null;
-      })();
 
-      const htmlContent = `
+          const refs = String(data.productReference || "")
+            .split(/[;,]+/g)
+            .map((s) => String(s || "").trim())
+            .filter(Boolean);
+          if (refs.length === 0) return "";
+          return refs
+            .map((ref) => {
+              return `
+                <tr>
+                  <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                    <div style="font-weight:700; color:#111;">${ref}</div>
+                  </td>
+                  <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                    —
+                  </td>
+                  <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                    1
+                  </td>
+                </tr>
+              `;
+            })
+            .join("");
+        })();
+
+        // Préparer les infos réseau (lien carte + image dimensions) selon deliveryNetwork
+        const getNetworkInfo = (
+          networkCode?: string,
+        ): {
+          name: string;
+          link?: string;
+          imageFile?: string;
+        } | null => {
+          if (!networkCode) return null;
+          const code = (networkCode || "").toUpperCase();
+          // Mapping par préfixe
+          if (code.startsWith("MONR")) {
+            return {
+              name: "Mondial Relay",
+              link: "https://www.mondialrelay.fr/trouver-le-point-relais-le-plus-proche-de-chez-moi/",
+              imageFile: "mondial_relay.jpg",
+            };
+          }
+          if (code.startsWith("CHRP")) {
+            return {
+              name: "Chronopost",
+              link: "https://www.chronopost.fr/expeditionAvanceeSec/ounoustrouver.html",
+              imageFile: "chronopost.png",
+            };
+          }
+          if (code.startsWith("POFR")) {
+            return {
+              name: "Colissimo (La Poste)",
+              link: "https://localiser.laposte.fr/",
+              imageFile: "colissimo.jpg",
+            };
+          }
+          if (code.startsWith("SOGP")) {
+            return {
+              name: "Relais Colis",
+              link: "https://www.relaiscolis.com/relais/trouver",
+              imageFile: "relais_colis.jpg",
+            };
+          }
+          if (code.startsWith("UPSE")) {
+            return {
+              name: "UPS Access Point",
+              link: "https://www.ups.com/fr/fr/business-solutions/expand-your-online-business/ups-access-point",
+              imageFile: "ups.jpg",
+            };
+          }
+          if (code.startsWith("COPR")) {
+            return {
+              name: "Colis Privé",
+              link: "https://client.colisprive-store.com/relais",
+              imageFile: "colis_prive.jpg",
+            };
+          }
+          if (code.startsWith("DLVG")) {
+            return {
+              name: "Delivengo",
+              link: "https://localiser.laposte.fr/",
+              imageFile: "delivengo.jpg",
+            };
+          }
+          if (code.startsWith("FEDX")) {
+            return {
+              name: "Fedex",
+              link: "https://www.fedex.com/en-us.html",
+              imageFile: "fedex.jpg",
+            };
+          }
+
+          return null;
+        };
+
+        const networkInfo =
+          data.deliveryMethod === "pickup_point" ||
+          data.deliveryMethod === "home_delivery"
+            ? getNetworkInfo(data.deliveryNetwork)
+            : null;
+
+        // Attachement image dimensions (cid) si disponible
+        const networkImageCid = "network-dimensions-img";
+        const networkImageAttachment = (() => {
+          try {
+            if (networkInfo?.imageFile) {
+              const imgPath = path.join(
+                __dirname,
+                "..",
+                "public",
+                networkInfo.imageFile,
+              );
+              if (fs.existsSync(imgPath)) {
+                return {
+                  filename: networkInfo.imageFile,
+                  path: imgPath,
+                  cid: networkImageCid,
+                } as any;
+              }
+            }
+          } catch (_) {}
+          return null;
+        })();
+
+        const htmlContent = `
         <!DOCTYPE html>
         <html>
         <head>
@@ -526,20 +1244,47 @@ class EmailService {
               <h1>🎉 Nouvelle commande !</h1>
               <p>Vous avez reçu une nouvelle commande sur ${data.storeName}</p>
             </div>
-            
+
             <div class="content">
               <h2>Bonjour,</h2>
-              
+
               <p>Excellente nouvelle ! Vous venez de recevoir une nouvelle commande sur votre boutique <strong>${
                 data.storeName
               }</strong>.</p>
-              
+
               <div class="order-details">
                 <h3>📦 Détails de la commande</h3>
-                <p><strong>Référence produit :</strong> ${
-                  data.productReference
-                }</p>
-                <p><strong>Montant :</strong> <span class="amount">${formattedNetProduct}</span>${promoNote}</p>
+                <p><strong>Montant reçu :</strong> <span class="amount">${formattedAmount}</span></p>
+                ${
+                  ownerPromoCodes.length > 0
+                    ? `<p><strong>Code${
+                        ownerPromoCodes.length > 1 ? "s" : ""
+                      } promo utilisé${
+                        ownerPromoCodes.length > 1 ? "s" : ""
+                      } :</strong> ${ownerPromoCodes.join(", ")}</p>`
+                    : ""
+                }
+                ${
+                  itemsRowsHtml
+                    ? `
+                      <div style="margin-top:16px;">
+                        <p style="margin:0 0 10px 0;"><strong>Articles :</strong></p>
+                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                          <thead>
+                            <tr>
+                              <th align="left" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Référence</th>
+                              <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Prix unitaire</th>
+                              <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Qté</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            ${itemsRowsHtml}
+                          </tbody>
+                        </table>
+                      </div>
+                    `
+                    : ""
+                }
                 <p><strong>ID de transaction :</strong> ${data.paymentId}</p>
                 ${
                   data.deliveryMethod !== "store_pickup"
@@ -562,7 +1307,7 @@ class EmailService {
                      : ""
                  }
               </div>
-              
+
               <div class="customer-details">
                 <h3>👤 Informations client</h3>
                 <p><strong>Nom :</strong> ${data.customerName}</p>
@@ -611,15 +1356,15 @@ class EmailService {
                 }
               </div>
 
-      
-              
+
+
               <p>Le client a été automatiquement notifié par email de la confirmation de sa commande.</p>
-              
+
               <p><strong>Action requise :</strong> Veuillez préparer et expédier la commande dans les plus brefs délais.</p>
-        
+
               <p><strong>L'équipe PayLive</strong></p>
             </div>
-            
+
             <div class="footer">
               <p>Cet email a été envoyé automatiquement depuis votre boutique ${
                 data.storeName
@@ -631,231 +1376,510 @@ class EmailService {
         </html>
       `;
 
-      // Fusionner les pièces jointes (documents + image réseau)
-      const mailAttachments: any[] = [];
-      if (data.attachments && data.attachments.length) {
-        mailAttachments.push(...data.attachments);
-      }
-      if (networkImageAttachment) {
-        mailAttachments.push(networkImageAttachment);
-      }
+        // Fusionner les pièces jointes (documents + image réseau)
+        const mailAttachments: any[] = [];
+        if (data.attachments && data.attachments.length) {
+          mailAttachments.push(...data.attachments);
+        }
+        if (networkImageAttachment) {
+          mailAttachments.push(networkImageAttachment);
+        }
 
-      const mailOptions = {
-        from: `"PayLive - ${data.storeName}" <${process.env.SMTP_USER}>`,
-        to: data.ownerEmail,
-        subject: `💰 Nouvelle commande reçue - ${formattedNetProduct} - ${data.storeName}`,
-        html: htmlContent,
-        // Ajouter les pièces jointes si présentes
-        ...(mailAttachments.length ? { attachments: mailAttachments } : {}),
-      };
+        const mailOptions = {
+          from: `"PayLive - ${data.storeName}" <${process.env.SMTP_USER}>`,
+          to: data.ownerEmail,
+          subject: `💰 Nouvelle commande reçue - ${formattedAmount} - ${data.storeName}`,
+          html: htmlContent,
+          // Ajouter les pièces jointes si présentes
+          ...(mailAttachments.length ? { attachments: mailAttachments } : {}),
+        };
 
-      const info = await this.transporter.sendMail(mailOptions);
-      console.log(
-        `✅ Email de notification envoyé au propriétaire ${data.ownerEmail}`,
-      );
-      console.log("📨 sendMail result (owner):", {
-        messageId: info.messageId,
-        accepted: info.accepted,
-        rejected: info.rejected,
-        response: info.response,
-      });
-      return true;
-    } catch (error) {
-      console.error("❌ Erreur envoi email propriétaire:", error);
-      return false;
+        const info = await this.transporter.sendMail(mailOptions);
+        console.log(
+          `✅ Email de notification envoyé au propriétaire ${data.ownerEmail}`,
+        );
+        console.log("📨 sendMail result (owner):", {
+          messageId: info.messageId,
+          accepted: info.accepted,
+          rejected: info.rejected,
+          response: info.response,
+        });
+        return true;
+      } catch (error: any) {
+        const retryable = this.isRetryableSmtpError(error);
+        const code = String(error?.code || "");
+        const responseCode = Number(error?.responseCode || 0);
+        const response = String(error?.response || "");
+        console.error("❌ Erreur envoi email propriétaire:", {
+          attempt,
+          maxAttempts,
+          retryable,
+          code,
+          responseCode,
+          response,
+        });
+        if (!retryable || attempt >= maxAttempts) {
+          return false;
+        }
+        const baseMs = 800;
+        const backoffMs = baseMs * attempt * attempt;
+        const jitterMs = Math.floor(Math.random() * 250);
+        await this.sleep(backoffMs + jitterMs);
+      }
     }
+    return false;
   }
 
-  // Email de demande de remboursement au SAV après annulation Boxtal
-  async sendAdminRefundRequest(data: AdminRefundRequestData): Promise<boolean> {
-    try {
-      const savEmail = process.env.SMTP_USER || "";
-      if (!savEmail) {
-        console.warn(
-          "SMTP_USER non configuré, email de remboursement non envoyé.",
-        );
-        return false;
-      }
+  async sendStoreOwnerOrderModified(
+    data: StoreOwnerEmailData,
+  ): Promise<boolean> {
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const formattedAmount = this.formatAmount(data.amount, data.currency);
+        const promoCodes = String(data.promoCodes || "")
+          .split(/[;,]+/g)
+          .map((s) => String(s || "").trim())
+          .filter(Boolean);
+        const ownerPromoCodes = promoCodes.filter((c) => !/^CREDIT-/i.test(c));
+        const itemsRowsHtml = (() => {
+          const products = Array.isArray(data.products) ? data.products : [];
+          if (products.length > 0) {
+            return products
+              .map((p) => {
+                const ref = String(p.product_reference || "").trim();
+                const desc = String(p.description || "").trim();
+                const qRaw = Number(p.quantity || 1);
+                const qty =
+                  Number.isFinite(qRaw) && qRaw > 0 ? Math.floor(qRaw) : 1;
+                const unitRaw = Number(p.unit_price || 0);
+                const unit =
+                  Number.isFinite(unitRaw) && unitRaw >= 0 ? unitRaw : 0;
+                const unitFormatted =
+                  this.formatAmount(unit, data.currency) || String(unit);
+                return `
+                  <tr>
+                    <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                      <div style="font-weight:700; color:#111;">${ref || "—"}</div>
+                      ${
+                        desc
+                          ? `<div style="margin-top:4px; font-size:13px; color:#555;">${desc}</div>`
+                          : ""
+                      }
+                    </td>
+                    <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                      ${unitFormatted}
+                    </td>
+                    <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                      ${qty}
+                    </td>
+                  </tr>
+                `;
+              })
+              .join("");
+          }
 
-      const formattedAmount = this.formatAmount(
-        data.amount,
-        data.currency || "EUR",
-      );
-      const formattedDelivery = this.formatAmount(
-        data.deliveryCost,
-        data.currency || "EUR",
-      );
-      const formattedTotal = this.formatAmount(
-        data.total,
-        data.currency || "EUR",
-      );
+          const refs = String(data.productReference || "")
+            .split(/[;,]+/g)
+            .map((s) => String(s || "").trim())
+            .filter(Boolean);
+          if (refs.length === 0) return "";
+          return refs
+            .map((ref) => {
+              return `
+                <tr>
+                  <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                    <div style="font-weight:700; color:#111;">${ref}</div>
+                  </td>
+                  <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                    —
+                  </td>
+                  <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                    1
+                  </td>
+                </tr>
+              `;
+            })
+            .join("");
+        })();
 
-      const htmlContent = `
+        const getNetworkInfo = (
+          networkCode?: string,
+        ): {
+          name: string;
+          link?: string;
+          imageFile?: string;
+        } | null => {
+          if (!networkCode) return null;
+          const code = (networkCode || "").toUpperCase();
+          if (code.startsWith("MONR")) {
+            return {
+              name: "Mondial Relay",
+              link: "https://www.mondialrelay.fr/trouver-le-point-relais-le-plus-proche-de-chez-moi/",
+              imageFile: "mondial_relay.jpg",
+            };
+          }
+          if (code.startsWith("CHRP")) {
+            return {
+              name: "Chronopost",
+              link: "https://www.chronopost.fr/expeditionAvanceeSec/ounoustrouver.html",
+              imageFile: "chronopost.png",
+            };
+          }
+          if (code.startsWith("POFR")) {
+            return {
+              name: "Colissimo (La Poste)",
+              link: "https://localiser.laposte.fr/",
+              imageFile: "colissimo.jpg",
+            };
+          }
+          if (code.startsWith("SOGP")) {
+            return {
+              name: "Relais Colis",
+              link: "https://www.relaiscolis.com/relais/trouver",
+              imageFile: "relais_colis.jpg",
+            };
+          }
+          if (code.startsWith("UPSE")) {
+            return {
+              name: "UPS Access Point",
+              link: "https://www.ups.com/fr/fr/business-solutions/expand-your-online-business/ups-access-point",
+              imageFile: "ups.jpg",
+            };
+          }
+          if (code.startsWith("COPR")) {
+            return {
+              name: "Colis Privé",
+              link: "https://client.colisprive-store.com/relais",
+              imageFile: "colis_prive.jpg",
+            };
+          }
+          if (code.startsWith("DLVG")) {
+            return {
+              name: "Delivengo",
+              link: "https://localiser.laposte.fr/",
+              imageFile: "delivengo.jpg",
+            };
+          }
+
+          return null;
+        };
+
+        const networkInfo =
+          data.deliveryMethod === "pickup_point" ||
+          data.deliveryMethod === "home_delivery"
+            ? getNetworkInfo(data.deliveryNetwork)
+            : null;
+
+        const networkImageCid = "network-dimensions-img";
+        const networkImageAttachment = (() => {
+          try {
+            if (networkInfo?.imageFile) {
+              const imgPath = path.join(
+                __dirname,
+                "..",
+                "public",
+                networkInfo.imageFile,
+              );
+              if (fs.existsSync(imgPath)) {
+                return {
+                  filename: networkInfo.imageFile,
+                  path: imgPath,
+                  cid: networkImageCid,
+                } as any;
+              }
+            }
+          } catch (_) {}
+          return null;
+        })();
+
+        const htmlContent = `
         <!DOCTYPE html>
         <html>
         <head>
           <meta charset="utf-8">
-          <title>Demande de remboursement client</title>
+          <title>Commande modifiée</title>
           <style>
             body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #0d6efd 0%, #6c63ff 100%); color: white; padding: 20px; border-radius: 10px 10px 0 0; }
-            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
-            .section { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #0d6efd; }
-            .kv { margin: 0; }
-            .kv strong { display: inline-block; width: 220px; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #6c63ff 0%, #3b82f6 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .order-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6c63ff; }
+            .customer-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #17a2b8; }
+            .amount { font-size: 24px; font-weight: bold; color: #6c63ff; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+            .network { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #6c63ff; }
+            .network img { max-width: 100px; width: auto; height: auto; border-radius: 6px; border: 1px solid #eee; }
+            .network a { color: #0d6efd; text-decoration: none; }
+            .network a:hover { text-decoration: underline; }
           </style>
         </head>
         <body>
           <div class="container">
             <div class="header">
-              <h1>💸 Remboursement à effectuer</h1>
-              <p>${data.storeName}${
-                data.storeSlug ? ` — ${data.storeSlug}` : ""
-              }</p>
+              <h1>✏️ Commande modifiée</h1>
+              <p>Une commande a été modifiée sur ${data.storeName}</p>
             </div>
+
             <div class="content">
-              <div class="section">
-                <h3>Résumé</h3>
-                <p class="kv"><strong>Shipping Order ID :</strong> ${
-                  data.shippingOrderId
-                }</p>
-                <p class="kv"><strong>Statut Boxtal :</strong> ${
-                  data.boxtalStatus || "N/A"
-                }</p>
-                <p class="kv"><strong>Shipment ID :</strong> ${
-                  data.shipmentId || "N/A"
-                }</p>
-                <p class="kv"><strong>Store owner :</strong> ${
-                  data.storeOwnerEmail || "N/A"
-                }</p>
+              <h2>Bonjour,</h2>
+
+              <p>Le client a modifié une commande. Cette nouvelle transaction remplace la précédente.</p>
+
+              <div class="order-details">
+                <h3>📦 Détails de la commande modifiée</h3>
+                <p><strong>Montant net :</strong> <span class="amount">${formattedAmount}</span></p>
+                ${
+                  ownerPromoCodes.length > 0
+                    ? `<p><strong>Code${
+                        ownerPromoCodes.length > 1 ? "s" : ""
+                      } promo utilisé${
+                        ownerPromoCodes.length > 1 ? "s" : ""
+                      } :</strong> ${ownerPromoCodes.join(", ")}</p>`
+                    : ""
+                }
+                ${
+                  itemsRowsHtml
+                    ? `
+                      <div style="margin-top:16px;">
+                        <p style="margin:0 0 10px 0;"><strong>Articles :</strong></p>
+                        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                          <thead>
+                            <tr>
+                              <th align="left" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Référence</th>
+                              <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Prix unitaire</th>
+                              <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Qté</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            ${itemsRowsHtml}
+                          </tbody>
+                        </table>
+                      </div>
+                    `
+                    : ""
+                }
+                ${
+                  data.previousPaymentId
+                    ? `<p><strong>Transaction précédente :</strong> ${data.previousPaymentId}</p>`
+                    : ""
+                }
+                <p><strong>Nouvelle transaction :</strong> ${data.paymentId}</p>
+                ${
+                  data.deliveryMethod !== "store_pickup"
+                    ? `<p><strong>ID de commande :</strong> ${data.boxtalId}</p>`
+                    : `<p><strong>ID de commande interne :</strong> ${data.shipmentId}</p>`
+                }
+                <p><strong>Date :</strong> ${new Date().toLocaleDateString(
+                  "fr-FR",
+                  {
+                    year: "numeric",
+                    month: "long",
+                    day: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  },
+                )}</p>
               </div>
 
-              <div class="section">
-                <h3>Client</h3>
-                <p class="kv"><strong>Nom :</strong> ${
-                  data.customerName || "N/A"
-                }</p>
-                <p class="kv"><strong>Email :</strong> ${
-                  data.customerEmail || "N/A"
-                }</p>
-                <p class="kv"><strong>Stripe Customer ID :</strong> ${
-                  data.customerStripeId || "N/A"
-                }</p>
-                <p class="kv"><strong>Payment ID :</strong> ${
-                  data.paymentId || "N/A"
-                }</p>
+              <div class="customer-details">
+                <h3>👤 Informations client</h3>
+                <p><strong>Nom :</strong> ${data.customerName}</p>
+                <p><strong>Email :</strong> ${data.customerEmail}</p>
+                ${
+                  data.customerPhone
+                    ? `<p><strong>Téléphone :</strong> ${data.customerPhone}</p>`
+                    : ""
+                }
+              </p>
               </div>
 
-              <div class="section">
-                <h3>Montants</h3>
-                <p class="kv"><strong>Produit (référence) :</strong> ${
-                  formattedAmount ||
-                  (typeof data.amount === "number" ? data.amount : "N/A")
-                }</p>
-                <p class="kv"><strong>Frais de livraison :</strong> ${
-                  formattedDelivery ||
-                  (typeof data.deliveryCost === "number"
-                    ? data.deliveryCost
-                    : "N/A")
-                }</p>
-                <p class="kv"><strong>Total à rembourser :</strong> ${
-                  formattedTotal ||
-                  (typeof data.total === "number" ? data.total : "N/A")
-                }</p>
-                <p class="kv"><strong>Devise :</strong> ${(
-                  data.currency || "EUR"
-                ).toUpperCase()}</p>
+              <div class="order-details">
+                <h3>🚚 Méthode de livraison</h3>
+                <p><strong>Méthode :</strong> ${
+                  data.deliveryMethod === "pickup_point"
+                    ? `Point relais (${data.pickupPointCode})`
+                    : data.deliveryMethod === "home_delivery"
+                      ? "À domicile"
+                      : "Retrait en Magasin"
+                }
+                </p>
+                <p><strong>Poids du colis :</strong> ${data.weight} kg</p>
+                ${
+                  networkInfo
+                    ? `
+                        <p><strong>Réseau :</strong> ${data.deliveryNetwork} (${
+                          networkInfo.name
+                        })</p>
+                        <p>Vous pouvez déposer ce colis dans n'importe quel point relais du réseau <strong>${
+                          data.deliveryNetwork
+                        }</strong>.</p>
+                        ${
+                          networkInfo.link
+                            ? `<p>🗺️ <a href="${networkInfo.link}" target="_blank" rel="noopener">Voir la carte des points relais</a></p>`
+                            : ""
+                        }
+                        <p><strong>Dimensions maximales des colis</strong> (selon le réseau) :</p>
+                        ${
+                          networkImageAttachment
+                            ? `<img src="cid:${networkImageCid}" alt="Dimensions maximales - ${networkInfo.name}" />`
+                            : ""
+                        }
+                      `
+                    : ""
+                }
               </div>
 
-              <p>Suite à l'annulation de la commande Boxtal, merci d'effectuer le remboursement au client via Stripe (recherche par email ou customer ID).</p>
-              <p><strong>PayLive - Service SAV</strong></p>
+              <p><strong>L'équipe PayLive</strong></p>
+            </div>
+
+            <div class="footer">
+              <p>Cet email a été envoyé automatiquement depuis votre boutique ${
+                data.storeName
+              }</p>
+              <p>© ${new Date().getFullYear()} PayLive - Tous droits réservés</p>
             </div>
           </div>
         </body>
         </html>
       `;
 
-      const info = await this.transporter.sendMail({
-        from: `"PayLive SAV" <${process.env.SMTP_USER}>`,
-        to: savEmail,
-        subject: `💸 Remboursement à effectuer - ${data.storeName}${
-          formattedTotal ? ` - ${formattedTotal}` : ""
-        }`,
-        html: htmlContent,
-      });
-      console.log(`✅ Email remboursement envoyé à ${savEmail}`);
-      console.log("📨 sendMail result (refund):", {
-        messageId: info.messageId,
-        accepted: info.accepted,
-        rejected: info.rejected,
-        response: info.response,
-      });
-      return true;
-    } catch (error) {
-      console.error("❌ Erreur envoi email remboursement:", error);
-      return false;
+        const mailAttachments: any[] = [];
+        if (data.attachments && data.attachments.length) {
+          mailAttachments.push(...data.attachments);
+        }
+        if (networkImageAttachment) {
+          mailAttachments.push(networkImageAttachment);
+        }
+
+        const mailOptions = {
+          from: `"PayLive - ${data.storeName}" <${process.env.SMTP_USER}>`,
+          to: data.ownerEmail,
+          subject: `✏️ Commande modifiée - ${formattedAmount} - ${data.storeName}`,
+          html: htmlContent,
+          ...(mailAttachments.length ? { attachments: mailAttachments } : {}),
+        };
+
+        const info = await this.transporter.sendMail(mailOptions);
+        console.log(
+          `✅ Email de modification envoyé au propriétaire ${data.ownerEmail}`,
+        );
+        console.log("📨 sendMail result (owner modified):", {
+          messageId: info.messageId,
+          accepted: info.accepted,
+          rejected: info.rejected,
+          response: info.response,
+        });
+        return true;
+      } catch (error: any) {
+        const retryable = this.isRetryableSmtpError(error);
+        const code = String(error?.code || "");
+        const responseCode = Number(error?.responseCode || 0);
+        const response = String(error?.response || "");
+        console.error("❌ Erreur envoi email propriétaire (modification):", {
+          attempt,
+          maxAttempts,
+          retryable,
+          code,
+          responseCode,
+          response,
+        });
+        if (!retryable || attempt >= maxAttempts) {
+          return false;
+        }
+        const baseMs = 800;
+        const backoffMs = baseMs * attempt * attempt;
+        const jitterMs = Math.floor(Math.random() * 250);
+        await this.sleep(backoffMs + jitterMs);
+      }
     }
+    return false;
   }
-  // Email de confirmation de remboursement pour le client
-  async sendCustomerRefundConfirmation(
-    data: CustomerRefundEmailData,
-  ): Promise<boolean> {
+
+  async sendCustomerOrderCancelled(data: {
+    customerEmail: string;
+    customerName?: string;
+    storeName: string;
+    amount: number;
+    currency: string;
+    refundCreditAmount?: number;
+    shipmentId?: string;
+  }): Promise<boolean> {
     try {
+      const escapeHtml = (raw: string) =>
+        String(raw || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+
+      const to = String(data.customerEmail || "").trim();
+      if (!to) return false;
+
       const formattedAmount = this.formatAmount(data.amount, data.currency);
+      const refundCredit =
+        typeof data.refundCreditAmount === "number" &&
+        Number.isFinite(data.refundCreditAmount) &&
+        data.refundCreditAmount > 0
+          ? data.refundCreditAmount
+          : 0;
+      const formattedRefundCredit =
+        refundCredit > 0
+          ? this.formatAmount(refundCredit, data.currency) ||
+            String(refundCredit)
+          : "";
+
       const htmlContent = `
         <!DOCTYPE html>
         <html>
         <head>
           <meta charset="utf-8">
-          <title>Remboursement confirmé</title>
+          <title>Commande annulée</title>
           <style>
             body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%); color: white; padding: 24px; border-radius: 10px 10px 0 0; }
-            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
-            .section { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #16a34a; }
-            .kv { margin: 0; }
-            .kv strong { display: inline-block; width: 220px; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #ef4444 0%, #f97316 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .order-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ef4444; }
+            .amount { font-size: 22px; font-weight: bold; color: #ef4444; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
           </style>
         </head>
         <body>
           <div class="container">
             <div class="header">
-              <h1>💸 Remboursement confirmé</h1>
-              <p>${data.storeName}</p>
+              <h1>Commande annulée</h1>
+              <p>${escapeHtml(data.storeName)}</p>
             </div>
             <div class="content">
-              <p>Bonjour ${data.customerName || ""},</p>
-              <p>Nous vous confirmons que votre demande de remboursement a été traitée avec succès.</p>
-              <div class="section">
-                <h3>Détails</h3>
-                <p class="kv"><strong>Montant remboursé :</strong> ${
-                  formattedAmount || "N/A"
-                }</p>
-                <p class="kv"><strong>Transaction (Payment ID) :</strong> ${
-                  data.paymentId
-                }</p>
-                <p class="kv"><strong>Remboursement (Refund ID) :</strong> ${
-                  data.refundId
-                }</p>
-                ${
-                  data.productReference
-                    ? `<p class="kv"><strong>Référence produit :</strong> ${data.productReference}</p>`
-                    : ""
-                }
+              <h2>Bonjour ${escapeHtml(data.customerName || "Client")},</h2>
+              <p>Votre commande a été annulée.</p>
+              <div class="order-details">
+                <p><strong>Boutique :</strong> ${escapeHtml(data.storeName)}</p>
                 ${
                   data.shipmentId
-                    ? `<p class="kv"><strong>Commande d'expédition :</strong> ${data.shipmentId}</p>`
+                    ? `<p><strong>Commande :</strong> ${escapeHtml(
+                        data.shipmentId,
+                      )}</p>`
                     : ""
                 }
+                <p><strong>Montant :</strong> <span class="amount">${
+                  formattedAmount || ""
+                }</span></p>
               </div>
-              <p>Le montant remboursé sera visible sur votre moyen de paiement sous quelques jours ouvrés.</p>
-              <p>Merci pour votre confiance.</p>
-              <p><strong>L'équipe ${data.storeName}</strong></p>
-            </div>
-            <div class="footer" style="text-align:center; margin-top:24px; color:#666; font-size:14px;">
-              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
+              <p>
+                ${
+                  formattedRefundCredit
+                    ? `Le montant payé a été reversé à votre cagnotte : <strong>${escapeHtml(
+                        formattedRefundCredit,
+                      )}</strong>.`
+                    : "Le montant payé a été reversé à votre cagnotte."
+                }
+              </p>
+              <div class="footer">
+                <p>Merci pour votre compréhension.</p>
+              </div>
             </div>
           </div>
         </body>
@@ -864,25 +1888,120 @@ class EmailService {
 
       const info = await this.transporter.sendMail({
         from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
-        to: data.customerEmail,
-        subject: `💸 Remboursement confirmé - ${data.storeName}`,
+        to,
+        subject: `Commande annulée - ${data.storeName}`,
         html: htmlContent,
       });
-      console.log(
-        `✅ Email de remboursement client envoyé à ${data.customerEmail}`,
-      );
-      console.log("📨 sendMail result (customer refund):", {
+      console.log("✅ Email annulation client envoyé:", {
+        to,
         messageId: info.messageId,
         accepted: info.accepted,
         rejected: info.rejected,
-        response: info.response,
       });
       return true;
     } catch (error) {
-      console.error("❌ Erreur envoi email remboursement client:", error);
+      console.error("❌ Erreur envoi email annulation client:", error);
       return false;
     }
   }
+
+  async sendStoreOwnerOrderCancelled(data: {
+    ownerEmail: string;
+    storeName: string;
+    customerName?: string;
+    customerEmail?: string;
+    amount: number;
+    currency: string;
+    shipmentId?: string;
+  }): Promise<boolean> {
+    try {
+      const escapeHtml = (raw: string) =>
+        String(raw || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+
+      const to = String(data.ownerEmail || "").trim();
+      if (!to) return false;
+
+      const formattedAmount = this.formatAmount(data.amount, data.currency);
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Commande annulée</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #ef4444 0%, #f97316 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .order-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ef4444; }
+            .amount { font-size: 22px; font-weight: bold; color: #ef4444; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>Commande annulée</h1>
+              <p>${escapeHtml(data.storeName)}</p>
+            </div>
+            <div class="content">
+              <h2>Bonjour,</h2>
+              <p>Une commande a été annulée.</p>
+              <div class="order-details">
+                <p><strong>Client :</strong> ${escapeHtml(
+                  data.customerName || "Client",
+                )}</p>
+                ${
+                  data.customerEmail
+                    ? `<p><strong>Email :</strong> ${escapeHtml(
+                        data.customerEmail,
+                      )}</p>`
+                    : ""
+                }
+                ${
+                  data.shipmentId
+                    ? `<p><strong>Commande :</strong> ${escapeHtml(
+                        data.shipmentId,
+                      )}</p>`
+                    : ""
+                }
+                <p><strong>Montant :</strong> <span class="amount">${
+                  formattedAmount || ""
+                }</span></p>
+              </div>
+              <div class="footer">
+                <p>Le montant a été reversé à la cagnotte du client.</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const info = await this.transporter.sendMail({
+        from: `"PayLive - ${data.storeName}" <${process.env.SMTP_USER}>`,
+        to,
+        subject: `Commande annulée - ${data.storeName}`,
+        html: htmlContent,
+      });
+      console.log("✅ Email annulation propriétaire envoyé:", {
+        to,
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email annulation propriétaire:", error);
+      return false;
+    }
+  }
+
   async sendCustomerTrackingUpdate(
     data: CustomerTrackingEmailData,
   ): Promise<boolean> {
@@ -942,7 +2061,6 @@ class EmailService {
               <p><strong>L'équipe ${data.storeName}</strong></p>
             </div>
             <div class="footer">
-              <p>Cet email a été envoyé automatiquement, merci de ne pas y répondre.</p>
             </div>
           </div>
         </body>
@@ -1507,7 +2625,7 @@ class EmailService {
                 ${ribDetailsHtml}
               </div>
 
-              
+
 
               <p>Merci de traiter cette demande de versement.</p>
               <p><strong>PayLive - Service SAV</strong></p>
@@ -1538,6 +2656,150 @@ class EmailService {
       return false;
     }
   }
+
+  async sendPayoutConfirmationToStoreOwner(data: {
+    ownerEmail: string;
+    storeName: string;
+    storeSlug?: string;
+    periodStart?: string | null;
+    periodEnd: string;
+    storeSiret?: string;
+    storeAddress?: any;
+    grossAmount: number;
+    feeAmount: number;
+    payoutAmount: number;
+    currency?: string;
+    attachments?: Array<{
+      filename: string;
+      content: Buffer;
+      contentType?: string;
+    }>;
+  }): Promise<boolean> {
+    try {
+      const to = String(data.ownerEmail || "").trim();
+      if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+        console.warn("sendPayoutConfirmationToStoreOwner: invalid ownerEmail");
+        return false;
+      }
+
+      const currency = (data.currency || "EUR") as string;
+      const formattedGross = this.formatAmount(data.grossAmount, currency);
+      const formattedFee = this.formatAmount(data.feeAmount, currency);
+      const formattedPayout = this.formatAmount(data.payoutAmount, currency);
+
+      const addr =
+        data.storeAddress && typeof data.storeAddress === "object"
+          ? (data.storeAddress as any)
+          : null;
+      const addrLine1 = String(addr?.line1 || "").trim();
+      const addrLine2 = String(addr?.line2 || "").trim();
+      const addrPostal = String(addr?.postal_code || "").trim();
+      const addrCity = String(addr?.city || "").trim();
+      const addrCountry = String(addr?.country || "").trim();
+      const addrPhone = String(addr?.phone || "").trim();
+      const addrOne = [addrLine1, addrLine2].filter(Boolean).join(", ");
+      const addrTwo = [addrPostal, addrCity].filter(Boolean).join(" ");
+      const addrThree = addrCountry || "";
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Versement effectué</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 700px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #0d6efd 0%, #6c63ff 100%); color: white; padding: 24px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
+            .section { background: white; padding: 16px; border-radius: 8px; margin: 16px 0; border-left: 4px solid #0d6efd; }
+            .kv { margin: 0; }
+            .kv strong { display: inline-block; width: 220px; }
+            .amount-card { background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%); color: white; padding: 16px; border-radius: 10px; text-align: center; margin: 16px 0; }
+            .amount-title { font-size: 14px; opacity: 0.9; margin-bottom: 8px; }
+            .amount-value { font-size: 28px; font-weight: bold; letter-spacing: 0.5px; }
+            .footer { text-align: center; margin-top: 20px; color: #666; font-size: 14px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>💸 Versement effectué</h1>
+              <p>${data.storeName}</p>
+            </div>
+            <div class="content">
+              <p>Bonjour,</p>
+              <p>Votre relevé de versement est prêt. Vous le trouverez en pièce jointe au format PDF.</p>
+
+              <div class="amount-card">
+                <div class="amount-title">Montant viré</div>
+                <div class="amount-value">${formattedPayout || "N/A"}</div>
+              </div>
+
+              <div class="section">
+                <h3>Période</h3>
+                <p class="kv"><strong>Du :</strong> ${data.periodStart || "—"}</p>
+                <p class="kv"><strong>Au :</strong> ${data.periodEnd}</p>
+              </div>
+
+              <div class="section">
+                <h3>Boutique</h3>
+                ${data.storeSiret ? `<p class="kv"><strong>SIRET :</strong> ${data.storeSiret}</p>` : ""}
+                ${
+                  addrOne
+                    ? `<p class="kv"><strong>Adresse :</strong> ${addrOne}</p>`
+                    : ""
+                }
+                ${
+                  addrTwo || addrThree
+                    ? `<p class="kv"><strong>Ville :</strong> ${[addrTwo, addrThree].filter(Boolean).join(", ")}</p>`
+                    : ""
+                }
+                ${addrPhone ? `<p class="kv"><strong>Téléphone :</strong> ${addrPhone}</p>` : ""}
+              </div>
+
+              <div class="section">
+                <h3>Montants</h3>
+                <p class="kv"><strong>Total net (avant frais) :</strong> ${formattedGross || "N/A"}</p>
+                <p class="kv"><strong>Frais PayLive :</strong> ${formattedFee || "N/A"}</p>
+                <p class="kv"><strong>Montant viré :</strong> ${formattedPayout || "N/A"}</p>
+              </div>
+
+              <p><strong>L’équipe PayLive</strong></p>
+            </div>
+            <div class="footer">
+              <p>© ${new Date().getFullYear()} PayLive - Tous droits réservés</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const mailOptions: any = {
+        from: `"PayLive - ${data.storeName}" <${process.env.SMTP_USER}>`,
+        to,
+        subject: `💸 Versement effectué — ${data.storeName}`,
+        html: htmlContent,
+        attachments:
+          data.attachments && data.attachments.length > 0
+            ? data.attachments
+            : undefined,
+      };
+
+      const info = await this.transporter.sendMail(mailOptions);
+      console.log("✅ Email versement envoyé au propriétaire:", {
+        to,
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email versement propriétaire:", error);
+      return false;
+    }
+  }
+
   async sendRaffleWinnerCongrats(data: {
     customerEmail: string;
     customerName?: string;
@@ -1556,33 +2818,46 @@ class EmailService {
         <html>
         <head>
           <meta charset="utf-8">
-          <title>Félicitations</title>
+          <title>🎉 Félicitations</title>
           <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #111827; background: #f9fafb; }
-            .container { max-width: 680px; margin: 0 auto; padding: 24px; }
-            .card { background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
-            .header { padding: 20px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; gap: 12px; }
-            .brand { font-weight: 700; font-size: 18px; color: #111827; }
-            .content { padding: 20px; }
-            .cta { display:inline-block; margin-top: 16px; background:#4f46e5; color:white; text-decoration:none; padding:10px 14px; border-radius:8px; font-weight:600; }
-            .muted { color:#6b7280; font-size:14px; margin-top:16px; }
-            img.logo { width:36px; height:36px; border-radius:8px; object-fit:cover; border:1px solid #e5e7eb; }
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .brand { font-weight: 700; font-size: 18px; margin-bottom: 8px; }
+            .header h1 { font-size: 36px; font-weight: 800; margin: 4px 0; }
+            .sub { font-size: 20px; margin-top: 8px; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #667eea; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+            .logo { max-width: 100px; margin-bottom: 12px; border-radius: 8px; }
           </style>
         </head>
         <body>
           <div class="container">
-            <div class="card">
-              <div class="header">
-                ${logo ? `<img class="logo" src="${logo}" alt="${data.storeName}" />` : ""}
-                <div class="brand">${data.storeName}</div>
-              </div>
-              <div class="content">
-                <p>Bonjour${name ? ` ${name}` : ""},</p>
-                <p>🎉 Félicitations ! Vous avez été tiré au sort lors de notre live.</p>
-                <p>Nous vous recontactons très vite avec les modalités pour recevoir votre gain.</p>
-                <p class="muted">Si vous avez des questions, vous pouvez répondre directement à cet email.</p>
-                <p>À très vite,<br/>L’équipe ${data.storeName}</p>
-              </div>
+            <div class="header">
+              ${logo ? `<img src="${logo}" alt="${data.storeName}" class="logo">` : ""}
+              <div class="brand">${data.storeName}</div>
+              <h1>🎉 Félicitations !</h1>
+              <p class="sub">✅ Vous avez gagné lors de notre tirage au sort</p>
+            </div>
+
+            <div class="content">
+              <h2>Bonjour ${name || ""},</h2>
+
+              <p>Nous avons le plaisir de vous annoncer que vous avez été tiré(e) au sort lors de notre live.</p>
+
+              <div class="details">
+                <h3>📬 Prochaine étape</h3>
+                <p>Notre équipe va vous recontacter très vite avec les modalités pour recevoir votre gain.</p>
+                <p>Vous pouvez répondre directement à cet email si vous avez des questions.</p>
+            </div>
+
+              <p>🙏 Merci pour votre participation !</p>
+              <p><strong>L'équipe ${data.storeName}</strong></p>
+            </div>
+
+            <div class="footer">
+              <p>© ${new Date().getFullYear()} ${data.storeName} - Tous droits réservés</p>
             </div>
           </div>
         </body>

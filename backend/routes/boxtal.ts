@@ -2,6 +2,7 @@ import express from "express";
 import { XMLParser } from "fast-xml-parser";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
+import { clerkClient, getAuth } from "@clerk/express";
 import Stripe from "stripe";
 import {
   emailService,
@@ -84,6 +85,48 @@ const verifyAndRefreshBoxtalToken = async () => {
   }
 };
 
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const parseBoxtalShippingPayload = (raw: any): Record<string, any> | null => {
+  if (!raw) return null;
+  if (typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, any>;
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, any>;
+      }
+      if (typeof parsed === "string") {
+        const parsed2 = JSON.parse(parsed);
+        if (parsed2 && typeof parsed2 === "object" && !Array.isArray(parsed2)) {
+          return parsed2 as Record<string, any>;
+        }
+      }
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+
+const pickPreferredDocument = (payload: any) => {
+  const docs: any[] = Array.isArray(payload?.content) ? payload.content : [];
+  const preferredDoc =
+    docs.find((d) => String(d?.type || "").toUpperCase() === "LABEL") ||
+    docs[0] ||
+    null;
+  return {
+    doc: preferredDoc,
+    url: preferredDoc?.url ? String(preferredDoc.url) : "",
+    type: preferredDoc?.type ? String(preferredDoc.type) : "LABEL",
+  };
+};
+
 // Route pour obtenir le token d'authentification Boxtal
 router.post("/auth", async (req, res) => {
   try {
@@ -124,6 +167,7 @@ router.post("/cotation", async (req, res) => {
     },
     CH: {
       "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
+      "FEDX-FedexRegionalEconomy": { width: 20, length: 200, height: 10 },
     },
   };
   const { sender, recipient, weight, network } = req.body || {};
@@ -451,6 +495,362 @@ router.get("/shipping-orders/:id/shipping-document", async (req, res) => {
 
 // Proxy de téléchargement du bordereau avec Content-Disposition: attachment
 router.get(
+  "/shipments/:shipmentRowId/shipping-document/download",
+  async (req, res) => {
+    try {
+      const auth = getAuth(req);
+      if (!auth?.isAuthenticated || !auth.userId) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      const shipmentRowId = Number(req.params.shipmentRowId);
+      if (!Number.isFinite(shipmentRowId) || shipmentRowId <= 0) {
+        return res.status(400).json({ error: "Invalid shipment id" });
+      }
+      if (!supabase) {
+        return res.status(500).json({ error: "Database not configured" });
+      }
+
+      const { data: shipment, error: shipmentErr } = await supabase
+        .from("shipments")
+        .select(
+          "id,store_id,customer_stripe_id,shipment_id,document_created,document_url,boxtal_shipping_json,status,estimated_delivery_date,delivery_cost",
+        )
+        .eq("id", shipmentRowId)
+        .maybeSingle();
+      if (shipmentErr) {
+        return res.status(500).json({ error: shipmentErr.message });
+      }
+      if (!shipment) {
+        return res.status(404).json({ error: "Shipment not found" });
+      }
+
+      const requesterUser = await clerkClient.users.getUser(auth.userId);
+      const requesterStripeId = String(
+        (requesterUser?.publicMetadata as any)?.stripe_id || "",
+      ).trim();
+      const shipmentStoreId = Number((shipment as any)?.store_id || 0);
+      const shipmentCustomerStripeId = String(
+        (shipment as any)?.customer_stripe_id || "",
+      ).trim();
+
+      let isOwner = false;
+      if (Number.isFinite(shipmentStoreId) && shipmentStoreId > 0) {
+        const { data: store, error: storeErr } = await supabase
+          .from("stores")
+          .select("id,clerk_id")
+          .eq("id", shipmentStoreId)
+          .maybeSingle();
+        if (storeErr) {
+          return res.status(500).json({ error: storeErr.message });
+        }
+        isOwner =
+          Boolean((store as any)?.clerk_id) &&
+          String((store as any)?.clerk_id) === String(auth.userId);
+      }
+
+      const isCustomer =
+        Boolean(requesterStripeId) &&
+        requesterStripeId === shipmentCustomerStripeId;
+      if (!isOwner && !isCustomer) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+
+      let shippingOrderId = String((shipment as any)?.shipment_id || "").trim();
+      let docPayload: any = null;
+
+      if ((shipment as any)?.status == null) {
+        const createOrderPayload = parseBoxtalShippingPayload(
+          (shipment as any)?.boxtal_shipping_json,
+        );
+        if (!createOrderPayload) {
+          return res.status(400).json({
+            error:
+              "boxtal_shipping_json absent ou invalide pour créer l'expédition",
+          });
+        }
+
+        const token = await verifyAndRefreshBoxtalToken();
+        const createUrl = `${BOXTAL_API}/shipping/v3.1/shipping-order`;
+        const createResp = await fetch(createUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(createOrderPayload),
+        });
+
+        if (!createResp.ok) {
+          const createErrorText = await createResp.text();
+          console.error(
+            "retry shipment creation failed:",
+            createResp.status,
+            createErrorText,
+            { shipmentRowId },
+          );
+          return res.status(createResp.status).json({
+            error: "Failed to create shipping order",
+            details: createErrorText,
+          });
+        }
+
+        const createData: any = await createResp.json();
+        shippingOrderId = String(createData?.content?.id || "").trim();
+        if (!shippingOrderId) {
+          return res.status(502).json({
+            error: "Shipping order created but missing id",
+          });
+        }
+
+        // Reprise du flux webhook: attendre la disponibilité du bordereau.
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          await sleep(10000);
+          const retryToken = await verifyAndRefreshBoxtalToken();
+          const docResp = await fetch(
+            `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
+              shippingOrderId,
+            )}/shipping-document`,
+            {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${retryToken}`,
+                "Content-Type": "application/json",
+              },
+            },
+          );
+          if (!docResp.ok) continue;
+          const maybeDocPayload: any = await docResp.json().catch(() => null);
+          const docs: any[] = Array.isArray(maybeDocPayload?.content)
+            ? maybeDocPayload.content
+            : [];
+          if (docs.length > 0) {
+            docPayload = maybeDocPayload;
+            break;
+          }
+        }
+
+        const updateAfterCreate: any = {
+          shipment_id: shippingOrderId,
+          status: (createData?.content?.status as any) || null,
+          estimated_delivery_date:
+            (createData?.content?.estimatedDeliveryDate as any) || null,
+          boxtal_shipping_json: null,
+        };
+        const deliveryExclTax = Number(
+          (createData?.content?.deliveryPriceExclTax?.value as any) ?? NaN,
+        );
+        if (Number.isFinite(deliveryExclTax) && deliveryExclTax >= 0) {
+          updateAfterCreate.delivery_cost = deliveryExclTax * 1.2;
+        }
+        const preferred = pickPreferredDocument(docPayload);
+        if (preferred.url) {
+          updateAfterCreate.document_created = true;
+          updateAfterCreate.document_url = preferred.url;
+        }
+
+        const { error: updateAfterCreateErr } = await supabase
+          .from("shipments")
+          .update(updateAfterCreate)
+          .eq("id", shipmentRowId);
+        if (updateAfterCreateErr) {
+          console.error(
+            "Error updating shipment after boxtal recreate:",
+            updateAfterCreateErr,
+          );
+        }
+      }
+
+      if (!shippingOrderId) {
+        return res.status(404).json({ error: "Missing shipping order id" });
+      }
+
+      if (!docPayload) {
+        const token = await verifyAndRefreshBoxtalToken();
+        const docResp = await fetch(
+          `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
+            shippingOrderId,
+          )}/shipping-document`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          },
+        );
+        if (!docResp.ok) {
+          const contentType = docResp.headers.get("content-type") || "";
+          if (contentType.includes("application/json")) {
+            const errJson = await docResp.json();
+            return res.status(docResp.status).json(errJson);
+          }
+          const errText = await docResp.text();
+          return res.status(docResp.status).json({
+            error: "Failed to get shipping documents",
+            details: errText,
+          });
+        }
+        docPayload = await docResp.json();
+      }
+
+      const preferredDoc = pickPreferredDocument(docPayload);
+      if (!preferredDoc.url) {
+        return res
+          .status(404)
+          .json({ error: "No shipping document available" });
+      }
+
+      const fileResp = await fetch(preferredDoc.url);
+      if (!fileResp.ok) {
+        const errText = await fileResp.text().catch(() => "");
+        return res.status(fileResp.status).json({
+          error: "Failed to download shipping document",
+          details: errText,
+        });
+      }
+
+      const buf = Buffer.from(await fileResp.arrayBuffer());
+      const ct = fileResp.headers.get("content-type") || "application/pdf";
+      const safeType = String(preferredDoc.type || "DOCUMENT").toUpperCase();
+      const filename = `${safeType}_${shippingOrderId}.pdf`;
+
+      try {
+        const { error: updErr } = await supabase
+          .from("shipments")
+          .update({
+            shipment_id: shippingOrderId,
+            document_created: true,
+            document_url: preferredDoc.url,
+            boxtal_shipping_json: null,
+          })
+          .eq("id", shipmentRowId);
+        if (updErr) {
+          console.error("Error updating shipment document fields:", updErr);
+        }
+      } catch (updEx) {
+        console.error("Exception updating shipment document fields:", updEx);
+      }
+
+      res.setHeader("Content-Type", ct);
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`,
+      );
+      return res.status(200).send(buf);
+    } catch (error) {
+      console.error(
+        "Error in /api/boxtal/shipments/:shipmentRowId/shipping-document/download:",
+        error,
+      );
+      return res.status(500).json({
+        error: "Failed to download shipping document",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  },
+);
+
+router.post("/shipments/:shipmentRowId/cancel", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const shipmentRowId = Number(req.params.shipmentRowId);
+    if (!Number.isFinite(shipmentRowId) || shipmentRowId <= 0) {
+      return res.status(400).json({ error: "Invalid shipment id" });
+    }
+    if (!supabase) {
+      return res.status(500).json({ error: "Database not configured" });
+    }
+
+    const { data: shipment, error: shipmentErr } = await supabase
+      .from("shipments")
+      .select("*")
+      .eq("id", shipmentRowId)
+      .maybeSingle();
+    if (shipmentErr) {
+      return res.status(500).json({ error: shipmentErr.message });
+    }
+    if (!shipment) {
+      return res.status(404).json({ error: "Shipment not found" });
+    }
+
+    const requesterUser = await clerkClient.users.getUser(auth.userId);
+    const requesterStripeId = String(
+      (requesterUser?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    const shipmentStoreId = Number((shipment as any)?.store_id || 0);
+    const shipmentCustomerStripeId = String(
+      (shipment as any)?.customer_stripe_id || "",
+    ).trim();
+
+    let isOwner = false;
+    if (Number.isFinite(shipmentStoreId) && shipmentStoreId > 0) {
+      const { data: store, error: storeErr } = await supabase
+        .from("stores")
+        .select("id,clerk_id")
+        .eq("id", shipmentStoreId)
+        .maybeSingle();
+      if (storeErr) {
+        return res.status(500).json({ error: storeErr.message });
+      }
+      isOwner =
+        Boolean((store as any)?.clerk_id) &&
+        String((store as any)?.clerk_id) === String(auth.userId);
+    }
+
+    const isCustomer =
+      Boolean(requesterStripeId) &&
+      requesterStripeId === shipmentCustomerStripeId;
+    if (!isOwner && !isCustomer) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const stRaw = (shipment as any)?.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || "")
+            .trim()
+            .toUpperCase();
+    if (st !== null && st !== "PENDING") {
+      return res.status(400).json({ error: "Annulation non autorisée" });
+    }
+
+    const { error: updErr } = await supabase
+      .from("shipments")
+      .update({ status: "CANCELLED" })
+      .eq("id", shipmentRowId);
+    if (updErr) {
+      return res.status(500).json({ error: updErr.message });
+    }
+
+    const { data: updated, error: rereadErr } = await supabase
+      .from("shipments")
+      .select("*")
+      .eq("id", shipmentRowId)
+      .maybeSingle();
+    if (rereadErr) {
+      return res.status(500).json({ error: rereadErr.message });
+    }
+
+    return res.json({ shipment: updated });
+  } catch (e) {
+    console.error("Error cancelling shipment:", e);
+    try {
+      await emailService.sendAdminError({
+        subject: "Cancel shipment exception",
+        message: `Exception annulation shipmentRowId=${String(req?.params?.shipmentRowId || "").trim()}`,
+        context: JSON.stringify(e),
+      });
+    } catch {}
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get(
   "/shipping-orders/:id/shipping-document/download",
   async (req, res) => {
     try {
@@ -683,137 +1083,290 @@ router.delete("/shipping-orders/:id", async (req, res) => {
       return res.status(400).json({ error: "Missing shipping order id" });
     }
 
-    const token = await verifyAndRefreshBoxtalToken();
-    const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
-      id,
-    )}`;
+    let boxtalOk = false;
+    let boxtalStatus: number | null = null;
+    let boxtalPayload: any = null;
+    let boxtalError: any = null;
 
-    const options = {
-      method: "DELETE",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-    } as any;
+    try {
+      const token = await verifyAndRefreshBoxtalToken();
+      const url = `${BOXTAL_API}/shipping/v3.1/shipping-order/${encodeURIComponent(
+        id,
+      )}`;
 
-    const response = await fetch(url, options);
+      const options = {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      } as any;
 
-    const contentType = response.headers.get("content-type") || "";
-    let payload: any = null;
-    if (response.ok) {
-      payload = await response.json();
-    } else if (contentType.includes("application/json")) {
-      const errJson = await response.json();
-      return res.status(response.status).json(errJson);
-    } else {
-      const errText = await response.text();
-      return res.status(response.status).json({
-        error: "Failed to cancel shipping order",
-        details: errText,
-      });
+      const response = await fetch(url, options);
+      boxtalStatus = response.status;
+
+      const contentType = response.headers.get("content-type") || "";
+      if (response.ok) {
+        boxtalOk = true;
+        boxtalPayload = await response.json().catch(() => null);
+      } else if (contentType.includes("application/json")) {
+        boxtalError = await response.json().catch(() => null);
+        try {
+          await emailService.sendAdminError({
+            subject: "Boxtal cancel échec",
+            message: `Echec annulation Boxtal shipment_id=${id}`,
+            context: JSON.stringify(boxtalError),
+          });
+        } catch {}
+      } else {
+        const errText = await response.text().catch(() => "");
+        boxtalError = {
+          error: "Failed to cancel shipping order",
+          details: errText,
+        };
+        try {
+          await emailService.sendAdminError({
+            subject: "Boxtal cancel échec",
+            message: `Echec annulation Boxtal shipment_id=${id}`,
+            context: errText,
+          });
+        } catch {}
+      }
+    } catch (boxtalEx) {
+      boxtalError = {
+        error: "Boxtal cancel request failed",
+        message:
+          boxtalEx instanceof Error ? boxtalEx.message : String(boxtalEx),
+      };
+      try {
+        await emailService.sendAdminError({
+          subject: "Boxtal cancel exception",
+          message: `Exception annulation Boxtal shipment_id=${id}`,
+          context: JSON.stringify(boxtalError),
+        });
+      } catch {}
     }
 
-    // Mettre à jour le statut en base de données si possible
+    let dbUpdated = false;
     try {
-      if (supabase && payload?.content?.status) {
-        const newStatus = String(payload.content.status);
+      if (supabase) {
         const { error: updError } = await supabase
           .from("shipments")
-          .update({ status: newStatus, cancel_requested: true })
+          .update({ status: "CANCELLED" })
           .eq("shipment_id", id);
         if (updError) {
           console.error("Supabase update shipments status failed:", updError);
+        } else {
+          dbUpdated = true;
         }
       }
     } catch (dbErr) {
       console.error("DB update exception:", dbErr);
     }
 
-    // Envoi d'un email à l'admin avec les infos nécessaires pour remboursement
+    const skipAdminRefundEmail =
+      String((req.query as any)?.skipAdminRefundEmail || "").toLowerCase() ===
+        "true" ||
+      String((req.query as any)?.silent || "").toLowerCase() === "true";
+
+    let shipment: any = null;
     try {
       if (supabase) {
-        const { data: shipment, error: shipErr } = await supabase
+        const { data, error: shipErr } = await supabase
           .from("shipments")
           .select("*")
           .eq("shipment_id", id)
-          .single();
-
-        if (shipErr) {
-          console.warn("Supabase fetch shipment failed:", shipErr);
-        }
-
-        let storeName = "Votre Boutique";
-        let storeOwnerEmail: string | undefined = undefined;
-        let storeSlug: string | undefined = undefined;
-        if (shipment?.store_id) {
-          const { data: store, error: storeErr } = await supabase
-            .from("stores")
-            .select("name, owner_email, slug")
-            .eq("id", shipment.store_id)
-            .single();
-          if (storeErr) {
-            console.warn("Supabase fetch store failed:", storeErr);
-          } else {
-            storeName = (store as any)?.name || storeName;
-            storeOwnerEmail = (store as any)?.owner_email || undefined;
-            storeSlug = (store as any)?.slug || undefined;
-          }
-        }
-
-        let customerName: string | undefined = undefined;
-        let customerEmail: string | undefined = undefined;
-        const customerStripeId: string | undefined =
-          shipment?.customer_stripe_id || undefined;
-        if (stripe && customerStripeId) {
-          try {
-            const customer = await stripe.customers.retrieve(customerStripeId);
-            customerEmail = (customer as any)?.email || undefined;
-            customerName = (customer as any)?.name || undefined;
-          } catch (cErr) {
-            console.warn("Stripe retrieve customer failed:", cErr);
-          }
-        }
-
-        const amountRaw =
-          typeof shipment?.product_value === "number"
-            ? shipment.product_value
-            : typeof shipment?.value === "number"
-              ? shipment.value
-              : undefined;
-        const deliveryCostRaw =
-          typeof shipment?.delivery_cost === "number"
-            ? shipment.delivery_cost
-            : undefined;
-        const totalRaw =
-          typeof amountRaw === "number" && typeof deliveryCostRaw === "number"
-            ? amountRaw + deliveryCostRaw
-            : amountRaw;
-
-        await emailService.sendAdminRefundRequest({
-          storeName,
-          storeOwnerEmail,
-          storeSlug,
-          shippingOrderId: id,
-          boxtalStatus: String(payload?.content?.status || ""),
-          shipmentId: shipment ? String(shipment.id) : undefined,
-          customerName,
-          customerEmail,
-          customerStripeId,
-          productReference: shipment?.product_reference || undefined,
-          amount: amountRaw,
-          deliveryCost: deliveryCostRaw,
-          total: totalRaw,
-          currency: "EUR",
-          paymentId: shipment?.payment_id,
-        });
+          .maybeSingle();
+        shipment = data || null;
+        if (shipErr) console.warn("Supabase fetch shipment failed:", shipErr);
       }
-    } catch (emailErr) {
-      console.error("Failed to send admin refund email:", emailErr);
+    } catch (shipEx) {
+      console.warn("Supabase fetch shipment exception:", shipEx);
     }
 
-    return res.status(200).json(payload);
+    let storeName = "Votre Boutique";
+    let storeOwnerEmail: string | undefined = undefined;
+    let storeSlug: string | undefined = undefined;
+    try {
+      if (supabase && shipment?.store_id) {
+        const { data: store, error: storeErr } = await supabase
+          .from("stores")
+          .select("name, owner_email, slug")
+          .eq("id", shipment.store_id)
+          .maybeSingle();
+        if (storeErr) {
+          console.warn("Supabase fetch store failed:", storeErr);
+        } else if (store) {
+          storeName = (store as any)?.name || storeName;
+          storeOwnerEmail = (store as any)?.owner_email || undefined;
+          storeSlug = (store as any)?.slug || undefined;
+        }
+      }
+    } catch (storeEx) {
+      console.warn("Supabase fetch store exception:", storeEx);
+    }
+
+    let customerName: string | undefined = undefined;
+    let customerEmail: string | undefined = undefined;
+    const customerStripeId: string | undefined =
+      shipment?.customer_stripe_id || undefined;
+    if (stripe && customerStripeId) {
+      try {
+        const customer = await stripe.customers.retrieve(customerStripeId);
+        customerEmail = (customer as any)?.email || undefined;
+        customerName = (customer as any)?.name || undefined;
+      } catch (cErr) {
+        console.warn("Stripe retrieve customer failed:", cErr);
+      }
+    }
+
+    const paymentId = String(shipment?.payment_id || "").trim();
+    const customerSpentAmountCents = Math.max(
+      0,
+      Math.round(Number((shipment as any)?.customer_spent_amount || 0)),
+    );
+    const creditCents = Number.isFinite(customerSpentAmountCents)
+      ? customerSpentAmountCents
+      : 0;
+
+    if (stripe && customerStripeId && creditCents > 0) {
+      try {
+        let alreadyIssued = false;
+        if (paymentId) {
+          try {
+            const pi = await stripe.paymentIntents.retrieve(paymentId);
+            const issuedParsed = Number.parseInt(
+              String((pi.metadata as any)?.boxtal_cancel_credit_cents || "0"),
+              10,
+            );
+            alreadyIssued =
+              Number.isFinite(issuedParsed) && issuedParsed === creditCents;
+          } catch (_e) {}
+        }
+
+        if (!alreadyIssued) {
+          const cust = (await stripe.customers.retrieve(
+            customerStripeId,
+          )) as Stripe.Customer;
+          if (cust && !("deleted" in cust)) {
+            const meta = (cust as any)?.metadata || {};
+            const prevBalanceParsed = Number.parseInt(
+              String(meta?.credit_balance || "0"),
+              10,
+            );
+            const prevBalanceCents = Number.isFinite(prevBalanceParsed)
+              ? prevBalanceParsed
+              : 0;
+            const nextBalanceCents = prevBalanceCents + creditCents;
+            await stripe.customers.update(
+              customerStripeId,
+              {
+                metadata: {
+                  ...meta,
+                  credit_balance: String(nextBalanceCents),
+                },
+              } as any,
+              { idempotencyKey: `credit-boxtal-cancel-${id}` } as any,
+            );
+            if (paymentId) {
+              try {
+                await stripe.paymentIntents.update(paymentId, {
+                  metadata: {
+                    boxtal_cancel_credit_cents: String(creditCents),
+                    boxtal_cancel_shipping_order_id: String(id),
+                  },
+                });
+              } catch (_e) {}
+            }
+          }
+        }
+      } catch (creditErr) {
+        console.error("Failed to issue credit after Boxtal cancel:", creditErr);
+      }
+    }
+
+    const orderAmount =
+      Number.isFinite(customerSpentAmountCents) && customerSpentAmountCents
+        ? customerSpentAmountCents / 100
+        : 0;
+    const refundCreditAmount =
+      Number.isFinite(creditCents) && creditCents > 0 ? creditCents / 100 : 0;
+
+    if (!skipAdminRefundEmail) {
+      try {
+        await emailService.sendAdminError({
+          subject: "Commande annulée (crédit client)",
+          message: `Commande annulée shipment_id=${id}`,
+          context: JSON.stringify(
+            {
+              shipment_id: id,
+              storeName,
+              storeSlug,
+              storeOwnerEmail,
+              paymentId: paymentId || null,
+              customerStripeId: customerStripeId || null,
+              creditCents,
+              boxtal: {
+                ok: boxtalOk,
+                status: boxtalStatus,
+                error: boxtalError,
+              },
+              dbUpdated,
+            },
+            null,
+            2,
+          ),
+        });
+      } catch {}
+    }
+
+    if (storeOwnerEmail) {
+      try {
+        await emailService.sendStoreOwnerOrderCancelled({
+          ownerEmail: storeOwnerEmail,
+          storeName,
+          customerName,
+          customerEmail,
+          amount: orderAmount,
+          currency: "EUR",
+          shipmentId: id,
+        });
+      } catch (e) {
+        console.warn("sendStoreOwnerOrderCancelled failed:", e);
+      }
+    }
+
+    if (customerEmail) {
+      try {
+        await emailService.sendCustomerOrderCancelled({
+          customerEmail,
+          customerName,
+          storeName,
+          amount: orderAmount,
+          currency: "EUR",
+          refundCreditAmount,
+          shipmentId: id,
+        });
+      } catch (e) {
+        console.warn("sendCustomerOrderCancelled failed:", e);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      boxtal: { ok: boxtalOk, status: boxtalStatus, error: boxtalError },
+      dbUpdated,
+      payload: boxtalPayload,
+    });
   } catch (error) {
     console.error("Error in DELETE /api/boxtal/shipping-orders/:id:", error);
+    try {
+      await emailService.sendAdminError({
+        subject: "Boxtal cancel exception",
+        message: `Exception annulation Boxtal shipment_id=${String(req?.params?.id || "").trim()}`,
+        context: JSON.stringify(error),
+      });
+    } catch {}
     return res.status(500).json({
       error: "Failed to cancel shipping order",
       message: error instanceof Error ? error.message : "Unknown error",

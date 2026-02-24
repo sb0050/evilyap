@@ -50,21 +50,21 @@ app.use((req: any, res: any, next: NextFunction) => {
 app.post(
   "/api/stripe/webhook",
   express.raw({ type: "application/json" }),
-  stripeWebhookHandler
+  stripeWebhookHandler,
 );
 
 // Pour les webhooks Boxtal, traiter aussi le raw body avant express.json
 app.post(
   "/api/boxtal/webhook",
   express.raw({ type: "application/json" }),
-  boxtalWebhookHandler
+  boxtalWebhookHandler,
 );
 
 // Pour le webhook Clerk, traiter le raw body avant express.json
 app.post(
   "/api/clerk/webhook",
   express.raw({ type: "application/json" }),
-  clerkWebhookHandler
+  clerkWebhookHandler,
 );
 
 app.use(clerkMiddleware());
@@ -78,7 +78,16 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
     return next();
   }
 
-  if (process.env.ENV === "prod") {
+  const allowUnauthenticated =
+    req.method === "GET" &&
+    (req.path.startsWith("/stores/exists") ||
+      /^\/stores\/[^/]+$/.test(req.path) ||
+      /^\/stores\/[^/]+\/stock\/public$/.test(req.path));
+  if (allowUnauthenticated) {
+    return next();
+  }
+
+  if (process.env.VERCEL_ENV === "prod") {
     const auth = getAuth(req);
     if (!auth?.isAuthenticated || !auth.userId) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -98,7 +107,7 @@ app.use(express.json());
   const ok = await emailService.verifyConnection();
   if (!ok) {
     console.warn(
-      "⚠️ La connexion SMTP a échoué. Vérifiez SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS dans backend/.env"
+      "⚠️ La connexion SMTP a échoué. Vérifiez SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS dans backend/.env",
     );
   }
 })();

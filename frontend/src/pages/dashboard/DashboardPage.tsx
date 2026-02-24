@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
-import Header from '../components/Header';
-import Spinner from '../components/Spinner';
+import Header from '../../components/Header';
+import Spinner from '../../components/Spinner';
 import {
   Wallet,
   ShoppingCart,
@@ -22,6 +22,7 @@ import {
   Trash2,
   Coins,
   Dice5,
+  Check,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -31,8 +32,8 @@ import {
   FaShareAlt,
   FaArchive,
 } from 'react-icons/fa';
-import { Toast } from '../components/Toast';
-import { useToast } from '../utils/toast';
+import { Toast } from '../../components/Toast';
+import { useToast } from '../../utils/toast';
 import {
   apiPut,
   apiPost,
@@ -40,35 +41,30 @@ import {
   apiGet,
   apiDelete,
   API_BASE_URL,
-} from '../utils/api';
-import SuccessConfetti from '../components/SuccessConfetti';
+} from '../../utils/api';
+import SuccessConfetti from '../../components/SuccessConfetti';
 import { RiDiscountPercentFill } from 'react-icons/ri';
 import { FR, BE } from 'country-flag-icons/react/3x2';
 import { AddressElement } from '@stripe/react-stripe-js';
 import { Address } from '@stripe/stripe-js';
-import StripeWrapper from '../components/StripeWrapper';
+import StripeWrapper from '../../components/StripeWrapper';
+
+const isDeliveryRegulationText = (text: unknown) =>
+  /r[ée]gularisation\s+livraison/i.test(String(text || '').trim());
 
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
-
-type RIBInfo = {
-  type: 'link' | 'database';
-  url?: string | null;
-  iban?: string;
-  bic?: string;
-};
 
 type Store = {
   id: number;
   name: string;
   slug: string;
-  balance?: number | null;
   clerk_id?: string | null;
   description?: string | null;
   website?: string | null;
   siret?: string | null;
-  rib?: RIBInfo | null;
-  product_value?: number | null;
+  iban_bic?: { iban: string; bic: string } | null;
+  payout_created_at?: string | null;
   is_verified?: boolean;
 };
 
@@ -83,19 +79,67 @@ type Shipment = {
   delivery_network: string | null;
   dropoff_point: any | null;
   pickup_point: object | null;
-  weight: string | null;
+  weight: number | null;
   product_reference: string | null;
-  paid_value: number | null;
+  description?: string | null;
+  store_earnings_amount?: number | null;
+  customer_spent_amount?: number | null;
+  stripe_fees?: number | null;
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
-  cancel_requested?: boolean | null;
   is_final_destination?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
-  promo_codes?: string | null;
-  product_value?: number | null;
+  promo_code?: string | null;
   estimated_delivery_cost?: number | null;
+  facture_id?: number | string | null;
+  boxtal_shipping_json?: any | null;
+};
+
+type ProductItem = {
+  reference: string;
+  quantity: number;
+  description?: string | null;
+};
+
+type StripeProductLite = {
+  id: string;
+  name: string | null;
+  description: string | null;
+  unit_amount_cents: number | null;
+};
+
+type WalletTransaction = {
+  payment_id: string;
+  created: number;
+  currency: string;
+  customer?: {
+    id?: string | null;
+  };
+  product_reference?: string | null;
+  articles?: string | null;
+  promo_code?: string | null;
+  net_total: number;
+};
+
+type StockRow = {
+  id: number;
+  created_at: string;
+  store_id: number | null;
+  product_reference: string | null;
+  quantity: number | null;
+  weight: number | null;
+  image_url?: string | null;
+  bought?: number | null;
+  price?: number | null;
+  product_stripe_id: any;
+};
+
+type StockApiItem = {
+  stock: StockRow;
+  product: any | null;
+  prices: any[];
 };
 
 export default function DashboardPage() {
@@ -109,12 +153,13 @@ export default function DashboardPage() {
   const [resolvedSlug, setResolvedSlug] = useState<string | null>(null);
   const [noStore, setNoStore] = useState<boolean>(false);
   // Vérification d’existence et d’accès au dashboard gérées par Header
-  const { toast, showToast, hideToast } = useToast();
+  const { toast, showToast, hideToast, setToast } = useToast();
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [website, setWebsite] = useState('');
   const [siret, setSiret] = useState('');
+  const [tvaApplicable, setTvaApplicable] = useState(false);
   // Validation du nom (aligné sur Onboarding)
   const [isCheckingSlug, setIsCheckingSlug] = useState(false);
   const [slugExists, setSlugExists] = useState(false);
@@ -124,14 +169,8 @@ export default function DashboardPage() {
   const [lastCheckedSlug, setLastCheckedSlug] = useState('');
   const [showValidationErrors, setShowValidationErrors] = useState(false);
 
-  const [payoutMethod, setPayoutMethod] = useState<'link' | 'database'>('link');
   const [ibanInput, setIbanInput] = useState('');
   const [bicInput, setBicInput] = useState('');
-  // Ajouts pour l'UI de versement
-  const [editingRib, setEditingRib] = useState(false);
-  const [ribFile, setRibFile] = useState<File | null>(null);
-  const [uploadingRib, setUploadingRib] = useState(false);
-  const [ribUploadError, setRibUploadError] = useState<string | null>(null);
   const [ibanError, setIbanError] = useState<string | null>(null);
   const [bicError, setBicError] = useState<string | null>(null);
   const [isSubmittingPayout, setIsSubmittingPayout] = useState(false);
@@ -145,7 +184,14 @@ export default function DashboardPage() {
   const [showPayout, setShowPayout] = useState(false);
   // Navigation des sections du dashboard
   const [section, setSection] = useState<
-    'infos' | 'wallet' | 'sales' | 'clients' | 'promo' | 'support' | 'carts'
+    | 'infos'
+    | 'wallet'
+    | 'stock'
+    | 'sales'
+    | 'clients'
+    | 'promo'
+    | 'support'
+    | 'carts'
   >('infos');
   // Support: message de contact
   const [supportMessage, setSupportMessage] = useState<string>('');
@@ -170,7 +216,55 @@ export default function DashboardPage() {
   >('id');
   const [salesFilterTerm, setSalesFilterTerm] = useState<string>('');
   const [reloadingSales, setReloadingSales] = useState<boolean>(false);
-  const [reloadingBalance, setReloadingBalance] = useState<boolean>(false);
+  const [walletTransactions, setWalletTransactions] = useState<
+    WalletTransaction[]
+  >([]);
+  const [walletTransactionsLoading, setWalletTransactionsLoading] =
+    useState<boolean>(false);
+  const [walletTransactionsSlug, setWalletTransactionsSlug] = useState<
+    string | null
+  >(null);
+  const [walletTransactionsTotalNet, setWalletTransactionsTotalNet] =
+    useState<number>(0);
+  const [walletTransactionsTotalCount, setWalletTransactionsTotalCount] =
+    useState<number>(0);
+  const [walletTablePageSize, setWalletTablePageSize] = useState<number>(10);
+  const [walletTablePage, setWalletTablePage] = useState<number>(1);
+  const [stripeProductsLiteById, setStripeProductsLiteById] = useState<
+    Record<string, StripeProductLite>
+  >({});
+  const requestedStripeProductIdsRef = useRef<Set<string>>(new Set());
+
+  const [stockTitle, setStockTitle] = useState<string>('');
+  const [stockReference, setStockReference] = useState<string>('');
+  const [stockDescription, setStockDescription] = useState<string>('');
+  const [stockQuantity, setStockQuantity] = useState<string>('1');
+  const [stockWeight, setStockWeight] = useState<string>('');
+  const [stockPrice, setStockPrice] = useState<string>('');
+  const [stockImageFile, setStockImageFile] = useState<File | null>(null);
+  const [stockImagePreview, setStockImagePreview] = useState<string | null>(
+    null
+  );
+  const [stockImageUrlInput, setStockImageUrlInput] = useState<string>('');
+  const [stockImageUrls, setStockImageUrls] = useState<string[]>([]);
+  const [stockCreating, setStockCreating] = useState<boolean>(false);
+  const [editingStockId, setEditingStockId] = useState<number | null>(null);
+  const [stockItems, setStockItems] = useState<StockApiItem[]>([]);
+  const [stockLoading, setStockLoading] = useState<boolean>(false);
+  const [stockReloading, setStockReloading] = useState<boolean>(false);
+  const [stockLoadedSlug, setStockLoadedSlug] = useState<string | null>(null);
+  const [stockPageSize, setStockPageSize] = useState<number>(12);
+  const [stockPage, setStockPage] = useState<number>(1);
+  const [stockFilterField, setStockFilterField] = useState<
+    'reference' | 'titre' | 'description'
+  >('reference');
+  const [stockFilterTerm, setStockFilterTerm] = useState<string>('');
+  const [selectedStockIds, setSelectedStockIds] = useState<Set<number>>(
+    new Set()
+  );
+  const [stockCardImageIndex, setStockCardImageIndex] = useState<
+    Record<string, number>
+  >({});
   // États Clients (onglet dédié)
   const [clientsPageSize, setClientsPageSize] = useState<number>(10);
   const [clientsPage, setClientsPage] = useState<number>(1);
@@ -213,13 +307,26 @@ export default function DashboardPage() {
   } | null>(null);
   const [cartReference, setCartReference] = useState<string>('');
   const [cartDescription, setCartDescription] = useState<string>('');
+  const [cartWeightKg, setCartWeightKg] = useState<string>('');
   const [cartAmountEuro, setCartAmountEuro] = useState<string>('');
+  const [cartQuantity, setCartQuantity] = useState<string>('1');
+  const [cartStockSuggestions, setCartStockSuggestions] = useState<any[]>([]);
+  const [cartStockSuggestionsOpen, setCartStockSuggestionsOpen] =
+    useState<boolean>(false);
+  const [cartStockSuggestionsLoading, setCartStockSuggestionsLoading] =
+    useState<boolean>(false);
+  const [cartSelectedStockItem, setCartSelectedStockItem] = useState<
+    any | null
+  >(null);
   const [cartCreating, setCartCreating] = useState<boolean>(false);
   const [storeCarts, setStoreCarts] = useState<any[]>([]);
   const [cartDeletingIds, setCartDeletingIds] = useState<
     Record<number, boolean>
   >({});
   const [cartReloading, setCartReloading] = useState<boolean>(false);
+  const [cartsFilterField, setCartsFilterField] = useState<
+    'reference' | 'client' | 'description'
+  >('client');
   const [cartSearchTerm, setCartSearchTerm] = useState<string>('');
   const [cartPageSize, setCartPageSize] = useState<number>(10);
   const [cartPage, setCartPage] = useState<number>(1);
@@ -241,6 +348,99 @@ export default function DashboardPage() {
   const [cartGroupPage, setCartGroupPage] = useState<Record<string, number>>(
     {}
   );
+  const [selectedCartGroupIds, setSelectedCartGroupIds] = useState<Set<string>>(
+    new Set()
+  );
+  const [sendingRecap, setSendingRecap] = useState<boolean>(false);
+  const [recapSentByGroup, setRecapSentByGroup] = useState<
+    Record<string, boolean>
+  >({});
+  const [recapSentAtByGroup, setRecapSentAtByGroup] = useState<
+    Record<string, string | null>
+  >({});
+  useEffect(() => {
+    setSelectedCartGroupIds(prev => {
+      const next = new Set<string>();
+      const ids = new Set(
+        (storeCarts || []).map(c => String(c.customer_stripe_id || ''))
+      );
+      prev.forEach(id => {
+        if (ids.has(id)) next.add(id);
+      });
+      return next;
+    });
+  }, [storeCarts]);
+  useEffect(() => {
+    const groupsMap: Record<string, any[]> = {};
+    (storeCarts || []).forEach((c: any) => {
+      const key = String(c.customer_stripe_id || '');
+      if (!groupsMap[key]) groupsMap[key] = [];
+      groupsMap[key].push(c);
+    });
+    setRecapSentByGroup(() => {
+      const next: Record<string, boolean> = {};
+      Object.entries(groupsMap).forEach(([sid, items]) => {
+        next[sid] = (items as any[]).some((it: any) => !!it.recap_sent_at);
+      });
+      return next;
+    });
+    setRecapSentAtByGroup(() => {
+      const next: Record<string, string | null> = {};
+      Object.entries(groupsMap).forEach(([sid, items]) => {
+        const times = (items as any[])
+          .map((it: any) => String(it.recap_sent_at || '').trim())
+          .filter(Boolean)
+          .map(t => Date.parse(t))
+          .filter(n => Number.isFinite(n));
+        if (times.length > 0) {
+          const max = Math.max(...times);
+          next[sid] = new Date(max).toISOString();
+        } else {
+          next[sid] = null;
+        }
+      });
+      return next;
+    });
+  }, [storeCarts]);
+  const formatRelativeSent = (iso?: string | null) => {
+    if (!iso) return '';
+    const t = Date.parse(String(iso));
+    if (!Number.isFinite(t)) return '';
+    const diffMs = Date.now() - t;
+    const s = Math.floor(diffMs / 1000);
+    if (s < 60) return 'il y a 1min';
+    const m = Math.floor(s / 60);
+    if (m < 60) return `il y a ${m}min`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `il y a ${h}h`;
+    const d = Math.floor(h / 24);
+    if (d < 7) return `il y a ${d}j`;
+    const w = Math.floor(d / 7);
+    return `il y a ${w}sem`;
+  };
+  const handleSendRecap = async () => {
+    try {
+      if (selectedCartGroupIds.size === 0) return;
+      setSendingRecap(true);
+      const token = await getToken();
+      const payload = {
+        stripeIds: Array.from(selectedCartGroupIds),
+        storeSlug: store?.slug,
+      };
+      const resp = await apiPost('/api/carts/recap', payload, {
+        headers: { Authorization: token ? `Bearer ${token}` : '' },
+      });
+      await resp.json().catch(() => ({}));
+      await handleReloadCarts();
+      showToast('Récapitulatif envoyé', 'success');
+    } catch (e: any) {
+      const raw = e?.message || 'Erreur lors de l’envoi du récapitulatif';
+      const trimmed = (raw || '').replace(/^Error:\s*/, '');
+      showToast(trimmed, 'error');
+    } finally {
+      setSendingRecap(false);
+    }
+  };
 
   const [promoLoadedOnce, setPromoLoadedOnce] = useState<boolean>(false);
   useEffect(() => {
@@ -256,7 +456,6 @@ export default function DashboardPage() {
     useState<string>('');
   const [promoCodeName, setPromoCodeName] = useState<string>('');
   const [promoMinAmountEuro, setPromoMinAmountEuro] = useState<string>('');
-  const [promoFirstTime, setPromoFirstTime] = useState<boolean>(true);
   const [promoExpiresDate, setPromoExpiresDate] = useState<string>('');
   const [promoExpiresTime, setPromoExpiresTime] = useState<string>('');
   const [promoActive, setPromoActive] = useState<boolean>(true);
@@ -265,7 +464,7 @@ export default function DashboardPage() {
   const [promoCodes, setPromoCodes] = useState<any[]>([]);
   const [promoListLoading, setPromoListLoading] = useState<boolean>(false);
   const [promoSearchTerm, setPromoSearchTerm] = useState<string>('');
-  const [promoDeletingIds, setPromoDeletingIds] = useState<
+  const [promoTogglingIds, setPromoTogglingIds] = useState<
     Record<string, boolean>
   >({});
 
@@ -284,9 +483,23 @@ export default function DashboardPage() {
       });
       const json = await resp.json().catch(() => ({}));
       const list = Array.isArray(json?.data) ? json.data : [];
-      setCouponOptions(list);
-      if (!promoSelectedCouponId && list.length > 0) {
-        setPromoSelectedCouponId(list[0].id);
+      const filtered = list.filter((opt: any) => {
+        const label = String(opt?.name || opt?.id || '')
+          .trim()
+          .toUpperCase();
+        if (!label) return false;
+        if (label.startsWith('CREDIT-')) return false;
+        if (label.startsWith('PAYLIVE-')) return false;
+        return true;
+      });
+      setCouponOptions(filtered);
+      if (filtered.length === 0) {
+        setPromoSelectedCouponId('');
+      } else if (
+        !promoSelectedCouponId ||
+        !filtered.some((c: any) => c?.id === promoSelectedCouponId)
+      ) {
+        setPromoSelectedCouponId(filtered[0].id);
       }
     } catch (e: any) {
       const raw = e?.message || 'Erreur lors du chargement des coupons';
@@ -321,37 +534,68 @@ export default function DashboardPage() {
     }
   };
 
-  const handleDeletePromotionCode = async (id: string) => {
+  const normalizePromoToastError = (raw: any) => {
+    let msg = String(raw ?? '').trim();
+    msg = msg.replace(/^Error:\s*/i, '').trim();
+
+    const match = msg.match(/\{[\s\S]*\}/);
+    if (match?.[0]) {
+      try {
+        const parsed = JSON.parse(match[0]);
+        const inner =
+          parsed && typeof parsed === 'object' && 'error' in parsed
+            ? (parsed as any).error
+            : null;
+        if (typeof inner === 'string' && inner.trim()) msg = inner.trim();
+      } catch {}
+    }
+
+    const normalized = msg.toLowerCase();
+    if (
+      normalized.includes('promotion code') &&
+      normalized.includes('already exists')
+    ) {
+      return 'Ce nom de code existe déjà';
+    }
+    return msg || 'Erreur inconnue';
+  };
+
+  const handleSetPromotionCodeActive = async (id: string, active: boolean) => {
     try {
       if (!id) return;
-      setPromoDeletingIds(prev => ({ ...prev, [id]: true }));
+      setPromoTogglingIds(prev => ({ ...prev, [id]: true }));
       const token = await getToken();
-      const resp = await apiDelete(
-        `/api/stripe/promotion-codes/${encodeURIComponent(id)}`,
+      const resp = await apiPut(
+        `/api/stripe/promotion-codes/${encodeURIComponent(id)}/active`,
+        { active: !!active },
         {
           headers: { Authorization: token ? `Bearer ${token}` : '' },
         }
       );
       const json = await resp.json().catch(() => ({}));
       if (!resp.ok) {
-        const msg = json?.error || 'Suppression du code promo échouée';
+        const msg = json?.error || 'Mise à jour du code promo échouée';
         throw new Error(typeof msg === 'string' ? msg : 'Erreur');
       }
-      showToast('Code promo archivé', 'success');
+      showToast(active ? 'Code promo activé' : 'Code promo archivé', 'success');
       await fetchPromotionCodes();
     } catch (e: any) {
-      const raw = e?.message || 'Erreur inconnue';
-      showToast(raw, 'error');
+      showToast(normalizePromoToastError(e?.message || e), 'error');
     } finally {
-      setPromoDeletingIds(prev => ({ ...prev, [id]: false }));
+      setPromoTogglingIds(prev => ({ ...prev, [id]: false }));
     }
   };
 
   const handleCreatePromotionCode = async () => {
     try {
-      const code = (promoCodeName || '').trim();
+      const code = (promoCodeName || '').trim().toUpperCase();
       if (!promoSelectedCouponId || !code) {
         showToast('Veuillez choisir un coupon et saisir un code', 'error');
+        return;
+      }
+      const codeUpper = code.toUpperCase();
+      if (codeUpper.startsWith('CREDIT-') || codeUpper.startsWith('PAYLIVE-')) {
+        showToast('Ce préfixe est réservé (CREDIT- / PAYLIVE-)', 'error');
         return;
       }
       // Validation date d'expiration
@@ -420,12 +664,8 @@ export default function DashboardPage() {
         active: !!promoActive,
         storeSlug: store?.slug,
       };
-      if (
-        typeof minimum_amount === 'number' ||
-        typeof promoFirstTime === 'boolean'
-      ) {
+      if (typeof minimum_amount === 'number') {
         body.minimum_amount = minimum_amount;
-        body.first_time_transaction = !!promoFirstTime;
       }
       if (typeof expires_at === 'number') body.expires_at = expires_at;
       if (typeof max_redemptions === 'number')
@@ -436,8 +676,9 @@ export default function DashboardPage() {
       });
       const json = await resp.json().catch(() => ({}));
       if (!resp.ok) {
-        const msg = json?.error || 'Création du code promo échouée';
-        throw new Error(typeof msg === 'string' ? msg : 'Erreur');
+        const candidate = json?.error || 'Création du code promo échouée';
+        let msg = typeof candidate === 'string' ? candidate : 'Erreur';
+        throw new Error(normalizePromoToastError(msg));
       }
       showToast('Code promo créé', 'success');
       // Rafraîchir la liste
@@ -445,13 +686,11 @@ export default function DashboardPage() {
       // Reset partiel
       setPromoCodeName('');
       setPromoMinAmountEuro('');
-      setPromoFirstTime(false);
       setPromoExpiresDate('');
       setPromoActive(true);
       setPromoMaxRedemptions('');
     } catch (e: any) {
-      const raw = e?.message || 'Erreur inconnue';
-      showToast(raw, 'error');
+      showToast(normalizePromoToastError(e?.message || e), 'error');
     } finally {
       setPromoCreating(false);
     }
@@ -471,7 +710,31 @@ export default function DashboardPage() {
   // Popup de bienvenue après création de boutique
   const [showWelcome, setShowWelcome] = useState<boolean>(false);
   const location = useLocation();
-  const shareLink = store?.slug ? `paylive.cc/c/${store.slug}` : '';
+  const normalizeBaseUrl = (raw?: string) => {
+    const val = String(raw || '').trim();
+    if (!val) return 'http://localhost:3000';
+    if (/^https?:\/\//i.test(val)) return val.replace(/\/+$/, '');
+    const isLocal = /^(localhost|127\.0\.0\.1)/i.test(val);
+    const defaultScheme = isLocal ? 'http' : 'https';
+    return `${defaultScheme}://${val}`.replace(/\/+$/, '');
+  };
+
+  const getClientBaseUrl = () => {
+    const env = (import.meta as any)?.env || {};
+    const vercelEnv = String(env.VERCEL_ENV || env.VITE_VERCEL_ENV || '')
+      .toLowerCase()
+      .trim();
+    if (vercelEnv === 'prod') return 'https://paylive.cc';
+    if (vercelEnv === 'preview') return 'https://preview-paylive.vercel.app';
+    const fromEnv = String(env.VITE_CLIENT_URL || '').trim();
+    if (fromEnv) return normalizeBaseUrl(fromEnv);
+    if (typeof window !== 'undefined' && window.location?.origin) {
+      return normalizeBaseUrl(window.location.origin);
+    }
+    return 'http://localhost:3000';
+  };
+
+  const shareLink = store?.slug ? `${getClientBaseUrl()}/c/${store.slug}` : '';
   const [aliasCopied, setAliasCopied] = useState(false);
 
   const handleCopyAlias = async () => {
@@ -765,7 +1028,10 @@ export default function DashboardPage() {
             id: s.id ?? null,
             shipmentId: s.shipment_id ?? null,
             productReference: s.product_reference ?? null,
-            value: s.paid_value ?? null,
+            value:
+              s.customer_spent_amount != null
+                ? Math.max(0, Number(s.customer_spent_amount || 0) / 100)
+                : null,
             customerStripeId: s.customer_stripe_id ?? null,
             status: s.status ?? null,
             createdAt: s.created_at ?? null,
@@ -812,6 +1078,21 @@ export default function DashboardPage() {
       });
     } catch {
       return d as string;
+    }
+  };
+
+  const formatDateEpoch = (sec?: number | null) => {
+    if (!sec) return '—';
+    try {
+      return new Date(Number(sec) * 1000).toLocaleString('fr-FR', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return String(sec);
     }
   };
 
@@ -879,21 +1160,34 @@ export default function DashboardPage() {
   const [docStatus, setDocStatus] = useState<
     Record<number, 'idle' | 'loading' | 'success' | 'error'>
   >({});
+  const [invoiceStatus, setInvoiceStatus] = useState<
+    Record<number, 'idle' | 'loading' | 'success' | 'error'>
+  >({});
 
   const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
     const silent = options?.silent;
-    if (!s.shipment_id) {
+    const stRaw = s.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || '')
+            .trim()
+            .toUpperCase();
+    if (st !== null && st !== 'PENDING') {
       setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) {
+        showToast('Annulation non autorisée pour ce statut', 'error');
+      }
       return false;
     }
     try {
       setCancelStatus(prev => ({ ...prev, [s.id]: 'loading' }));
       const token = await getToken();
-      const url = `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
-        s.shipment_id
-      )}`;
+      const url = `${apiBase}/api/shipments/${encodeURIComponent(
+        String(s.id)
+      )}/cancel`;
       const resp = await fetch(url, {
-        method: 'DELETE',
+        method: 'POST',
         headers: {
           Authorization: token ? `Bearer ${token}` : '',
         },
@@ -901,13 +1195,21 @@ export default function DashboardPage() {
       const json = await resp.json().catch(() => ({}));
       if (resp.ok) {
         setCancelStatus(prev => ({ ...prev, [s.id]: 'success' }));
+        const updated = json?.shipment;
         setShipments(prev =>
-          (prev || []).map(it =>
-            it.id === s.id ? { ...it, cancel_requested: true } : it
-          )
+          (prev || []).map(it => {
+            if (it.id !== s.id) return it;
+            if (updated && typeof updated === 'object')
+              return { ...it, ...updated };
+            return { ...it, status: 'CANCELLED' };
+          })
         );
         if (!silent) {
-          showToast("Demande d'annulation envoyée", 'success');
+          const refs = formatProductReferenceForToast(s.product_reference);
+          showToast(
+            refs ? `Commande annulée : ${refs}` : 'Commande annulée',
+            'success'
+          );
         }
         return true;
       } else {
@@ -935,17 +1237,107 @@ export default function DashboardPage() {
     }
   };
 
+  const handleInvoice = async (s: Shipment, options?: { silent?: boolean }) => {
+    const silent = options?.silent;
+    try {
+      setInvoiceStatus(prev => ({ ...prev, [s.id]: 'loading' }));
+      if (!silent) {
+        setToast({
+          message: 'Génération de la facture…',
+          type: 'info',
+          visible: true,
+        });
+      }
+      const token = await getToken();
+      const url = `${apiBase}/api/shipments/${encodeURIComponent(String(s.id))}/invoice`;
+      const resp = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(text || 'Erreur facture');
+      }
+      const blob = await resp.blob();
+      const objectUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      const dispo = resp.headers.get('Content-Disposition') || '';
+      const filename = (() => {
+        const rfc5987 = dispo.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+        if (rfc5987?.[1]) {
+          try {
+            return decodeURIComponent(String(rfc5987[1]).trim());
+          } catch {
+            return String(rfc5987[1]).trim();
+          }
+        }
+        const quoted = dispo.match(/filename\s*=\s*"([^"]+)"/i);
+        if (quoted?.[1]) return String(quoted[1]).trim();
+        const bare = dispo.match(/filename\s*=\s*([^;]+)/i);
+        if (bare?.[1]) return String(bare[1]).trim();
+        return '';
+      })();
+      const sanitizeFilenamePart = (raw: string) =>
+        String(raw || '')
+          .trim()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/\s+/g, ' ')
+          .replace(/[^\dA-Za-z _-]+/g, '')
+          .replace(/\s+/g, '_')
+          .slice(0, 60) || 'client';
+      const stripeId = s.customer_stripe_id || '';
+      const customer = stripeId ? customersMap[stripeId] || null : null;
+      const customerName = String(customer?.name || '').trim();
+      const customerEmail = String(customer?.email || '').trim();
+      const customerForFile = sanitizeFilenamePart(
+        customerName || customerEmail || stripeId || 'client'
+      );
+      const factureIdForFile = String(s.facture_id || '').replace(
+        /[^\dA-Za-z_-]+/g,
+        '_'
+      );
+      a.download =
+        filename ||
+        `facture_${factureIdForFile || String(s.id)}_${customerForFile}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(objectUrl);
+      setInvoiceStatus(prev => ({ ...prev, [s.id]: 'success' }));
+      if (!silent) {
+        showToast('Facture téléchargée', 'success');
+      }
+      return true;
+    } catch (e: any) {
+      setInvoiceStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      const rawMsg = e?.message || 'Erreur facture';
+      if (!silent) {
+        showToast(
+          typeof rawMsg === 'string'
+            ? rawMsg.replace(/^Error:\s*/, '')
+            : 'Erreur facture',
+          'error'
+        );
+      }
+      return false;
+    }
+  };
+
   const handleShippingDocument = async (
     s: Shipment,
     options?: { silent?: boolean }
   ) => {
     const silent = options?.silent;
     try {
-      if (!s.shipment_id) return false;
+      if (!s.shipment_id && s.status != null) return false;
       setDocStatus(prev => ({ ...prev, [s.id]: 'loading' }));
       const token = await getToken();
-      const url = `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
-        s.shipment_id
+      const url = `${apiBase}/api/boxtal/shipments/${encodeURIComponent(
+        String(s.id)
       )}/shipping-document/download`;
       const resp = await fetch(url, {
         method: 'GET',
@@ -958,14 +1350,14 @@ export default function DashboardPage() {
         const objectUrl = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = objectUrl;
-        a.download = `LABEL_${s.shipment_id}.pdf`;
+        a.download = `LABEL_${s.shipment_id || s.id}.pdf`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         window.URL.revokeObjectURL(objectUrl);
         setDocStatus(prev => ({ ...prev, [s.id]: 'success' }));
         if (!silent) {
-          showToast('Bordereau créé', 'success');
+          showToast('Bordereau téléchargé', 'success');
         }
         return true;
       } else {
@@ -1003,9 +1395,14 @@ export default function DashboardPage() {
   };
 
   const handleBatchShippingDocuments = async () => {
-    const targets = selectedSales.filter(
-      s => s.document_created && s.shipment_id
-    );
+    if (hasBlockedDocSelection) {
+      showToast(
+        "Bordereau indisponible : autorisé seulement si status = null ou (status = 'PENDING' et document_created = true).",
+        'error'
+      );
+      return;
+    }
+    const targets = selectedForDoc;
     if (targets.length === 0) {
       showToast('Aucune vente sélectionnée pour le bordereau', 'error');
       return;
@@ -1032,29 +1429,76 @@ export default function DashboardPage() {
   };
 
   const handleBatchCancel = async () => {
-    const targets = selectedSales.filter(
-      s => s.shipment_id && !s.is_final_destination && !s.cancel_requested
-    );
+    const targets = selectedForCancel;
     if (targets.length === 0) {
       showToast("Aucune vente sélectionnée pour l'annulation", 'error');
       return;
     }
-    const references: string[] = [];
+    const counts = new Map<string, number>();
     for (const s of targets) {
       const ok = await handleCancel(s, { silent: true });
       if (ok) {
-        const ref = String(s.product_reference || s.shipment_id || '').trim();
-        references.push(ref || String(s.shipment_id));
+        const items = parseProductReferenceItems(s.product_reference);
+        if (items.length === 0) {
+          const fallback = String(s.product_reference || '').trim();
+          if (fallback) counts.set(fallback, (counts.get(fallback) || 0) + 1);
+        } else {
+          for (const it of items) {
+            const ref = String(it.reference || '').trim();
+            if (!ref) continue;
+            const qty = Math.max(1, Number(it.quantity || 1));
+            counts.set(ref, (counts.get(ref) || 0) + qty);
+          }
+        }
+      }
+    }
+    if (counts.size === 0) {
+      showToast("Aucune vente traitée pour l'annulation", 'error');
+      return;
+    }
+    const parts = Array.from(counts.entries()).map(([ref, qty]) => {
+      const label = ref.startsWith('prod_')
+        ? stripeProductsLiteById[ref]?.name || ref
+        : ref;
+      return `${label}(x${qty})`;
+    });
+    const msg =
+      parts.length <= 3
+        ? `Commandes annulées : ${parts.join(', ')}`
+        : `Commandes annulées : ${parts.slice(0, 3).join(', ')}...`;
+    showToast(msg, 'success');
+  };
+
+  const handleBatchInvoice = async () => {
+    const targets = selectedSales.filter(
+      s => String(s.status || '').toUpperCase() !== 'CANCELLED'
+    );
+    if (targets.length === 0) {
+      showToast('Aucune vente sélectionnée pour la facture', 'error');
+      return;
+    }
+    setToast({
+      message: 'Génération des factures…',
+      type: 'info',
+      visible: true,
+    });
+    const references: string[] = [];
+    for (const s of targets) {
+      const ok = await handleInvoice(s, { silent: true });
+      if (ok) {
+        const formatted = formatProductReferenceForToast(s.product_reference);
+        const fallback = String(s.shipment_id || s.id).trim();
+        references.push(formatted || fallback);
       }
     }
     if (references.length === 0) {
-      showToast("Aucune vente traitée pour l'annulation", 'error');
+      showToast('Aucune facture téléchargée', 'error');
       return;
     }
     const msg =
       references.length <= 3
-        ? `Annulations envoyées pour : ${references.join(', ')}`
-        : `Annulations envoyées pour ${references.length} références (${references
+        ? `Factures téléchargées pour : ${references.join(', ')}`
+        : `Factures téléchargées pour ${references.length} références (${references
             .slice(0, 3)
             .join(', ')}...)`;
     showToast(msg, 'success');
@@ -1095,33 +1539,1049 @@ export default function DashboardPage() {
     }
   };
 
-  const handleReloadBalance = async () => {
+  const fetchWalletTransactions = async (options?: { silent?: boolean }) => {
+    const slug = store?.slug;
+    if (!slug) return;
+
+    const silent = options?.silent;
     try {
-      const slug = store?.slug;
-      if (!slug) return;
-      setReloadingBalance(true);
-      setError(null);
+      setWalletTransactionsLoading(true);
+      const token = await getToken();
+      const qs = new URLSearchParams();
+      qs.set('limit', 'all');
+      const payoutRaw = String(store?.payout_created_at || '').trim();
+      if (payoutRaw) {
+        const ms = new Date(payoutRaw).getTime();
+        if (Number.isFinite(ms)) {
+          qs.set('startTimestamp', String(Math.floor(ms / 1000)));
+        }
+      }
       const resp = await fetch(
-        `${apiBase}/api/stores/${encodeURIComponent(slug)}`
+        `${apiBase}/api/stores/${encodeURIComponent(slug)}/transactions?${qs.toString()}`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
       );
       const json = await resp.json().catch(() => ({}));
-      if (!resp.ok || !json?.store) {
-        const msg = json?.error || 'Erreur lors du rechargement du solde';
-        throw new Error(typeof msg === 'string' ? msg : 'Rechargement échoué');
+      if (!resp.ok) {
+        const msg = json?.error || json?.message || 'Erreur transactions';
+        throw new Error(typeof msg === 'string' ? msg : 'Erreur transactions');
       }
-      const refreshed = json.store as Store;
-      setStore(prev => ({
-        ...(prev || refreshed),
-        balance: refreshed?.balance ?? 0,
-      }));
-      showToast('Solde rechargé', 'success');
+      setWalletTransactions(
+        Array.isArray(json?.transactions) ? json.transactions : []
+      );
+      setWalletTransactionsTotalNet(Number(json?.total_net || 0));
+      setWalletTransactionsTotalCount(Number(json?.total_count || 0));
+      setWalletTransactionsSlug(slug);
+      setWalletTablePage(1);
     } catch (e: any) {
-      const rawMsg = e?.message || 'Erreur inconnue';
-      showToast(rawMsg, 'error');
+      const rawMsg = e?.message || 'Erreur transactions';
+      if (!silent) {
+        showToast(
+          typeof rawMsg === 'string'
+            ? rawMsg.replace(/^Error:\s*/, '')
+            : 'Erreur transactions',
+          'error'
+        );
+      }
+      setWalletTransactions([]);
+      setWalletTransactionsTotalNet(0);
+      setWalletTransactionsTotalCount(0);
+      setWalletTransactionsSlug(slug);
     } finally {
-      setReloadingBalance(false);
+      setWalletTransactionsLoading(false);
     }
   };
+
+  const fetchStockProducts = async (options?: {
+    silent?: boolean;
+    background?: boolean;
+  }) => {
+    const slug = store?.slug;
+    if (!slug) return;
+
+    const silent = options?.silent;
+    const background = Boolean(options?.background);
+    try {
+      if (background) setStockReloading(true);
+      else setStockLoading(true);
+      const token = await getToken();
+      const resp = await apiGet(
+        `/api/stores/${encodeURIComponent(slug)}/stock/products`,
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg =
+          json?.error || json?.message || 'Erreur chargement des stocks';
+        throw new Error(
+          typeof msg === 'string' ? msg : 'Erreur chargement des stocks'
+        );
+      }
+      setStockItems(Array.isArray(json?.items) ? json.items : []);
+      setStockLoadedSlug(slug);
+    } catch (e: any) {
+      const rawMsg = e?.message || 'Erreur chargement des stocks';
+      if (!silent) {
+        showToast(
+          typeof rawMsg === 'string'
+            ? rawMsg.replace(/^Error:\s*/, '')
+            : 'Erreur chargement des stocks',
+          'error'
+        );
+      }
+      setStockItems([]);
+      setStockLoadedSlug(slug);
+    } finally {
+      if (background) setStockReloading(false);
+      else setStockLoading(false);
+    }
+  };
+
+  const resetStockForm = () => {
+    setStockTitle('');
+    setStockReference('');
+    setStockDescription('');
+    setStockQuantity('1');
+    setStockWeight('');
+    setStockPrice('');
+    setStockImageFile(null);
+    setStockImagePreview(null);
+    setStockImageUrlInput('');
+    setStockImageUrls([]);
+  };
+
+  const fetchStockSearchExactMatch = async (
+    storeSlug: string,
+    ref: string
+  ): Promise<StockApiItem | null> => {
+    const slug = String(storeSlug || '').trim();
+    const q = String(ref || '').trim();
+    if (!slug || q.length < 2) return null;
+    const resp = await fetch(
+      `${API_BASE_URL}/api/stores/${encodeURIComponent(
+        slug
+      )}/stock/search?q=${encodeURIComponent(q)}`
+    );
+    if (!resp.ok) return null;
+    const json = await resp.json().catch(() => null as any);
+    const items = Array.isArray(json?.items) ? json.items : [];
+    const qKey = q.toLowerCase();
+    const exact = items.find((it: any) => {
+      const r = String(it?.stock?.product_reference || '')
+        .trim()
+        .toLowerCase();
+      return r === qKey;
+    });
+    return (exact as StockApiItem) || null;
+  };
+
+  const handleCreateStockProduct = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const slug = store?.slug;
+    if (!slug) return;
+
+    if (!stockImageFile) {
+      showToast('Veuillez uploader une image', 'error');
+      return;
+    }
+
+    const titleTrim = stockTitle.trim();
+    const referenceTrim = stockReference.trim();
+    const descTrim = stockDescription.trim();
+    const priceTxt = String(stockPrice || '').trim();
+
+    if (!titleTrim || !referenceTrim || !descTrim) {
+      showToast(
+        'Veuillez renseigner le titre, la référence et la description',
+        'error'
+      );
+      return;
+    }
+    if (
+      isDeliveryRegulationText(titleTrim) ||
+      isDeliveryRegulationText(referenceTrim)
+    ) {
+      showToast('Référence interdite', 'error');
+      return;
+    }
+
+    let existing: StockApiItem | null = null;
+    try {
+      existing = await fetchStockSearchExactMatch(slug, referenceTrim);
+    } catch {
+      showToast('Erreur vérification de la référence', 'error');
+      return;
+    }
+    if (existing) {
+      showToast('Cette référence existe déjà dans le stock', 'error');
+      return;
+    }
+
+    const qtyRaw = parseInt(String(stockQuantity || '').trim(), 10);
+    const quantity = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : NaN;
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      showToast('Quantité invalide (>= 1)', 'error');
+      return;
+    }
+
+    const weightTxt = String(stockWeight || '').trim();
+    if (!weightTxt) {
+      showToast('Veuillez renseigner le poids', 'error');
+      return;
+    }
+    const weight = parseFloat(weightTxt.replace(',', '.'));
+    if (!(Number.isFinite(weight) && weight >= 0)) {
+      showToast('Poids invalide (>= 0)', 'error');
+      return;
+    }
+
+    if (!priceTxt) {
+      showToast('Veuillez renseigner le prix', 'error');
+      return;
+    }
+    const priceEur = parseFloat(priceTxt.replace(',', '.'));
+    if (!(Number.isFinite(priceEur) && priceEur > 0)) {
+      showToast('Prix invalide (> 0)', 'error');
+      return;
+    }
+
+    try {
+      setStockCreating(true);
+      const token = await getToken();
+
+      const normalizedUrls = Array.from(
+        new Set(
+          (stockImageUrls || [])
+            .map(u => String(u || '').trim())
+            .filter(Boolean)
+        )
+      );
+
+      let uploadedUrl: string | null = null;
+      if (stockImageFile) {
+        const fd = new FormData();
+        fd.append('slug', slug);
+        fd.append('image', stockImageFile);
+        const upResp = await apiPostForm('/api/upload/stock-product', fd, {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        });
+        const upJson = await upResp.json().catch(() => ({}));
+        if (!upResp.ok) {
+          const msg = upJson?.error || upJson?.message || 'Upload échoué';
+          throw new Error(typeof msg === 'string' ? msg : 'Upload échoué');
+        }
+        uploadedUrl = String(upJson?.url || '').trim() || null;
+      }
+
+      const allImageUrls = Array.from(
+        new Set([uploadedUrl, ...normalizedUrls].filter(Boolean) as string[])
+      );
+      const imageUrlJoined =
+        allImageUrls.length > 0 ? allImageUrls.join(',') : null;
+
+      const resp = await apiPost(
+        `/api/stores/${encodeURIComponent(slug)}/stock/products`,
+        {
+          title: titleTrim,
+          reference: referenceTrim,
+          description: descTrim,
+          quantity,
+          weight,
+          price: priceEur,
+          image_url: imageUrlJoined,
+        },
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || json?.message || 'Création échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Création échouée');
+      }
+
+      showToast('Produit créé', 'success');
+      setEditingStockId(null);
+      resetStockForm();
+      await fetchStockProducts({ silent: true, background: true });
+    } catch (e: any) {
+      const rawMsg = e?.message || 'Création échouée';
+      showToast(
+        typeof rawMsg === 'string'
+          ? rawMsg.replace(/^Error:\s*/, '')
+          : 'Erreur',
+        'error'
+      );
+    } finally {
+      setStockCreating(false);
+    }
+  };
+
+  const handleUpdateStockProduct = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const slug = store?.slug;
+    if (!slug) return;
+
+    const stockId = Number(editingStockId);
+    if (!Number.isFinite(stockId) || stockId <= 0) return;
+
+    if (!stockImageFile && !stockImagePreview) {
+      showToast('Veuillez uploader une image', 'error');
+      return;
+    }
+
+    const titleTrim = stockTitle.trim();
+    const referenceTrim = stockReference.trim();
+    const descTrim = stockDescription.trim();
+    const priceTxt = String(stockPrice || '').trim();
+
+    if (!titleTrim || !referenceTrim || !descTrim) {
+      showToast(
+        'Veuillez renseigner le titre, la référence et la description',
+        'error'
+      );
+      return;
+    }
+    if (
+      isDeliveryRegulationText(titleTrim) ||
+      isDeliveryRegulationText(referenceTrim)
+    ) {
+      showToast('Référence interdite', 'error');
+      return;
+    }
+
+    let existing: StockApiItem | null = null;
+    try {
+      existing = await fetchStockSearchExactMatch(slug, referenceTrim);
+    } catch {
+      showToast('Erreur vérification de la référence', 'error');
+      return;
+    }
+    const existingId = Number((existing as any)?.stock?.id ?? 0);
+    if (existing && existingId !== stockId) {
+      showToast('Cette référence existe déjà dans le stock', 'error');
+      return;
+    }
+
+    const qtyRaw = parseInt(String(stockQuantity || '').trim(), 10);
+    const quantity = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : NaN;
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      showToast('Quantité invalide (>= 1)', 'error');
+      return;
+    }
+
+    const weightTxt = String(stockWeight || '').trim();
+    if (!weightTxt) {
+      showToast('Veuillez renseigner le poids', 'error');
+      return;
+    }
+    const weight = parseFloat(weightTxt.replace(',', '.'));
+    if (!(Number.isFinite(weight) && weight >= 0)) {
+      showToast('Poids invalide (>= 0)', 'error');
+      return;
+    }
+
+    if (!priceTxt) {
+      showToast('Veuillez renseigner le prix', 'error');
+      return;
+    }
+    const priceEur = parseFloat(priceTxt.replace(',', '.'));
+    if (!(Number.isFinite(priceEur) && priceEur > 0)) {
+      showToast('Prix invalide (> 0)', 'error');
+      return;
+    }
+
+    try {
+      setStockCreating(true);
+      const token = await getToken();
+
+      const normalizedUrls = Array.from(
+        new Set(
+          (stockImageUrls || [])
+            .map(u => String(u || '').trim())
+            .filter(Boolean)
+        )
+      );
+
+      const existingPreviewUrl =
+        !stockImageFile && /^https?:\/\//.test(String(stockImagePreview || ''))
+          ? String(stockImagePreview || '').trim()
+          : null;
+
+      let uploadedUrl: string | null = null;
+      if (stockImageFile) {
+        const fd = new FormData();
+        fd.append('slug', slug);
+        fd.append('image', stockImageFile);
+        const upResp = await apiPostForm('/api/upload/stock-product', fd, {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        });
+        const upJson = await upResp.json().catch(() => ({}));
+        if (!upResp.ok) {
+          const msg = upJson?.error || upJson?.message || 'Upload échoué';
+          throw new Error(typeof msg === 'string' ? msg : 'Upload échoué');
+        }
+        uploadedUrl = String(upJson?.url || '').trim() || null;
+      }
+
+      const allImageUrls = Array.from(
+        new Set(
+          [uploadedUrl, existingPreviewUrl, ...normalizedUrls].filter(
+            Boolean
+          ) as string[]
+        )
+      );
+      const imageUrlJoined =
+        allImageUrls.length > 0 ? allImageUrls.join(',') : null;
+
+      const resp = await apiPut(
+        `/api/stores/${encodeURIComponent(slug)}/stock/products/${stockId}`,
+        {
+          title: titleTrim,
+          reference: referenceTrim,
+          description: descTrim,
+          quantity,
+          weight,
+          price: priceEur,
+          image_url: imageUrlJoined,
+        },
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || json?.message || 'Modification échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Modification échouée');
+      }
+
+      showToast('Produit modifié', 'success');
+      setEditingStockId(null);
+      resetStockForm();
+      await fetchStockProducts({ silent: true, background: true });
+    } catch (e: any) {
+      const rawMsg = e?.message || 'Modification échouée';
+      showToast(
+        typeof rawMsg === 'string'
+          ? rawMsg.replace(/^Error:\s*/, '')
+          : 'Erreur',
+        'error'
+      );
+    } finally {
+      setStockCreating(false);
+    }
+  };
+
+  const handleSubmitStockProduct = async (e: React.FormEvent) => {
+    if (editingStockId) return handleUpdateStockProduct(e);
+    return handleCreateStockProduct(e);
+  };
+
+  const startEditStockProduct = (it: StockApiItem, idx: number) => {
+    const d = getStockDisplay(it, idx);
+    const stock = it?.stock as any;
+    const stockId = Number(d.stockId);
+    if (!Number.isFinite(stockId) || stockId <= 0) return;
+
+    setEditingStockId(stockId);
+    setStockTitle(d.title === '—' ? '' : d.title);
+    setStockReference(d.ref === '—' ? '' : d.ref);
+    setStockDescription(d.description || '');
+
+    const qty = Number(stock?.quantity);
+    setStockQuantity(
+      Number.isFinite(qty) && qty > 0 ? String(Math.floor(qty)) : '1'
+    );
+
+    const w = stock?.weight;
+    setStockWeight(w == null ? '' : String(w));
+
+    setStockPrice(d.priceEur == null ? '' : String(d.priceEur));
+
+    setStockImageFile(null);
+    setStockImageUrlInput('');
+    const urls = Array.from(new Set(d.imageUrls));
+    setStockImagePreview(urls[0] || null);
+    setStockImageUrls(urls.slice(1));
+  };
+
+  const handleStockImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    if (!file) {
+      setStockImageFile(null);
+      setStockImagePreview(null);
+      return;
+    }
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!allowed.includes(file.type)) {
+      showToast('Image invalide. Formats: JPEG, PNG ou WEBP.', 'error');
+      e.target.value = '';
+      return;
+    }
+    const max = 2 * 1024 * 1024;
+    if (file.size > max) {
+      showToast('Image trop lourde (max 2 Mo).', 'error');
+      e.target.value = '';
+      return;
+    }
+    setStockImageFile(file);
+    const url = URL.createObjectURL(file);
+    setStockImagePreview(url);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (stockImagePreview) {
+        try {
+          URL.revokeObjectURL(stockImagePreview);
+        } catch {}
+      }
+    };
+  }, [stockImagePreview]);
+
+  const addStockImageUrl = () => {
+    const raw = String(stockImageUrlInput || '').trim();
+    if (!raw) return;
+    let normalized = '';
+    try {
+      const url = new URL(raw);
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        showToast('URL invalide (http/https uniquement)', 'error');
+        return;
+      }
+      normalized = url.toString();
+    } catch {
+      showToast('URL invalide', 'error');
+      return;
+    }
+
+    setStockImageUrls(prev => {
+      const next = new Set(
+        (prev || []).map(u => String(u || '').trim()).filter(Boolean)
+      );
+      next.add(normalized);
+      return Array.from(next);
+    });
+    setStockImageUrlInput('');
+  };
+
+  const removeStockImageUrl = (url: string) => {
+    const target = String(url || '').trim();
+    setStockImageUrls(prev =>
+      (prev || []).filter(u => String(u || '').trim() !== target)
+    );
+  };
+
+  useEffect(() => {
+    const slug = store?.slug;
+    if (section !== 'wallet') return;
+    if (!slug) return;
+    if (walletTransactionsLoading) return;
+    if (walletTransactionsSlug === slug) return;
+    fetchWalletTransactions({ silent: true }).catch(() => {});
+  }, [section, store?.slug, walletTransactionsLoading, walletTransactionsSlug]);
+
+  useEffect(() => {
+    const slug = store?.slug;
+    if (section !== 'stock') return;
+    if (!slug) return;
+    if (stockLoading) return;
+    if (stockLoadedSlug === slug) return;
+    fetchStockProducts({ silent: true }).catch(() => {});
+  }, [section, store?.slug, stockLoading, stockLoadedSlug]);
+
+  const walletTableTotalPages = Math.max(
+    1,
+    Math.ceil(walletTransactions.length / walletTablePageSize)
+  );
+  const walletTableStartIndex = (walletTablePage - 1) * walletTablePageSize;
+  const visibleWalletTransactions = walletTransactions.slice(
+    walletTableStartIndex,
+    walletTableStartIndex + walletTablePageSize
+  );
+
+  useEffect(() => {
+    const newTotal = Math.max(
+      1,
+      Math.ceil(walletTransactions.length / walletTablePageSize)
+    );
+    if (walletTablePage > newTotal) setWalletTablePage(newTotal);
+    if (walletTablePage < 1) setWalletTablePage(1);
+  }, [walletTransactions, walletTablePageSize]);
+
+  const getStockDisplay = (it: StockApiItem, idx: number) => {
+    const stock = it?.stock;
+    const product = it?.product;
+    const prices = Array.isArray(it?.prices) ? it.prices : [];
+    const firstPrice = prices[0] || null;
+    const unitAmount = Number(firstPrice?.unit_amount || 0);
+    const priceEur = unitAmount > 0 ? unitAmount / 100 : null;
+
+    const ref =
+      String(stock?.product_reference || '').trim() ||
+      String(product?.metadata?.product_reference || '').trim() ||
+      '—';
+    const title =
+      String(product?.name || '').trim() ||
+      String(product?.metadata?.title || '').trim() ||
+      '—';
+    const description = String(product?.description || '').trim();
+
+    const qty = Number(stock?.quantity || 0);
+    const qtyLabel = Number.isFinite(qty) && qty > 0 ? qty : 0;
+    const w = stock?.weight;
+    const weightLabel =
+      w == null
+        ? ''
+        : `${Number(w)
+            .toFixed(3)
+            .replace(/\.?0+$/, '')} kg`;
+
+    const boughtCount = Math.max(
+      0,
+      Math.floor(Number((stock as any)?.bought || 0))
+    );
+    const stockId = Number(stock?.id);
+    const idKey = `${Number.isFinite(stockId) ? stockId : idx}`;
+
+    const rawStockImages = String((stock as any)?.image_url || '').trim();
+    const stockImageUrls = rawStockImages
+      ? rawStockImages
+          .split(',')
+          .map(s => String(s || '').trim())
+          .filter(Boolean)
+      : [];
+    const productImages = Array.isArray(product?.images)
+      ? (product.images as any[])
+          .map(u => String(u || '').trim())
+          .filter(Boolean)
+      : [];
+    const imageUrls =
+      stockImageUrls.length > 0
+        ? Array.from(new Set(stockImageUrls))
+        : Array.from(new Set(productImages));
+
+    return {
+      stockId,
+      idKey,
+      title,
+      ref,
+      description,
+      qtyLabel,
+      weightLabel,
+      priceEur,
+      boughtCount,
+      imageUrls,
+      hasStockImages: stockImageUrls.length > 0,
+      createdAt: stock?.created_at,
+    };
+  };
+
+  const stockFilterTermTrim = stockFilterTerm.trim().toLowerCase();
+  const filteredStockItems = (stockItems || []).filter((it, idx) => {
+    if (!stockFilterTermTrim) return true;
+    const d = getStockDisplay(it, idx);
+    const hay =
+      stockFilterField === 'reference'
+        ? d.ref
+        : stockFilterField === 'titre'
+          ? d.title
+          : d.description;
+    return String(hay || '')
+      .toLowerCase()
+      .includes(stockFilterTermTrim);
+  });
+
+  const stockTotalPages = Math.max(
+    1,
+    Math.ceil(filteredStockItems.length / stockPageSize)
+  );
+  const stockStartIndex = (stockPage - 1) * stockPageSize;
+  const visibleStockItems = filteredStockItems.slice(
+    stockStartIndex,
+    stockStartIndex + stockPageSize
+  );
+
+  useEffect(() => {
+    setSelectedStockIds(prev => {
+      const next = new Set<number>();
+      const ids = new Set((stockItems || []).map(it => Number(it?.stock?.id)));
+      prev.forEach(id => {
+        if (ids.has(id)) next.add(id);
+      });
+      return next;
+    });
+  }, [stockItems]);
+
+  useEffect(() => {
+    if (stockPage > stockTotalPages) setStockPage(stockTotalPages);
+    if (stockPage < 1) setStockPage(1);
+  }, [stockTotalPages]);
+
+  const visibleStockIds = visibleStockItems
+    .map(it => Number(it?.stock?.id))
+    .filter(n => Number.isFinite(n));
+  const allVisibleStockSelected =
+    visibleStockIds.length > 0 &&
+    visibleStockIds.every(id => selectedStockIds.has(id));
+
+  const toggleSelectAllVisibleStock = () => {
+    setSelectedStockIds(prev => {
+      const next = new Set(prev);
+      if (allVisibleStockSelected) {
+        visibleStockIds.forEach(id => next.delete(id));
+      } else {
+        visibleStockIds.forEach(id => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const toggleStockSelected = (id: number) => {
+    const n = Number(id);
+    if (!Number.isFinite(n)) return;
+    setSelectedStockIds(prev => {
+      const next = new Set(prev);
+      if (next.has(n)) next.delete(n);
+      else next.add(n);
+      return next;
+    });
+  };
+
+  const handleBulkDeleteSelectedStock = async () => {
+    const slug = store?.slug;
+    if (!slug) return;
+    if (selectedStockIds.size === 0) return;
+
+    const ids = Array.from(selectedStockIds).filter(id => Number.isFinite(id));
+    setStockLoading(true);
+
+    setStockItems(prev =>
+      (prev || []).filter(it => {
+        const id = Number(it?.stock?.id);
+        return !Number.isFinite(id) || !selectedStockIds.has(id);
+      })
+    );
+    setSelectedStockIds(new Set());
+
+    try {
+      const token = await getToken();
+      const resp = await fetch(
+        `${API_BASE_URL}/api/stores/${encodeURIComponent(slug)}/stock/products`,
+        {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+          body: JSON.stringify({ ids }),
+        }
+      );
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const msg = json?.error || json?.message || 'Suppression échouée';
+        throw new Error(typeof msg === 'string' ? msg : 'Suppression échouée');
+      }
+
+      const results = Array.isArray(json?.results) ? json.results : [];
+      const failed = results.filter((r: any) => r && r.ok === false);
+      if (failed.length > 0) {
+        showToast(
+          `${failed.length} suppression${failed.length > 1 ? 's' : ''} échouée${
+            failed.length > 1 ? 's' : ''
+          }`,
+          'error'
+        );
+      } else {
+        showToast('Suppression effectuée', 'success');
+      }
+    } catch (e: any) {
+      const rawMsg = e?.message || 'Suppression échouée';
+      showToast(
+        typeof rawMsg === 'string'
+          ? rawMsg.replace(/^Error:\s*/, '')
+          : 'Suppression échouée',
+        'error'
+      );
+    } finally {
+      await fetchStockProducts({ silent: true, background: true }).catch(
+        () => {}
+      );
+      setStockLoading(false);
+    }
+  };
+
+  const extractStripeProductIds = useCallback(
+    (raw: string | null | undefined): string[] =>
+      String(raw || '')
+        .split(';')
+        .map(s => String(s || '').trim())
+        .filter(s => s.startsWith('prod_')),
+    []
+  );
+
+  const ensureStripeProductsLoaded = useCallback(
+    async (ids: string[]) => {
+      const unique = Array.from(
+        new Set(
+          (ids || [])
+            .map(s => String(s || '').trim())
+            .filter(s => s.startsWith('prod_'))
+        )
+      );
+      if (unique.length === 0) return;
+
+      const toFetch: string[] = [];
+      for (const id of unique) {
+        if (stripeProductsLiteById[id]) continue;
+        if (requestedStripeProductIdsRef.current.has(id)) continue;
+        requestedStripeProductIdsRef.current.add(id);
+        toFetch.push(id);
+      }
+      if (toFetch.length === 0) return;
+
+      const token = await getToken();
+      const resp = await apiPost(
+        '/api/stripe/products/by-ids',
+        { ids: toFetch },
+        { headers: { Authorization: token ? `Bearer ${token}` : '' } }
+      );
+      const json = await resp.json().catch(() => ({}) as any);
+      const products: StripeProductLite[] = Array.isArray(json?.products)
+        ? json.products
+        : [];
+      if (products.length === 0) return;
+
+      setStripeProductsLiteById(prev => {
+        const next = { ...prev };
+        for (const p of products) {
+          const id = String((p as any)?.id || '').trim();
+          if (!id || !id.startsWith('prod_')) continue;
+          next[id] = {
+            id,
+            name: String((p as any)?.name || '').trim() || null,
+            description: String((p as any)?.description || '').trim() || null,
+            unit_amount_cents:
+              typeof (p as any)?.unit_amount_cents === 'number' &&
+              Number.isFinite((p as any).unit_amount_cents)
+                ? (p as any).unit_amount_cents
+                : null,
+          };
+        }
+        return next;
+      });
+    },
+    [getToken, stripeProductsLiteById]
+  );
+
+  const parseProductReferenceItems = (
+    raw: string | null | undefined
+  ): ProductItem[] => {
+    const txt = String(raw || '').trim();
+    if (!txt) return [];
+
+    const parts = txt
+      .split(';')
+      .map(s => String(s || '').trim())
+      .filter(Boolean);
+
+    const onlyStripeIds =
+      parts.length > 0 && parts.every(p => String(p || '').startsWith('prod_'));
+    if (onlyStripeIds) {
+      const counts = new Map<string, number>();
+      for (const pid of parts) {
+        const id = String(pid || '').trim();
+        if (!id) continue;
+        counts.set(id, (counts.get(id) || 0) + 1);
+      }
+      return Array.from(counts.entries()).map(([reference, quantity]) => ({
+        reference,
+        quantity,
+        description: null,
+      }));
+    }
+
+    const m = new Map<string, { quantity: number; description?: string }>();
+    for (const p of parts) {
+      const seg = String(p || '').trim();
+      if (!seg) continue;
+
+      const idx = seg.indexOf('**');
+      const refRaw = idx >= 0 ? seg.slice(0, idx) : seg;
+      const tailRaw = idx >= 0 ? seg.slice(idx + 2) : '';
+
+      let reference = String(refRaw || '').trim();
+      let tail = String(tailRaw || '').trim();
+
+      let quantity = 1;
+      let description = '';
+
+      if (tail) {
+        const mm = tail.match(/^(\d+)?\s*(?:\((.*)\))?$/);
+        if (mm?.[1]) {
+          const q = Number(mm[1]);
+          if (Number.isFinite(q) && q > 0) quantity = Math.floor(q);
+        }
+        if (typeof mm?.[2] === 'string') description = mm[2];
+      } else {
+        const mm = reference.match(/^(.*?)(?:\((.*)\))?$/);
+        if (mm?.[2]) description = mm[2];
+      }
+
+      reference = reference.replace(/\((.*)\)$/, '').trim();
+      description = String(description || '').trim();
+      if (!reference) continue;
+
+      const prev = m.get(reference);
+      const nextQty =
+        (prev?.quantity || 0) + (Number.isFinite(quantity) ? quantity : 1);
+      const nextDesc = description || prev?.description || '';
+      m.set(reference, {
+        quantity: nextQty,
+        description: nextDesc || undefined,
+      });
+    }
+
+    return Array.from(m.entries()).map(([reference, v]) => ({
+      reference,
+      quantity: v.quantity,
+      description: v.description || null,
+    }));
+  };
+
+  const formatProductReferenceForToast = (raw: string | null | undefined) => {
+    const items = parseProductReferenceItems(raw);
+    if (items.length === 0) return '';
+    return items
+      .map(it => {
+        const ref = String(it.reference || '').trim();
+        const label = ref.startsWith('prod_')
+          ? stripeProductsLiteById[ref]?.name || ref
+          : ref;
+        return `${label}(x${Math.max(1, Number(it.quantity || 1))})`;
+      })
+      .join(', ');
+  };
+
+  const getShipmentProductItems = (s: Shipment): ProductItem[] =>
+    parseProductReferenceItems(s.product_reference);
+
+  const formatShipmentProductReference = (s: Shipment) => {
+    const items = getShipmentProductItems(s);
+    if (items.length === 0) return '—';
+    return items
+      .map(it => {
+        const ref = String(it.reference || '').trim();
+        const label = ref.startsWith('prod_')
+          ? stripeProductsLiteById[ref]?.name || ref
+          : ref;
+        return `${label}(x${it.quantity})`;
+      })
+      .join(', ');
+  };
+
+  const renderShipmentProductReference = (s: Shipment) => {
+    const items = getShipmentProductItems(s);
+    if (items.length === 0) return '—';
+    return (
+      <div className='space-y-2'>
+        {items.map((it, idx) => {
+          const ref = String(it.reference || '').trim();
+          const sp = ref.startsWith('prod_')
+            ? stripeProductsLiteById[ref]
+            : null;
+          const label = sp?.name || ref;
+          const d =
+            String(sp?.description || '').trim() ||
+            String(it.description || '').trim();
+          const qtyText = `qté: ${Math.max(1, Number(it.quantity || 1))}`;
+          const price =
+            sp?.unit_amount_cents != null
+              ? formatValue(
+                  Math.max(0, Number(sp.unit_amount_cents || 0)) / 100
+                )
+              : '';
+          return (
+            <div key={`${s.id}-${idx}`} className='space-y-0.5'>
+              <div className='font-medium truncate max-w-[280px]' title={label}>
+                {label}
+              </div>
+              {d || price || qtyText ? (
+                <div
+                  className='text-xs text-gray-500 truncate max-w-[280px]'
+                  title={[d, qtyText, price].filter(Boolean).join(' — ')}
+                >
+                  {[d, qtyText, price].filter(Boolean).join(' — ')}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const renderProductReferenceFromRaw = (
+    raw: string | null | undefined,
+    keyPrefix: string
+  ) => {
+    const items = parseProductReferenceItems(raw);
+    if (items.length === 0) return '—';
+    return (
+      <div className='space-y-2'>
+        {items.map((it, idx) => {
+          const ref = String(it.reference || '').trim();
+          const sp = ref.startsWith('prod_')
+            ? stripeProductsLiteById[ref]
+            : null;
+          const label = sp?.name || ref;
+          const d =
+            String(sp?.description || '').trim() ||
+            String(it.description || '').trim();
+          const qtyText = `qté: ${Math.max(1, Number(it.quantity || 1))}`;
+          const price =
+            sp?.unit_amount_cents != null
+              ? formatValue(
+                  Math.max(0, Number(sp.unit_amount_cents || 0)) / 100
+                )
+              : '';
+          return (
+            <div key={`${keyPrefix}-${idx}`} className='space-y-0.5'>
+              <div className='font-medium truncate max-w-[280px]' title={label}>
+                {label}
+              </div>
+              {d || price || qtyText ? (
+                <div
+                  className='text-xs text-gray-500 truncate max-w-[280px]'
+                  title={[d, qtyText, price].filter(Boolean).join(' — ')}
+                >
+                  {[d, qtyText, price].filter(Boolean).join(' — ')}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  useEffect(() => {
+    const ids = Array.from(
+      new Set(
+        (shipments || []).flatMap(s =>
+          extractStripeProductIds(s.product_reference)
+        )
+      )
+    );
+    if (ids.length === 0) return;
+    ensureStripeProductsLoaded(ids).catch(() => {});
+  }, [extractStripeProductIds, ensureStripeProductsLoaded, shipments]);
 
   // Filtre Mes ventes: champ sélectionné + terme de recherche
   const filteredShipments = (shipments || []).filter(s => {
@@ -1154,8 +2614,9 @@ export default function DashboardPage() {
         email.includes(term)
       );
     }
-    const refStr = (s.product_reference || '').toLowerCase();
-    return refStr.includes(term);
+    const refStr = formatShipmentProductReference(s).toLowerCase();
+    const rawRefStr = String(s.product_reference || '').toLowerCase();
+    return refStr.includes(term) || rawRefStr.includes(term);
   });
   const totalPages = Math.max(
     1,
@@ -1169,11 +2630,35 @@ export default function DashboardPage() {
   const selectedSales = (shipments || []).filter(s =>
     selectedSaleIds.has(s.id)
   );
-  const selectedForDoc = selectedSales.filter(
-    s => s.document_created && s.shipment_id
+  const selectedForInvoice = selectedSales.filter(
+    s => String(s.status || '').toUpperCase() !== 'CANCELLED'
   );
+  const selectedForDoc = selectedSales.filter(s => {
+    const stRaw = s.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || '')
+            .trim()
+            .toUpperCase();
+    return st === null || (st === 'PENDING' && s.document_created === true);
+  });
+  const hasBlockedDocSelection = selectedSales.some(s => {
+    const stRaw = s.status;
+    const st =
+      stRaw == null
+        ? null
+        : String(stRaw || '')
+            .trim()
+            .toUpperCase();
+    return !(st === null || (st === 'PENDING' && s.document_created === true));
+  });
+  const shippingDocDisabled =
+    selectedSales.length === 0 || hasBlockedDocSelection;
   const selectedForCancel = selectedSales.filter(
-    s => s.shipment_id && !s.is_final_destination && !s.cancel_requested
+    s =>
+      !s.is_final_destination &&
+      (s.status == null || String(s.status).toUpperCase() === 'PENDING')
   );
   const visibleSaleIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
@@ -1186,6 +2671,10 @@ export default function DashboardPage() {
       else next.add(id);
       return next;
     });
+  };
+  const isInteractiveRowClick = (target: EventTarget | null) => {
+    const el = target as HTMLElement | null;
+    return Boolean(el?.closest?.('button,a,input,select,textarea,label'));
   };
   const toggleSelectAllVisible = () => {
     setSelectedSaleIds(prev => {
@@ -1241,8 +2730,9 @@ export default function DashboardPage() {
           email.includes(term)
         );
       }
-      const refStr = (s.product_reference || '').toLowerCase();
-      return refStr.includes(term);
+      const refStr = formatShipmentProductReference(s).toLowerCase();
+      const rawRefStr = String(s.product_reference || '').toLowerCase();
+      return refStr.includes(term) || rawRefStr.includes(term);
     }).length;
     const newTotal = Math.max(1, Math.ceil(filteredLength / pageSize));
     if (page > newTotal) setPage(newTotal);
@@ -1251,10 +2741,24 @@ export default function DashboardPage() {
 
   // Chargement des clients Stripe basés sur les customer_stripe_id des shipments
   useEffect(() => {
-    if (section !== 'clients' && section !== 'sales') return;
-    const ids = Array.from(
-      new Set((shipments || []).map(s => s.customer_stripe_id).filter(Boolean))
-    ) as string[];
+    if (section !== 'clients' && section !== 'sales' && section !== 'wallet')
+      return;
+    const ids = (() => {
+      if (section === 'wallet') {
+        return Array.from(
+          new Set(
+            (walletTransactions || [])
+              .map(t => (t as any)?.customer?.id)
+              .filter(Boolean)
+          )
+        ) as string[];
+      }
+      return Array.from(
+        new Set(
+          (shipments || []).map(s => s.customer_stripe_id).filter(Boolean)
+        )
+      ) as string[];
+    })();
     const idsToFetch = ids.filter(id => !(id in customersMap));
     if (idsToFetch.length === 0) return;
     setCustomersLoading(true);
@@ -1289,7 +2793,7 @@ export default function DashboardPage() {
         });
       })
       .finally(() => setCustomersLoading(false));
-  }, [section, shipments]);
+  }, [section, shipments, walletTransactions]);
 
   // Charger les réseaux sociaux (comptes externes) Clerk pour les clients Stripe qui exposent clerkUserId
   useEffect(() => {
@@ -1427,10 +2931,126 @@ export default function DashboardPage() {
     }
   };
 
+  useEffect(() => {
+    if (section !== 'carts') return;
+    const storeSlug = String(store?.slug || '').trim();
+    const q = String(cartReference || '').trim();
+    const selectedRef = String(
+      (cartSelectedStockItem as any)?.stock?.product_reference || ''
+    )
+      .trim()
+      .toLowerCase();
+    if (selectedRef && selectedRef === q.toLowerCase()) {
+      setCartStockSuggestions([]);
+      setCartStockSuggestionsOpen(false);
+      return;
+    }
+    if (!storeSlug || q.length < 2) {
+      setCartStockSuggestions([]);
+      setCartStockSuggestionsOpen(false);
+      if (!q) setCartSelectedStockItem(null);
+      return;
+    }
+
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setCartStockSuggestionsLoading(true);
+      try {
+        const resp = await fetch(
+          `${API_BASE_URL}/api/stores/${encodeURIComponent(
+            storeSlug
+          )}/stock/search?q=${encodeURIComponent(q)}`
+        );
+        const json = await resp.json().catch(() => null as any);
+        if (cancelled) return;
+        if (!resp.ok) {
+          setCartStockSuggestions([]);
+          setCartStockSuggestionsOpen(false);
+          return;
+        }
+        const items = Array.isArray(json?.items) ? json.items : [];
+        setCartStockSuggestions(items);
+        setCartStockSuggestionsOpen(true);
+      } finally {
+        if (!cancelled) setCartStockSuggestionsLoading(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [section, store?.slug, cartReference, cartSelectedStockItem]);
+
+  const applyCartSuggestion = (s: any) => {
+    const stock = s?.stock || {};
+    const product = s?.product || null;
+
+    const ref = String(stock?.product_reference || '').trim();
+    const qtyRaw = stock?.quantity;
+    const qtyParsed =
+      typeof qtyRaw === 'number'
+        ? qtyRaw
+        : typeof qtyRaw === 'string'
+          ? Number(qtyRaw)
+          : qtyRaw === null || qtyRaw === undefined
+            ? null
+            : Number(qtyRaw);
+    if (!ref) return;
+    if (qtyParsed !== null && Number.isFinite(qtyParsed) && qtyParsed <= 0)
+      return;
+    const qtyAvailable =
+      qtyParsed !== null && Number.isFinite(qtyParsed) && qtyParsed > 0
+        ? Math.floor(qtyParsed)
+        : 1;
+
+    const title = String(product?.name || ref || '').trim() || ref;
+    const priceRaw = Number((s as any)?.unit_price);
+    const price = Number.isFinite(priceRaw) && priceRaw > 0 ? priceRaw : null;
+
+    const stripeWeightRaw = (product as any)?.metadata?.weight_kg;
+    const stripeWeightParsed = stripeWeightRaw
+      ? Number(String(stripeWeightRaw).replace(',', '.'))
+      : NaN;
+    const stockWeightRaw = Number(stock?.weight);
+    const weight =
+      Number.isFinite(stripeWeightParsed) && stripeWeightParsed >= 0
+        ? stripeWeightParsed
+        : Number.isFinite(stockWeightRaw) && stockWeightRaw >= 0
+          ? stockWeightRaw
+          : null;
+
+    setCartSelectedStockItem(s);
+    setCartReference(ref);
+    setCartDescription(title);
+    setCartAmountEuro(prev =>
+      price !== null
+        ? String(price.toFixed(2))
+        : String(prev || '').trim()
+          ? prev
+          : ''
+    );
+    setCartWeightKg(prev =>
+      weight !== null ? String(weight) : String(prev || '').trim() ? prev : ''
+    );
+    setCartQuantity(String(qtyAvailable));
+    setCartStockSuggestionsOpen(false);
+  };
+
   const handleCreateCart = async () => {
     try {
       const ref = (cartReference || '').trim();
+      const desc = (cartDescription || '').trim();
       const amt = parseFloat((cartAmountEuro || '').trim().replace(',', '.'));
+      const qtyParsed = parseInt((cartQuantity || '').trim(), 10);
+      const qty =
+        Number.isFinite(qtyParsed) && qtyParsed > 0 ? Math.floor(qtyParsed) : 0;
+      const weightParsed = parseFloat(
+        (cartWeightKg || '').trim().replace(',', '.')
+      );
+      const weight =
+        Number.isFinite(weightParsed) && weightParsed >= 0
+          ? weightParsed
+          : null;
       if (!(amt > 0)) {
         showToast('Veuillez saisir un montant supérieur à 0', 'error');
         return;
@@ -1445,6 +3065,22 @@ export default function DashboardPage() {
       }
       if (!ref) {
         showToast('Veuillez saisir la référence', 'error');
+        return;
+      }
+      if (isDeliveryRegulationText(ref) || isDeliveryRegulationText(desc)) {
+        showToast('Référence interdite', 'error');
+        return;
+      }
+      if (!desc) {
+        showToast('Veuillez saisir la description', 'error');
+        return;
+      }
+      if (!(qty > 0)) {
+        showToast('Veuillez saisir une quantité valide (>= 1)', 'error');
+        return;
+      }
+      if (weight === null) {
+        showToast('Veuillez saisir un poids valide (>= 0)', 'error');
         return;
       }
       setCartCreating(true);
@@ -1471,12 +3107,65 @@ export default function DashboardPage() {
         );
         return;
       }
+      const existingForCustomer = (storeCarts || []).find((c: any) => {
+        const existingRef = String(c?.product_reference || '')
+          .trim()
+          .toLowerCase();
+        const currentRef = String(ref || '')
+          .trim()
+          .toLowerCase();
+        const existingCustomerStripeId = String(c?.customer_stripe_id || '');
+        return (
+          existingRef === currentRef &&
+          existingCustomerStripeId === String(stripeId || '')
+        );
+      });
+      if (existingForCustomer?.id) {
+        const existingQtyRaw = Number(existingForCustomer?.quantity);
+        const existingQty =
+          Number.isFinite(existingQtyRaw) && existingQtyRaw > 0
+            ? Math.floor(existingQtyRaw)
+            : 1;
+        const nextQty = existingQty + qty;
+        const updateResp = await fetch(
+          `${API_BASE_URL}/api/carts/${existingForCustomer.id}`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quantity: nextQty }),
+          }
+        );
+        const updateJson = await updateResp.json().catch(() => ({}));
+        if (!updateResp.ok) {
+          const msg =
+            updateJson?.error ||
+            updateJson?.message ||
+            'Mise a jour du panier echouee';
+          throw new Error(typeof msg === 'string' ? msg : 'Erreur');
+        }
+        showToast('Quantite mise a jour', 'success');
+        setCartReference('');
+        setCartDescription('');
+        setCartWeightKg('');
+        setCartAmountEuro('');
+        setCartQuantity('1');
+        if (store?.slug) {
+          const r = await apiGet(
+            `/api/carts/store/${encodeURIComponent(store.slug)}`
+          );
+          const j = await r.json().catch(() => ({}));
+          setStoreCarts(Array.isArray(j?.carts) ? j.carts : []);
+        }
+        return;
+      }
       const payload: any = {
         store_id: store.id,
         product_reference: ref,
         value: amt,
         customer_stripe_id: stripeId,
-        description: (cartDescription || '').trim() || null,
+        description: desc,
+        weight,
+        quantity: qty,
       };
       const resp = await apiPost('/api/carts', payload);
       const json = await resp.json().catch(() => ({}));
@@ -1487,7 +3176,9 @@ export default function DashboardPage() {
       showToast('Panier créé', 'success');
       setCartReference('');
       setCartDescription('');
+      setCartWeightKg('');
       setCartAmountEuro('');
+      setCartQuantity('1');
       if (store?.slug) {
         const r = await apiGet(
           `/api/carts/store/${encodeURIComponent(store.slug)}`
@@ -1652,7 +3343,15 @@ export default function DashboardPage() {
         setDescription(s?.description || '');
         setWebsite(s?.website || '');
         setSiret((s as any)?.siret || '');
-        setPayoutMethod(s?.rib?.type === 'link' ? 'link' : 'database');
+        setTvaApplicable(Boolean((s as any)?.tva_applicable));
+        const iban = String((s as any)?.iban_bic?.iban || '').trim();
+        const bic = String((s as any)?.iban_bic?.bic || '').trim();
+        if (!ibanInput.trim() && iban) {
+          setIbanInput(iban);
+        }
+        if (!bicInput.trim() && bic) {
+          setBicInput(bic);
+        }
         const addr = (s as any)?.address || null;
         if (addr) {
           setFormPhone(String(addr?.phone || ''));
@@ -1760,6 +3459,7 @@ export default function DashboardPage() {
         website,
         phone: formPhone,
         address: billingAddress,
+        tva_applicable: tvaApplicable,
       };
       const isSiretVerified =
         Boolean(siret) &&
@@ -1863,68 +3563,29 @@ export default function DashboardPage() {
     if (!store?.slug) return;
     setIbanError(null);
     setBicError(null);
-    setRibUploadError(null);
     setIsSubmittingPayout(true);
     try {
-      let methodToUse: 'database' | 'link' = payoutMethod;
-      let ibanToUse = '';
-      let bicToUse = '';
-
-      // Si un RIB existe et pas en mode édition, utiliser les coordonnées enregistrées
-      if (store.rib && !editingRib) {
-        methodToUse = store.rib.type;
-        if (methodToUse === 'database') {
-          ibanToUse = store.rib.iban || '';
-          bicToUse = store.rib.bic || '';
-        }
-      } else {
-        // Mode édition ou aucun RIB enregistré
-        if (payoutMethod === 'database') {
-          ibanToUse = ibanInput.trim();
-          bicToUse = bicInput.trim();
-        } else if (payoutMethod === 'link') {
-          // Upload du RIB si un document est sélectionné
-          if (ribFile) {
-            try {
-              const fd = new FormData();
-              fd.append('document', ribFile);
-              fd.append('slug', store.slug);
-              setUploadingRib(true);
-              const uploadResp = await apiPostForm('/api/upload/rib', fd);
-              const uploadJson = await uploadResp.json();
-              if (!uploadJson?.success) {
-                setRibUploadError(uploadJson?.error || 'Upload du RIB échoué');
-                showToast(uploadJson?.error || 'Upload du RIB échoué', 'error');
-                return;
-              }
-              // Mettre à jour le store local pour refléter le nouveau RIB link
-              setStore({
-                ...(store as any),
-                rib: { type: 'link', url: uploadJson.url, iban: '', bic: '' },
-              } as Store);
-            } catch (e) {
-              const msg =
-                e instanceof Error ? e.message : 'Upload du RIB échoué';
-              setRibUploadError(msg);
-              showToast(msg, 'error');
-              return;
-            } finally {
-              setUploadingRib(false);
-            }
-          }
-          methodToUse = 'link';
-        }
+      const ibanToUse = ibanInput.trim();
+      const bicToUse = bicInput.trim();
+      if (!ibanToUse) {
+        setIbanError('IBAN requis');
+        return;
+      }
+      if (!bicToUse) {
+        setBicError('BIC requis');
+        return;
       }
 
-      const payload: any = { method: methodToUse };
-      if (methodToUse === 'database') {
-        payload.iban = ibanToUse;
-        payload.bic = bicToUse;
-      }
-
+      const payload: any = { iban: ibanToUse, bic: bicToUse };
+      const token = await getToken();
       const resp = await apiPost(
         `/api/stores/${encodeURIComponent(store!.slug)}/confirm-payout`,
-        payload
+        payload,
+        {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
       );
       const json = await resp.json();
       if (!json?.success) {
@@ -1943,10 +3604,33 @@ export default function DashboardPage() {
       const updated: Store = json.store;
       // Préserver les champs non renvoyés (ex: clerk_id) pour ne pas casser Protect
       setStore(prev => ({ ...(prev as Store), ...updated }));
-      showToast(
-        'La demande de versement a été envoyée avec succès.',
-        'success'
-      );
+
+      const pdfBase64 =
+        json?.pdf && typeof json.pdf?.base64 === 'string'
+          ? (json.pdf.base64 as string)
+          : '';
+      const pdfFileName =
+        json?.pdf && typeof json.pdf?.fileName === 'string'
+          ? (json.pdf.fileName as string)
+          : 'transactions.pdf';
+      if (pdfBase64) {
+        try {
+          const binary = atob(pdfBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++)
+            bytes[i] = binary.charCodeAt(i);
+          const blob = new Blob([bytes], { type: 'application/pdf' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = pdfFileName;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+        } catch {}
+      }
+      showToast('Versement effectué avec succès.', 'success');
     } catch (err) {
       const rawMsg = err instanceof Error ? err.message : 'Erreur inconnue';
       let parsed: any = null;
@@ -2013,8 +3697,8 @@ export default function DashboardPage() {
         {/* Errors are now surfaced via Toasts */}
         {/* Les erreurs sont gérées via des toasts, pas de bandeau inline */}
 
-        <div className='flex items-center justify-between mb-6'>
-          <div>
+        <div className='flex items-start justify-between gap-3 mb-6'>
+          <div className='min-w-0 flex-1'>
             <h1 className='text-2xl font-bold text-gray-900'>
               Tableau de bord
             </h1>
@@ -2035,15 +3719,26 @@ export default function DashboardPage() {
             )}
           </div>
           {store && (
-            <button
-              onClick={() =>
-                navigate(`/checkout/${encodeURIComponent(store.slug)}`)
-              }
-              className='inline-flex items-center px-2 py-2 sm:px-4 sm:py-2 text-xs sm:text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
-            >
-              Formulaire de paiement
-              <ArrowRight className='w-3 h-3 sm:w-4 sm:h-4 ml-2' />
-            </button>
+            <div className='shrink-0 flex flex-col items-end gap-2'>
+              <button
+                onClick={() =>
+                  navigate(`/checkout/${encodeURIComponent(store.slug)}`)
+                }
+                className='inline-flex items-center justify-center whitespace-nowrap px-2 py-2 text-xs sm:px-4 sm:py-2 sm:text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
+              >
+                Formulaire de paiement
+                <ArrowRight className='w-3 h-3 sm:w-4 sm:h-4 ml-1.5 sm:ml-2' />
+              </button>
+              <button
+                onClick={() =>
+                  navigate(`/store/${encodeURIComponent(store.slug)}`)
+                }
+                className='inline-flex items-center justify-center whitespace-nowrap px-2 py-2 text-xs sm:px-4 sm:py-2 sm:text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700'
+              >
+                Voir ma boutique
+                <ArrowRight className='w-3 h-3 sm:w-4 sm:h-4 ml-1.5 sm:ml-2' />
+              </button>
+            </div>
           )}
         </div>
         {/* Onglets horizontaux au-dessus du contenu */}
@@ -2070,6 +3765,17 @@ export default function DashboardPage() {
             >
               <Wallet className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
               <span className='truncate'>Porte-monnaie</span>
+            </button>
+            <button
+              onClick={() => setSection('stock')}
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+                section === 'stock'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <FaArchive className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <span className='truncate'>Stock</span>
             </button>
             <button
               onClick={() => setSection('sales')}
@@ -2113,7 +3819,8 @@ export default function DashboardPage() {
                   : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
               }`}
             >
-              <Tag className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <RiDiscountPercentFill className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+
               <span className='truncate'>Code Promo</span>
             </button>
             <button
@@ -2147,12 +3854,12 @@ export default function DashboardPage() {
                   <p className='text-xs text-gray-500'>
                     Collez ce lien dans la bio de vos réseaux sociaux.
                   </p>
-                  <div className='flex flex-col sm:flex-row items-center sm:items-center space-y-2 sm:space-y-0 sm:space-x-2 p-3 '>
+                  <div className='flex flex-col sm:flex-row items-stretch sm:items-center space-y-2 sm:space-y-0 sm:space-x-2 p-3'>
                     <input
                       type='text'
                       value={shareLink}
                       readOnly
-                      className='mr-5 bg-transparent text-xs sm:text-sm text-gray-700 outline-none min-w-0 text-left truncate sm:text-left'
+                      className='w-full bg-gray-50 border border-gray-200 rounded-md px-3 py-2 text-xs sm:text-sm text-gray-700 outline-none'
                     />
                     <button
                       onClick={handleCopyAlias}
@@ -2235,6 +3942,13 @@ export default function DashboardPage() {
                       <p className='text-sm text-gray-700'>
                         <span className='font-medium mr-1'>SIRET:</span>
                         <span>{(store as any)?.siret || '-'}</span>
+                      </p>
+                      <p className='text-sm text-gray-700'>
+                        <span>
+                          {(store as any)?.tva_applicable
+                            ? 'TVA applicable'
+                            : 'TVA non applicable'}
+                        </span>
                       </p>
                       <p className='text-sm text-gray-700'>
                         <span className='font-medium mr-1'>Adresse:</span>
@@ -2386,6 +4100,19 @@ export default function DashboardPage() {
                             : 'BCE invalide. Entrez exactement 10 chiffres.')}
                       </p>
                     ) : null}
+                    <div className='mt-3'>
+                      <label className='flex items-center space-x-2'>
+                        <input
+                          type='checkbox'
+                          checked={tvaApplicable}
+                          onChange={e => setTvaApplicable(e.target.checked)}
+                          className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer'
+                        />
+                        <span className='text-sm text-gray-700'>
+                          TVA applicable
+                        </span>
+                      </label>
+                    </div>
 
                     {siret &&
                     normalizeCompanyId(siret) === lastCheckedSiret &&
@@ -2739,15 +4466,9 @@ export default function DashboardPage() {
 
           {section === 'carts' && (
             <div className='bg-white rounded-lg shadow p-6'>
-              <div className='flex items-center justify-between mb-4'>
-                <div className='flex items-center'>
-                  <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
-                  <h2 className='text-lg font-semibold text-gray-900'>
-                    Panier
-                  </h2>
-                </div>
-
-                <div className='sm:hidden'></div>
+              <div className='flex items-center mb-4'>
+                <ShoppingCart className='w-5 h-5 text-indigo-600 mr-2' />
+                <h2 className='text-lg font-semibold text-gray-900'>Panier</h2>
               </div>
 
               <p className='text-sm text-gray-600 mb-4'>
@@ -2767,7 +4488,7 @@ export default function DashboardPage() {
                       setCartCustomerInput(v);
                       searchClerkUsers(v);
                     }}
-                    placeholder='Nom du client (contains)'
+                    placeholder='Nom du client ou e-mail'
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />
                   {cartUsersLoading ? (
@@ -2809,41 +4530,180 @@ export default function DashboardPage() {
                   <label className='block text-sm font-medium text-gray-700 mb-1'>
                     Référence
                   </label>
-                  <input
-                    type='text'
-                    value={cartReference}
-                    onChange={e => setCartReference(e.target.value)}
-                    placeholder='Ex: REF-001'
-                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                  />
+                  <div className='relative'>
+                    <input
+                      type='text'
+                      value={cartReference}
+                      onChange={e => {
+                        const v = e.target.value;
+                        setCartSelectedStockItem(null);
+                        setCartReference(v);
+                        setCartStockSuggestionsOpen(
+                          Boolean(String(v || '').trim())
+                        );
+                      }}
+                      onFocus={() => {
+                        if (cartStockSuggestions.length > 0)
+                          setCartStockSuggestionsOpen(true);
+                      }}
+                      onBlur={() => {
+                        setTimeout(
+                          () => setCartStockSuggestionsOpen(false),
+                          150
+                        );
+                      }}
+                      placeholder='Ex: REF-001'
+                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                    />
+                    {cartStockSuggestionsOpen &&
+                    (cartStockSuggestionsLoading ||
+                      cartStockSuggestions.length > 0) ? (
+                      <div className='absolute z-20 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg overflow-hidden'>
+                        {cartStockSuggestionsLoading ? (
+                          <div className='px-3 py-2 text-sm text-gray-500'>
+                            Recherche…
+                          </div>
+                        ) : null}
+                        {cartStockSuggestions.map((s: any, idx: number) => {
+                          const stock = s?.stock || {};
+                          const product = s?.product || null;
+                          const ref = String(
+                            stock?.product_reference || ''
+                          ).trim();
+                          const qRaw = (stock as any)?.quantity;
+                          const qty =
+                            typeof qRaw === 'number'
+                              ? qRaw
+                              : typeof qRaw === 'string'
+                                ? Number(qRaw)
+                                : qRaw === null || qRaw === undefined
+                                  ? null
+                                  : Number(qRaw);
+                          const disabled =
+                            qty !== null && Number.isFinite(qty) && qty <= 0;
+                          const title = String(
+                            product?.name || ref || ''
+                          ).trim();
+                          const priceRaw = Number((s as any)?.unit_price);
+                          const price =
+                            Number.isFinite(priceRaw) && priceRaw > 0
+                              ? priceRaw
+                              : null;
+                          const imgRaw =
+                            Array.isArray(product?.images) &&
+                            product.images.length > 0
+                              ? String(product.images[0] || '').trim()
+                              : String(stock?.image_url || '')
+                                  .split(',')[0]
+                                  ?.trim() || '';
+
+                          return (
+                            <button
+                              key={String(stock?.id || ref || idx)}
+                              type='button'
+                              disabled={disabled}
+                              onMouseDown={e => e.preventDefault()}
+                              onClick={() => {
+                                if (disabled) return;
+                                applyCartSuggestion(s);
+                              }}
+                              className={`w-full px-3 py-2 text-left flex items-center gap-3 ${
+                                disabled
+                                  ? 'bg-gray-50 text-gray-400 cursor-not-allowed'
+                                  : 'hover:bg-gray-50'
+                              }`}
+                            >
+                              {imgRaw ? (
+                                <img
+                                  src={imgRaw}
+                                  alt={title || ref}
+                                  className='w-10 h-10 rounded object-cover bg-gray-100 shrink-0'
+                                />
+                              ) : (
+                                <div className='w-10 h-10 rounded bg-gray-100 shrink-0' />
+                              )}
+                              <div className='min-w-0 flex-1'>
+                                <div className='text-sm font-medium truncate'>
+                                  {ref || '—'}
+                                </div>
+                                <div className='text-xs text-gray-600 truncate'>
+                                  {title || '—'}
+                                  {price !== null
+                                    ? ` • ${price.toFixed(2)} €`
+                                    : ''}
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className='space-y-2'>
+                  <div>
+                    <label className='block text-sm font-medium text-gray-700 mb-1'>
+                      Description
+                    </label>
+                    <input
+                      type='text'
+                      value={cartDescription}
+                      onChange={e => setCartDescription(e.target.value)}
+                      placeholder='Ex: Robe Noire'
+                      required
+                      disabled={Boolean(cartSelectedStockItem)}
+                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
+                    />
+                  </div>
+                  <div>
+                    <label className='block text-sm font-medium text-gray-700 mb-1'>
+                      Poids (kg)
+                    </label>
+                    <input
+                      type='number'
+                      min='0'
+                      step='0.01'
+                      value={cartWeightKg}
+                      onChange={e => setCartWeightKg(e.target.value)}
+                      placeholder='0.5'
+                      required
+                      disabled={Boolean(cartSelectedStockItem)}
+                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
+                    />
+                  </div>
                 </div>
 
                 <div>
                   <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Description
+                    Prix unitaire (€)
                   </label>
-                  <input
-                    type='text'
-                    value={cartDescription}
-                    onChange={e => setCartDescription(e.target.value)}
-                    placeholder='Ex: Robe Noire'
-                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                  />
-                </div>
-
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Montant (€)
-                  </label>
-                  <input
-                    type='number'
-                    min='0.01'
-                    step='0.01'
-                    value={cartAmountEuro}
-                    onChange={e => setCartAmountEuro(e.target.value)}
-                    placeholder='Ex: 49.90'
-                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                  />
+                  <div className='space-y-2'>
+                    <input
+                      type='number'
+                      min='0.01'
+                      step='0.01'
+                      value={cartAmountEuro}
+                      onChange={e => setCartAmountEuro(e.target.value)}
+                      placeholder='Ex: 49.90'
+                      disabled={Boolean(cartSelectedStockItem)}
+                      className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
+                    />
+                    <div>
+                      <label className='block text-sm font-medium text-gray-700 mb-1'>
+                        Quantité
+                      </label>
+                      <input
+                        type='number'
+                        min='1'
+                        step='1'
+                        value={cartQuantity}
+                        onChange={e => setCartQuantity(e.target.value)}
+                        placeholder='1'
+                        className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -2854,7 +4714,22 @@ export default function DashboardPage() {
                     cartCreating ||
                     !cartSelectedUser ||
                     !(cartReference || '').trim() ||
-                    !(parseFloat((cartAmountEuro || '').replace(',', '.')) > 0)
+                    !(cartDescription || '').trim() ||
+                    isDeliveryRegulationText(cartReference) ||
+                    isDeliveryRegulationText(cartDescription) ||
+                    !(
+                      parseFloat((cartAmountEuro || '').replace(',', '.')) > 0
+                    ) ||
+                    (() => {
+                      const q = parseInt((cartQuantity || '').trim(), 10);
+                      return !(Number.isFinite(q) && q > 0);
+                    })() ||
+                    (() => {
+                      const w = parseFloat(
+                        (cartWeightKg || '').trim().replace(',', '.')
+                      );
+                      return !(Number.isFinite(w) && w >= 0);
+                    })()
                   }
                   className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                 >
@@ -2865,29 +4740,7 @@ export default function DashboardPage() {
                 </button>
               </div>
 
-              <div className='mb-3 flex items-center justify-between'>
-                <input
-                  type='text'
-                  value={cartSearchTerm}
-                  onChange={e => {
-                    setCartSearchTerm(e.target.value);
-                    setCartPage(1);
-                  }}
-                  placeholder='Nom du client…'
-                  className='w-full md:w-64 border border-gray-300 rounded-md px-3 py-2 text-sm'
-                />
-                <button
-                  onClick={handleReloadCarts}
-                  disabled={cartReloading}
-                  className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                  title='Recharger'
-                >
-                  <RefreshCw
-                    className={`w-4 h-4 mr-1 ${cartReloading ? 'animate-spin' : ''}`}
-                  />
-                  Recharger
-                </button>
-              </div>
+              <div className='mb-3'></div>
 
               {(() => {
                 const groupsMap: Record<string, any[]> = {};
@@ -2905,8 +4758,23 @@ export default function DashboardPage() {
                 const filtered = groups.filter(g => {
                   const term = (cartSearchTerm || '').trim().toLowerCase();
                   if (!term) return true;
-                  const name = (g.user?.fullName || '').toLowerCase();
-                  return name.includes(term);
+                  if (cartsFilterField === 'reference') {
+                    return (g.items || []).some((it: any) =>
+                      String(it?.product_reference || '')
+                        .toLowerCase()
+                        .includes(term)
+                    );
+                  }
+                  if (cartsFilterField === 'description') {
+                    return (g.items || []).some((it: any) =>
+                      String(it?.description || '')
+                        .toLowerCase()
+                        .includes(term)
+                    );
+                  }
+                  const name = String(g.user?.fullName || '').toLowerCase();
+                  const email = String(g.user?.email || '').toLowerCase();
+                  return name.includes(term) || email.includes(term);
                 });
                 const totalGroups = filtered.length;
                 const totalPages = Math.max(
@@ -2916,9 +4784,100 @@ export default function DashboardPage() {
                 const page = Math.min(cartPage, totalPages);
                 const start = (page - 1) * cartPageSize;
                 const pageGroups = filtered.slice(start, start + cartPageSize);
+                const allSelected =
+                  selectedCartGroupIds.size > 0 &&
+                  filtered.every(g => selectedCartGroupIds.has(g.stripeId));
 
                 return (
                   <div className='space-y-6'>
+                    <div className='flex flex-wrap items-center gap-2'>
+                      <div>
+                        <div className='inline-flex items-center gap-2 text-sm text-gray-700'>
+                          <input
+                            type='checkbox'
+                            className='w-4 h-4 accent-blue-600'
+                            checked={allSelected}
+                            onChange={() => {
+                              if (allSelected) {
+                                setSelectedCartGroupIds(new Set());
+                              } else {
+                                setSelectedCartGroupIds(
+                                  new Set(filtered.map(g => g.stripeId))
+                                );
+                              }
+                            }}
+                          />
+                          <span>Sélectionner tout</span>
+                        </div>
+                        <div className='text-xs text-gray-600 mt-1'>
+                          {selectedCartGroupIds.size}{' '}
+                          {selectedCartGroupIds.size > 1
+                            ? 'paniers sélectionnés'
+                            : 'panier sélectionné'}
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={handleSendRecap}
+                        disabled={
+                          selectedCartGroupIds.size === 0 || sendingRecap
+                        }
+                        className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                          selectedCartGroupIds.size === 0 || sendingRecap
+                            ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        }`}
+                        title='Envoyer le récapitulatif'
+                      >
+                        {sendingRecap ? (
+                          <span className='inline-flex items-center'>
+                            <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-gray-500 border-t-transparent'></span>
+                            Envoi…
+                          </span>
+                        ) : (
+                          <span>Envoyer le récapitulatif</span>
+                        )}
+                      </button>
+
+                      <span className='text-sm text-gray-700'>Filtrer par</span>
+                      <select
+                        value={cartsFilterField}
+                        onChange={e => {
+                          const v = e.target.value as
+                            | 'reference'
+                            | 'client'
+                            | 'description';
+                          setCartsFilterField(v);
+                          setCartPage(1);
+                        }}
+                        className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                      >
+                        <option value='reference'>Référence</option>
+                        <option value='client'>Client</option>
+                        <option value='description'>Description</option>
+                      </select>
+                      <input
+                        type='text'
+                        value={cartSearchTerm}
+                        onChange={e => {
+                          setCartSearchTerm(e.target.value);
+                          setCartPage(1);
+                        }}
+                        placeholder='Saisir…'
+                        className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-44 sm:w-56'
+                      />
+                      <button
+                        onClick={handleReloadCarts}
+                        disabled={cartReloading}
+                        className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                        title='Recharger'
+                      >
+                        <RefreshCw
+                          className={`w-4 h-4 mr-1 ${cartReloading ? 'animate-spin' : ''}`}
+                        />
+                        <span>Recharger</span>
+                      </button>
+                    </div>
                     {pageGroups.length === 0 ? (
                       <div className='text-sm text-gray-600'>Aucun panier</div>
                     ) : (
@@ -2927,22 +4886,56 @@ export default function DashboardPage() {
                           key={g.stripeId}
                           className='border border-gray-200 rounded-md'
                         >
-                          <div className='flex items-center gap-3 p-3 bg-gray-50 border-b border-gray-200'>
-                            {g.user?.hasImage && g.user?.imageUrl ? (
-                              <img
-                                src={g.user.imageUrl}
-                                alt={g.user.fullName || 'Client'}
-                                className='w-8 h-8 rounded-full object-cover'
+                          <div className='flex items-center justify-between p-3 bg-gray-50 border-b border-gray-200'>
+                            <div className='flex items-center gap-3'>
+                              <input
+                                type='checkbox'
+                                className='w-4 h-4 accent-blue-600'
+                                checked={selectedCartGroupIds.has(g.stripeId)}
+                                onChange={() => {
+                                  setSelectedCartGroupIds(prev => {
+                                    const next = new Set([...prev]);
+                                    if (next.has(g.stripeId)) {
+                                      next.delete(g.stripeId);
+                                    } else {
+                                      next.add(g.stripeId);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                aria-label='Sélectionner ce panier'
                               />
-                            ) : (
-                              <div className='w-8 h-8 rounded-full bg-gray-300'></div>
-                            )}
-                            <div>
-                              <div className='text-gray-900 font-semibold text-sm'>
-                                {g.user?.fullName || g.stripeId || 'Client'}
-                              </div>
-                              <div className='text-xs text-gray-600'>
-                                {g.user?.email || ''}
+                              {g.user?.hasImage && g.user?.imageUrl ? (
+                                <img
+                                  src={g.user.imageUrl}
+                                  alt={g.user.fullName || 'Client'}
+                                  className='w-8 h-8 rounded-full object-cover'
+                                />
+                              ) : (
+                                <div className='w-8 h-8 rounded-full bg-gray-300'></div>
+                              )}
+                              <div>
+                                <div className='flex items-center gap-2 text-gray-900 font-semibold text-sm'>
+                                  <span>
+                                    {g.user?.fullName || g.stripeId || 'Client'}
+                                  </span>
+                                  {recapSentByGroup[g.stripeId] && (
+                                    <span className='inline-flex items-center text-green-600 text-xs font-medium'>
+                                      <Check className='w-4 h-4 mr-1' />
+                                      {(() => {
+                                        const rel = formatRelativeSent(
+                                          recapSentAtByGroup[g.stripeId]
+                                        );
+                                        return rel
+                                          ? `recap envoyé · ${rel}`
+                                          : 'recap envoyé';
+                                      })()}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className='text-xs text-gray-600'>
+                                  {g.user?.email || ''}
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -2957,7 +4950,16 @@ export default function DashboardPage() {
                                     Description
                                   </th>
                                   <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Montant (€)
+                                    Prix unitaire (€)
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Quantité
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Total (€)
+                                  </th>
+                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                    Poids (kg)
                                   </th>
                                   <th className='px-4 py-2 text-left font-medium text-gray-700'>
                                     Créé
@@ -2991,6 +4993,39 @@ export default function DashboardPage() {
                                               minimumFractionDigits: 2,
                                               maximumFractionDigits: 2,
                                             })
+                                          : '—'}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {Number.isFinite(Number(c.quantity))
+                                          ? Number(c.quantity)
+                                          : 1}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {(() => {
+                                          const unit = Number(c.value);
+                                          const qty = Number(c.quantity);
+                                          if (
+                                            !Number.isFinite(unit) ||
+                                            !Number.isFinite(qty)
+                                          ) {
+                                            return '—';
+                                          }
+                                          const total = unit * qty;
+                                          return total.toLocaleString('fr-FR', {
+                                            minimumFractionDigits: 2,
+                                            maximumFractionDigits: 2,
+                                          });
+                                        })()}
+                                      </td>
+                                      <td className='px-4 py-3 text-gray-700'>
+                                        {Number.isFinite(Number(c.weight))
+                                          ? Number(c.weight).toLocaleString(
+                                              'fr-FR',
+                                              {
+                                                minimumFractionDigits: 2,
+                                                maximumFractionDigits: 2,
+                                              }
+                                            )
                                           : '—'}
                                       </td>
                                       <td className='px-4 py-3 text-gray-700'>
@@ -3118,163 +5153,117 @@ export default function DashboardPage() {
                 <h2 className='text-lg font-semibold text-gray-900'>
                   Porte-monnaie
                 </h2>
-                <button
-                  onClick={handleReloadBalance}
-                  disabled={reloadingBalance}
-                  className='inline-flex items-center ml-4 px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                  title='Recharger le solde'
-                >
-                  <RefreshCw
-                    className={`w-4 h-4 mr-1 ${reloadingBalance ? 'animate-spin' : ''}`}
-                  />
-                  <span>Recharger</span>
-                </button>
               </div>
               <p className='text-gray-600 mb-2'>
                 Montant accumulé suite aux achats des clients.
               </p>
-              {store && (
-                <div className='flex items-baseline space-x-2 mb-4'>
-                  <span className='text-2xl font-bold text-gray-900'>
-                    {(store.balance ?? 0).toFixed(2)}
-                  </span>
-                  <span className='text-gray-700'>€ disponibles</span>
-                </div>
-              )}
+              <div className='flex items-baseline space-x-2 mb-4'>
+                <span className='text-2xl font-bold text-gray-900'>
+                  {(() => {
+                    const payoutRaw = String(
+                      store?.payout_created_at || ''
+                    ).trim();
+                    const payoutMs = payoutRaw
+                      ? new Date(payoutRaw).getTime()
+                      : NaN;
+                    const hasStart =
+                      Number.isFinite(payoutMs) && Number(payoutMs) > 0;
+
+                    let storeEarningsCents = 0;
+                    let stripeFeesCents = 0;
+                    (shipments || []).forEach(s => {
+                      if (!Boolean((s as any)?.is_final_destination)) return;
+                      const createdAt = String(s.created_at || '').trim();
+                      const createdMs = createdAt
+                        ? new Date(createdAt).getTime()
+                        : NaN;
+                      if (hasStart) {
+                        if (!Number.isFinite(createdMs)) return;
+                        if (createdMs < Number(payoutMs)) return;
+                      }
+
+                      const status = String(s.status || '').toUpperCase();
+                      const earningsRaw = Number(s.store_earnings_amount || 0);
+                      const earnings = Number.isFinite(earningsRaw)
+                        ? Math.max(0, Math.round(earningsRaw))
+                        : 0;
+                      if (status !== 'CANCELLED')
+                        storeEarningsCents += earnings;
+
+                      const feesRaw = Number(s.stripe_fees || 0);
+                      const fees = Number.isFinite(feesRaw)
+                        ? Math.max(0, Math.round(feesRaw))
+                        : 0;
+                      stripeFeesCents += fees;
+                    });
+
+                    const payliveFeeCents = Math.round(
+                      storeEarningsCents * 0.015
+                    );
+                    const finalCents =
+                      storeEarningsCents - stripeFeesCents - payliveFeeCents;
+                    return (finalCents / 100).toFixed(2);
+                  })()}
+                </span>
+                <span className='text-gray-700'>€ total net</span>
+              </div>
               {/* Bouton qui révèle la section Demande de versement */}
               {store && (
                 <div>
-                  <div>
-                    {store?.rib && !editingRib && (
-                      <div className='mb-4'>
-                        <p className='text-gray-700'>
-                          Les coordonnées bancaires précédemment renseignées
-                          pour le dernier versement seront utilisées.
-                        </p>
-                      </div>
-                    )}
-                    {!(store?.rib && !editingRib) && (
-                      <div>
-                        <div className='flex items-center space-x-4 mb-3'>
-                          <label className='inline-flex items-center'>
-                            <input
-                              type='radio'
-                              className='mr-2'
-                              name='payoutMethod'
-                              value='link'
-                              checked={payoutMethod === 'link'}
-                              onChange={() => setPayoutMethod('link')}
-                            />
-                            Télécharger l'IBAN/RIB
-                          </label>
-                          <label className='inline-flex items-center'>
-                            <input
-                              type='radio'
-                              className='mr-2'
-                              name='payoutMethod'
-                              value='database'
-                              checked={payoutMethod === 'database'}
-                              onChange={() => setPayoutMethod('database')}
-                            />
-                            Saisir IBAN/BIC
-                          </label>
-                        </div>
-                        {payoutMethod === 'link' && (
-                          <div className='mb-3 space-y-2'>
-                            <label className='block text-sm font-medium text-gray-700'>
-                              Pièce jointe (PDF/JPG/PNG)
-                            </label>
-                            <input
-                              type='file'
-                              accept='application/pdf,image/png,image/jpeg'
-                              onChange={e => {
-                                const f = e.target.files?.[0] || null;
-                                setRibFile(f);
-                                setRibUploadError(null);
-                              }}
-                              className='block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100'
-                            />
-                            {uploadingRib && (
-                              <p className='text-xs text-gray-500 mt-1'>
-                                Téléchargement en cours...
-                              </p>
-                            )}
-                            {ribUploadError && (
-                              <p className='text-sm text-red-600 mt-1'>
-                                {ribUploadError}
-                              </p>
-                            )}
-                          </div>
-                        )}
-                        {payoutMethod === 'database' && (
-                          <div className='grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3'>
-                            <div>
-                              <label className='block text-sm text-gray-700 mb-1'>
-                                IBAN
-                              </label>
-                              <input
-                                className={`w-full border rounded px-3 py-2 text-sm ${ibanError ? 'border-red-500' : 'border-gray-300'}`}
-                                value={ibanInput}
-                                onChange={e => {
-                                  setIbanInput(e.target.value);
-                                  if (ibanError) setIbanError(null);
-                                }}
-                                placeholder='FR76 3000 6000 0112 3456 7890 189'
-                              />
-                              {ibanError && (
-                                <p className='mt-1 text-xs text-red-600'>
-                                  {ibanError}
-                                </p>
-                              )}
-                            </div>
-                            <div>
-                              <label className='block text-sm text-gray-700 mb-1'>
-                                BIC
-                              </label>
-                              <input
-                                className={`w-full border rounded px-3 py-2 text-sm ${bicError ? 'border-red-500' : 'border-gray-300'}`}
-                                value={bicInput}
-                                onChange={e => {
-                                  setBicInput(e.target.value);
-                                  if (bicError) setBicError(null);
-                                }}
-                                placeholder='AGRIFRPPXXX'
-                              />
-                              {bicError && (
-                                <p className='mt-1 text-xs text-red-600'>
-                                  {bicError}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                  <div className='grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3'>
+                    <div>
+                      <label className='block text-sm text-gray-700 mb-1'>
+                        IBAN
+                      </label>
+                      <input
+                        className={`w-full border rounded px-3 py-2 text-sm ${ibanError ? 'border-red-500' : 'border-gray-300'}`}
+                        value={ibanInput}
+                        onChange={e => {
+                          setIbanInput(e.target.value);
+                          if (ibanError) setIbanError(null);
+                        }}
+                        placeholder='FR76 3000 6000 0112 3456 7890 189'
+                      />
+                      {ibanError && (
+                        <p className='mt-1 text-xs text-red-600'>{ibanError}</p>
+                      )}
+                    </div>
+                    <div>
+                      <label className='block text-sm text-gray-700 mb-1'>
+                        BIC
+                      </label>
+                      <input
+                        className={`w-full border rounded px-3 py-2 text-sm ${bicError ? 'border-red-500' : 'border-gray-300'}`}
+                        value={bicInput}
+                        onChange={e => {
+                          setBicInput(e.target.value);
+                          if (bicError) setBicError(null);
+                        }}
+                        placeholder='AGRIFRPPXXX'
+                      />
+                      {bicError && (
+                        <p className='mt-1 text-xs text-red-600'>{bicError}</p>
+                      )}
+                    </div>
                   </div>
                   <div className='mt-4 flex items-center space-x-2'>
                     <button
                       onClick={confirmPayout}
                       className={`inline-flex items-center px-4 py-2 rounded-md text-white ${
                         isSubmittingPayout ||
-                        ((store?.rib === null || editingRib) &&
-                          (payoutMethod === 'link'
-                            ? !ribFile
-                            : !ibanInput.trim() || !bicInput.trim())) ||
-                        (payoutMethod === 'database'
-                          ? Boolean(ibanError) || Boolean(bicError)
-                          : Boolean(ribUploadError))
+                        !ibanInput.trim() ||
+                        !bicInput.trim() ||
+                        Boolean(ibanError) ||
+                        Boolean(bicError)
                           ? 'bg-gray-400 cursor-not-allowed'
                           : 'bg-indigo-600 hover:bg-indigo-700'
                       }`}
                       disabled={
                         isSubmittingPayout ||
-                        ((store?.rib === null || editingRib) &&
-                          (payoutMethod === 'link'
-                            ? !ribFile
-                            : !ibanInput.trim() || !bicInput.trim())) ||
-                        (payoutMethod === 'database'
-                          ? Boolean(ibanError) || Boolean(bicError)
-                          : Boolean(ribUploadError))
+                        !ibanInput.trim() ||
+                        !bicInput.trim() ||
+                        Boolean(ibanError) ||
+                        Boolean(bicError)
                       }
                     >
                       {isSubmittingPayout && (
@@ -3283,36 +5272,820 @@ export default function DashboardPage() {
                       <HandCoins className='w-5 h-5 mr-2' />
                       Retirer mes gains
                     </button>
-                    {store?.rib && !editingRib && (
-                      <button
-                        onClick={() => {
-                          setEditingRib(true);
-                          setPayoutMethod(
-                            store?.rib?.type === 'link' ? 'link' : 'database'
-                          );
-                        }}
-                        className='px-3 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
-                      >
-                        Modifier
-                      </button>
-                    )}
-                    {editingRib && (
-                      <button
-                        onClick={() => {
-                          setEditingRib(false);
-                          setRibFile(null);
-                          setIbanError(null);
-                          setBicError(null);
-                          setRibUploadError(null);
-                        }}
-                        className='px-3 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300'
-                      >
-                        Annuler
-                      </button>
-                    )}
                   </div>
                 </div>
               )}
+
+              <div className='mt-8'>
+                <div className='flex items-center justify-between mb-3'>
+                  <h3 className='text-base font-semibold text-gray-900'>
+                    Transactions
+                  </h3>
+                </div>
+
+                <div className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3'>
+                  <div className='flex items-center gap-2'>
+                    <label className='text-sm text-gray-700'>
+                      Lignes / page
+                    </label>
+                    <select
+                      value={walletTablePageSize}
+                      onChange={e => {
+                        const v = Number(e.target.value);
+                        setWalletTablePageSize(Number.isFinite(v) ? v : 10);
+                        setWalletTablePage(1);
+                      }}
+                      className='border border-gray-300 rounded-md px-2 py-1 text-sm'
+                    >
+                      <option value={10}>10</option>
+                      <option value={20}>20</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                    </select>
+                    <button
+                      onClick={() => fetchWalletTransactions().catch(() => {})}
+                      disabled={walletTransactionsLoading}
+                      className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                    >
+                      <RefreshCw
+                        className={`w-4 h-4 mr-1 ${walletTransactionsLoading ? 'animate-spin' : ''}`}
+                      />
+                      <span>Recharger</span>
+                    </button>
+                  </div>
+                </div>
+
+                {walletTransactionsTotalCount > 0 ? (
+                  <div className='text-xs text-gray-500 mb-2'>
+                    Affichage de {walletTransactions.length} sur{' '}
+                    {walletTransactionsTotalCount} transactions
+                  </div>
+                ) : null}
+
+                {walletTransactionsLoading ? (
+                  <div className='flex items-center justify-center py-10'>
+                    <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600'></div>
+                  </div>
+                ) : walletTransactions.length === 0 ? (
+                  <div className='text-sm text-gray-600'>
+                    Aucune transaction trouvée.
+                  </div>
+                ) : (
+                  <>
+                    <div className='overflow-x-auto border border-gray-200 rounded-lg'>
+                      <table className='min-w-full text-sm'>
+                        <thead className='bg-gray-50'>
+                          <tr className='border-b border-gray-200'>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Date
+                            </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Client
+                            </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Articles
+                            </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Code Promo
+                            </th>
+                            <th className='text-right py-3 px-4 font-semibold text-gray-700'>
+                              Net
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {visibleWalletTransactions.map(tx => {
+                            const stripeId = String(tx?.customer?.id || '');
+                            const customer = stripeId
+                              ? customersMap[stripeId] || null
+                              : null;
+                            const clerkId =
+                              customer?.clerkUserId || customer?.clerk_id;
+                            const u = clerkId
+                              ? socialsMap[clerkId] || null
+                              : null;
+                            const name =
+                              customer?.name ||
+                              [u?.firstName, u?.lastName]
+                                .filter(Boolean)
+                                .join(' ') ||
+                              (customer ? stripeId : '—');
+                            const email = (
+                              u?.emailAddress ||
+                              customer?.email ||
+                              ''
+                            ).trim();
+
+                            return (
+                              <tr
+                                key={tx.payment_id}
+                                className='border-b border-gray-100 hover:bg-gray-50'
+                              >
+                                <td className='py-3 px-4 text-gray-700 whitespace-nowrap'>
+                                  <div>{formatDateEpoch(tx.created)}</div>
+                                </td>
+                                <td className='py-3 px-4 text-gray-700'>
+                                  <div className='flex items-center space-x-2'>
+                                    {u?.hasImage && u?.imageUrl ? (
+                                      <img
+                                        src={u.imageUrl}
+                                        alt='avatar'
+                                        className='w-6 h-6 rounded-full object-cover'
+                                      />
+                                    ) : (
+                                      <span className='inline-block w-6 h-6 rounded-full bg-gray-200' />
+                                    )}
+                                    <div className='space-y-0.5'>
+                                      <div
+                                        className='font-medium truncate max-w-[180px] text-gray-900'
+                                        title={name}
+                                      >
+                                        {name}
+                                      </div>
+                                      <div className='text-xs text-gray-500 truncate max-w-[180px]'>
+                                        {email || '—'}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+                                <td className='py-3 px-4 text-gray-700'>
+                                  {renderProductReferenceFromRaw(
+                                    tx.product_reference || tx.articles,
+                                    String(tx.payment_id || tx.created)
+                                  )}
+                                </td>
+                                <td className='py-3 px-4 text-gray-700 whitespace-nowrap'>
+                                  {String(tx.promo_code || '').trim() || '—'}
+                                </td>
+                                <td className='py-3 px-4 text-right text-gray-900 font-semibold whitespace-nowrap'>
+                                  {formatValue(
+                                    Math.max(0, Number(tx.net_total || 0))
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className='flex items-center justify-between mt-3'>
+                      <div className='text-xs text-gray-600'>
+                        Page {walletTablePage} / {walletTableTotalPages}
+                      </div>
+                      <div className='flex items-center gap-2'>
+                        <button
+                          onClick={() =>
+                            setWalletTablePage(p => Math.max(1, p - 1))
+                          }
+                          disabled={walletTablePage <= 1}
+                          className={`px-3 py-1 text-sm rounded-md border ${
+                            walletTablePage <= 1
+                              ? 'bg-gray-100 text-gray-400 border-gray-200'
+                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                          }`}
+                        >
+                          Précédent
+                        </button>
+                        <button
+                          onClick={() =>
+                            setWalletTablePage(p =>
+                              Math.min(walletTableTotalPages, p + 1)
+                            )
+                          }
+                          disabled={walletTablePage >= walletTableTotalPages}
+                          className={`px-3 py-1 text-sm rounded-md border ${
+                            walletTablePage >= walletTableTotalPages
+                              ? 'bg-gray-100 text-gray-400 border-gray-200'
+                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                          }`}
+                        >
+                          Suivant
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+
+          {section === 'stock' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center mb-4'>
+                <FaArchive className='w-5 h-5 text-indigo-600 mr-2' />
+                <h2 className='text-lg font-semibold text-gray-900'>Stock</h2>
+              </div>
+
+              <form onSubmit={handleSubmitStockProduct} className='space-y-4'>
+                <div className='grid grid-cols-1 lg:grid-cols-2 gap-4'>
+                  <div className='space-y-3'>
+                    <div>
+                      <label className='block text-sm font-medium text-gray-700 mb-1'>
+                        Titre
+                      </label>
+                      <input
+                        type='text'
+                        value={stockTitle}
+                        onChange={e => setStockTitle(e.target.value)}
+                        className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                        required
+                      />
+                    </div>
+
+                    <div className='grid grid-cols-1 sm:grid-cols-2 gap-4'>
+                      <div>
+                        <label className='block text-xs font-medium text-gray-700 mb-1'>
+                          Référence
+                        </label>
+                        <input
+                          type='text'
+                          value={stockReference}
+                          onChange={e => setStockReference(e.target.value)}
+                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className='block text-xs font-medium text-gray-700 mb-1'>
+                          Quantité
+                        </label>
+                        <input
+                          type='number'
+                          min={1}
+                          step={1}
+                          value={stockQuantity}
+                          onChange={e => setStockQuantity(e.target.value)}
+                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className='grid grid-cols-1 sm:grid-cols-2 gap-4'>
+                      <div>
+                        <label className='block text-xs font-medium text-gray-700 mb-1'>
+                          Poids (kg)
+                        </label>
+                        <input
+                          type='number'
+                          step='0.001'
+                          min='0'
+                          value={stockWeight}
+                          onChange={e => setStockWeight(e.target.value)}
+                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                          placeholder='0,5'
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className='block text-xs font-medium text-gray-700 mb-1'>
+                          Prix (€)
+                        </label>
+                        <input
+                          type='number'
+                          value={stockPrice}
+                          onChange={e => setStockPrice(e.target.value)}
+                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                          placeholder='12,90'
+                          step='0.01'
+                          min='0.01'
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className='block text-sm font-medium text-gray-700 mb-1'>
+                        Description
+                      </label>
+                      <textarea
+                        value={stockDescription}
+                        onChange={e => setStockDescription(e.target.value)}
+                        className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                        rows={2}
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className='block text-sm font-medium text-gray-700 mb-1'>
+                      Image
+                    </label>
+                    <div className='flex items-center space-x-4'>
+                      <div className='flex-1'>
+                        <label className='flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100'>
+                          <div className='flex flex-col items-center justify-center pt-5 pb-6'>
+                            <Upload className='w-8 h-8 mb-2 text-gray-400' />
+                            <p className='text-sm text-gray-500'>
+                              Cliquez pour télécharger une image
+                            </p>
+                            <p className='text-xs text-gray-400 mt-1'>
+                              JPEG, PNG ou WEBP — 2 Mo max
+                            </p>
+                          </div>
+                          <input
+                            type='file'
+                            className='hidden'
+                            accept='image/jpeg,image/png,image/webp'
+                            onChange={handleStockImageChange}
+                          />
+                        </label>
+                      </div>
+                      {stockImagePreview ? (
+                        <div className='w-32 h-32 border rounded-lg overflow-hidden relative'>
+                          <img
+                            src={stockImagePreview}
+                            alt='Aperçu'
+                            className='w-full h-full object-cover'
+                          />
+                          <button
+                            type='button'
+                            onClick={() => {
+                              setStockImageFile(null);
+                              setStockImagePreview(null);
+                            }}
+                            className='absolute top-2 right-2 inline-flex items-center px-2 py-1 text-xs rounded-md border border-gray-200 bg-white/90 text-gray-700 hover:bg-white'
+                          >
+                            Retirer
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className='mt-3'>
+                      <label className='block text-sm font-medium text-gray-700 mb-1'>
+                        Images (URL)
+                      </label>
+                      <div className='flex items-center gap-2'>
+                        <input
+                          type='url'
+                          value={stockImageUrlInput}
+                          onChange={e => setStockImageUrlInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              addStockImageUrl();
+                            }
+                          }}
+                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                          placeholder='https://...'
+                        />
+                        <button
+                          type='button'
+                          onClick={addStockImageUrl}
+                          className='inline-flex items-center px-3 py-2 rounded-md text-sm border border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                        >
+                          Ajouter
+                        </button>
+                      </div>
+                      {stockImageUrls.length > 0 ? (
+                        <div className='mt-2 flex flex-wrap gap-2'>
+                          {stockImageUrls.map(url => (
+                            <div
+                              key={url}
+                              className='relative w-14 h-14 rounded-md border border-gray-200 bg-gray-50 overflow-hidden'
+                              title={url}
+                            >
+                              <img
+                                src={url}
+                                alt='Aperçu'
+                                className='w-full h-full object-cover'
+                              />
+                              <button
+                                type='button'
+                                onClick={() => removeStockImageUrl(url)}
+                                className='absolute top-1 right-1 w-5 h-5 rounded-full bg-white/90 border border-gray-200 text-gray-700 text-xs flex items-center justify-center hover:bg-white'
+                                aria-label='Retirer'
+                                title='Retirer'
+                              >
+                                ×
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+
+                <div className='flex items-center gap-2'>
+                  <button
+                    type='submit'
+                    className='inline-flex items-center px-4 py-2 rounded-md text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed'
+                    disabled={
+                      stockCreating ||
+                      (!editingStockId
+                        ? !stockImageFile
+                        : !stockImagePreview) ||
+                      !stockTitle.trim() ||
+                      !stockReference.trim() ||
+                      isDeliveryRegulationText(stockTitle) ||
+                      isDeliveryRegulationText(stockReference) ||
+                      !stockDescription.trim() ||
+                      !String(stockQuantity || '').trim() ||
+                      !String(stockWeight || '').trim() ||
+                      !String(stockPrice || '').trim()
+                    }
+                  >
+                    {stockCreating && (
+                      <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                    )}
+                    {editingStockId
+                      ? 'Modifier le produit'
+                      : 'Créer le produit'}
+                  </button>
+                  {editingStockId ? (
+                    <button
+                      type='button'
+                      onClick={() => {
+                        setEditingStockId(null);
+                        resetStockForm();
+                      }}
+                      className='inline-flex items-center px-4 py-2 rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                      disabled={stockCreating}
+                    >
+                      Annuler
+                    </button>
+                  ) : null}
+                </div>
+              </form>
+
+              <div className='mt-8'>
+                <div className='flex items-center mb-3 gap-2'>
+                  <h3 className='text-base font-semibold text-gray-900'>
+                    Produits en stock
+                  </h3>
+                  <button
+                    type='button'
+                    onClick={() =>
+                      fetchStockProducts({
+                        silent: true,
+                        background: true,
+                      }).catch(() => {})
+                    }
+                    disabled={stockLoading || stockReloading}
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                  >
+                    <RefreshCw
+                      className={`w-4 h-4 mr-1 ${
+                        stockReloading ? 'animate-spin' : ''
+                      }`}
+                    />
+                    <span>Recharger</span>
+                  </button>
+                </div>
+
+                {stockLoading ? (
+                  <div className='flex items-center justify-center py-10'>
+                    <div className='animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600'></div>
+                  </div>
+                ) : stockItems.length === 0 ? (
+                  <div className='text-sm text-gray-600'>
+                    Aucun produit en stock.
+                  </div>
+                ) : (
+                  <>
+                    <div className='mb-4 flex flex-wrap items-center justify-between gap-3'>
+                      <div className='flex items-center gap-3'>
+                        <input
+                          type='checkbox'
+                          checked={allVisibleStockSelected}
+                          onChange={toggleSelectAllVisibleStock}
+                          className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer'
+                        />
+                        <div className='text-sm text-gray-700'>
+                          Tout sélectionner
+                        </div>
+                        <div className='text-sm text-gray-600'>
+                          — {selectedStockIds.size} sélectionné
+                          {selectedStockIds.size > 1 ? 's' : ''}
+                        </div>
+                        <button
+                          type='button'
+                          onClick={handleBulkDeleteSelectedStock}
+                          disabled={selectedStockIds.size === 0}
+                          className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                        >
+                          <span>Supprimer</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className='mb-4 flex flex-wrap items-center gap-2'>
+                      <div className='flex items-center space-x-2 flex-wrap'>
+                        <span className='text-sm text-gray-700'>
+                          Filtrer par
+                        </span>
+                        <select
+                          value={stockFilterField}
+                          onChange={e => {
+                            const v = e.target.value as
+                              | 'reference'
+                              | 'titre'
+                              | 'description';
+                            setStockFilterField(v);
+                            setStockPage(1);
+                          }}
+                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                        >
+                          <option value='reference'>Référence</option>
+                          <option value='titre'>Titre</option>
+                          <option value='description'>Description</option>
+                        </select>
+                        <input
+                          type='text'
+                          value={stockFilterTerm}
+                          onChange={e => {
+                            setStockFilterTerm(e.target.value);
+                            setStockPage(1);
+                          }}
+                          placeholder='Saisir…'
+                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                        />
+                      </div>
+                    </div>
+
+                    {filteredStockItems.length === 0 ? (
+                      <div className='text-sm text-gray-600'>
+                        Aucun résultat.
+                      </div>
+                    ) : (
+                      <div className='grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4'>
+                        {visibleStockItems.map((it, idx) => {
+                          const stock = it?.stock;
+                          const d = getStockDisplay(it, idx);
+
+                          const activeIndex = Math.max(
+                            0,
+                            stockCardImageIndex[d.idKey] || 0
+                          );
+                          const hasImages = d.imageUrls.length > 0;
+                          const currentImage = hasImages
+                            ? d.imageUrls[activeIndex % d.imageUrls.length]
+                            : '';
+
+                          const isSelected = selectedStockIds.has(
+                            Number(d.stockId)
+                          );
+
+                          return (
+                            <div
+                              key={d.idKey}
+                              className='rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden'
+                            >
+                              <div className='p-4 flex gap-4'>
+                                <div className='w-28 shrink-0'>
+                                  <div className='relative w-full aspect-[3/4] rounded-md bg-gray-50 border border-gray-100 overflow-hidden flex items-center justify-center'>
+                                    {currentImage ? (
+                                      <img
+                                        src={currentImage}
+                                        alt={d.title}
+                                        className='w-full h-full object-cover'
+                                      />
+                                    ) : (
+                                      <FaArchive className='w-10 h-10 text-gray-300' />
+                                    )}
+
+                                    {d.hasStockImages &&
+                                    d.imageUrls.length > 1 ? (
+                                      <>
+                                        <button
+                                          type='button'
+                                          onClick={() => {
+                                            const total = d.imageUrls.length;
+                                            setStockCardImageIndex(prev => ({
+                                              ...prev,
+                                              [d.idKey]:
+                                                (activeIndex - 1 + total) %
+                                                total,
+                                            }));
+                                          }}
+                                          className='absolute left-1 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-white/90 border border-gray-200 flex items-center justify-center hover:bg-white'
+                                          title='Précédent'
+                                        >
+                                          <ArrowRight className='w-4 h-4 text-gray-700 rotate-180' />
+                                        </button>
+                                        <button
+                                          type='button'
+                                          onClick={() => {
+                                            const total = d.imageUrls.length;
+                                            setStockCardImageIndex(prev => ({
+                                              ...prev,
+                                              [d.idKey]:
+                                                (activeIndex + 1) % total,
+                                            }));
+                                          }}
+                                          className='absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-white/90 border border-gray-200 flex items-center justify-center hover:bg-white'
+                                          title='Suivant'
+                                        >
+                                          <ArrowRight className='w-4 h-4 text-gray-700' />
+                                        </button>
+                                        <div className='absolute bottom-1 left-0 right-0 flex items-center justify-center gap-1'>
+                                          {d.imageUrls.map((_, i) => (
+                                            <div
+                                              key={`${d.idKey}-dot-${i}`}
+                                              className={`h-1.5 w-1.5 rounded-full ${
+                                                i ===
+                                                activeIndex % d.imageUrls.length
+                                                  ? 'bg-indigo-600'
+                                                  : 'bg-white/70 border border-gray-200'
+                                              }`}
+                                            />
+                                          ))}
+                                        </div>
+                                      </>
+                                    ) : null}
+                                  </div>
+                                </div>
+
+                                <div className='min-w-0 flex-1'>
+                                  <div className='flex items-start justify-between gap-3'>
+                                    <div className='min-w-0'>
+                                      <div className='flex items-start gap-3'>
+                                        <input
+                                          type='checkbox'
+                                          checked={isSelected}
+                                          onChange={() =>
+                                            toggleStockSelected(
+                                              Number(d.stockId)
+                                            )
+                                          }
+                                          className='mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer'
+                                        />
+                                        <div className='min-w-0'>
+                                          <div className='text-sm font-semibold text-gray-900 truncate'>
+                                            {d.title}
+                                          </div>
+                                          <div className='mt-1 text-xs text-gray-500 truncate'>
+                                            Réf:{' '}
+                                            <span className='text-gray-700'>
+                                              {d.ref}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div className='text-right shrink-0'>
+                                      <div className='text-xs text-gray-500'>
+                                        Qté
+                                      </div>
+                                      <div className='text-sm font-semibold text-gray-900'>
+                                        {d.qtyLabel}
+                                      </div>
+                                      {(() => {
+                                        const stockQtyRaw = stock?.quantity;
+                                        if (stockQtyRaw === null) {
+                                          return (
+                                            <div className='mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-orange-50 text-orange-700 border border-orange-200'>
+                                              Temporaire
+                                            </div>
+                                          );
+                                        }
+                                        const stockQty =
+                                          typeof stockQtyRaw === 'number'
+                                            ? stockQtyRaw
+                                            : typeof stockQtyRaw === 'string'
+                                              ? Number(stockQtyRaw)
+                                              : stockQtyRaw === null ||
+                                                  stockQtyRaw === undefined
+                                                ? null
+                                                : Number(stockQtyRaw);
+                                        if (
+                                          stockQty === null ||
+                                          !Number.isFinite(stockQty)
+                                        ) {
+                                          return null;
+                                        }
+                                        return stockQty <= 0 ? (
+                                          <div className='mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200'>
+                                            Épuisé
+                                          </div>
+                                        ) : (
+                                          <div className='mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-50 text-green-700 border border-green-200'>
+                                            Disponible
+                                          </div>
+                                        );
+                                      })()}
+                                    </div>
+                                  </div>
+
+                                  {d.description ? (
+                                    <div className='mt-3 text-xs text-gray-600 line-clamp-3'>
+                                      {d.description}
+                                    </div>
+                                  ) : null}
+
+                                  <div className='mt-3 grid grid-cols-3 gap-2 text-xs'>
+                                    <div className='rounded-md bg-gray-50 border border-gray-100 p-2'>
+                                      <div className='text-gray-500'>Poids</div>
+                                      <div className='text-gray-900 font-medium'>
+                                        {d.weightLabel || '—'}
+                                      </div>
+                                    </div>
+                                    <div className='rounded-md bg-gray-50 border border-gray-100 p-2'>
+                                      <div className='text-gray-500'>Prix</div>
+                                      <div className='text-gray-900 font-medium'>
+                                        {d.priceEur == null
+                                          ? '—'
+                                          : formatValue(d.priceEur)}
+                                      </div>
+                                    </div>
+                                    <div className='rounded-md bg-gray-50 border border-gray-100 p-2'>
+                                      <div className='text-gray-500'>
+                                        Acheté
+                                      </div>
+                                      <div className='text-gray-900 font-medium'>
+                                        {d.boughtCount}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className='mt-3 flex items-center justify-between gap-2'>
+                                    <div className='text-xs text-gray-500'>
+                                      Créé: {formatDate(stock?.created_at)}
+                                    </div>
+                                    <div className='flex items-center gap-2'>
+                                      <button
+                                        type='button'
+                                        onClick={() =>
+                                          startEditStockProduct(it, idx)
+                                        }
+                                        className='inline-flex items-center px-3 py-1.5 rounded-md text-xs border border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                                      >
+                                        <Pencil className='w-3.5 h-3.5 mr-1' />
+                                        Modifier
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div className='mt-4 flex flex-wrap items-center justify-between gap-2'>
+                      <div className='flex items-center gap-2'>
+                        <label className='text-sm text-gray-700'>Cartes</label>
+                        <select
+                          value={stockPageSize}
+                          onChange={e => {
+                            const v = parseInt(e.target.value, 10);
+                            setStockPageSize(Number.isFinite(v) ? v : 12);
+                            setStockPage(1);
+                          }}
+                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-28'
+                        >
+                          <option value={6}>6</option>
+                          <option value={12}>12</option>
+                          <option value={24}>24</option>
+                          <option value={48}>48</option>
+                        </select>
+                      </div>
+
+                      <div className='flex flex-wrap items-center gap-2'>
+                        <div className='text-sm text-gray-600'>
+                          Page {stockPage} / {stockTotalPages} —{' '}
+                          {filteredStockItems.length} produit
+                          {filteredStockItems.length > 1 ? 's' : ''}
+                        </div>
+                        <div className='flex items-center space-x-2'>
+                          <button
+                            onClick={() =>
+                              setStockPage(p => Math.max(1, p - 1))
+                            }
+                            disabled={stockPage <= 1}
+                            className={`px-3 py-1 text-sm rounded-md border ${
+                              stockPage <= 1
+                                ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            }`}
+                          >
+                            Précédent
+                          </button>
+                          <button
+                            onClick={() =>
+                              setStockPage(p =>
+                                Math.min(stockTotalPages, p + 1)
+                              )
+                            }
+                            disabled={stockPage >= stockTotalPages}
+                            className={`px-3 py-1 text-sm rounded-md border ${
+                              stockPage >= stockTotalPages
+                                ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                            }`}
+                          >
+                            Suivant
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           )}
 
@@ -3410,7 +6183,7 @@ export default function DashboardPage() {
                     >
                       <option value='id'>ID</option>
                       <option value='client'>Client</option>
-                      <option value='reference'>Référence produit</option>
+                      <option value='reference'>Référence</option>
                     </select>
                     <input
                       type='text'
@@ -3453,7 +6226,7 @@ export default function DashboardPage() {
                   >
                     <option value='id'>ID</option>
                     <option value='client'>Client</option>
-                    <option value='reference'>Référence produit</option>
+                    <option value='reference'>Référence</option>
                   </select>
                   <input
                     type='text'
@@ -3471,15 +6244,28 @@ export default function DashboardPage() {
               <div className='mb-4 flex flex-wrap items-center gap-2'>
                 <button
                   onClick={handleBatchShippingDocuments}
-                  disabled={selectedForDoc.length === 0}
+                  disabled={shippingDocDisabled}
                   className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
-                    selectedForDoc.length === 0
+                    shippingDocDisabled
                       ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                   }`}
                   title='Créer le bordereau'
                 >
                   Créer le bordereau
+                </button>
+
+                <button
+                  onClick={handleBatchInvoice}
+                  disabled={selectedForInvoice.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedForInvoice.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Créer la facture'
+                >
+                  Créer la facture
                 </button>
                 <button
                   onClick={handleBatchCancel}
@@ -3489,9 +6275,9 @@ export default function DashboardPage() {
                       ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                   }`}
-                  title="Demander l'annulation"
+                  title='Annuler la commande'
                 >
-                  Demander l'annulation
+                  Annuler la commande
                 </button>
                 <button
                   onClick={() => handleOpenHelp(selectedSales)}
@@ -3526,7 +6312,19 @@ export default function DashboardPage() {
                   visibleShipments.map(s => (
                     <div
                       key={s.id}
-                      className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
+                      onClick={e => {
+                        if (isInteractiveRowClick(e.target)) return;
+                        toggleSaleSelection(s.id);
+                      }}
+                      className={`rounded-lg border p-3 shadow-sm cursor-pointer ${
+                        selectedSaleIds.has(s.id)
+                          ? 'ring-2 ring-indigo-500 ring-inset'
+                          : ''
+                      } ${
+                        String(s.status || '').toUpperCase() === 'CANCELLED'
+                          ? 'border-red-200 bg-red-50'
+                          : 'border-gray-200 bg-white'
+                      }`}
                     >
                       <div className='flex items-start justify-between'>
                         <div>
@@ -3546,41 +6344,37 @@ export default function DashboardPage() {
                               className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                             />
                           </div>
-                          <div className='text-sm font-semibold text-gray-900'>
-                            Payé: {formatValue(s.paid_value)}
-                          </div>
                           <div className='text-xs text-gray-600'>
                             Reçu:{' '}
                             {formatValue(
-                              (s.paid_value ?? 0) -
-                                (s.estimated_delivery_cost ?? 0)
+                              Math.max(
+                                0,
+                                Number(s.store_earnings_amount || 0) / 100
+                              )
                             )}
                           </div>
-                          {s.promo_codes && (
-                            <div className='text-xs text-gray-500'>
-                              <span className='line-through'>
-                                {formatValue(s.product_value)}
-                              </span>{' '}
-                              (
-                              {formatValue(
-                                Math.max(
-                                  0,
-                                  (s.product_value ?? 0) -
-                                    ((s.paid_value ?? 0) -
-                                      (s.estimated_delivery_cost ?? 0))
-                                )
-                              )}{' '}
-                              de remise avec le code :
-                              {s.promo_codes?.replace(/;/g, ', ')})
-                            </div>
-                          )}
+                          {(() => {
+                            const tokens = String(s.promo_code || '')
+                              .split(';;')
+                              .map(t => String(t || '').trim())
+                              .filter(Boolean)
+                              .filter(
+                                t => !t.toUpperCase().startsWith('PAYLIVE-')
+                              );
+                            const promo = tokens.join(', ');
+                            return promo ? (
+                              <div className='text-xs text-gray-500'>
+                                Code promo : {promo}
+                              </div>
+                            ) : null;
+                          })()}
                         </div>
                       </div>
 
                       <div className='mt-3 text-sm text-gray-700'>
                         <div>
                           <span className='font-medium'>Référence:</span>{' '}
-                          {s.product_reference ?? '—'}
+                          {renderShipmentProductReference(s)}
                         </div>
                         <div>
                           {(() => {
@@ -3636,7 +6430,14 @@ export default function DashboardPage() {
                         </div>
                         <div>
                           <span className='font-medium'>Statut:</span>{' '}
-                          {s.status || '—'}
+                          {String(s.status || '').toUpperCase() ===
+                          'CANCELLED' ? (
+                            <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
+                              Annulée
+                            </span>
+                          ) : (
+                            s.status || '—'
+                          )}
                         </div>
                       </div>
 
@@ -3677,7 +6478,7 @@ export default function DashboardPage() {
                           </span>
                         </div>
                         <div>
-                          <span className='font-medium'>Poids:</span>{' '}
+                          <span className='font-medium'>Poids(kg):</span>{' '}
                           {s.weight || '—'}
                         </div>
 
@@ -3732,10 +6533,10 @@ export default function DashboardPage() {
                         Référence produit
                       </th>
                       <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Payé
+                        Reçu
                       </th>
                       <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Reçu
+                        Code Promo
                       </th>
                       <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                         Méthode
@@ -3747,7 +6548,7 @@ export default function DashboardPage() {
                         Réseau
                       </th>
                       <th className='text-left py-3 px-4 font-semibold text-gray-700'>
-                        Poids
+                        Poids(kg)
                       </th>
                     </tr>
                   </thead>
@@ -3765,7 +6566,19 @@ export default function DashboardPage() {
                       visibleShipments.map(s => (
                         <tr
                           key={s.id}
-                          className='border-b border-gray-100 hover:bg-gray-50'
+                          onClick={e => {
+                            if (isInteractiveRowClick(e.target)) return;
+                            toggleSaleSelection(s.id);
+                          }}
+                          className={`border-b border-gray-100 cursor-pointer ${
+                            selectedSaleIds.has(s.id)
+                              ? 'outline outline-2 outline-indigo-500 outline-offset-[-2px]'
+                              : ''
+                          } ${
+                            String(s.status || '').toUpperCase() === 'CANCELLED'
+                              ? 'bg-red-50'
+                              : 'hover:bg-gray-50'
+                          }`}
                         >
                           <td className='py-4 px-4 text-gray-700'>
                             <input
@@ -3847,39 +6660,28 @@ export default function DashboardPage() {
                             })()}
                           </td>
                           <td className='py-4 px-4 text-gray-700'>
-                            {s.product_reference ?? '—'}
-                          </td>
-                          <td className='py-4 px-4 text-gray-900 font-semibold'>
-                            {formatValue(s.paid_value)}
+                            {renderShipmentProductReference(s)}
                           </td>
                           <td className='py-4 px-4 text-gray-900 font-semibold'>
                             {(() => {
-                              const hasPromo = !!s.promo_codes;
-                              const finalValue =
-                                (s.paid_value ?? 0) -
-                                (s.estimated_delivery_cost ?? 0);
-                              return (
-                                <>
-                                  {formatValue(finalValue)}
-                                  {hasPromo && (
-                                    <div className='text-xs text-gray-500 mt-1'>
-                                      <span className='line-through'>
-                                        {formatValue(s.product_value)}
-                                      </span>{' '}
-                                      (
-                                      {formatValue(
-                                        Math.max(
-                                          0,
-                                          (s.product_value ?? 0) -
-                                            (finalValue ?? 0)
-                                        )
-                                      )}{' '}
-                                      de remise avec le code:{' '}
-                                      {s.promo_codes!.replace(';', ', ')})
-                                    </div>
-                                  )}
-                                </>
+                              const finalValue = Math.max(
+                                0,
+                                Number(s.store_earnings_amount || 0) / 100
                               );
+                              return <>{formatValue(finalValue)}</>;
+                            })()}
+                          </td>
+                          <td className='py-4 px-4 text-gray-700'>
+                            {(() => {
+                              const tokens = String(s.promo_code || '')
+                                .split(';;')
+                                .map(t => String(t || '').trim())
+                                .filter(Boolean)
+                                .filter(
+                                  t => !t.toUpperCase().startsWith('PAYLIVE-')
+                                );
+                              const promo = tokens.join(', ');
+                              return promo || '—';
                             })()}
                           </td>
                           <td className='py-4 px-4 text-gray-700'>
@@ -3887,8 +6689,18 @@ export default function DashboardPage() {
                           </td>
                           <td className='py-4 px-4 text-gray-700'>
                             <div className='space-y-1'>
-                              <div className='font-medium'>
-                                {s.status || '—'}
+                              <div
+                                className={`font-medium ${
+                                  String(s.status || '').toUpperCase() ===
+                                  'CANCELLED'
+                                    ? 'text-red-700'
+                                    : ''
+                                }`}
+                              >
+                                {String(s.status || '').toUpperCase() ===
+                                'CANCELLED'
+                                  ? 'ANNULÉE'
+                                  : s.status || '—'}
                               </div>
                               <div className='text-xs text-gray-500'>
                                 {getStatusDescription(s.status)}
@@ -3926,19 +6738,16 @@ export default function DashboardPage() {
                         ref={drawButtonRef}
                         onClick={handleDraw}
                         disabled={selectedIds.size < 2 || drawLoading}
-                        className='flex items-center sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border bg-white text-gray-700 border-gray-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                        className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                         title='Lancer le tirage'
                       >
                         {drawLoading ? (
                           <span className='inline-flex items-center'>
-                            <span className='animate-spin rounded-full h-4 w-4 border-b-2 border-gray-600 mr-2' />
+                            <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
                             Tirage…
                           </span>
                         ) : (
-                          <span className='inline-flex items-center'>
-                            <Dice5 className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
-                            <span>Lancer le tirage</span>
-                          </span>
+                          <span>Lancer le tirage</span>
                         )}
                       </button>
                     </div>
@@ -4021,7 +6830,7 @@ export default function DashboardPage() {
                       />
                       <span>Recharger</span>
                     </button>
-                    <div className='text-sm text-gray-700'>
+                    <div className='text-xs text-gray-600 mt-1'>
                       {selectedIds.size} sélectionné(s)
                     </div>
 
@@ -4126,7 +6935,7 @@ export default function DashboardPage() {
                       />
                       <span>Recharger</span>
                     </button>
-                    <div className='text-sm text-gray-700'>
+                    <div className='text-xs text-gray-600 mt-1'>
                       {selectedIds.size} sélectionné(s)
                     </div>
                   </div>
@@ -4183,8 +6992,12 @@ export default function DashboardPage() {
                   (shipments || []).forEach(s => {
                     const id = s.customer_stripe_id || '';
                     if (!id) return;
-                    const v =
-                      (s.paid_value ?? 0) - (s.estimated_delivery_cost ?? 0);
+                    if (String(s.status || '').toUpperCase() === 'CANCELLED')
+                      return;
+                    const v = Math.max(
+                      0,
+                      Number(s.customer_spent_amount || 0) / 100
+                    );
                     spentMap[id] = (spentMap[id] || 0) + v;
                   });
 
@@ -4269,7 +7082,15 @@ export default function DashboardPage() {
                           return (
                             <div
                               key={r.id}
-                              className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
+                              onClick={e => {
+                                if (isInteractiveRowClick(e.target)) return;
+                                toggleSelectId(r.id);
+                              }}
+                              className={`rounded-lg border p-3 shadow-sm cursor-pointer ${
+                                selectedIds.has(r.id)
+                                  ? 'ring-2 ring-indigo-500 ring-inset'
+                                  : ''
+                              } border-gray-200 bg-white`}
                             >
                               <div className='flex items-start justify-between'>
                                 <div className='flex items-center space-x-2'>
@@ -4278,7 +7099,7 @@ export default function DashboardPage() {
                                     checked={selectedIds.has(r.id)}
                                     onChange={() => toggleSelectId(r.id)}
                                     aria-label='Sélectionner'
-                                    className='h-4 w-4'
+                                    className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                                   />
                                   {u?.hasImage && u?.imageUrl ? (
                                     <img
@@ -4301,8 +7122,10 @@ export default function DashboardPage() {
                                     </div>
                                   </div>
                                 </div>
-                                <div className='text-sm font-semibold text-gray-900'>
-                                  {formatValue(r.spent)}
+                                <div className='text-right'>
+                                  <div className='text-sm font-semibold text-gray-900'>
+                                    {formatValue(r.spent)}
+                                  </div>
                                 </div>
                               </div>
 
@@ -4609,9 +7432,15 @@ export default function DashboardPage() {
                                   (shipments || []).forEach(s => {
                                     const id = s.customer_stripe_id || '';
                                     if (!id) return;
-                                    const v =
-                                      (s.paid_value ?? 0) -
-                                      (s.estimated_delivery_cost ?? 0);
+                                    if (
+                                      String(s.status || '').toUpperCase() ===
+                                      'CANCELLED'
+                                    )
+                                      return;
+                                    const v = Math.max(
+                                      0,
+                                      Number(s.customer_spent_amount || 0) / 100
+                                    );
                                     spentMap[id] = (spentMap[id] || 0) + v;
                                   });
                                   const sortedIds = [...filteredIds].sort(
@@ -4633,25 +7462,39 @@ export default function DashboardPage() {
                                     selectedIds.has(id)
                                   );
                                   return (
-                                    <input
-                                      type='checkbox'
-                                      checked={allSelected}
-                                      onChange={e => {
-                                        const checked = e.target.checked;
-                                        setSelectedIds(prev => {
-                                          const next = new Set(prev);
-                                          if (checked) {
-                                            pageIds.forEach(id => next.add(id));
-                                          } else {
-                                            pageIds.forEach(id =>
-                                              next.delete(id)
-                                            );
-                                          }
-                                          return next;
-                                        });
-                                      }}
-                                      aria-label='Tout sélectionner'
-                                    />
+                                    <div className='flex flex-col items-start'>
+                                      <div className='inline-flex items-center gap-2 text-sm text-gray-700'>
+                                        <input
+                                          type='checkbox'
+                                          checked={allSelected}
+                                          onChange={e => {
+                                            const checked = e.target.checked;
+                                            setSelectedIds(prev => {
+                                              const next = new Set(prev);
+                                              if (checked) {
+                                                pageIds.forEach(id =>
+                                                  next.add(id)
+                                                );
+                                              } else {
+                                                pageIds.forEach(id =>
+                                                  next.delete(id)
+                                                );
+                                              }
+                                              return next;
+                                            });
+                                          }}
+                                          aria-label='Sélectionner tout'
+                                          className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
+                                        />
+                                        <span>Sélectionner tout</span>
+                                      </div>
+                                      <div className='text-xs text-gray-600 mt-1 font-normal'>
+                                        {selectedIds.size}{' '}
+                                        {selectedIds.size > 1
+                                          ? 'clients sélectionnés'
+                                          : 'client sélectionné'}
+                                      </div>
+                                    </div>
                                   );
                                 })()}
                               </th>
@@ -4704,7 +7547,15 @@ export default function DashboardPage() {
                               return (
                                 <tr
                                   key={r.id}
-                                  className='border-b border-gray-100 hover:bg-gray-50'
+                                  onClick={e => {
+                                    if (isInteractiveRowClick(e.target)) return;
+                                    toggleSelectId(r.id);
+                                  }}
+                                  className={`border-b border-gray-100 cursor-pointer ${
+                                    selectedIds.has(r.id)
+                                      ? 'outline outline-2 outline-indigo-500 outline-offset-[-2px]'
+                                      : ''
+                                  } hover:bg-gray-50`}
                                 >
                                   <td className='py-4 px-4'>
                                     <input
@@ -4712,6 +7563,7 @@ export default function DashboardPage() {
                                       checked={selectedIds.has(r.id)}
                                       onChange={() => toggleSelectId(r.id)}
                                       aria-label='Sélectionner'
+                                      className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                                     />
                                   </td>
                                   <td className='py-4 px-4 text-gray-700'>
@@ -4743,7 +7595,9 @@ export default function DashboardPage() {
                                               alt='avatar'
                                               className='w-8 h-8 rounded-full object-cover'
                                             />
-                                          ) : null}
+                                          ) : (
+                                            <span className='inline-block w-8 h-8 rounded-full bg-gray-200' />
+                                          )}
                                           <span>{name}</span>
                                         </div>
                                       );
@@ -5146,7 +8000,7 @@ export default function DashboardPage() {
                   <label className='block text-sm font-medium text-gray-700 mb-1'>
                     Coupon
                   </label>
-                  <div className='space-y-2'>
+                  <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2'>
                     {couponOptions.map(opt => (
                       <label key={opt.id} className='flex items-center gap-2'>
                         <input
@@ -5174,8 +8028,12 @@ export default function DashboardPage() {
                   <input
                     type='text'
                     value={promoCodeName}
-                    onChange={e => setPromoCodeName(e.target.value)}
-                    placeholder='Ex: SUMMER20'
+                    onChange={e => {
+                      const next = String(e.target.value || '').toUpperCase();
+                      if (next.startsWith('CREDIT-')) return;
+                      setPromoCodeName(next);
+                    }}
+                    placeholder='Ex: STORE20'
                     className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                   />
                 </div>
@@ -5197,25 +8055,17 @@ export default function DashboardPage() {
 
                 <div>
                   <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Restriction premiers achats
+                    Nombre maximum d’utilisations
                   </label>
-                  <div className='flex items-center gap-3'>
-                    <input
-                      id='promo-first-time'
-                      type='checkbox'
-                      checked={promoFirstTime}
-                      onChange={e => setPromoFirstTime(e.target.checked)}
-                      className='h-4 w-4'
-                      disabled
-                    />
-                    <label
-                      htmlFor='promo-first-time'
-                      className='text-sm text-gray-700'
-                    >
-                      Ce code ne sera valable que pour les clients qui n’ont
-                      jamais effectué d’achat auparavant.
-                    </label>
-                  </div>
+                  <input
+                    type='number'
+                    min='0'
+                    step='1'
+                    value={promoMaxRedemptions}
+                    onChange={e => setPromoMaxRedemptions(e.target.value)}
+                    placeholder='Ex: 10'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
                 </div>
 
                 <div>
@@ -5248,21 +8098,6 @@ export default function DashboardPage() {
                     L’heure est obligatoire si une date est renseignée.
                   </p>
                 </div>
-
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Nombre maximum d’utilisations
-                  </label>
-                  <input
-                    type='number'
-                    min='0'
-                    step='1'
-                    value={promoMaxRedemptions}
-                    onChange={e => setPromoMaxRedemptions(e.target.value)}
-                    placeholder='Ex: 10'
-                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                  />
-                </div>
               </div>
 
               <div className='flex items-center gap-3 mb-6'>
@@ -5274,7 +8109,7 @@ export default function DashboardPage() {
                   {promoCreating && (
                     <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
                   )}
-                  <RiDiscountPercentFill className='w-4 h-4 mr-1' />
+
                   <span>Créer le code promo</span>
                 </button>
               </div>
@@ -5282,7 +8117,6 @@ export default function DashboardPage() {
               {/* Barre de recherche par libellé du code */}
               <div className='flex items-center justify-between mb-4'>
                 <div className='flex items-center'>
-                  <RiDiscountPercentFill className='w-5 h-5 text-indigo-600 mr-2' />
                   <h2 className='text-lg font-semibold text-gray-900'>
                     Mes Code Promo
                   </h2>
@@ -5334,14 +8168,40 @@ export default function DashboardPage() {
                           <div className='text-base font-semibold text-gray-900'>
                             {p.code}
                           </div>
-                          <button
-                            onClick={() => handleDeletePromotionCode(p.id)}
-                            disabled={!!promoDeletingIds[p.id]}
-                            className='inline-flex items-center px-2 py-1 text-xs rounded-md bg-gray-600 text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-                          >
-                            <FaArchive className='w-3 h-3 mr-1' />
-                            Archiver
-                          </button>
+                          {promoTogglingIds[p.id] ? (
+                            <div className='text-sm text-gray-600'>
+                              Chargement...
+                            </div>
+                          ) : (
+                            <label className='inline-flex items-center cursor-pointer select-none'>
+                              <input
+                                type='checkbox'
+                                className='sr-only'
+                                checked={p?.active !== false}
+                                onChange={e =>
+                                  handleSetPromotionCodeActive(
+                                    p.id,
+                                    e.target.checked
+                                  )
+                                }
+                              />
+                              <span
+                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                                  p?.active !== false
+                                    ? 'bg-indigo-600'
+                                    : 'bg-gray-300'
+                                }`}
+                              >
+                                <span
+                                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                    p?.active !== false
+                                      ? 'translate-x-6'
+                                      : 'translate-x-1'
+                                  }`}
+                                />
+                              </span>
+                            </label>
+                          )}
                         </div>
                         <div className='mt-2 text-sm text-gray-700 space-y-1'>
                           <div>
@@ -5388,9 +8248,6 @@ export default function DashboardPage() {
                                   `${(r.minimum_amount / 100).toFixed(2)}€ min.`
                                 );
                               }
-                              if (r.first_time_transaction) {
-                                parts.push('premier achat');
-                              }
                               return parts.length ? parts.join(' • ') : '—';
                             })()}
                           </div>
@@ -5424,7 +8281,7 @@ export default function DashboardPage() {
                         Restrictions
                       </th>
                       <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                        Actions
+                        Statut
                       </th>
                     </tr>
                   </thead>
@@ -5432,7 +8289,7 @@ export default function DashboardPage() {
                     {promoListLoading ? (
                       <tr>
                         <td
-                          colSpan={8}
+                          colSpan={7}
                           className='px-4 py-6 text-center text-gray-600'
                         >
                           Chargement...
@@ -5441,7 +8298,7 @@ export default function DashboardPage() {
                     ) : promoCodes.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={8}
+                          colSpan={7}
                           className='px-4 py-6 text-center text-gray-600'
                         >
                           Aucun code promo
@@ -5456,98 +8313,118 @@ export default function DashboardPage() {
                             .toLowerCase()
                             .includes(term);
                         })
-                        .map((p: any) => (
-                          <tr
-                            key={p.id}
-                            className={p?.active === false ? 'opacity-60' : ''}
-                          >
-                            <td className='px-4 py-3 text-gray-900 font-medium'>
-                              {p.code}
-                            </td>
-                            <td
-                              className='px-4 py-3 text-gray-700 truncate max-w-[12rem]'
-                              title={(() => {
-                                const match = couponOptions.find(
-                                  c => c.id === (p?.coupon?.id || '')
-                                );
-                                return (
-                                  match?.name ||
-                                  p?.coupon?.name ||
-                                  p?.coupon?.id ||
-                                  ''
-                                );
-                              })()}
+                        .map((p: any) =>
+                          promoTogglingIds[p.id] ? (
+                            <tr key={p.id}>
+                              <td
+                                colSpan={7}
+                                className='px-4 py-6 text-center text-gray-600'
+                              >
+                                Chargement...
+                              </td>
+                            </tr>
+                          ) : (
+                            <tr
+                              key={p.id}
+                              className={
+                                p?.active === false ? 'opacity-60' : ''
+                              }
                             >
-                              {(() => {
-                                const match = couponOptions.find(
-                                  c => c.id === (p?.coupon?.id || '')
-                                );
-                                return (
-                                  match?.name ||
-                                  p?.coupon?.name ||
-                                  p?.coupon?.id ||
-                                  '—'
-                                );
-                              })()}
-                            </td>
+                              <td className='px-4 py-3 text-gray-900 font-medium'>
+                                {p.code}
+                              </td>
+                              <td
+                                className='px-4 py-3 text-gray-700 truncate max-w-[12rem]'
+                                title={(() => {
+                                  const match = couponOptions.find(
+                                    c => c.id === (p?.coupon?.id || '')
+                                  );
+                                  return (
+                                    match?.name ||
+                                    p?.coupon?.name ||
+                                    p?.coupon?.id ||
+                                    ''
+                                  );
+                                })()}
+                              >
+                                {(() => {
+                                  const match = couponOptions.find(
+                                    c => c.id === (p?.coupon?.id || '')
+                                  );
+                                  return (
+                                    match?.name ||
+                                    p?.coupon?.name ||
+                                    p?.coupon?.id ||
+                                    '—'
+                                  );
+                                })()}
+                              </td>
 
-                            <td className='px-4 py-3 text-gray-700'>
-                              {p.expires_at
-                                ? new Date(p.expires_at * 1000).toLocaleString(
-                                    'fr-FR',
-                                    {
+                              <td className='px-4 py-3 text-gray-700'>
+                                {p.expires_at
+                                  ? new Date(
+                                      p.expires_at * 1000
+                                    ).toLocaleString('fr-FR', {
                                       dateStyle: 'short',
                                       timeStyle: 'short',
+                                    })
+                                  : '—'}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700'>
+                                {p.times_redeemed ?? 0}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700'>
+                                {p.max_redemptions ?? '—'}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700'>
+                                {(() => {
+                                  const r = p?.restrictions || {};
+                                  const parts: string[] = [];
+                                  if (typeof r.minimum_amount === 'number') {
+                                    const eur = (
+                                      r.minimum_amount / 100
+                                    ).toLocaleString('fr-FR', {
+                                      minimumFractionDigits: 2,
+                                      maximumFractionDigits: 2,
+                                    });
+                                    parts.push(`Min: ${eur} €`);
+                                  }
+                                  return parts.length ? parts.join(' • ') : '—';
+                                })()}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700'>
+                                <label className='inline-flex items-center cursor-pointer select-none'>
+                                  <input
+                                    type='checkbox'
+                                    className='sr-only'
+                                    checked={p?.active !== false}
+                                    onChange={e =>
+                                      handleSetPromotionCodeActive(
+                                        p.id,
+                                        e.target.checked
+                                      )
                                     }
-                                  )
-                                : '—'}
-                            </td>
-                            <td className='px-4 py-3 text-gray-700'>
-                              {p.times_redeemed ?? 0}
-                            </td>
-                            <td className='px-4 py-3 text-gray-700'>
-                              {p.max_redemptions ?? '—'}
-                            </td>
-                            <td className='px-4 py-3 text-gray-700'>
-                              {(() => {
-                                const r = p?.restrictions || {};
-                                const parts: string[] = [];
-                                if (typeof r.minimum_amount === 'number') {
-                                  const eur = (
-                                    r.minimum_amount / 100
-                                  ).toLocaleString('fr-FR', {
-                                    minimumFractionDigits: 2,
-                                    maximumFractionDigits: 2,
-                                  });
-                                  parts.push(`Min: ${eur} €`);
-                                }
-                                if (
-                                  typeof r.first_time_transaction === 'boolean'
-                                ) {
-                                  parts.push(
-                                    r.first_time_transaction
-                                      ? 'Premiers achats uniquement'
-                                      : 'Tous achats'
-                                  );
-                                }
-                                return parts.length ? parts.join(' • ') : '—';
-                              })()}
-                            </td>
-                            <td className='px-4 py-3 text-gray-700'>
-                              <button
-                                onClick={() => handleDeletePromotionCode(p.id)}
-                                disabled={!!promoDeletingIds[p.id]}
-                                className={`inline-flex items-center p-2 rounded-md border ${promoDeletingIds[p.id] ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-700 border-gray-300'}`}
-                                title={'Archiver'}
-                              >
-                                <FaArchive
-                                  className={`w-4 h-4 ${promoDeletingIds[p.id] ? 'opacity-60' : ''}`}
-                                />
-                                <span className='ml-1'>Archiver</span>
-                              </button>
-                            </td>
-                          </tr>
-                        ))
+                                  />
+                                  <span
+                                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                                      p?.active !== false
+                                        ? 'bg-indigo-600'
+                                        : 'bg-gray-300'
+                                    }`}
+                                  >
+                                    <span
+                                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                        p?.active !== false
+                                          ? 'translate-x-6'
+                                          : 'translate-x-1'
+                                      }`}
+                                    />
+                                  </span>
+                                </label>
+                              </td>
+                            </tr>
+                          )
+                        )
                     )}
                   </tbody>
                 </table>
@@ -5650,7 +8527,7 @@ export default function DashboardPage() {
                               </span>
                             </div>
                             <div className='text-gray-600 truncate'>
-                              Réf: {s.product_reference ?? '—'}
+                              Réf: {formatShipmentProductReference(s)}
                             </div>
                           </div>
                         ))}
