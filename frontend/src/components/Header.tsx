@@ -1,4 +1,11 @@
-import { useEffect, useState, useLayoutEffect, useRef, Fragment } from 'react';
+import {
+  useEffect,
+  useState,
+  useLayoutEffect,
+  useRef,
+  Fragment,
+  useMemo,
+} from 'react';
 import {
   RedirectToSignUp,
   SignedIn,
@@ -58,8 +65,8 @@ export default function Header() {
   const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
   const hasEnsuredStripeCustomerRef = useRef<boolean>(false);
   const [ownerStoreInfo, setOwnerStoreInfo] = useState<OwnerStoreInfo | null>(
-      null
-    );
+    null
+  );
   const [cartSummaryLoading, setCartSummaryLoading] = useState(false);
   const [cartItemsByStore, setCartItemsByStore] = useState<
     Array<{
@@ -160,14 +167,42 @@ export default function Header() {
       currency: 'EUR',
     }).format(value);
 
+  const isDeliveryRegulationText = (text: unknown) => {
+    const normalized = String(text || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+    return /\b(?:regulation|regularisation)\s+livraison\b/i.test(normalized);
+  };
+
   const parseActiveStoreSlug = () => {
     const path = String(location.pathname || '');
     const parts = path.split('/').filter(Boolean);
-    if (parts.length >= 2 && (parts[0] === 'store' || parts[0] === 'checkout')) {
+    if (
+      parts.length >= 2 &&
+      (parts[0] === 'store' || parts[0] === 'checkout')
+    ) {
       return decodeURIComponent(parts[1] || '');
     }
     return '';
   };
+
+  const filteredCartItemsByStore = useMemo(() => {
+    const out = (cartItemsByStore || [])
+      .map(g => {
+        const items = Array.isArray(g?.items)
+          ? g.items.filter(
+              it =>
+                !isDeliveryRegulationText(it?.product_reference) &&
+                !isDeliveryRegulationText((it as any)?.description)
+            )
+          : [];
+        return { ...g, items };
+      })
+      .filter(g => Array.isArray(g?.items) && g.items.length > 0);
+    return out;
+  }, [cartItemsByStore]);
 
   const refreshCartSummary = async () => {
     const sid = String(stripeCustomerId || '').trim();
@@ -202,7 +237,7 @@ export default function Header() {
 
   useEffect(() => {
     const active = String(parseActiveStoreSlug() || '').trim();
-    const available = cartItemsByStore
+    const available = filteredCartItemsByStore
       .map(g => String(g?.store?.slug || '').trim())
       .filter(Boolean);
     const next =
@@ -211,21 +246,23 @@ export default function Header() {
         ? selectedStoreSlug
         : available[0] || '');
     if (next !== selectedStoreSlug) setSelectedStoreSlug(next);
-  }, [location.pathname, cartItemsByStore]);
+  }, [location.pathname, filteredCartItemsByStore]);
 
   const currentGroup =
-    cartItemsByStore.find(
+    filteredCartItemsByStore.find(
       g =>
         String(g?.store?.slug || '').trim() ===
         String(selectedStoreSlug || '').trim()
     ) || null;
 
-  const currentItems = Array.isArray(currentGroup?.items) ? currentGroup!.items : [];
+  const currentItems = Array.isArray(currentGroup?.items)
+    ? currentGroup!.items
+    : [];
   const currentTotal = currentItems.reduce((sum, it) => {
     const qty = Math.max(1, Number(it?.quantity || 1));
     return sum + Number(it?.value || 0) * qty;
   }, 0);
-  const totalItemsCount = cartItemsByStore.reduce(
+  const totalItemsCount = filteredCartItemsByStore.reduce(
     (sum, g) => sum + (Array.isArray(g?.items) ? g.items.length : 0),
     0
   );
@@ -531,7 +568,8 @@ export default function Header() {
                                   Panier
                                 </div>
                                 <div className='text-xs text-gray-500 truncate'>
-                                  {currentGroup?.store?.name || 'Sélectionnez une boutique'}
+                                  {currentGroup?.store?.name ||
+                                    'Sélectionnez une boutique'}
                                 </div>
                               </div>
                               <div className='text-xs text-gray-500'>
@@ -539,7 +577,7 @@ export default function Header() {
                               </div>
                             </div>
 
-                            {cartItemsByStore.length > 1 ? (
+                            {filteredCartItemsByStore.length > 1 ? (
                               <div className='mt-3'>
                                 <select
                                   value={selectedStoreSlug}
@@ -548,7 +586,7 @@ export default function Header() {
                                   }}
                                   className='w-full h-9 rounded-md border border-gray-200 bg-white px-2 text-sm text-gray-900'
                                 >
-                                  {cartItemsByStore
+                                  {filteredCartItemsByStore
                                     .filter(g => Boolean(g?.store?.slug))
                                     .map(g => (
                                       <option
@@ -575,9 +613,16 @@ export default function Header() {
                                     const id = Number(it?.id || 0);
                                     const title =
                                       String(it?.description || '').trim() ||
-                                      String(it?.product_reference || '').trim();
-                                    const ref = String(it?.product_reference || '').trim();
-                                    const qty = Math.max(1, Number(it?.quantity || 1));
+                                      String(
+                                        it?.product_reference || ''
+                                      ).trim();
+                                    const ref = String(
+                                      it?.product_reference || ''
+                                    ).trim();
+                                    const qty = Math.max(
+                                      1,
+                                      Number(it?.quantity || 1)
+                                    );
                                     const price = Number(it?.value || 0);
                                     return (
                                       <div
@@ -593,7 +638,9 @@ export default function Header() {
                                           </div>
                                         </div>
                                         <div className='text-sm font-semibold text-gray-900'>
-                                          {price > 0 ? formatEur(price * qty) : '—'}
+                                          {price > 0
+                                            ? formatEur(price * qty)
+                                            : '—'}
                                         </div>
                                       </div>
                                     );
@@ -601,7 +648,9 @@ export default function Header() {
                                 </div>
 
                                 <div className='mt-4 flex items-center justify-between'>
-                                  <div className='text-sm text-gray-700'>Total panier</div>
+                                  <div className='text-sm text-gray-700'>
+                                    Total panier
+                                  </div>
                                   <div className='text-sm font-semibold text-gray-900'>
                                     {formatEur(currentTotal)}
                                   </div>
@@ -612,7 +661,9 @@ export default function Header() {
 
                           <div className='p-4 border-t border-gray-100'>
                             <button
-                              disabled={!selectedStoreSlug || currentItems.length === 0}
+                              disabled={
+                                !selectedStoreSlug || currentItems.length === 0
+                              }
                               onClick={() => {
                                 navigate(
                                   `/checkout/${encodeURIComponent(selectedStoreSlug)}`

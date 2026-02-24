@@ -1723,18 +1723,6 @@ export default function DashboardPage() {
       return;
     }
 
-    let existing: StockApiItem | null = null;
-    try {
-      existing = await fetchStockSearchExactMatch(slug, referenceTrim);
-    } catch {
-      showToast('Erreur vérification de la référence', 'error');
-      return;
-    }
-    if (existing) {
-      showToast('Cette référence existe déjà dans le stock', 'error');
-      return;
-    }
-
     const qtyRaw = parseInt(String(stockQuantity || '').trim(), 10);
     const quantity = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : NaN;
     if (!Number.isFinite(quantity) || quantity <= 0) {
@@ -1865,19 +1853,6 @@ export default function DashboardPage() {
       isDeliveryRegulationText(referenceTrim)
     ) {
       showToast('Référence interdite', 'error');
-      return;
-    }
-
-    let existing: StockApiItem | null = null;
-    try {
-      existing = await fetchStockSearchExactMatch(slug, referenceTrim);
-    } catch {
-      showToast('Erreur vérification de la référence', 'error');
-      return;
-    }
-    const existingId = Number((existing as any)?.stock?.id ?? 0);
-    if (existing && existingId !== stockId) {
-      showToast('Cette référence existe déjà dans le stock', 'error');
       return;
     }
 
@@ -3755,7 +3730,9 @@ export default function DashboardPage() {
                 <ArrowRight className='w-3 h-3 sm:w-4 sm:h-4 ml-1.5 sm:ml-2' />
               </button>
               <button
-                onClick={() => navigate(`/store/${encodeURIComponent(store.slug)}`)}
+                onClick={() =>
+                  navigate(`/store/${encodeURIComponent(store.slug)}`)
+                }
                 className='inline-flex items-center justify-center whitespace-nowrap px-2 py-2 text-xs sm:px-4 sm:py-2 sm:text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700'
               >
                 Voir ma boutique

@@ -440,6 +440,75 @@ router.put("/:storeSlug", async (req, res) => {
   }
 });
 
+router.get("/me", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const clerkId = String(auth.userId).trim();
+    const { data: store, error } = await supabase
+      .from("stores")
+      .select("id, name, slug, clerk_id")
+      .eq("clerk_id", clerkId)
+      .maybeSingle();
+
+    if (error && (error as any)?.code !== "PGRST116") {
+      console.error("Erreur Supabase (get store by clerk_id):", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.json({ success: true, hasStore: Boolean(store), store: store || null });
+  } catch (e) {
+    console.error("Erreur serveur:", e);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+router.post("/need-a-demo", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const emailAddresses = Array.isArray((user as any)?.emailAddresses)
+      ? (user as any).emailAddresses
+      : [];
+    const primaryEmail = String(
+      (user as any)?.primaryEmailAddress?.emailAddress || "",
+    ).trim();
+
+    const payload = {
+      clerkUserId: String((user as any)?.id || auth.userId),
+      fullName: String((user as any)?.fullName || "").trim() || null,
+      firstName: String((user as any)?.firstName || "").trim() || null,
+      lastName: String((user as any)?.lastName || "").trim() || null,
+      primaryEmail: primaryEmail || null,
+      emails: emailAddresses
+        .map((e: any) => String(e?.emailAddress || "").trim())
+        .filter(Boolean),
+      createdAt: (user as any)?.createdAt || null,
+      lastSignInAt: (user as any)?.lastSignInAt || null,
+    };
+
+    try {
+      await emailService.sendAdminError({
+        subject: "Demande de démo (NeedADemo)",
+        message: `Le user souhaite une démo. clerk_id=${String(auth.userId)}`,
+        context: JSON.stringify(payload, null, 2),
+      });
+    } catch {}
+
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("Erreur serveur:", e);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
 // GET /api/stores/:storeSlug - Récupérer une boutique par son slug
 router.get("/:storeSlug", async (req, res) => {
   try {
