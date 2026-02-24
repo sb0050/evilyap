@@ -26,6 +26,8 @@ import TermsAndConditions from './pages/public/TermsAndConditions';
 import AdminPage from './pages/admin/AdminPage';
 import { useEffect } from 'react';
 import DashboardPage from './pages/dashboard/DashboardPage';
+import StorePage from './pages/StorePage';
+import NeedADemoPage from './pages/NeedADemoPage';
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -97,11 +99,28 @@ function App() {
               }
             />
             <Route
+              path='/store/:storeName'
+              element={<StorePage />}
+            />
+            <Route
               path='/onboarding'
               element={
                 <>
                   <SignedIn>
                     <OnboardingPage />
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path='/needademo'
+              element={
+                <>
+                  <SignedIn>
+                    <NeedADemoPage />
                   </SignedIn>
                   <SignedOut>
                     <RedirectToSignUp />

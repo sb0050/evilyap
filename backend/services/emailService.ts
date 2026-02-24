@@ -211,39 +211,6 @@ class EmailService {
     return false;
   }
 
-  private sleep(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  private isRetryableSmtpError(err: any): boolean {
-    const code = String(err?.code || "").toUpperCase();
-    const responseCode = Number(err?.responseCode || 0);
-    if (
-      [
-        "EAUTH",
-        "ECONNECTION",
-        "ETIMEDOUT",
-        "EAI_AGAIN",
-        "ECONNRESET",
-        "ENOTFOUND",
-        "ESOCKET",
-      ].includes(code)
-    ) {
-      return true;
-    }
-    if ([421, 450, 451, 452, 454].includes(responseCode)) return true;
-    const response = String(err?.response || "").toLowerCase();
-    if (
-      response.includes("temporary") ||
-      response.includes("try again") ||
-      response.includes("connection lost") ||
-      response.includes("rate limit")
-    ) {
-      return true;
-    }
-    return false;
-  }
-
   private formatAmount(amount?: number, currency?: string): string | undefined {
     if (typeof amount !== "number" || !currency) return undefined;
     try {

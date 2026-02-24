@@ -7,14 +7,6 @@ import { BE, CH, FR } from 'country-flag-icons/react/3x2';
 const LandingPage = () => {
   const navigate = useNavigate();
   const [showFaqModal, setShowFaqModal] = useState(false);
-  const [showContactModal, setShowContactModal] = useState(false);
-  const [contactName, setContactName] = useState('');
-  const [contactEmail, setContactEmail] = useState('');
-  const [contactPhone, setContactPhone] = useState('');
-  const [contactMessage, setContactMessage] = useState('');
-  const [contactSending, setContactSending] = useState(false);
-  const [contactError, setContactError] = useState<string | null>(null);
-  const [contactSuccess, setContactSuccess] = useState<string | null>(null);
 
   const videos = [
     { id: 1, url: `${import.meta.env.VITE_CLOUDFRONT_URL}/demo/1.mp4` },
@@ -45,24 +37,8 @@ const LandingPage = () => {
             >
               Consulter notre FAQ
             </a>
-            <a
-              href='/howitworks'
-              className='hidden md:inline-flex px-5 py-2.5 rounded-md border border-gray-300 text-gray-800 hover:bg-gray-50'
-              onClick={e => {
-                e.preventDefault();
-                try {
-                  const fbq = (window as any).fbq;
-                  if (typeof fbq === 'function') {
-                    fbq('track', 'Lead', { content_name: 'demo' });
-                  }
-                } catch {}
-                setShowContactModal(true);
-              }}
-            >
-              Je veux une démo
-            </a>
             <button
-              onClick={() => navigate('/onboarding')}
+              onClick={() => navigate('/needademo')}
               className='relative px-2 py-2 text-sm sm:text-base sm:px-5 sm:py-2.5 rounded-md text-white bg-gradient-to-r 
               from-purple-600 to-blue-600 shadow-[0_0_18px_rgba(99,102,241,0.55)] 
               ring-2 ring-purple-400/50 transition-transform duration-200 hover:-translate-y-0.5'
@@ -453,21 +429,7 @@ const LandingPage = () => {
               Consulter notre FAQ
             </button>
             <button
-              onClick={() => {
-                try {
-                  const fbq = (window as any).fbq;
-                  if (typeof fbq === 'function') {
-                    fbq('track', 'Lead', { content_name: 'demo' });
-                  }
-                } catch {}
-                setShowContactModal(true);
-              }}
-              className='px-5 py-2.5 rounded-md border border-gray-300 text-gray-800 hover:bg-gray-50'
-            >
-              Je veux une démo
-            </button>
-            <button
-              onClick={() => navigate('/onboarding')}
+              onClick={() => navigate('/needademo')}
               className='relative px-5 py-2.5 rounded-md text-white bg-gradient-to-r 
               from-purple-600 to-blue-600 shadow-[0_0_18px_rgba(99,102,241,0.55)] ring-2
                ring-purple-400/50 transition-transform duration-200 hover:-translate-y-0.5'
@@ -812,141 +774,6 @@ const LandingPage = () => {
                       </div>
                     </details>
                   ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {showContactModal && (
-          <div
-            className='fixed inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-center justify-center'
-            onClick={() => setShowContactModal(false)}
-          >
-            <div
-              className='relative w-full max-w-md mx-auto bg-white rounded-lg shadow-xl overflow-hidden'
-              onClick={e => e.stopPropagation()}
-            >
-              <div className='flex items-center justify-between p-4 border-b'>
-                <h2 className='text-xl font-semibold text-gray-900'>
-                  Demande de démo
-                </h2>
-                <button
-                  className='px-3 py-1 rounded-md text-sm font-medium bg-gray-100 hover:bg-gray-200 text-gray-700'
-                  onClick={() => setShowContactModal(false)}
-                >
-                  Fermer
-                </button>
-              </div>
-              <div className='p-6 space-y-4'>
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Email *
-                  </label>
-                  <input
-                    type='email'
-                    value={contactEmail}
-                    onChange={e => setContactEmail(e.target.value)}
-                    className='w-full border border-gray-300 rounded-md px-3 py-2'
-                    placeholder='votre@email.com'
-                  />
-                </div>
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Nom
-                  </label>
-                  <input
-                    type='text'
-                    value={contactName}
-                    onChange={e => setContactName(e.target.value)}
-                    className='w-full border border-gray-300 rounded-md px-3 py-2'
-                    placeholder='Votre nom (optionnel)'
-                  />
-                </div>
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Téléphone
-                  </label>
-                  <input
-                    type='tel'
-                    value={contactPhone}
-                    onChange={e => setContactPhone(e.target.value)}
-                    className='w-full border border-gray-300 rounded-md px-3 py-2'
-                    placeholder='Votre téléphone (optionnel)'
-                  />
-                </div>
-                <div>
-                  <label className='block text-sm font-medium text-gray-700 mb-1'>
-                    Un message à nous faire passer
-                  </label>
-                  <textarea
-                    value={contactMessage}
-                    onChange={e => setContactMessage(e.target.value)}
-                    className='w-full border border-gray-300 rounded-md px-3 py-2'
-                    placeholder='Expliquez votre besoin, vos disponibilités, etc.'
-                    rows={4}
-                  />
-                </div>
-                {contactError && (
-                  <div className='text-sm text-red-600'>{contactError}</div>
-                )}
-                {contactSuccess && (
-                  <div className='text-sm text-green-600'>{contactSuccess}</div>
-                )}
-                <div className='flex justify-end gap-2 pt-2'>
-                  <button
-                    onClick={async () => {
-                      setContactError(null);
-                      setContactSuccess(null);
-                      const email = (contactEmail || '').trim();
-                      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-                        setContactError('Email obligatoire et valide');
-                        return;
-                      }
-                      try {
-                        setContactSending(true);
-                        const apiUrl =
-                          import.meta.env.VITE_API_URL ||
-                          'http://localhost:5000';
-                        const resp = await fetch(
-                          `${apiUrl}/api/admin/demo-request`,
-                          {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                              email,
-                              name: contactName || null,
-                              phone: contactPhone || null,
-                              message: contactMessage || null,
-                            }),
-                          }
-                        );
-                        const json = await resp.json().catch(() => ({}));
-                        if (resp.ok) {
-                          setContactSuccess(
-                            'Votre demande a été envoyée. Nous revenons vers vous très vite.'
-                          );
-                          setContactName('');
-                          setContactEmail('');
-                          setContactPhone('');
-                          setContactMessage('');
-                        } else {
-                          setContactError(
-                            (json as any)?.error ||
-                              'Erreur lors de l’envoi. Réessayez plus tard.'
-                          );
-                        }
-                      } catch (e: any) {
-                        setContactError(e?.message || 'Erreur réseau');
-                      } finally {
-                        setContactSending(false);
-                      }
-                    }}
-                    className='px-4 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60'
-                    disabled={contactSending}
-                  >
-                    {contactSending ? 'Envoi...' : 'Envoyer ma demande'}
-                  </button>
                 </div>
               </div>
             </div>

@@ -1723,18 +1723,6 @@ export default function DashboardPage() {
       return;
     }
 
-    let existing: StockApiItem | null = null;
-    try {
-      existing = await fetchStockSearchExactMatch(slug, referenceTrim);
-    } catch {
-      showToast('Erreur vérification de la référence', 'error');
-      return;
-    }
-    if (existing) {
-      showToast('Cette référence existe déjà dans le stock', 'error');
-      return;
-    }
-
     const qtyRaw = parseInt(String(stockQuantity || '').trim(), 10);
     const quantity = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : NaN;
     if (!Number.isFinite(quantity) || quantity <= 0) {
@@ -1865,19 +1853,6 @@ export default function DashboardPage() {
       isDeliveryRegulationText(referenceTrim)
     ) {
       showToast('Référence interdite', 'error');
-      return;
-    }
-
-    let existing: StockApiItem | null = null;
-    try {
-      existing = await fetchStockSearchExactMatch(slug, referenceTrim);
-    } catch {
-      showToast('Erreur vérification de la référence', 'error');
-      return;
-    }
-    const existingId = Number((existing as any)?.stock?.id ?? 0);
-    if (existing && existingId !== stockId) {
-      showToast('Cette référence existe déjà dans le stock', 'error');
       return;
     }
 
@@ -3722,8 +3697,8 @@ export default function DashboardPage() {
         {/* Errors are now surfaced via Toasts */}
         {/* Les erreurs sont gérées via des toasts, pas de bandeau inline */}
 
-        <div className='flex items-center justify-between mb-6'>
-          <div>
+        <div className='flex items-start justify-between gap-3 mb-6'>
+          <div className='min-w-0 flex-1'>
             <h1 className='text-2xl font-bold text-gray-900'>
               Tableau de bord
             </h1>
@@ -3744,15 +3719,26 @@ export default function DashboardPage() {
             )}
           </div>
           {store && (
-            <button
-              onClick={() =>
-                navigate(`/checkout/${encodeURIComponent(store.slug)}`)
-              }
-              className='inline-flex items-center px-2 py-2 sm:px-4 sm:py-2 text-xs sm:text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
-            >
-              Formulaire de paiement
-              <ArrowRight className='w-3 h-3 sm:w-4 sm:h-4 ml-2' />
-            </button>
+            <div className='shrink-0 flex flex-col items-end gap-2'>
+              <button
+                onClick={() =>
+                  navigate(`/checkout/${encodeURIComponent(store.slug)}`)
+                }
+                className='inline-flex items-center justify-center whitespace-nowrap px-2 py-2 text-xs sm:px-4 sm:py-2 sm:text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
+              >
+                Formulaire de paiement
+                <ArrowRight className='w-3 h-3 sm:w-4 sm:h-4 ml-1.5 sm:ml-2' />
+              </button>
+              <button
+                onClick={() =>
+                  navigate(`/store/${encodeURIComponent(store.slug)}`)
+                }
+                className='inline-flex items-center justify-center whitespace-nowrap px-2 py-2 text-xs sm:px-4 sm:py-2 sm:text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700'
+              >
+                Voir ma boutique
+                <ArrowRight className='w-3 h-3 sm:w-4 sm:h-4 ml-1.5 sm:ml-2' />
+              </button>
+            </div>
           )}
         </div>
         {/* Onglets horizontaux au-dessus du contenu */}

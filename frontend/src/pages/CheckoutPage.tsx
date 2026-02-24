@@ -1,5 +1,5 @@
 import { useState, useEffect, type Dispatch, type SetStateAction } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   useStripe,
   useElements,
@@ -2136,25 +2136,36 @@ export default function CheckoutPage() {
           {/* En-tête de la boutique */}
           <div className='bg-white rounded-lg shadow-sm p-6 mb-6'>
             <div className='flex items-center space-x-4'>
-              {storeLogo ? (
-                <img
-                  src={storeLogo}
-                  alt={store?.name}
-                  className='w-16 h-16 rounded-lg object-cover'
-                />
-              ) : (
-                <div className='w-16 h-16 rounded-lg bg-gray-200 flex items-center justify-center'>
-                  <ShoppingBag className='w-8 h-8 text-gray-500' />
-                </div>
-              )}
+              <Link
+                to={`/store/${encodeURIComponent(
+                  String(store?.slug ?? storeName ?? '').trim()
+                )}`}
+                className='shrink-0'
+                aria-label='Aller à la boutique'
+              >
+                {storeLogo ? (
+                  <img
+                    src={storeLogo}
+                    alt={store?.name}
+                    className='w-16 h-16 rounded-lg object-cover hover:opacity-95'
+                  />
+                ) : (
+                  <div className='w-16 h-16 rounded-lg bg-gray-200 flex items-center justify-center hover:bg-gray-300'>
+                    <ShoppingBag className='w-8 h-8 text-gray-500' />
+                  </div>
+                )}
+              </Link>
               <div className='min-w-0'>
                 <div className='flex flex-col sm:flex-row sm:items-center gap-2 min-w-0'>
-                  <h1
-                    className='text-2xl font-bold text-gray-900 truncate max-w-full'
+                  <Link
+                    to={`/store/${encodeURIComponent(
+                      String(store?.slug ?? storeName ?? '').trim()
+                    )}`}
+                    className='text-2xl font-bold text-gray-900 truncate max-w-full hover:underline'
                     title={store?.name ?? storeName}
                   >
                     {store?.name ?? storeName}
-                  </h1>
+                  </Link>
                 </div>
                 {store?.description && (
                   <p

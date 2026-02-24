@@ -78,6 +78,15 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
     return next();
   }
 
+  const allowUnauthenticated =
+    req.method === "GET" &&
+    (req.path.startsWith("/stores/exists") ||
+      /^\/stores\/[^/]+$/.test(req.path) ||
+      /^\/stores\/[^/]+\/stock\/public$/.test(req.path));
+  if (allowUnauthenticated) {
+    return next();
+  }
+
   if (process.env.VERCEL_ENV === "prod") {
     const auth = getAuth(req);
     if (!auth?.isAuthenticated || !auth.userId) {
