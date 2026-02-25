@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { RedirectToSignUp, useUser } from '@clerk/clerk-react';
-import { ArrowRight, ChevronLeft, ChevronRight } from 'lucide-react';
+import {
+  ArrowRight,
+  BadgeCheck,
+  ChevronLeft,
+  ChevronRight,
+} from 'lucide-react';
 import { LuCrown } from 'react-icons/lu';
 import Header from '../components/Header';
 import { Toast } from '../components/Toast';
@@ -87,8 +92,7 @@ function ProductImageCarousel({
   }, [index, brokenByIndex, normalized]);
 
   const count = normalized.length;
-  const anyValid =
-    count > 0 && normalized.some((_, i) => !brokenByIndex[i]);
+  const anyValid = count > 0 && normalized.some((_, i) => !brokenByIndex[i]);
   const canNavigate = count > 1 && anyValid;
   const currentSrc = anyValid ? normalized[index] : '';
 
@@ -121,9 +125,7 @@ function ProductImageCarousel({
           src={currentSrc}
           alt={alt}
           className='w-full h-full object-cover'
-          onError={() =>
-            setBrokenByIndex(prev => ({ ...prev, [index]: true }))
-          }
+          onError={() => setBrokenByIndex(prev => ({ ...prev, [index]: true }))}
           loading='lazy'
         />
       ) : (
@@ -218,7 +220,9 @@ export default function StorePage() {
   );
 
   const filteredItems = useMemo(() => {
-    const q = String(filterTerm || '').trim().toLowerCase();
+    const q = String(filterTerm || '')
+      .trim()
+      .toLowerCase();
     if (!q) return visibleItems;
     return visibleItems.filter(it => {
       if (filterField === 'reference') {
@@ -397,7 +401,8 @@ export default function StorePage() {
     }).format(value);
 
   const cloudBase = (
-    import.meta.env.VITE_CLOUDFRONT_URL || 'https://d1tmgyvizond6e.cloudfront.net'
+    import.meta.env.VITE_CLOUDFRONT_URL ||
+    'https://d1tmgyvizond6e.cloudfront.net'
   ).replace(/\/+$/, '');
   const storeLogo = store?.id ? `${cloudBase}/images/${store.id}` : undefined;
 
@@ -406,7 +411,9 @@ export default function StorePage() {
   }
 
   const resolveStripeCustomerId = async () => {
-    const direct = String((user?.publicMetadata as any)?.stripe_id || '').trim();
+    const direct = String(
+      (user?.publicMetadata as any)?.stripe_id || ''
+    ).trim();
     if (direct) return direct;
 
     const email = user?.primaryEmailAddress?.emailAddress;
@@ -425,7 +432,9 @@ export default function StorePage() {
     if (detailsResp.status !== 404) {
       const json = await detailsResp.json().catch(() => null as any);
       const msg =
-        json?.error || json?.message || 'Erreur lors de la récupération du client';
+        json?.error ||
+        json?.message ||
+        'Erreur lors de la récupération du client';
       throw new Error(msg);
     }
 
@@ -445,7 +454,9 @@ export default function StorePage() {
     const createJson = await createResp.json().catch(() => null as any);
     if (!createResp.ok) {
       const msg =
-        createJson?.error || createJson?.message || 'Erreur lors de la création du client';
+        createJson?.error ||
+        createJson?.message ||
+        'Erreur lors de la création du client';
       throw new Error(msg);
     }
     const stripeId = String(createJson?.stripeId || '').trim();
@@ -501,6 +512,64 @@ export default function StorePage() {
         String(it.product?.id || '').trim() ||
         undefined;
 
+      const summaryResp = await fetch(
+        `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(
+          stripeCustomerId
+        )}`
+      );
+      if (summaryResp.ok) {
+        const summaryJson = await summaryResp.json().catch(() => null as any);
+        const groups = Array.isArray(summaryJson?.itemsByStore)
+          ? summaryJson.itemsByStore
+          : [];
+        const groupForStore = groups.find(
+          (g: any) => g?.store?.id && store?.id && g.store.id === store.id
+        );
+        const items = Array.isArray(groupForStore?.items)
+          ? groupForStore.items
+          : [];
+        const refKey = String(reference || '')
+          .trim()
+          .toLowerCase();
+        const existing = items.find((c: any) => {
+          const r = String(c?.product_reference || '')
+            .trim()
+            .toLowerCase();
+          return r === refKey;
+        });
+        if (existing?.id) {
+          const existingQtyRaw = Number(existing?.quantity);
+          const existingQty =
+            Number.isFinite(existingQtyRaw) && existingQtyRaw > 0
+              ? Math.floor(existingQtyRaw)
+              : 1;
+          const nextQty = existingQty + quantity;
+          const updateResp = await fetch(
+            `${apiBase}/api/carts/${encodeURIComponent(String(existing.id))}`,
+            {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ quantity: nextQty }),
+            }
+          );
+          const updateJson = await updateResp.json().catch(() => null as any);
+          if (!updateResp.ok) {
+            showToast(
+              updateJson?.message ||
+                updateJson?.error ||
+                'Erreur lors de la mise à jour du panier',
+              'error'
+            );
+            return;
+          }
+          showToast('Quantité mise à jour', 'success');
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('cart:updated'));
+          }
+          return;
+        }
+      }
+
       const resp = await fetch(`${apiBase}/api/carts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -511,7 +580,8 @@ export default function StorePage() {
           customer_stripe_id: stripeCustomerId,
           description: title,
           quantity,
-          weight: typeof it.stock.weight === 'number' ? it.stock.weight : undefined,
+          weight:
+            typeof it.stock.weight === 'number' ? it.stock.weight : undefined,
           product_stripe_id: productStripeId,
         }),
       });
@@ -588,22 +658,26 @@ export default function StorePage() {
                       <h1 className='text-2xl font-bold text-gray-900 truncate'>
                         {store?.name || storeSlug}
                       </h1>
-                      {store?.description ? (
-                        <p className='text-gray-600 mt-1'>{store.description}</p>
-                      ) : null}
-                      {store?.website ? (
-                        <a
-                          href={
-                            store.website.startsWith('http')
-                              ? store.website
-                              : `https://${store.website}`
-                          }
-                          target='_blank'
-                          rel='noopener noreferrer'
-                          className='text-sm text-blue-600 hover:underline mt-1 inline-block'
-                        >
-                          {store.website}
-                        </a>
+                      {store?.description || store?.is_verified ? (
+                        <div className='mt-1'>
+                          {store?.description ? (
+                            <p
+                              className='text-gray-600'
+                              title={store.description}
+                            >
+                              {store.description}
+                            </p>
+                          ) : null}
+                          {store?.is_verified ? (
+                            <div
+                              title="Le SIRET de la boutique a été vérifié via l'INSEE"
+                              className='inline-flex items-center gap-1 mt-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit'
+                            >
+                              <BadgeCheck className='w-3 h-3' /> Boutique
+                              Vérifiée
+                            </div>
+                          ) : null}
+                        </div>
                       ) : null}
                     </div>
                   </div>
@@ -632,7 +706,9 @@ export default function StorePage() {
                   <div>
                     <div className='mb-4 flex flex-wrap items-center gap-2'>
                       <div className='flex items-center space-x-2 flex-wrap'>
-                        <span className='text-sm text-gray-700'>Filtrer par</span>
+                        <span className='text-sm text-gray-700'>
+                          Filtrer par
+                        </span>
                         <select
                           value={filterField}
                           onChange={e => {
@@ -676,7 +752,9 @@ export default function StorePage() {
                           }}
                           className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
                         >
-                          <option value='best_sellers'>Meilleures ventes</option>
+                          <option value='best_sellers'>
+                            Meilleures ventes
+                          </option>
                           <option value='recent'>Plus récents</option>
                           <option value='price_asc'>Prix croissant</option>
                           <option value='price_desc'>Prix décroissant</option>
@@ -685,7 +763,9 @@ export default function StorePage() {
                     </div>
 
                     {sortedItems.length === 0 ? (
-                      <div className='text-sm text-gray-600'>Aucun résultat.</div>
+                      <div className='text-sm text-gray-600'>
+                        Aucun résultat.
+                      </div>
                     ) : (
                       <>
                         <div className='grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4'>
@@ -695,7 +775,9 @@ export default function StorePage() {
                               it.product!.images
                                 ? it.product!.images
                                 : [];
-                            const stockImages = String(it.stock?.image_url || '')
+                            const stockImages = String(
+                              it.stock?.image_url || ''
+                            )
                               .split(',')
                               .map(s => s.trim())
                               .filter(Boolean);
@@ -709,7 +791,8 @@ export default function StorePage() {
                             ).trim();
                             const selectedQty = quantities[it.stock.id] ?? 1;
                             const canAdd = addingItemId !== it.stock.id;
-                            const isPopular = mostPopularStockId === it.stock.id;
+                            const isPopular =
+                              mostPopularStockId === it.stock.id;
 
                             return (
                               <div
@@ -752,7 +835,9 @@ export default function StorePage() {
                                   </div>
 
                                   <div className='mt-3 flex items-center justify-between gap-2'>
-                                    <div className='text-xs text-gray-700'>Qté</div>
+                                    <div className='text-xs text-gray-700'>
+                                      Qté
+                                    </div>
                                     <div className='flex items-center gap-1'>
                                       <button
                                         type='button'
@@ -842,7 +927,9 @@ export default function StorePage() {
 
                         <div className='mt-4 flex flex-wrap items-center justify-between gap-2'>
                           <div className='flex items-center gap-2'>
-                            <label className='text-sm text-gray-700'>Cartes</label>
+                            <label className='text-sm text-gray-700'>
+                              Cartes
+                            </label>
                             <select
                               value={itemsPerPage}
                               onChange={e => {
@@ -863,8 +950,9 @@ export default function StorePage() {
 
                           <div className='flex flex-wrap items-center gap-2'>
                             <div className='text-sm text-gray-600'>
-                              Page {currentPage} / {totalPages} — {totalProducts}{' '}
-                              produit{totalProducts > 1 ? 's' : ''}
+                              Page {currentPage} / {totalPages} —{' '}
+                              {totalProducts} produit
+                              {totalProducts > 1 ? 's' : ''}
                             </div>
                             <div className='flex items-center space-x-2'>
                               <button

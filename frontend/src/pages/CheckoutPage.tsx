@@ -1,4 +1,10 @@
-import { useState, useEffect, type Dispatch, type SetStateAction } from 'react';
+﻿import {
+  useState,
+  useEffect,
+  useRef,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   useStripe,
@@ -218,6 +224,20 @@ export default function CheckoutPage() {
   const [cartQtyInputById, setCartQtyInputById] = useState<
     Record<number, string>
   >({});
+  const postPaymentStockCheckTimerRef = useRef<ReturnType<
+    typeof setInterval
+  > | null>(null);
+  const postPaymentStockCheckInFlightRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      if (postPaymentStockCheckTimerRef.current) {
+        clearInterval(postPaymentStockCheckTimerRef.current);
+      }
+      postPaymentStockCheckTimerRef.current = null;
+      postPaymentStockCheckInFlightRef.current = false;
+    };
+  }, []);
 
   const [storePickupAddress, setStorePickupAddress] = useState<
     Address | undefined
@@ -412,8 +432,14 @@ export default function CheckoutPage() {
     const productStripeIdByRefKey = new Map<string, string>();
     const existingRefKeys = new Set<string>();
     const slug = String(storeSlug || '').trim();
+    const stockByRefKey: Record<string, any> = {};
     if (!slug)
-      return { weightByRefKey, productStripeIdByRefKey, existingRefKeys };
+      return {
+        weightByRefKey,
+        productStripeIdByRefKey,
+        existingRefKeys,
+        stockByRefKey,
+      };
 
     const refs = Array.from(
       new Set(
@@ -423,7 +449,12 @@ export default function CheckoutPage() {
       )
     );
     if (refs.length === 0)
-      return { weightByRefKey, productStripeIdByRefKey, existingRefKeys };
+      return {
+        weightByRefKey,
+        productStripeIdByRefKey,
+        existingRefKeys,
+        stockByRefKey,
+      };
 
     try {
       const maxConcurrent = 4;
@@ -450,6 +481,7 @@ export default function CheckoutPage() {
         const next = { ...prev };
         for (const r of results) {
           next[r.key] = r.item;
+          stockByRefKey[r.key] = r.item;
         }
         return next;
       });
@@ -470,7 +502,12 @@ export default function CheckoutPage() {
       }
     } catch (_e) {}
 
-    return { weightByRefKey, productStripeIdByRefKey, existingRefKeys };
+    return {
+      weightByRefKey,
+      productStripeIdByRefKey,
+      existingRefKeys,
+      stockByRefKey,
+    };
   };
 
   const refreshCartForStore = async () => {
@@ -553,8 +590,12 @@ export default function CheckoutPage() {
 
       const storeSlug = String(store?.slug || '').trim();
       const items: CartItem[] = groupForStore.items || [];
-      const { weightByRefKey, productStripeIdByRefKey, existingRefKeys } =
-        await refreshStockDetailsForCart(items, storeSlug);
+      const {
+        weightByRefKey,
+        productStripeIdByRefKey,
+        existingRefKeys,
+        stockByRefKey,
+      } = await refreshStockDetailsForCart(items, storeSlug);
       const { unitPriceByProductId, productById } =
         await refreshStripeProductDetailsForCart(
           items,
@@ -619,12 +660,13 @@ export default function CheckoutPage() {
       );
       setCartItemsForStore(filteredItems);
       setCartTotalForStore(total);
-      return { items: filteredItems, total, missingRefs };
+      return { items: filteredItems, total, missingRefs, stockByRefKey };
     } catch (_e) {
       return {
         items: cartItemsForStore || [],
         total: Number(cartTotalForStore || 0),
         missingRefs: [] as string[],
+        stockByRefKey: {} as Record<string, any>,
       };
     } finally {
       setReloadingCart(false);
@@ -1171,7 +1213,10 @@ export default function CheckoutPage() {
     return hasEmail && hasDeliveryInfo && hasContactInfo;
   };
 
-  const validateCartQuantitiesInStock = async (items: CartItem[]) => {
+  const validateCartQuantitiesInStock = async (
+    items: CartItem[],
+    freshStockByRefKey?: Record<string, any>
+  ) => {
     const slug = String((store as any)?.slug || storeName || '').trim();
     if (!slug) return;
 
@@ -1193,11 +1238,9 @@ export default function CheckoutPage() {
     const resolvedByRefKey = new Map<string, any | null>();
     for (const ref of refs) {
       const key = getRefKey(ref);
-      const cached = Object.prototype.hasOwnProperty.call(
-        cartStockByRefKey,
-        key
-      )
-        ? (cartStockByRefKey as any)[key]
+      const source = freshStockByRefKey || cartStockByRefKey;
+      const cached = Object.prototype.hasOwnProperty.call(source, key)
+        ? (source as any)[key]
         : undefined;
       if (cached !== undefined) resolvedByRefKey.set(key, cached);
     }
@@ -1280,6 +1323,7 @@ export default function CheckoutPage() {
       let latestCartItems = [...(cartItemsForStore || [])];
       let latestCartTotal = Number(cartTotalForStore || 0);
       let missingRefs: string[] = [];
+      let latestStockByRefKey: Record<string, any> | undefined;
 
       try {
         const refreshed = await handleReloadCartItems();
@@ -1294,6 +1338,7 @@ export default function CheckoutPage() {
         missingRefs = Array.isArray(refreshed?.missingRefs)
           ? refreshed.missingRefs
           : [];
+        latestStockByRefKey = refreshed?.stockByRefKey;
       } catch (e: any) {
         const msg = e?.message || 'Erreur lors du rechargement du panier';
         setPaymentError(msg);
@@ -1360,7 +1405,7 @@ export default function CheckoutPage() {
         return;
       }
 
-      await validateCartQuantitiesInStock(latestCartItems);
+      await validateCartQuantitiesInStock(latestCartItems, latestStockByRefKey);
 
       // Ajout automatique au panier si référence et montant renseignés
 
@@ -1824,6 +1869,66 @@ export default function CheckoutPage() {
     setEmbeddedClientSecret('');
   };
 
+  useEffect(() => {
+    if (!showPayment) return;
+    if (!(store as any)?.slug && !storeName) return;
+
+    let cancelled = false;
+
+    const validateOrRollback = async () => {
+      if (cancelled) return;
+      if (postPaymentStockCheckInFlightRef.current) return;
+      postPaymentStockCheckInFlightRef.current = true;
+      try {
+        const refreshed = await handleReloadCartItems();
+        if (cancelled) return;
+
+        const missingRefs = Array.isArray(refreshed?.missingRefs)
+          ? refreshed.missingRefs
+          : [];
+        if (missingRefs.length > 0) {
+          throw new Error(
+            `Les articles ${missingRefs.join(', ')} ne sont plus disponibles. Veuillez les retirer de votre panier.`
+          );
+        }
+
+        const latestCartItems = Array.isArray(refreshed?.items)
+          ? refreshed.items
+          : [];
+        if (latestCartItems.length === 0) {
+          throw new Error('Votre panier est vide');
+        }
+
+        await validateCartQuantitiesInStock(
+          latestCartItems,
+          refreshed?.stockByRefKey
+        );
+      } catch (e: any) {
+        const msg = e?.message || 'Erreur lors de la vérification du stock';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        handleModifyOrder();
+      } finally {
+        postPaymentStockCheckInFlightRef.current = false;
+      }
+    };
+
+    validateOrRollback();
+    postPaymentStockCheckTimerRef.current = setInterval(
+      validateOrRollback,
+      5000
+    );
+
+    return () => {
+      cancelled = true;
+      if (postPaymentStockCheckTimerRef.current) {
+        clearInterval(postPaymentStockCheckTimerRef.current);
+      }
+      postPaymentStockCheckTimerRef.current = null;
+      postPaymentStockCheckInFlightRef.current = false;
+    };
+  }, [showPayment, store, storeName]);
+
   const handleModifyDelivery = () => {
     const shouldForceReset = modifyDeliveryClickCount >= 1;
     setModifyDeliveryClickCount(c => c + 1);
@@ -2167,26 +2272,30 @@ export default function CheckoutPage() {
                     {store?.name ?? storeName}
                   </Link>
                 </div>
-                {store?.description && (
-                  <p
-                    className='text-gray-600 mt-1'
-                    title={store.description}
-                    style={{
-                      display: '-webkit-box',
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden',
-                    }}
-                  >
-                    {store.description}
-                  </p>
-                )}
-                {store?.is_verified ? (
-                  <div
-                    title="Le SIRET de la boutique a été vérifié via l'INSEE"
-                    className='inline-flex items-center gap-1 mt-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit'
-                  >
-                    <BadgeCheck className='w-3 h-3' /> Boutique Vérifiée
+                {store?.description || store?.is_verified ? (
+                  <div className='mt-1'>
+                    {store?.description ? (
+                      <p
+                        className='text-gray-600'
+                        title={store.description}
+                        style={{
+                          display: '-webkit-box',
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {store.description}
+                      </p>
+                    ) : null}
+                    {store?.is_verified ? (
+                      <div
+                        title="Le SIRET de la boutique a été vérifié via l'INSEE"
+                        className='inline-flex items-center gap-1 mt-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit'
+                      >
+                        <BadgeCheck className='w-3 h-3' /> Boutique Vérifiée
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -2327,45 +2436,94 @@ export default function CheckoutPage() {
                                     <span className='whitespace-nowrap text-xs text-gray-600'>
                                       {Number(it.value || 0).toFixed(2)} €/u
                                     </span>
-                                    <input
-                                      type='number'
-                                      min='1'
-                                      step='1'
-                                      value={localValue}
-                                      onChange={e => {
-                                        const next = String(
-                                          e.target.value || ''
-                                        );
-                                        setCartQtyInputById(prev => ({
-                                          ...prev,
-                                          [it.id]: next,
-                                        }));
-                                      }}
-                                      onKeyDown={e => {
-                                        if (e.key !== 'Enter') return;
-                                        (e.currentTarget as any)?.blur?.();
-                                      }}
-                                      onBlur={() => {
-                                        const raw = String(
-                                          cartQtyInputById[it.id] ?? currentQty
-                                        );
-                                        const parsed = Math.max(
-                                          1,
-                                          Math.round(Number(raw || 1))
-                                        );
-                                        setCartQtyInputById(prev => {
-                                          const next = { ...prev };
-                                          delete next[it.id];
-                                          return next;
-                                        });
-                                        handleUpdateCartItemQuantity(
-                                          it.id,
-                                          parsed
-                                        );
-                                      }}
-                                      className='border border-gray-300 rounded px-2 py-0.5 text-sm w-20'
-                                      aria-label='Quantité'
-                                    />
+                                    <div className='flex items-center gap-1'>
+                                      <button
+                                        type='button'
+                                        onClick={() => {
+                                          const next = Math.max(
+                                            1,
+                                            currentQty - 1
+                                          );
+                                          setCartQtyInputById(prev => {
+                                            const out = { ...prev };
+                                            delete out[it.id];
+                                            return out;
+                                          });
+                                          handleUpdateCartItemQuantity(
+                                            it.id,
+                                            next
+                                          );
+                                        }}
+                                        className='h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60'
+                                        aria-label='Diminuer la quantité'
+                                        disabled={currentQty <= 1}
+                                      >
+                                        -
+                                      </button>
+                                      <input
+                                        type='number'
+                                        inputMode='numeric'
+                                        min={1}
+                                        step={1}
+                                        value={localValue}
+                                        onChange={e => {
+                                          const next = String(
+                                            e.target.value || ''
+                                          );
+                                          setCartQtyInputById(prev => ({
+                                            ...prev,
+                                            [it.id]: next,
+                                          }));
+                                        }}
+                                        onKeyDown={e => {
+                                          if (e.key !== 'Enter') return;
+                                          (e.currentTarget as any)?.blur?.();
+                                        }}
+                                        onBlur={() => {
+                                          const raw = String(
+                                            cartQtyInputById[it.id] ??
+                                              currentQty
+                                          );
+                                          const parsed = Math.max(
+                                            1,
+                                            Math.floor(Number(raw || 1))
+                                          );
+                                          setCartQtyInputById(prev => {
+                                            const next = { ...prev };
+                                            delete next[it.id];
+                                            return next;
+                                          });
+                                          handleUpdateCartItemQuantity(
+                                            it.id,
+                                            parsed
+                                          );
+                                        }}
+                                        className='h-8 w-14 rounded-md border border-gray-200 px-2 text-sm text-gray-900'
+                                        aria-label='Quantité'
+                                      />
+                                      <button
+                                        type='button'
+                                        onClick={() => {
+                                          const next = Math.max(
+                                            1,
+                                            currentQty + 1
+                                          );
+                                          setCartQtyInputById(prev => {
+                                            const out = { ...prev };
+                                            delete out[it.id];
+                                            return out;
+                                          });
+                                          handleUpdateCartItemQuantity(
+                                            it.id,
+                                            next
+                                          );
+                                        }}
+                                        className='h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60'
+                                        aria-label='Augmenter la quantité'
+                                      >
+                                        +
+                                      </button>
+                                    </div>
                                   </>
                                 );
                               })()}
@@ -2394,12 +2552,6 @@ export default function CheckoutPage() {
                     </div>
                     {canEnterPromoCode ? (
                       <div className='mt-3'>
-                        <label
-                          htmlFor='cart-promo-code'
-                          className='block text-sm font-medium text-gray-700 mb-1'
-                        >
-                          Code promo
-                        </label>
                         <input
                           id='cart-promo-code'
                           value={promoCodeId}
@@ -2422,16 +2574,12 @@ export default function CheckoutPage() {
                             }
                             setPromoCodeError(null);
                           }}
-                          placeholder='PAYLIVE-...'
+                          placeholder='Entrer un seul code promo (optionnel)'
                           className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                         />
-                        {promoCodeError ? (
+                        {promoCodeError && (
                           <p className='text-xs text-red-600 mt-1'>
                             {promoCodeError}
-                          </p>
-                        ) : (
-                          <p className='text-xs text-gray-500 mt-1'>
-                            Un seul code promo (optionnel).
                           </p>
                         )}
                       </div>

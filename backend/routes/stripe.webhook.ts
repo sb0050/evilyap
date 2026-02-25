@@ -762,11 +762,14 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
           let previousShipmentId: string | null = null;
           let openShipmentRowId: number | null = null;
           let oldBoxtalShipmentId: string | null = null;
+          let oldProductReference: string | null = null;
           if (openShipmentPaymentId) {
             try {
               const openShipmentQuery = supabase
                 .from("shipments")
-                .select("id,shipment_id,payment_id,is_open_shipment")
+                .select(
+                  "id,shipment_id,payment_id,is_open_shipment,product_reference",
+                )
                 .eq("payment_id", openShipmentPaymentId)
                 .eq("is_open_shipment", true)
                 .limit(1);
@@ -791,6 +794,8 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   : null;
               oldBoxtalShipmentId =
                 String(openShipmentRow?.shipment_id || "").trim() || null;
+              oldProductReference =
+                String(openShipmentRow?.product_reference || "").trim() || null;
               previousBoxtalId = oldBoxtalShipmentId || null;
               previousShipmentId = oldBoxtalShipmentId || null;
             } catch (e) {
@@ -1604,6 +1609,94 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             height: 5,
           };
 
+          const toCountryIsoCode = String(
+            (toAddress as any)?.location?.countryIsoCode || "",
+          )
+            .trim()
+            .toUpperCase();
+          const needsCustomsDeclaration = toCountryIsoCode === "CH";
+          const safeProductsForCustoms: any[] = Array.isArray(products)
+            ? products
+            : [];
+          const totalQtyForCustoms = safeProductsForCustoms.reduce(
+            (sum: number, p: any) =>
+              sum + Math.max(1, Math.round(Number(p?.quantity || 1))),
+            0,
+          );
+          const goodsWeightKg = (() => {
+            const w = Number(weight || 0);
+            if (!Number.isFinite(w)) return 0;
+            return Math.max(0, w - 0.4);
+          })();
+          const avgUnitWeightKg =
+            totalQtyForCustoms > 0 ? goodsWeightKg / totalQtyForCustoms : 0;
+          const customsArticles = (() => {
+            const articles = safeProductsForCustoms
+              .map((p: any) => {
+                const quantity = Math.max(
+                  1,
+                  Math.round(Number(p?.quantity || 1)),
+                );
+                const unitPriceCents = Math.max(
+                  0,
+                  Math.round(Number(p?.unit_price ?? 0)),
+                );
+                const subtotalCents = Math.max(
+                  0,
+                  Math.round(
+                    Number(p?.amount_subtotal ?? p?.amount_total ?? 0) || 0,
+                  ),
+                );
+                const unitValueEurRaw =
+                  unitPriceCents > 0
+                    ? unitPriceCents / 100
+                    : quantity > 0
+                      ? subtotalCents / 100 / quantity
+                      : 0;
+                const unitValueEur = Number.isFinite(unitValueEurRaw)
+                  ? Math.max(0, Math.round(unitValueEurRaw * 100) / 100)
+                  : 0;
+                const description =
+                  String(
+                    p?.description ||
+                      p?.name ||
+                      `${storeName} - ${productReference}`,
+                  ).trim() + " pour femmes / For women";
+                return {
+                  quantity,
+                  unitValue: { value: unitValueEur, currency: "EUR" },
+                  unitWeight: Number.isFinite(avgUnitWeightKg)
+                    ? Math.max(0, Math.round(avgUnitWeightKg * 1000) / 1000)
+                    : 0,
+                  description,
+                  tariffNumber: "6204",
+                  originCountry: "FR",
+                };
+              })
+              .filter((a: any) => String(a?.description || "").trim());
+
+            if (articles.length > 0) return articles;
+
+            const fallbackUnitValueEurRaw = Number(netAmount || 0) / 100;
+            const fallbackUnitValueEur = Number.isFinite(
+              fallbackUnitValueEurRaw,
+            )
+              ? Math.max(0, Math.round(fallbackUnitValueEurRaw * 100) / 100)
+              : 0;
+            return [
+              {
+                quantity: 1,
+                unitValue: { value: fallbackUnitValueEur, currency: "EUR" },
+                unitWeight: Number.isFinite(goodsWeightKg)
+                  ? Math.max(0, Math.round(goodsWeightKg * 1000) / 1000)
+                  : 0,
+                description: `${storeName} - ${productReference}`,
+                tariffNumber: "6204",
+                originCountry: "FR",
+              },
+            ];
+          })();
+
           const shipment = {
             packages: [
               {
@@ -1626,6 +1719,9 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             fromAddress,
             pickupPointCode: pickupPoint.code,
             dropOffPointCode: dropOffPoint.code,
+            customsDeclaration: needsCustomsDeclaration
+              ? { reason: "SALE", articles: customsArticles }
+              : undefined,
           };
 
           const createOrderPayload: any = {
@@ -1682,6 +1778,84 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   return;
                 }
               }
+
+              const oldRefRaw = String(oldProductReference || "").trim();
+              const oldIds = oldRefRaw
+                .split(";")
+                .map((s) => String(s || "").trim())
+                .filter((s) => s.startsWith("prod_"));
+              if (oldIds.length > 0) {
+                const counts = new Map<string, number>();
+                for (const pid of oldIds) {
+                  counts.set(pid, (counts.get(pid) || 0) + 1);
+                }
+                const uniquePids = Array.from(counts.keys());
+                const { data: stockRows, error: stockErr } = await supabase
+                  .from("stock")
+                  .select("id,product_stripe_id,quantity,bought")
+                  .eq("store_id", storeId)
+                  .in("product_stripe_id", uniquePids as any);
+                if (stockErr) {
+                  await emailService.sendAdminError({
+                    subject: "Restock échoué (modification commande)",
+                    message: `Erreur lecture stock pour restock (storeId=${storeId}, openShipmentRowId=${openShipmentRowId}).`,
+                    context: JSON.stringify(stockErr),
+                  });
+                } else {
+                  for (const r of Array.isArray(stockRows) ? stockRows : []) {
+                    const pid = String(
+                      (r as any)?.product_stripe_id || "",
+                    ).trim();
+                    if (!pid) continue;
+                    const qty = Math.floor(Number(counts.get(pid) || 0));
+                    if (!Number.isFinite(qty) || qty <= 0) continue;
+                    const stockId = Number((r as any)?.id || 0);
+                    if (!Number.isFinite(stockId) || stockId <= 0) continue;
+
+                    const bRaw = Number((r as any)?.bought || 0);
+                    const currentBought =
+                      Number.isFinite(bRaw) && bRaw >= 0 ? Math.floor(bRaw) : 0;
+                    const nextBought = Math.max(0, currentBought - qty);
+
+                    const rawQtyField = (r as any)?.quantity;
+                    if (rawQtyField === null || rawQtyField === undefined) {
+                      const { error: updErr } = await supabase
+                        .from("stock")
+                        .update({ bought: nextBought } as any)
+                        .eq("id", stockId)
+                        .eq("store_id", storeId);
+                      if (updErr) {
+                        await emailService.sendAdminError({
+                          subject: "Restock échoué (modification commande)",
+                          message: `Erreur update stock.bought (storeId=${storeId}, stockId=${stockId}).`,
+                          context: JSON.stringify(updErr),
+                        });
+                      }
+                      continue;
+                    }
+
+                    const parsedQty = Number(rawQtyField);
+                    const available =
+                      Number.isFinite(parsedQty) && parsedQty >= 0
+                        ? Math.floor(parsedQty)
+                        : 0;
+                    const nextQty = available + qty;
+                    const { error: updErr } = await supabase
+                      .from("stock")
+                      .update({ quantity: nextQty, bought: nextBought } as any)
+                      .eq("id", stockId)
+                      .eq("store_id", storeId);
+                    if (updErr) {
+                      await emailService.sendAdminError({
+                        subject: "Restock échoué (modification commande)",
+                        message: `Erreur update stock.quantity/bought (storeId=${storeId}, stockId=${stockId}).`,
+                        context: JSON.stringify(updErr),
+                      });
+                    }
+                  }
+                }
+              }
+
               const { error: delErr } = await supabase
                 .from("shipments")
                 .update({

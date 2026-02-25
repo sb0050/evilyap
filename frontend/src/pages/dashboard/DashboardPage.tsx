@@ -49,8 +49,14 @@ import { AddressElement } from '@stripe/react-stripe-js';
 import { Address } from '@stripe/stripe-js';
 import StripeWrapper from '../../components/StripeWrapper';
 
-const isDeliveryRegulationText = (text: unknown) =>
-  /r[ée]gularisation\s+livraison/i.test(String(text || '').trim());
+const isDeliveryRegulationText = (text: unknown) => {
+  const normalized = String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  return /\b(?:regulation|regularisation)\s+livraison\b/i.test(normalized);
+};
 
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
@@ -3703,15 +3709,32 @@ export default function DashboardPage() {
               Tableau de bord
             </h1>
             {store && (
-              <div className='flex flex-col sm:flex-row sm:items-center gap-2  min-w-0'>
+              <div className='mt-1 min-w-0'>
                 <p
-                  className='text-gray-600 truncate flex-1 min-w-0'
+                  className='text-gray-600 truncate min-w-0'
                   title={store.name}
                 >
                   {store.name}
                 </p>
+                {store?.description ? (
+                  <p
+                    className='text-gray-600 mt-1'
+                    title={store.description || undefined}
+                    style={{
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    {store.description}
+                  </p>
+                ) : null}
                 {store.is_verified ? (
-                  <div className='inline-flex items-center gap-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit shrink-0'>
+                  <div
+                    title="Le SIRET de la boutique a été vérifié via l'INSEE"
+                    className='inline-flex items-center gap-1 mt-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit shrink-0'
+                  >
                     <BadgeCheck className='w-3 h-3' /> Boutique Vérifiée
                   </div>
                 ) : null}
@@ -4974,8 +4997,34 @@ export default function DashboardPage() {
                                   const gid = g.stripeId;
                                   const size = cartGroupPageSize[gid] ?? 10;
                                   const page = cartGroupPage[gid] ?? 1;
-                                  const start = (page - 1) * size;
-                                  const items = g.items.slice(
+                                  const filtered = (g.items || []).filter(
+                                    (c: any) => {
+                                      const cartReference = String(
+                                        c?.product_reference || ''
+                                      ).trim();
+                                      const cartDescription = String(
+                                        c?.description || ''
+                                      ).trim();
+                                      return (
+                                        !isDeliveryRegulationText(
+                                          cartReference
+                                        ) &&
+                                        !isDeliveryRegulationText(
+                                          cartDescription
+                                        )
+                                      );
+                                    }
+                                  );
+                                  const totalPages = Math.max(
+                                    1,
+                                    Math.ceil(filtered.length / size)
+                                  );
+                                  const safePage = Math.min(
+                                    Math.max(1, page),
+                                    totalPages
+                                  );
+                                  const start = (safePage - 1) * size;
+                                  const items = filtered.slice(
                                     start,
                                     start + size
                                   );
@@ -5062,16 +5111,34 @@ export default function DashboardPage() {
                               const gid = g.stripeId;
                               const size = cartGroupPageSize[gid] ?? 10;
                               const page = cartGroupPage[gid] ?? 1;
+                              const filtered = (g.items || []).filter(
+                                (c: any) => {
+                                  const cartReference = String(
+                                    c?.product_reference || ''
+                                  ).trim();
+                                  const cartDescription = String(
+                                    c?.description || ''
+                                  ).trim();
+                                  return (
+                                    !isDeliveryRegulationText(cartReference) &&
+                                    !isDeliveryRegulationText(cartDescription)
+                                  );
+                                }
+                              );
                               const totalPages = Math.max(
                                 1,
-                                Math.ceil(g.items.length / size)
+                                Math.ceil(filtered.length / size)
+                              );
+                              const safePage = Math.min(
+                                Math.max(1, page),
+                                totalPages
                               );
                               return (
                                 <div className='flex items-center justify-end gap-2 p-3'>
                                   <div className='hidden sm:flex items-center space-x-3'>
                                     <div className='text-sm text-gray-600'>
-                                      Page {page} / {totalPages} —{' '}
-                                      {g.items.length}
+                                      Page {safePage} / {totalPages} —{' '}
+                                      {filtered.length}
                                     </div>
                                     <label className='text-sm text-gray-700'>
                                       Lignes
@@ -5305,7 +5372,7 @@ export default function DashboardPage() {
                     <button
                       onClick={() => fetchWalletTransactions().catch(() => {})}
                       disabled={walletTransactionsLoading}
-                      className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                      className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                     >
                       <RefreshCw
                         className={`w-4 h-4 mr-1 ${walletTransactionsLoading ? 'animate-spin' : ''}`}
@@ -5725,7 +5792,7 @@ export default function DashboardPage() {
                       }).catch(() => {})
                     }
                     disabled={stockLoading || stockReloading}
-                    className='inline-flex items-center px-3 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
+                    className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                   >
                     <RefreshCw
                       className={`w-4 h-4 mr-1 ${
