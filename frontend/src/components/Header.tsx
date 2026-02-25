@@ -14,7 +14,7 @@ import {
   useUser,
   useAuth,
 } from '@clerk/clerk-react';
-import { ShoppingCart, Store } from 'lucide-react';
+import { RefreshCw, ShoppingCart, Store } from 'lucide-react';
 import Spinner from './Spinner';
 import { API_BASE_URL } from '../utils/api';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -555,7 +555,12 @@ export default function Header() {
                   <Popover className='relative'>
                     {({ open }) => (
                       <>
-                        <Popover.Button className='relative inline-flex items-center justify-center h-9 w-9 rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50'>
+                        <Popover.Button
+                          onClick={() => {
+                            refreshCartSummary();
+                          }}
+                          className='relative inline-flex items-center justify-center h-9 w-9 rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                        >
                           <ShoppingCart
                             className='w-5 h-5'
                             aria-hidden='true'
@@ -588,9 +593,17 @@ export default function Header() {
                                       'Sélectionnez une boutique'}
                                   </div>
                                 </div>
-                                <div className='text-xs text-gray-500'>
-                                  {cartSummaryLoading ? 'Chargement…' : null}
-                                </div>
+                                <button
+                                  type='button'
+                                  onClick={() => refreshCartSummary()}
+                                  disabled={cartSummaryLoading}
+                                  className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                                >
+                                  <RefreshCw
+                                    className={`w-4 h-4 mr-1 ${cartSummaryLoading ? 'animate-spin' : ''}`}
+                                  />
+                                  <span>Recharger</span>
+                                </button>
                               </div>
 
                               {filteredCartItemsByStore.length > 1 ? (

@@ -6,6 +6,7 @@ import {
   BadgeCheck,
   ChevronLeft,
   ChevronRight,
+  RefreshCw,
 } from 'lucide-react';
 import { LuCrown } from 'react-icons/lu';
 import Header from '../components/Header';
@@ -192,6 +193,7 @@ export default function StorePage() {
   const storeSlug = String(storeName || '').trim();
 
   const [loading, setLoading] = useState(true);
+  const [reloading, setReloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [store, setStore] = useState<Store | null>(null);
   const [items, setItems] = useState<PublicStockItem[]>([]);
@@ -393,6 +395,42 @@ export default function StorePage() {
       cancelled = true;
     };
   }, [apiBase, storeSlug]);
+
+  const handleReloadStoreItems = async () => {
+    if (!storeSlug) return;
+    setReloading(true);
+    setError(null);
+    try {
+      const [storeResp, stockResp] = await Promise.all([
+        fetch(`${apiBase}/api/stores/${encodeURIComponent(storeSlug)}`),
+        fetch(
+          `${apiBase}/api/stores/${encodeURIComponent(storeSlug)}/stock/public`
+        ),
+      ]);
+
+      const storeJson = await storeResp.json().catch(() => null as any);
+      const stockJson = await stockResp.json().catch(() => null as any);
+
+      if (!storeResp.ok) {
+        throw new Error(
+          storeJson?.error || 'Erreur lors du chargement de la boutique'
+        );
+      }
+      if (!stockResp.ok) {
+        throw new Error(
+          stockJson?.error || 'Erreur lors du chargement des articles'
+        );
+      }
+
+      setStore(storeJson?.store || null);
+      setItems(Array.isArray(stockJson?.items) ? stockJson.items : []);
+    } catch (e: any) {
+      const msg = e?.message || 'Erreur interne';
+      setError(typeof msg === 'string' ? msg : 'Erreur interne');
+    } finally {
+      setReloading(false);
+    }
+  };
 
   const formatEur = (value: number) =>
     new Intl.NumberFormat('fr-FR', {
@@ -706,9 +744,22 @@ export default function StorePage() {
                 </div>
 
                 <div>
-                  <h2 className='text-lg font-semibold text-gray-900 mb-4'>
-                    Articles
-                  </h2>
+                  <div className='flex items-center gap-3 mb-4'>
+                    <h2 className='text-lg font-semibold text-gray-900'>
+                      Articles
+                    </h2>
+                    <button
+                      type='button'
+                      onClick={handleReloadStoreItems}
+                      disabled={reloading}
+                      className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                    >
+                      <RefreshCw
+                        className={`w-4 h-4 mr-1 ${reloading ? 'animate-spin' : ''}`}
+                      />
+                      <span>Recharger</span>
+                    </button>
+                  </div>
 
                   {visibleItems.length === 0 ? (
                     <div className='text-sm text-gray-600'>
