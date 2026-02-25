@@ -23,6 +23,13 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+const extractFirstWord = (text: unknown): string => {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  const word = raw.split(/\s+/)[0] || "";
+  return word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+};
+
 const buildProductReferenceOrFilter = (ref: string): string => {
   const safeRef = String(ref || "").trim();
   if (!safeRef) return "";
@@ -796,10 +803,6 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       .map((it) => String(it.reference || "").trim())
       .filter((s) => s.length > 0);
     const uniqueRefsForCheck = Array.from(new Set(refsForCheck));
-    const joinedRefs = incomingItems
-      .map((it) => String(it.reference || "").trim())
-      .filter((s) => s.length > 0)
-      .join(";");
 
     const promotionInputTrim = String(promotionCodeId || "").trim();
     const promotionInputUpper = promotionInputTrim.toUpperCase();
@@ -1360,6 +1363,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       })();
 
       const ref = String(it.reference || "").trim();
+
       let existingProductId = "";
       if (storeIdForCheck && ref) {
         try {
@@ -1395,9 +1399,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         continue;
       }
 
+      const descriptionTrim = String(it.description || "").trim();
+      const dynamicName = extractFirstWord(descriptionTrim) || ref || "N/A";
       const p = await stripe.products.create({
-        name: `${String(it.reference || "N/A")}`,
-        description: String(it.description || "").trim() || undefined,
+        name: `${dynamicName}`,
+        description: descriptionTrim || undefined,
         type: "good",
         shippable: true,
       });
@@ -1437,13 +1443,13 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
               .eq("store_id", storeIdForCheck)
               .eq("product_reference", ref);
           }
-          if (unitWeight !== null) {
-            await supabase
-              .from("stock")
-              .update({ weight: unitWeight })
-              .eq("store_id", storeIdForCheck)
-              .eq("product_reference", ref)
-              .is("weight", null);
+            if (unitWeight !== null) {
+              await supabase
+                .from("stock")
+                .update({ weight: unitWeight })
+                .eq("store_id", storeIdForCheck)
+                .eq("product_reference", ref)
+                .is("weight", null);
           }
         }
       } catch (e) {
@@ -1491,6 +1497,11 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
 
     const finalLineItems =
       orderLineItems.length > 0 ? orderLineItems : undefined;
+    const joinedRefs = (resolvedItems || [])
+      .map((it: any) => String(it?.reference || "").trim())
+      .filter((s: string) => s.length > 0)
+      .join(";");
+
     const stripeProductIdsJoined =
       stripeProductIdsForShipment
         .map((s) => String(s || "").trim())

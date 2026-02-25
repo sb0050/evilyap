@@ -2144,8 +2144,21 @@ export default function DashboardPage() {
       '—';
     const description = String(product?.description || '').trim();
 
-    const qty = Number(stock?.quantity || 0);
-    const qtyLabel = Number.isFinite(qty) && qty > 0 ? qty : 0;
+    const qtyRaw = stock?.quantity;
+    const qty =
+      typeof qtyRaw === 'number'
+        ? qtyRaw
+        : typeof qtyRaw === 'string'
+          ? Number(qtyRaw)
+          : qtyRaw === null || qtyRaw === undefined
+            ? null
+            : Number(qtyRaw);
+    const qtyLabel =
+      qtyRaw === null
+        ? 'Non Renseignée'
+        : qty !== null && Number.isFinite(qty) && qty > 0
+          ? qty
+          : 0;
     const w = stock?.weight;
     const weightLabel =
       w == null
