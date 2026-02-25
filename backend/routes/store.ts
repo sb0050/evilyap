@@ -459,7 +459,11 @@ router.get("/me", async (req, res) => {
       return res.status(500).json({ error: error.message });
     }
 
-    return res.json({ success: true, hasStore: Boolean(store), store: store || null });
+    return res.json({
+      success: true,
+      hasStore: Boolean(store),
+      store: store || null,
+    });
   } catch (e) {
     console.error("Erreur serveur:", e);
     return res.status(500).json({ error: "Erreur interne du serveur" });
@@ -1887,9 +1891,9 @@ router.post("/:storeSlug/stock/products", async (req, res) => {
           ? parseInt(quantity.trim(), 10)
           : NaN;
     const normalizedQty =
-      Number.isFinite(qtyRaw) && qtyRaw > 0 ? Math.floor(qtyRaw) : NaN;
-    if (!Number.isFinite(normalizedQty) || normalizedQty <= 0) {
-      return res.status(400).json({ error: "Quantité invalide (>= 1)" });
+      Number.isFinite(qtyRaw) && qtyRaw >= 0 ? Math.floor(qtyRaw) : NaN;
+    if (!Number.isFinite(normalizedQty) || normalizedQty < 0) {
+      return res.status(400).json({ error: "Quantité invalide (>= 0)" });
     }
 
     const weightRaw =
@@ -2543,9 +2547,9 @@ router.put("/:storeSlug/stock/products/:stockId", async (req, res) => {
           ? parseInt(quantity.trim(), 10)
           : NaN;
     const normalizedQty =
-      Number.isFinite(qtyRaw) && qtyRaw > 0 ? Math.floor(qtyRaw) : NaN;
-    if (!Number.isFinite(normalizedQty) || normalizedQty <= 0) {
-      return res.status(400).json({ error: "Quantité invalide (>= 1)" });
+      Number.isFinite(qtyRaw) && qtyRaw >= 0 ? Math.floor(qtyRaw) : NaN;
+    if (!Number.isFinite(normalizedQty) || normalizedQty < 0) {
+      return res.status(400).json({ error: "Quantité invalide (>= 0)" });
     }
 
     const weightRaw =
