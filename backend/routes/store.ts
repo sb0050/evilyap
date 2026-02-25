@@ -2839,20 +2839,6 @@ router.delete("/:storeSlug/stock/products", async (req, res) => {
         }
       }
 
-      if (bought > 0) {
-        const { error: updErr } = await supabase
-          .from("stock")
-          .update({ quantity: 0 })
-          .eq("id", id)
-          .eq("store_id", storeId);
-        if (updErr) {
-          results.push({ id, ok: false, error: updErr.message });
-          continue;
-        }
-        results.push({ id, ok: true, archived: true });
-        continue;
-      }
-
       const { error: delErr } = await supabase
         .from("stock")
         .delete()
@@ -2862,7 +2848,7 @@ router.delete("/:storeSlug/stock/products", async (req, res) => {
         results.push({ id, ok: false, error: delErr.message });
         continue;
       }
-      results.push({ id, ok: true, deleted: true });
+      results.push({ id, ok: true, deleted: true, bought });
     }
 
     return res.json({ success: true, results });
