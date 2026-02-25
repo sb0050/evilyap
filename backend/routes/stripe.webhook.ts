@@ -762,14 +762,11 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
           let previousShipmentId: string | null = null;
           let openShipmentRowId: number | null = null;
           let oldBoxtalShipmentId: string | null = null;
-          let oldProductReference: string | null = null;
           if (openShipmentPaymentId) {
             try {
               const openShipmentQuery = supabase
                 .from("shipments")
-                .select(
-                  "id,shipment_id,payment_id,is_open_shipment,product_reference",
-                )
+                .select("id,shipment_id,payment_id,is_open_shipment")
                 .eq("payment_id", openShipmentPaymentId)
                 .eq("is_open_shipment", true)
                 .limit(1);
@@ -794,8 +791,6 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   : null;
               oldBoxtalShipmentId =
                 String(openShipmentRow?.shipment_id || "").trim() || null;
-              oldProductReference =
-                String(openShipmentRow?.product_reference || "").trim() || null;
               previousBoxtalId = oldBoxtalShipmentId || null;
               previousShipmentId = oldBoxtalShipmentId || null;
             } catch (e) {
@@ -1776,83 +1771,6 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                   });
                   res.json({ received: true });
                   return;
-                }
-              }
-
-              const oldRefRaw = String(oldProductReference || "").trim();
-              const oldIds = oldRefRaw
-                .split(";")
-                .map((s) => String(s || "").trim())
-                .filter((s) => s.startsWith("prod_"));
-              if (oldIds.length > 0) {
-                const counts = new Map<string, number>();
-                for (const pid of oldIds) {
-                  counts.set(pid, (counts.get(pid) || 0) + 1);
-                }
-                const uniquePids = Array.from(counts.keys());
-                const { data: stockRows, error: stockErr } = await supabase
-                  .from("stock")
-                  .select("id,product_stripe_id,quantity,bought")
-                  .eq("store_id", storeId)
-                  .in("product_stripe_id", uniquePids as any);
-                if (stockErr) {
-                  await emailService.sendAdminError({
-                    subject: "Restock échoué (modification commande)",
-                    message: `Erreur lecture stock pour restock (storeId=${storeId}, openShipmentRowId=${openShipmentRowId}).`,
-                    context: JSON.stringify(stockErr),
-                  });
-                } else {
-                  for (const r of Array.isArray(stockRows) ? stockRows : []) {
-                    const pid = String(
-                      (r as any)?.product_stripe_id || "",
-                    ).trim();
-                    if (!pid) continue;
-                    const qty = Math.floor(Number(counts.get(pid) || 0));
-                    if (!Number.isFinite(qty) || qty <= 0) continue;
-                    const stockId = Number((r as any)?.id || 0);
-                    if (!Number.isFinite(stockId) || stockId <= 0) continue;
-
-                    const bRaw = Number((r as any)?.bought || 0);
-                    const currentBought =
-                      Number.isFinite(bRaw) && bRaw >= 0 ? Math.floor(bRaw) : 0;
-                    const nextBought = Math.max(0, currentBought - qty);
-
-                    const rawQtyField = (r as any)?.quantity;
-                    if (rawQtyField === null || rawQtyField === undefined) {
-                      const { error: updErr } = await supabase
-                        .from("stock")
-                        .update({ bought: nextBought } as any)
-                        .eq("id", stockId)
-                        .eq("store_id", storeId);
-                      if (updErr) {
-                        await emailService.sendAdminError({
-                          subject: "Restock échoué (modification commande)",
-                          message: `Erreur update stock.bought (storeId=${storeId}, stockId=${stockId}).`,
-                          context: JSON.stringify(updErr),
-                        });
-                      }
-                      continue;
-                    }
-
-                    const parsedQty = Number(rawQtyField);
-                    const available =
-                      Number.isFinite(parsedQty) && parsedQty >= 0
-                        ? Math.floor(parsedQty)
-                        : 0;
-                    const nextQty = available + qty;
-                    const { error: updErr } = await supabase
-                      .from("stock")
-                      .update({ quantity: nextQty, bought: nextBought } as any)
-                      .eq("id", stockId)
-                      .eq("store_id", storeId);
-                    if (updErr) {
-                      await emailService.sendAdminError({
-                        subject: "Restock échoué (modification commande)",
-                        message: `Erreur update stock.quantity/bought (storeId=${storeId}, stockId=${stockId}).`,
-                        context: JSON.stringify(updErr),
-                      });
-                    }
-                  }
                 }
               }
 

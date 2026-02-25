@@ -2069,7 +2069,7 @@ export default function CheckoutPage() {
   return (
     <StripeWrapper>
       {isOpenShipmentMode ? (
-        <div className='bg-blue-50 border-b border-blue-200'>
+        <div className='sticky top-0 z-50 bg-blue-50 border-b border-blue-200'>
           <div className='max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center justify-between gap-3'>
             <div className='text-sm text-blue-800 truncate'>
               Modification de la commande{' '}
@@ -2340,7 +2340,7 @@ export default function CheckoutPage() {
                         </button>
                       </div>
                     </div>
-                    <ul className='mt-1 space-y-1 max-h-40 overflow-auto text-sm text-gray-700'>
+                    <ul className='mt-1 max-h-40 overflow-auto text-sm text-gray-700 divide-y divide-gray-200'>
                       {cartItemsForStore
                         .filter(
                           it =>
@@ -2350,9 +2350,9 @@ export default function CheckoutPage() {
                         .map(it => (
                           <li
                             key={it.id}
-                            className='flex items-center justify-between gap-3'
+                            className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 py-3'
                           >
-                            <div className='min-w-0 flex-1'>
+                            <div className='min-w-0 sm:flex-1'>
                               {(() => {
                                 const ref = String(
                                   it.product_reference || ''
@@ -2393,49 +2393,58 @@ export default function CheckoutPage() {
                                         .split(',')[0]
                                         ?.trim() || '';
                                 return (
-                                  <div className='flex items-center gap-2 min-w-0'>
-                                    {imgRaw ? (
-                                      <img
-                                        src={imgRaw}
-                                        alt={title || ref}
-                                        className='w-8 h-8 rounded object-cover bg-gray-100 shrink-0'
-                                      />
-                                    ) : (
-                                      <div className='w-8 h-8 rounded bg-gray-100 shrink-0' />
-                                    )}
-                                    <div className='min-w-0'>
-                                      <div className='truncate font-medium'>
-                                        {ref || '—'}
-                                      </div>
-                                      <div className='truncate text-xs text-gray-600'>
-                                        {title || '—'}
-                                      </div>
-                                      {showDesc ? (
-                                        <div className='truncate text-xs text-gray-500'>
-                                          {cartDesc}
+                                  <div className='flex items-start justify-between gap-2'>
+                                    <div className='flex items-center gap-2 min-w-0'>
+                                      {imgRaw ? (
+                                        <img
+                                          src={imgRaw}
+                                          alt={title || ref}
+                                          className='w-8 h-8 rounded object-cover bg-gray-100 shrink-0'
+                                        />
+                                      ) : (
+                                        <div className='w-8 h-8 rounded bg-gray-100 shrink-0' />
+                                      )}
+                                      <div className='min-w-0'>
+                                        <div className='font-medium text-gray-900 break-words'>
+                                          {ref || '—'}
                                         </div>
-                                      ) : null}
+                                        <div className='text-xs text-gray-600 break-words'>
+                                          {title || '—'}
+                                        </div>
+                                        {showDesc ? (
+                                          <div className='text-xs text-gray-500 break-words'>
+                                            {cartDesc}
+                                          </div>
+                                        ) : null}
+                                      </div>
                                     </div>
+                                    <button
+                                      type='button'
+                                      onClick={() =>
+                                        handleDeleteCartItem(it.id)
+                                      }
+                                      className='sm:hidden p-1 rounded hover:bg-red-50 text-red-600 shrink-0'
+                                      aria-label='Supprimer cet article'
+                                    >
+                                      <Trash2 className='w-4 h-4' />
+                                    </button>
                                   </div>
                                 );
                               })()}
                             </div>
-                            <div className='flex items-center gap-2'>
-                              {(() => {
-                                const currentQty = Math.max(
-                                  1,
-                                  Math.round(Number(it.quantity || 1))
-                                );
-                                const localValue =
-                                  cartQtyInputById[it.id] !== undefined
-                                    ? cartQtyInputById[it.id]
-                                    : String(currentQty);
+                            <div className='w-full sm:w-auto'>
+                              <div className='mt-2 flex items-center justify-between gap-2 sm:mt-0 sm:justify-end sm:gap-2'>
+                                {(() => {
+                                  const currentQty = Math.max(
+                                    1,
+                                    Math.round(Number(it.quantity || 1))
+                                  );
+                                  const localValue =
+                                    cartQtyInputById[it.id] !== undefined
+                                      ? cartQtyInputById[it.id]
+                                      : String(currentQty);
 
-                                return (
-                                  <>
-                                    <span className='whitespace-nowrap text-xs text-gray-600'>
-                                      {Number(it.value || 0).toFixed(2)} €/u
-                                    </span>
+                                  return (
                                     <div className='flex items-center gap-1'>
                                       <button
                                         type='button'
@@ -2524,24 +2533,27 @@ export default function CheckoutPage() {
                                         +
                                       </button>
                                     </div>
-                                  </>
-                                );
-                              })()}
-                              <span className='whitespace-nowrap'>
-                                {(
-                                  Number(it.value || 0) *
-                                  Number(it.quantity || 1)
-                                ).toFixed(2)}{' '}
-                                €
-                              </span>
-                              <button
-                                type='button'
-                                onClick={() => handleDeleteCartItem(it.id)}
-                                className='p-1 rounded hover:bg-red-50 text-red-600'
-                                aria-label='Supprimer cet article'
-                              >
-                                <Trash2 className='w-4 h-4' />
-                              </button>
+                                  );
+                                })()}
+                                <span className='whitespace-nowrap text-xs text-gray-600'>
+                                  {Number(it.value || 0).toFixed(2)} €/u
+                                </span>
+                                <span className='whitespace-nowrap font-semibold text-gray-900'>
+                                  {(
+                                    Number(it.value || 0) *
+                                    Number(it.quantity || 1)
+                                  ).toFixed(2)}{' '}
+                                  €
+                                </span>
+                                <button
+                                  type='button'
+                                  onClick={() => handleDeleteCartItem(it.id)}
+                                  className='hidden sm:inline-flex p-1 rounded hover:bg-red-50 text-red-600'
+                                  aria-label='Supprimer cet article'
+                                >
+                                  <Trash2 className='w-4 h-4' />
+                                </button>
+                              </div>
                             </div>
                           </li>
                         ))}

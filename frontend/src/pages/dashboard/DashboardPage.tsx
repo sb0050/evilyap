@@ -265,6 +265,9 @@ export default function DashboardPage() {
     'reference' | 'titre' | 'description'
   >('reference');
   const [stockFilterTerm, setStockFilterTerm] = useState<string>('');
+  const [stockSortBy, setStockSortBy] = useState<
+    'best_sellers' | 'recent' | 'price_asc' | 'price_desc'
+  >('recent');
   const [selectedStockIds, setSelectedStockIds] = useState<Set<number>>(
     new Set()
   );
@@ -1730,9 +1733,10 @@ export default function DashboardPage() {
     }
 
     const qtyRaw = parseInt(String(stockQuantity || '').trim(), 10);
-    const quantity = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : NaN;
-    if (!Number.isFinite(quantity) || quantity <= 0) {
-      showToast('Quantité invalide (>= 1)', 'error');
+    const quantity =
+      Number.isFinite(qtyRaw) && qtyRaw >= 0 ? Math.floor(qtyRaw) : NaN;
+    if (!Number.isFinite(quantity) || quantity < 0) {
+      showToast('Quantité invalide (>= 0)', 'error');
       return;
     }
 
@@ -1876,9 +1880,10 @@ export default function DashboardPage() {
     }
 
     const qtyRaw = parseInt(String(stockQuantity || '').trim(), 10);
-    const quantity = Number.isFinite(qtyRaw) && qtyRaw > 0 ? qtyRaw : NaN;
-    if (!Number.isFinite(quantity) || quantity <= 0) {
-      showToast('Quantité invalide (>= 1)', 'error');
+    const quantity =
+      Number.isFinite(qtyRaw) && qtyRaw >= 0 ? Math.floor(qtyRaw) : NaN;
+    if (!Number.isFinite(quantity) || quantity < 0) {
+      showToast('Quantité invalide (>= 0)', 'error');
       return;
     }
 
@@ -2002,7 +2007,7 @@ export default function DashboardPage() {
 
     const qty = Number(stock?.quantity);
     setStockQuantity(
-      Number.isFinite(qty) && qty > 0 ? String(Math.floor(qty)) : '1'
+      Number.isFinite(qty) && qty >= 0 ? String(Math.floor(qty)) : '0'
     );
 
     const w = stock?.weight;
@@ -2204,12 +2209,62 @@ export default function DashboardPage() {
       .includes(stockFilterTermTrim);
   });
 
+  const sortedStockItems = (() => {
+    const entries = filteredStockItems.map((it, idx) => ({
+      it,
+      idx,
+      d: getStockDisplay(it, idx),
+    }));
+
+    const getBought = (e: any) => Number(e?.d?.boughtCount || 0) || 0;
+    const getCreatedTs = (e: any) => {
+      const raw = String(e?.d?.createdAt || '').trim();
+      const t = Date.parse(raw);
+      return Number.isFinite(t) ? t : 0;
+    };
+    const getId = (e: any) => {
+      const v = Number(e?.d?.stockId || 0);
+      return Number.isFinite(v) ? v : Number(e?.idx || 0);
+    };
+    const getPrice = (e: any) => {
+      const v = Number(e?.d?.priceEur);
+      return Number.isFinite(v) && v > 0 ? v : null;
+    };
+
+    entries.sort((a: any, b: any) => {
+      if (stockSortBy === 'best_sellers') {
+        const diff = getBought(b) - getBought(a);
+        if (diff !== 0) return diff;
+      } else if (stockSortBy === 'recent') {
+        const diff = getCreatedTs(b) - getCreatedTs(a);
+        if (diff !== 0) return diff;
+      } else if (stockSortBy === 'price_asc' || stockSortBy === 'price_desc') {
+        const pa = getPrice(a);
+        const pb = getPrice(b);
+        if (pa == null && pb == null) {
+        } else if (pa == null) {
+          return 1;
+        } else if (pb == null) {
+          return -1;
+        } else {
+          const diff = stockSortBy === 'price_asc' ? pa - pb : pb - pa;
+          if (diff !== 0) return diff;
+        }
+      }
+
+      const createdDiff = getCreatedTs(b) - getCreatedTs(a);
+      if (createdDiff !== 0) return createdDiff;
+      return getId(b) - getId(a);
+    });
+    return entries.map(e => e.it);
+  })();
+
   const stockTotalPages = Math.max(
     1,
-    Math.ceil(filteredStockItems.length / stockPageSize)
+    Math.ceil(sortedStockItems.length / stockPageSize)
   );
   const stockStartIndex = (stockPage - 1) * stockPageSize;
-  const visibleStockItems = filteredStockItems.slice(
+  const visibleStockItems = sortedStockItems.slice(
     stockStartIndex,
     stockStartIndex + stockPageSize
   );
@@ -5578,7 +5633,7 @@ export default function DashboardPage() {
                         </label>
                         <input
                           type='number'
-                          min={1}
+                          min={0}
                           step={1}
                           value={stockQuantity}
                           onChange={e => setStockQuantity(e.target.value)}
@@ -5840,7 +5895,7 @@ export default function DashboardPage() {
                     </div>
 
                     <div className='mb-4 flex flex-wrap items-center gap-2'>
-                      <div className='flex items-center space-x-2 flex-wrap'>
+                      <div className='flex items-center flex-wrap gap-2'>
                         <span className='text-sm text-gray-700'>
                           Filtrer par
                         </span>
@@ -5868,8 +5923,29 @@ export default function DashboardPage() {
                             setStockPage(1);
                           }}
                           placeholder='Saisir…'
-                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-44 sm:w-56'
                         />
+                        <span className='text-sm text-gray-700'>Trier par</span>
+                        <select
+                          value={stockSortBy}
+                          onChange={e => {
+                            const v = e.target.value as
+                              | 'best_sellers'
+                              | 'recent'
+                              | 'price_asc'
+                              | 'price_desc';
+                            setStockSortBy(v);
+                            setStockPage(1);
+                          }}
+                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                        >
+                          <option value='best_sellers'>
+                            Meilleures ventes
+                          </option>
+                          <option value='recent'>Plus récents</option>
+                          <option value='price_asc'>Prix croissant</option>
+                          <option value='price_desc'>Prix décroissant</option>
+                        </select>
                       </div>
                     </div>
 

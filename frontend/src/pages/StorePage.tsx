@@ -639,358 +639,375 @@ export default function StorePage() {
             </div>
           </div>
         ) : (
-          <div className='w-full bg-white rounded-lg shadow p-6'>
-            <div className='max-w-6xl mx-auto'>
-              <div className='flex items-start justify-between gap-4 mb-6'>
-                <div className='min-w-0'>
-                  <div className='flex items-center gap-3'>
-                    {storeLogo ? (
-                      <img
-                        src={storeLogo}
-                        alt={store?.name || 'Boutique'}
-                        className='w-10 h-10 rounded-md object-cover border border-gray-200 bg-white'
-                        onError={e => {
-                          (e.currentTarget as any).style.display = 'none';
-                        }}
-                      />
-                    ) : null}
-                    <div className='min-w-0'>
-                      <h1 className='text-2xl font-bold text-gray-900 truncate'>
-                        {store?.name || storeSlug}
-                      </h1>
-                      {store?.description || store?.is_verified ? (
-                        <div className='mt-1'>
-                          {store?.description ? (
-                            <p
-                              className='text-gray-600'
-                              title={store.description}
-                            >
-                              {store.description}
-                            </p>
-                          ) : null}
-                          {store?.is_verified ? (
-                            <div
-                              title="Le SIRET de la boutique a été vérifié via l'INSEE"
-                              className='inline-flex items-center gap-1 mt-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit'
-                            >
-                              <BadgeCheck className='w-3 h-3' /> Boutique
-                              Vérifiée
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-                <button
-                  onClick={() =>
-                    navigate(`/checkout/${encodeURIComponent(storeSlug)}`)
-                  }
-                  className='inline-flex items-center px-3 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
-                >
-                  Accéder au paiement
-                  <ArrowRight className='w-3 h-3 sm:w-4 sm:h-4 ml-2' />
-                </button>
-              </div>
-
-              <div>
-                <h2 className='text-lg font-semibold text-gray-900 mb-4'>
-                  Articles
-                </h2>
-
-                {visibleItems.length === 0 ? (
-                  <div className='text-sm text-gray-600'>
-                    Aucun article disponible pour le moment.
-                  </div>
-                ) : (
-                  <div>
-                    <div className='mb-4 flex flex-wrap items-center gap-2'>
-                      <div className='flex items-center space-x-2 flex-wrap'>
-                        <span className='text-sm text-gray-700'>
-                          Filtrer par
-                        </span>
-                        <select
-                          value={filterField}
-                          onChange={e => {
-                            const v = e.target.value as
-                              | 'reference'
-                              | 'titre'
-                              | 'description';
-                            setFilterField(v);
-                            setPage(1);
+          <>
+            <div className='sm:hidden mb-4'>
+              <button
+                onClick={() =>
+                  navigate(`/checkout/${encodeURIComponent(storeSlug)}`)
+                }
+                className='w-full inline-flex items-center justify-center px-3 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
+              >
+                Accéder au paiement
+                <ArrowRight className='w-3 h-3 ml-2' />
+              </button>
+            </div>
+            <div className='w-full bg-white rounded-lg shadow p-6'>
+              <div className='max-w-6xl mx-auto'>
+                <div className='flex items-start justify-between gap-4 mb-6'>
+                  <div className='min-w-0'>
+                    <div className='flex items-center gap-3'>
+                      {storeLogo ? (
+                        <img
+                          src={storeLogo}
+                          alt={store?.name || 'Boutique'}
+                          className='w-10 h-10 rounded-md object-cover border border-gray-200 bg-white'
+                          onError={e => {
+                            (e.currentTarget as any).style.display = 'none';
                           }}
-                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                        >
-                          <option value='reference'>Référence</option>
-                          <option value='titre'>Titre</option>
-                          <option value='description'>Description</option>
-                        </select>
-                        <input
-                          type='text'
-                          value={filterTerm}
-                          onChange={e => {
-                            setFilterTerm(e.target.value);
-                            setPage(1);
-                          }}
-                          placeholder='Saisir…'
-                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
                         />
-                      </div>
-
-                      <div className='flex items-center space-x-2 flex-wrap'>
-                        <span className='text-sm text-gray-700'>Trier par</span>
-                        <select
-                          value={sortBy}
-                          onChange={e => {
-                            const v = e.target.value as
-                              | 'best_sellers'
-                              | 'recent'
-                              | 'price_asc'
-                              | 'price_desc';
-                            setSortBy(v);
-                            setPage(1);
-                          }}
-                          className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                        >
-                          <option value='best_sellers'>
-                            Meilleures ventes
-                          </option>
-                          <option value='recent'>Plus récents</option>
-                          <option value='price_asc'>Prix croissant</option>
-                          <option value='price_desc'>Prix décroissant</option>
-                        </select>
+                      ) : null}
+                      <div className='min-w-0'>
+                        <h1 className='text-2xl font-bold text-gray-900 truncate'>
+                          {store?.name || storeSlug}
+                        </h1>
+                        {store?.description || store?.is_verified ? (
+                          <div className='mt-1'>
+                            {store?.description ? (
+                              <p
+                                className='text-gray-600'
+                                title={store.description}
+                              >
+                                {store.description}
+                              </p>
+                            ) : null}
+                            {store?.is_verified ? (
+                              <div
+                                title="Le SIRET de la boutique a été vérifié via l'INSEE"
+                                className='inline-flex items-center gap-1 mt-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit'
+                              >
+                                <BadgeCheck className='w-3 h-3' /> Boutique
+                                Vérifiée
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
+                  </div>
+                  <button
+                    onClick={() =>
+                      navigate(`/checkout/${encodeURIComponent(storeSlug)}`)
+                    }
+                    className='hidden sm:inline-flex items-center px-3 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
+                  >
+                    Accéder au paiement
+                    <ArrowRight className='w-3 h-3 sm:w-4 sm:h-4 ml-2' />
+                  </button>
+                </div>
 
-                    {sortedItems.length === 0 ? (
-                      <div className='text-sm text-gray-600'>
-                        Aucun résultat.
+                <div>
+                  <h2 className='text-lg font-semibold text-gray-900 mb-4'>
+                    Articles
+                  </h2>
+
+                  {visibleItems.length === 0 ? (
+                    <div className='text-sm text-gray-600'>
+                      Aucun article disponible pour le moment.
+                    </div>
+                  ) : (
+                    <div>
+                      <div className='mb-4 flex flex-wrap items-center gap-2'>
+                        <div className='flex items-center space-x-2 flex-wrap'>
+                          <span className='text-sm text-gray-700'>
+                            Filtrer par
+                          </span>
+                          <select
+                            value={filterField}
+                            onChange={e => {
+                              const v = e.target.value as
+                                | 'reference'
+                                | 'titre'
+                                | 'description';
+                              setFilterField(v);
+                              setPage(1);
+                            }}
+                            className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                          >
+                            <option value='reference'>Référence</option>
+                            <option value='titre'>Titre</option>
+                            <option value='description'>Description</option>
+                          </select>
+                          <input
+                            type='text'
+                            value={filterTerm}
+                            onChange={e => {
+                              setFilterTerm(e.target.value);
+                              setPage(1);
+                            }}
+                            placeholder='Saisir…'
+                            className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                          />
+                        </div>
+
+                        <div className='flex items-center space-x-2 flex-wrap'>
+                          <span className='text-sm text-gray-700'>
+                            Trier par
+                          </span>
+                          <select
+                            value={sortBy}
+                            onChange={e => {
+                              const v = e.target.value as
+                                | 'best_sellers'
+                                | 'recent'
+                                | 'price_asc'
+                                | 'price_desc';
+                              setSortBy(v);
+                              setPage(1);
+                            }}
+                            className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                          >
+                            <option value='best_sellers'>
+                              Meilleures ventes
+                            </option>
+                            <option value='recent'>Plus récents</option>
+                            <option value='price_asc'>Prix croissant</option>
+                            <option value='price_desc'>Prix décroissant</option>
+                          </select>
+                        </div>
                       </div>
-                    ) : (
-                      <>
-                        <div className='grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4'>
-                          {paginatedItems.map(it => {
-                            const stripeImages =
-                              Array.isArray(it.product?.images) &&
-                              it.product!.images
-                                ? it.product!.images
-                                : [];
-                            const stockImages = String(
-                              it.stock?.image_url || ''
-                            )
-                              .split(',')
-                              .map(s => s.trim())
-                              .filter(Boolean);
-                            const images = [...stripeImages, ...stockImages];
 
-                            const title =
-                              String(it.product?.name || '').trim() ||
-                              it.stock.product_reference;
-                            const desc = String(
-                              it.product?.description || ''
-                            ).trim();
-                            const selectedQty = quantities[it.stock.id] ?? 1;
-                            const canAdd = addingItemId !== it.stock.id;
-                            const isPopular =
-                              mostPopularStockId === it.stock.id;
+                      {sortedItems.length === 0 ? (
+                        <div className='text-sm text-gray-600'>
+                          Aucun résultat.
+                        </div>
+                      ) : (
+                        <>
+                          <div className='grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4'>
+                            {paginatedItems.map(it => {
+                              const stripeImages =
+                                Array.isArray(it.product?.images) &&
+                                it.product!.images
+                                  ? it.product!.images
+                                  : [];
+                              const stockImages = String(
+                                it.stock?.image_url || ''
+                              )
+                                .split(',')
+                                .map(s => s.trim())
+                                .filter(Boolean);
+                              const images = [...stripeImages, ...stockImages];
 
-                            return (
-                              <div
-                                key={it.stock.id}
-                                className='rounded-xl border border-gray-200 overflow-hidden bg-white shadow-sm hover:shadow transition-shadow'
-                              >
-                                <ProductImageCarousel
-                                  images={images}
-                                  alt={title}
-                                  badge={
-                                    isPopular ? (
-                                      <span className='inline-flex items-center gap-1 rounded-full bg-white/95 px-2 py-1 text-xs font-semibold text-red-600 shadow'>
-                                        <LuCrown className='h-3.5 w-3.5' />
-                                        <span>Populaire</span>
-                                      </span>
-                                    ) : undefined
-                                  }
-                                />
-                                <div className='p-3'>
-                                  <div className='flex items-start justify-between gap-3'>
-                                    <div className='min-w-0'>
-                                      <div className='text-sm font-semibold text-gray-900 truncate'>
-                                        {title}
+                              const title =
+                                String(it.product?.name || '').trim() ||
+                                it.stock.product_reference;
+                              const desc = String(
+                                it.product?.description || ''
+                              ).trim();
+                              const selectedQty = quantities[it.stock.id] ?? 1;
+                              const canAdd = addingItemId !== it.stock.id;
+                              const isPopular =
+                                mostPopularStockId === it.stock.id;
+
+                              return (
+                                <div
+                                  key={it.stock.id}
+                                  className='rounded-xl border border-gray-200 overflow-hidden bg-white shadow-sm hover:shadow transition-shadow'
+                                >
+                                  <ProductImageCarousel
+                                    images={images}
+                                    alt={title}
+                                    badge={
+                                      isPopular ? (
+                                        <span className='inline-flex items-center gap-1 rounded-full bg-white/95 px-2 py-1 text-xs font-semibold text-red-600 shadow'>
+                                          <LuCrown className='h-3.5 w-3.5' />
+                                          <span>Populaire</span>
+                                        </span>
+                                      ) : undefined
+                                    }
+                                  />
+                                  <div className='p-3'>
+                                    <div className='flex items-start justify-between gap-3'>
+                                      <div className='min-w-0'>
+                                        <div className='text-sm font-semibold text-gray-900 truncate'>
+                                          {title}
+                                        </div>
+                                        <div className='text-xs text-gray-500 mt-0.5 truncate'>
+                                          Réf: {it.stock.product_reference}
+                                        </div>
                                       </div>
-                                      <div className='text-xs text-gray-500 mt-0.5 truncate'>
-                                        Réf: {it.stock.product_reference}
+                                      <div className='text-right shrink-0'>
+                                        <div className='text-sm font-semibold text-gray-900'>
+                                          {it.unit_price != null
+                                            ? formatEur(it.unit_price)
+                                            : 'Prix indisponible'}
+                                        </div>
                                       </div>
                                     </div>
-                                    <div className='text-right shrink-0'>
-                                      <div className='text-sm font-semibold text-gray-900'>
-                                        {it.unit_price != null
-                                          ? formatEur(it.unit_price)
-                                          : 'Prix indisponible'}
+
+                                    <div className='text-xs text-gray-700 mt-2 line-clamp-2'>
+                                      {desc ? desc : 'Aucune description.'}
+                                    </div>
+
+                                    <div className='mt-3 flex items-center justify-between gap-2'>
+                                      <div className='text-xs text-gray-700'>
+                                        Qté
                                       </div>
-                                    </div>
-                                  </div>
-
-                                  <div className='text-xs text-gray-700 mt-2 line-clamp-2'>
-                                    {desc ? desc : 'Aucune description.'}
-                                  </div>
-
-                                  <div className='mt-3 flex items-center justify-between gap-2'>
-                                    <div className='text-xs text-gray-700'>
-                                      Qté
-                                    </div>
-                                    <div className='flex items-center gap-1'>
-                                      <button
-                                        type='button'
-                                        onClick={() =>
-                                          setQuantities(prev => {
-                                            const current =
-                                              prev[it.stock.id] ?? 1;
+                                      <div className='flex items-center gap-1'>
+                                        <button
+                                          type='button'
+                                          onClick={() =>
+                                            setQuantities(prev => {
+                                              const current =
+                                                prev[it.stock.id] ?? 1;
+                                              const next = Math.max(
+                                                1,
+                                                current - 1
+                                              );
+                                              return {
+                                                ...prev,
+                                                [it.stock.id]: next,
+                                              };
+                                            })
+                                          }
+                                          disabled={!canAdd}
+                                          className='h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60'
+                                          aria-label='Diminuer la quantité'
+                                        >
+                                          -
+                                        </button>
+                                        <input
+                                          type='number'
+                                          inputMode='numeric'
+                                          min={1}
+                                          step={1}
+                                          value={selectedQty}
+                                          onChange={e => {
+                                            const raw = e.target.value;
                                             const next = Math.max(
                                               1,
-                                              current - 1
+                                              Math.floor(Number(raw || 1))
                                             );
-                                            return {
+                                            setQuantities(prev => ({
                                               ...prev,
                                               [it.stock.id]: next,
-                                            };
-                                          })
-                                        }
-                                        disabled={!canAdd}
-                                        className='h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60'
-                                        aria-label='Diminuer la quantité'
-                                      >
-                                        -
-                                      </button>
-                                      <input
-                                        type='number'
-                                        inputMode='numeric'
-                                        min={1}
-                                        step={1}
-                                        value={selectedQty}
-                                        onChange={e => {
-                                          const raw = e.target.value;
-                                          const next = Math.max(
-                                            1,
-                                            Math.floor(Number(raw || 1))
-                                          );
-                                          setQuantities(prev => ({
-                                            ...prev,
-                                            [it.stock.id]: next,
-                                          }));
-                                        }}
-                                        disabled={!canAdd}
-                                        className='h-8 w-14 rounded-md border border-gray-200 px-2 text-sm text-gray-900'
-                                      />
+                                            }));
+                                          }}
+                                          disabled={!canAdd}
+                                          className='h-8 w-14 rounded-md border border-gray-200 px-2 text-sm text-gray-900'
+                                        />
+                                        <button
+                                          type='button'
+                                          onClick={() =>
+                                            setQuantities(prev => {
+                                              const current =
+                                                prev[it.stock.id] ?? 1;
+                                              const next = Math.max(
+                                                1,
+                                                current + 1
+                                              );
+                                              return {
+                                                ...prev,
+                                                [it.stock.id]: next,
+                                              };
+                                            })
+                                          }
+                                          disabled={!canAdd}
+                                          className='h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60'
+                                          aria-label='Augmenter la quantité'
+                                        >
+                                          +
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    <div className='mt-3'>
                                       <button
-                                        type='button'
                                         onClick={() =>
-                                          setQuantities(prev => {
-                                            const current =
-                                              prev[it.stock.id] ?? 1;
-                                            const next = Math.max(
-                                              1,
-                                              current + 1
-                                            );
-                                            return {
-                                              ...prev,
-                                              [it.stock.id]: next,
-                                            };
-                                          })
+                                          handleAddToCart(it, selectedQty)
                                         }
-                                        disabled={!canAdd}
-                                        className='h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60'
-                                        aria-label='Augmenter la quantité'
+                                        disabled={addingItemId === it.stock.id}
+                                        className='w-full inline-flex items-center justify-center px-3 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-60'
                                       >
-                                        +
+                                        {addingItemId === it.stock.id
+                                          ? 'Ajout...'
+                                          : 'Ajouter au panier'}
                                       </button>
                                     </div>
-                                  </div>
-
-                                  <div className='mt-3'>
-                                    <button
-                                      onClick={() =>
-                                        handleAddToCart(it, selectedQty)
-                                      }
-                                      disabled={addingItemId === it.stock.id}
-                                      className='w-full inline-flex items-center justify-center px-3 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-60'
-                                    >
-                                      {addingItemId === it.stock.id
-                                        ? 'Ajout...'
-                                        : 'Ajouter au panier'}
-                                    </button>
                                   </div>
                                 </div>
+                              );
+                            })}
+                          </div>
+
+                          <div className='mt-4 flex flex-wrap items-center justify-between gap-2'>
+                            <div className='flex items-center gap-2'>
+                              <label className='text-sm text-gray-700'>
+                                Cartes
+                              </label>
+                              <select
+                                value={itemsPerPage}
+                                onChange={e => {
+                                  const v = parseInt(e.target.value, 10);
+                                  const next =
+                                    Number.isFinite(v) && v > 0 ? v : 12;
+                                  setItemsPerPage(next);
+                                  setPage(1);
+                                }}
+                                className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-28'
+                              >
+                                <option value={12}>12</option>
+                                <option value={24}>24</option>
+                                <option value={48}>48</option>
+                                <option value={96}>96</option>
+                              </select>
+                            </div>
+
+                            <div className='flex flex-wrap items-center gap-2'>
+                              <div className='text-sm text-gray-600'>
+                                Page {currentPage} / {totalPages} —{' '}
+                                {totalProducts} produit
+                                {totalProducts > 1 ? 's' : ''}
                               </div>
-                            );
-                          })}
-                        </div>
-
-                        <div className='mt-4 flex flex-wrap items-center justify-between gap-2'>
-                          <div className='flex items-center gap-2'>
-                            <label className='text-sm text-gray-700'>
-                              Cartes
-                            </label>
-                            <select
-                              value={itemsPerPage}
-                              onChange={e => {
-                                const v = parseInt(e.target.value, 10);
-                                const next =
-                                  Number.isFinite(v) && v > 0 ? v : 12;
-                                setItemsPerPage(next);
-                                setPage(1);
-                              }}
-                              className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-28'
-                            >
-                              <option value={12}>12</option>
-                              <option value={24}>24</option>
-                              <option value={48}>48</option>
-                              <option value={96}>96</option>
-                            </select>
-                          </div>
-
-                          <div className='flex flex-wrap items-center gap-2'>
-                            <div className='text-sm text-gray-600'>
-                              Page {currentPage} / {totalPages} —{' '}
-                              {totalProducts} produit
-                              {totalProducts > 1 ? 's' : ''}
-                            </div>
-                            <div className='flex items-center space-x-2'>
-                              <button
-                                type='button'
-                                onClick={() => setPage(p => Math.max(1, p - 1))}
-                                disabled={currentPage <= 1}
-                                className={`px-3 py-1 text-sm rounded-md border ${
-                                  currentPage <= 1
-                                    ? 'bg-gray-100 text-gray-400 border-gray-200'
-                                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                                }`}
-                              >
-                                Précédent
-                              </button>
-                              <button
-                                type='button'
-                                onClick={() =>
-                                  setPage(p => Math.min(totalPages, p + 1))
-                                }
-                                disabled={currentPage >= totalPages}
-                                className={`px-3 py-1 text-sm rounded-md border ${
-                                  currentPage >= totalPages
-                                    ? 'bg-gray-100 text-gray-400 border-gray-200'
-                                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                                }`}
-                              >
-                                Suivant
-                              </button>
+                              <div className='flex items-center space-x-2'>
+                                <button
+                                  type='button'
+                                  onClick={() =>
+                                    setPage(p => Math.max(1, p - 1))
+                                  }
+                                  disabled={currentPage <= 1}
+                                  className={`px-3 py-1 text-sm rounded-md border ${
+                                    currentPage <= 1
+                                      ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                  }`}
+                                >
+                                  Précédent
+                                </button>
+                                <button
+                                  type='button'
+                                  onClick={() =>
+                                    setPage(p => Math.min(totalPages, p + 1))
+                                  }
+                                  disabled={currentPage >= totalPages}
+                                  className={`px-3 py-1 text-sm rounded-md border ${
+                                    currentPage >= totalPages
+                                      ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                  }`}
+                                >
+                                  Suivant
+                                </button>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
+          </>
         )}
       </div>
     </div>
