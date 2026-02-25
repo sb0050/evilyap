@@ -1128,7 +1128,7 @@ router.post("/:id/cancel", async (req, res) => {
 
     const { data: shipment, error: shipErr } = await supabase
       .from("shipments")
-      .select("id,store_id,customer_stripe_id,status")
+      .select("id,store_id,customer_stripe_id,status,product_reference")
       .eq("id", id)
       .maybeSingle();
     if (shipErr) {
@@ -1189,6 +1189,87 @@ router.post("/:id/cancel", async (req, res) => {
             .toUpperCase();
     if (st !== null && st !== "PENDING") {
       return res.status(400).json({ error: "Annulation non autorisée" });
+    }
+
+    const productRefRaw = String((shipment as any)?.product_reference || "")
+      .trim()
+      .toString();
+    const productItems = parseProductReferenceItems(productRefRaw);
+    if (productItems.length > 0) {
+      const stripeIds = productItems
+        .map((it) => String(it.reference || "").trim())
+        .filter((r) => r.startsWith("prod_"));
+      const refs = productItems
+        .map((it) => String(it.reference || "").trim())
+        .filter((r) => r && !r.startsWith("prod_"));
+
+      const stockByStripeId = new Map<string, any>();
+      if (stripeIds.length > 0) {
+        const unique = Array.from(new Set(stripeIds));
+        const { data: rows, error: readErr } = await supabase
+          .from("stock")
+          .select("id,product_stripe_id,quantity,bought")
+          .eq("store_id", storeId)
+          .in("product_stripe_id", unique as any);
+        if (readErr) return res.status(500).json({ error: readErr.message });
+        for (const r of Array.isArray(rows) ? rows : []) {
+          const pid = String((r as any)?.product_stripe_id || "").trim();
+          if (pid) stockByStripeId.set(pid, r);
+        }
+      }
+
+      const stockByReference = new Map<string, any>();
+      if (refs.length > 0) {
+        const unique = Array.from(new Set(refs));
+        const { data: rows, error: readErr } = await supabase
+          .from("stock")
+          .select("id,product_reference,quantity,bought")
+          .eq("store_id", storeId)
+          .in("product_reference", unique as any);
+        if (readErr) return res.status(500).json({ error: readErr.message });
+        for (const r of Array.isArray(rows) ? rows : []) {
+          const ref = String((r as any)?.product_reference || "").trim();
+          if (ref) stockByReference.set(ref, r);
+        }
+      }
+
+      for (const it of productItems) {
+        const reference = String(it.reference || "").trim();
+        if (!reference) continue;
+        const qty = Math.max(1, Math.floor(Number(it.quantity || 1)));
+        const row = reference.startsWith("prod_")
+          ? stockByStripeId.get(reference)
+          : stockByReference.get(reference);
+        const stockId = Number((row as any)?.id || 0);
+        if (!row || !Number.isFinite(stockId) || stockId <= 0) continue;
+
+        const bRaw = Number((row as any)?.bought || 0);
+        const currentBought =
+          Number.isFinite(bRaw) && bRaw >= 0 ? Math.floor(bRaw) : 0;
+        const nextBought = Math.max(0, currentBought - qty);
+
+        const rawQtyField = (row as any)?.quantity;
+        if (rawQtyField === null || rawQtyField === undefined) {
+          const { error: updErr } = await supabase
+            .from("stock")
+            .update({ bought: nextBought } as any)
+            .eq("id", stockId)
+            .eq("store_id", storeId);
+          if (updErr) return res.status(500).json({ error: updErr.message });
+          continue;
+        }
+
+        const parsedQty = Number(rawQtyField);
+        const available =
+          Number.isFinite(parsedQty) && parsedQty >= 0 ? Math.floor(parsedQty) : 0;
+        const nextQty = available + qty;
+        const { error: updErr } = await supabase
+          .from("stock")
+          .update({ quantity: nextQty, bought: nextBought } as any)
+          .eq("id", stockId)
+          .eq("store_id", storeId);
+        if (updErr) return res.status(500).json({ error: updErr.message });
+      }
     }
 
     const { error: updErr } = await supabase
