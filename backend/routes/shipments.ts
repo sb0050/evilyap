@@ -173,6 +173,105 @@ const parseProductReferenceItems = (raw: string): ProductReferenceItem[] => {
   return Array.from(acc.values());
 };
 
+async function applyStockAdjustmentForItems(options: {
+  storeId: number;
+  items: ProductReferenceItem[];
+  mode: "restock" | "unrestock";
+}) {
+  const storeId = options.storeId;
+  const items = Array.isArray(options.items) ? options.items : [];
+  if (!Number.isFinite(storeId) || storeId <= 0) return;
+  if (items.length === 0) return;
+
+  const stripeIds = items
+    .map((it) => String(it.reference || "").trim())
+    .filter((r) => r.startsWith("prod_"));
+  const refs = items
+    .map((it) => String(it.reference || "").trim())
+    .filter((r) => r && !r.startsWith("prod_"));
+
+  const stockByStripeId = new Map<string, any>();
+  if (stripeIds.length > 0) {
+    const unique = Array.from(new Set(stripeIds));
+    const { data: rows, error: readErr } = await supabase
+      .from("stock")
+      .select("id,product_stripe_id,quantity,bought")
+      .eq("store_id", storeId)
+      .in("product_stripe_id", unique as any);
+    if (readErr) throw new Error(readErr.message);
+    for (const r of Array.isArray(rows) ? rows : []) {
+      const pid = String((r as any)?.product_stripe_id || "").trim();
+      if (pid) stockByStripeId.set(pid, r);
+    }
+  }
+
+  const stockByReference = new Map<string, any>();
+  if (refs.length > 0) {
+    const unique = Array.from(new Set(refs));
+    const { data: rows, error: readErr } = await supabase
+      .from("stock")
+      .select("id,product_reference,quantity,bought")
+      .eq("store_id", storeId)
+      .in("product_reference", unique as any);
+    if (readErr) throw new Error(readErr.message);
+    for (const r of Array.isArray(rows) ? rows : []) {
+      const ref = String((r as any)?.product_reference || "").trim();
+      if (ref) stockByReference.set(ref, r);
+    }
+  }
+
+  for (const it of items) {
+    const reference = String(it.reference || "").trim();
+    if (!reference) continue;
+    const qtyRaw = Number(it.quantity || 1);
+    const qty = Number.isFinite(qtyRaw) && qtyRaw > 0 ? Math.floor(qtyRaw) : 1;
+
+    const row = reference.startsWith("prod_")
+      ? stockByStripeId.get(reference)
+      : stockByReference.get(reference);
+    const stockId = Number((row as any)?.id || 0);
+    if (!row || !Number.isFinite(stockId) || stockId <= 0) continue;
+
+    const bRaw = Number((row as any)?.bought || 0);
+    const currentBought =
+      Number.isFinite(bRaw) && bRaw >= 0 ? Math.floor(bRaw) : 0;
+
+    const rawQtyField = (row as any)?.quantity;
+    const hasQtyField = rawQtyField !== null && rawQtyField !== undefined;
+    const parsedQty = hasQtyField ? Number(rawQtyField) : NaN;
+    const available =
+      hasQtyField && Number.isFinite(parsedQty) && parsedQty >= 0
+        ? Math.floor(parsedQty)
+        : 0;
+
+    const nextBought =
+      options.mode === "restock"
+        ? Math.max(0, currentBought - qty)
+        : Math.max(0, currentBought + qty);
+    const nextQty =
+      options.mode === "restock"
+        ? Math.max(0, available + qty)
+        : Math.max(0, available - qty);
+
+    if (!hasQtyField) {
+      const { error: updErr } = await supabase
+        .from("stock")
+        .update({ bought: nextBought } as any)
+        .eq("id", stockId)
+        .eq("store_id", storeId);
+      if (updErr) throw new Error(updErr.message);
+      continue;
+    }
+
+    const { error: updErr } = await supabase
+      .from("stock")
+      .update({ quantity: nextQty, bought: nextBought } as any)
+      .eq("id", stockId)
+      .eq("store_id", storeId);
+    if (updErr) throw new Error(updErr.message);
+  }
+}
+
 function isMissingColumnError(err: any, column: string): boolean {
   const msg = String(err?.message || "");
   return (
@@ -227,7 +326,9 @@ router.post("/open-shipment", async (req, res) => {
 
     const { data: shipment, error: shipErr } = await supabase
       .from("shipments")
-      .select("id,store_id,customer_stripe_id,is_open_shipment,status")
+      .select(
+        "id,store_id,customer_stripe_id,is_open_shipment,status,product_reference,payment_id",
+      )
       .eq("id", shipmentIdNum)
       .maybeSingle();
     if (shipErr) {
@@ -266,6 +367,43 @@ router.post("/open-shipment", async (req, res) => {
           openShipment: (otherOpen || [])[0] || null,
         });
       }
+      const openRows = Array.isArray(otherOpen) ? otherOpen : [];
+      const openIds = openRows
+        .map((r: any) => Number(r?.id || 0))
+        .filter((n: number) => Number.isFinite(n) && n > 0);
+      if (openIds.length > 0) {
+        const { data: openShipments, error: openShipErr } = await supabase
+          .from("shipments")
+          .select("id,product_reference,is_open_shipment")
+          .in("id", openIds as any)
+          .eq("store_id", storeIdNum)
+          .eq("customer_stripe_id", stripeCustomerId)
+          .limit(50);
+        if (openShipErr) {
+          return res.status(500).json({ error: openShipErr.message });
+        }
+        for (const s of Array.isArray(openShipments) ? openShipments : []) {
+          if ((s as any)?.is_open_shipment !== true) continue;
+          const items = parseProductReferenceItems(
+            String((s as any)?.product_reference || "").trim(),
+          );
+          if (items.length > 0) {
+            try {
+              await applyStockAdjustmentForItems({
+                storeId: storeIdNum,
+                items,
+                mode: "unrestock",
+              });
+            } catch (e: any) {
+              return res.status(500).json({
+                error:
+                  e?.message ||
+                  "Erreur lors de la restauration du stock (changement de commande)",
+              });
+            }
+          }
+        }
+      }
       const paymentIdsToCleanup = (otherOpen || [])
         .map((r: any) => String(r?.payment_id || "").trim())
         .filter(Boolean);
@@ -295,12 +433,43 @@ router.post("/open-shipment", async (req, res) => {
       }
     }
 
+    const wasAlreadyOpen = Boolean((shipment as any)?.is_open_shipment);
+
     const { error: updErr } = await supabase
       .from("shipments")
       .update({ is_open_shipment: true })
-      .eq("id", shipmentIdNum);
+      .eq("id", shipmentIdNum)
+      .eq("store_id", storeIdNum)
+      .eq("customer_stripe_id", stripeCustomerId);
     if (updErr) {
       return res.status(500).json({ error: updErr.message });
+    }
+
+    if (!wasAlreadyOpen) {
+      const items = parseProductReferenceItems(
+        String((shipment as any)?.product_reference || "").trim(),
+      );
+      if (items.length > 0) {
+        try {
+          await applyStockAdjustmentForItems({
+            storeId: storeIdNum,
+            items,
+            mode: "restock",
+          });
+        } catch (e: any) {
+          await supabase
+            .from("shipments")
+            .update({ is_open_shipment: false })
+            .eq("id", shipmentIdNum)
+            .eq("store_id", storeIdNum)
+            .eq("customer_stripe_id", stripeCustomerId);
+          return res.status(500).json({
+            error:
+              e?.message ||
+              "Erreur lors de la préparation du stock pour modification",
+          });
+        }
+      }
     }
 
     return res.json({ success: true });
@@ -341,7 +510,7 @@ router.post("/open-shipment-by-payment", async (req, res) => {
     const { data: shipment, error: shipmentErr } = await supabase
       .from("shipments")
       .select(
-        "id,shipment_id,store_id,customer_stripe_id,payment_id,customer_spent_amount,status",
+        "id,shipment_id,store_id,customer_stripe_id,payment_id,customer_spent_amount,status,is_open_shipment,product_reference",
       )
       .eq("payment_id", paymentIdStr)
       .eq("store_id", storeIdNum)
@@ -386,6 +555,43 @@ router.post("/open-shipment-by-payment", async (req, res) => {
           openShipment: (otherOpen || [])[0] || null,
         });
       }
+      const openRows = Array.isArray(otherOpen) ? otherOpen : [];
+      const openIds = openRows
+        .map((r: any) => Number(r?.id || 0))
+        .filter((n: number) => Number.isFinite(n) && n > 0);
+      if (openIds.length > 0) {
+        const { data: openShipments, error: openShipErr } = await supabase
+          .from("shipments")
+          .select("id,product_reference,is_open_shipment")
+          .in("id", openIds as any)
+          .eq("store_id", storeIdNum)
+          .eq("customer_stripe_id", stripeCustomerId)
+          .limit(50);
+        if (openShipErr) {
+          return res.status(500).json({ error: openShipErr.message });
+        }
+        for (const s of Array.isArray(openShipments) ? openShipments : []) {
+          if ((s as any)?.is_open_shipment !== true) continue;
+          const items = parseProductReferenceItems(
+            String((s as any)?.product_reference || "").trim(),
+          );
+          if (items.length > 0) {
+            try {
+              await applyStockAdjustmentForItems({
+                storeId: storeIdNum,
+                items,
+                mode: "unrestock",
+              });
+            } catch (e: any) {
+              return res.status(500).json({
+                error:
+                  e?.message ||
+                  "Erreur lors de la restauration du stock (changement de commande)",
+              });
+            }
+          }
+        }
+      }
       const paymentIdsToCleanup = (otherOpen || [])
         .map((r: any) => String(r?.payment_id || "").trim())
         .filter(Boolean);
@@ -415,12 +621,40 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       }
     }
 
+    const wasAlreadyOpen = Boolean((shipment as any)?.is_open_shipment);
     const { error: updErr } = await supabase
       .from("shipments")
       .update({ is_open_shipment: true })
       .eq("id", shipmentIdNum);
     if (updErr) {
       return res.status(500).json({ error: updErr.message });
+    }
+
+    if (!wasAlreadyOpen) {
+      const items = parseProductReferenceItems(
+        String((shipment as any)?.product_reference || "").trim(),
+      );
+      if (items.length > 0) {
+        try {
+          await applyStockAdjustmentForItems({
+            storeId: storeIdNum,
+            items,
+            mode: "restock",
+          });
+        } catch (e: any) {
+          await supabase
+            .from("shipments")
+            .update({ is_open_shipment: false })
+            .eq("id", shipmentIdNum)
+            .eq("store_id", storeIdNum)
+            .eq("customer_stripe_id", stripeCustomerId);
+          return res.status(500).json({
+            error:
+              e?.message ||
+              "Erreur lors de la préparation du stock pour modification",
+          });
+        }
+      }
     }
 
     const spentRaw = Number((shipment as any)?.customer_spent_amount ?? 0);
@@ -580,7 +814,9 @@ router.post("/cancel-open-shipment", async (req, res) => {
 
     const { data: shipmentByPayment, error: shipmentErr } = await supabase
       .from("shipments")
-      .select("id,shipment_id,customer_stripe_id,payment_id,is_open_shipment")
+      .select(
+        "id,shipment_id,customer_stripe_id,payment_id,is_open_shipment,product_reference",
+      )
       .eq("payment_id", paymentIdStr)
       .eq("store_id", storeIdNum)
       .maybeSingle();
@@ -597,7 +833,9 @@ router.post("/cancel-open-shipment", async (req, res) => {
 
     const { data: openShipmentRows, error: openErr } = await supabase
       .from("shipments")
-      .select("id,shipment_id,payment_id,customer_stripe_id,is_open_shipment")
+      .select(
+        "id,shipment_id,payment_id,customer_stripe_id,is_open_shipment,product_reference",
+      )
       .eq("customer_stripe_id", stripeCustomerId)
       .eq("store_id", storeIdNum)
       .eq("is_open_shipment", true)
@@ -631,6 +869,26 @@ router.post("/cancel-open-shipment", async (req, res) => {
       return res
         .status(500)
         .json({ error: "Impossible de fermer la commande" });
+    }
+
+    for (const s of openShipments) {
+      const items = parseProductReferenceItems(
+        String((s as any)?.product_reference || "").trim(),
+      );
+      if (items.length === 0) continue;
+      try {
+        await applyStockAdjustmentForItems({
+          storeId: storeIdNum,
+          items,
+          mode: "unrestock",
+        });
+      } catch (e: any) {
+        return res.status(500).json({
+          error:
+            e?.message ||
+            "Erreur lors de la restauration du stock (annulation modification)",
+        });
+      }
     }
 
     const { data: closedRows, error: updErr } = await supabase
@@ -1261,7 +1519,9 @@ router.post("/:id/cancel", async (req, res) => {
 
         const parsedQty = Number(rawQtyField);
         const available =
-          Number.isFinite(parsedQty) && parsedQty >= 0 ? Math.floor(parsedQty) : 0;
+          Number.isFinite(parsedQty) && parsedQty >= 0
+            ? Math.floor(parsedQty)
+            : 0;
         const nextQty = available + qty;
         const { error: updErr } = await supabase
           .from("stock")

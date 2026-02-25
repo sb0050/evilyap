@@ -194,6 +194,7 @@ export default function Header() {
         const items = Array.isArray(g?.items)
           ? g.items.filter(
               it =>
+                (it as any)?.payment_id == null &&
                 !isDeliveryRegulationText(it?.product_reference) &&
                 !isDeliveryRegulationText((it as any)?.description)
             )
@@ -263,9 +264,20 @@ export default function Header() {
     return sum + Number(it?.value || 0) * qty;
   }, 0);
   const totalItemsCount = filteredCartItemsByStore.reduce(
-    (sum, g) => sum + (Array.isArray(g?.items) ? g.items.length : 0),
+    (sum, g) =>
+      sum +
+      (Array.isArray(g?.items)
+        ? g.items.reduce(
+            (acc: number, it: any) =>
+              acc + Math.max(1, Number(it?.quantity || 1)),
+            0
+          )
+        : 0),
     0
   );
+  const hideCartPopover =
+    String(location.pathname || '').startsWith('/checkout') ||
+    String(location.pathname || '').startsWith('/dashboard');
 
   // Suppression de la déduction d’accès au dashboard basée sur des slugs
 
@@ -539,146 +551,154 @@ export default function Header() {
               )}
 
               <div className='flex items-center gap-2'>
-                <Popover className='relative'>
-                  {({ open }) => (
-                    <>
-                      <Popover.Button className='relative inline-flex items-center justify-center h-9 w-9 rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50'>
-                        <ShoppingCart className='w-5 h-5' aria-hidden='true' />
-                        {totalItemsCount > 0 ? (
-                          <span className='absolute -top-1 -right-1 inline-flex items-center justify-center h-5 min-w-5 px-1 rounded-full bg-indigo-600 text-white text-[10px] font-semibold'>
-                            {totalItemsCount}
-                          </span>
-                        ) : null}
-                      </Popover.Button>
-                      <Transition
-                        as={Fragment}
-                        show={open}
-                        enter='transition ease-out duration-150'
-                        enterFrom='opacity-0 translate-y-1'
-                        enterTo='opacity-100 translate-y-0'
-                        leave='transition ease-in duration-100'
-                        leaveFrom='opacity-100 translate-y-0'
-                        leaveTo='opacity-0 translate-y-1'
-                      >
-                        <Popover.Panel className='absolute right-0 mt-2 w-[360px] max-w-[calc(100vw-2rem)] bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden z-50'>
-                          <div className='p-4 border-b border-gray-100'>
-                            <div className='flex items-center justify-between gap-3'>
-                              <div className='min-w-0'>
-                                <div className='text-sm font-semibold text-gray-900'>
-                                  Panier
+                {!hideCartPopover ? (
+                  <Popover className='relative'>
+                    {({ open }) => (
+                      <>
+                        <Popover.Button className='relative inline-flex items-center justify-center h-9 w-9 rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50'>
+                          <ShoppingCart
+                            className='w-5 h-5'
+                            aria-hidden='true'
+                          />
+                          {totalItemsCount > 0 ? (
+                            <span className='absolute -top-1 -right-1 inline-flex items-center justify-center h-5 min-w-5 px-1 rounded-full bg-indigo-600 text-white text-[10px] font-semibold'>
+                              {totalItemsCount}
+                            </span>
+                          ) : null}
+                        </Popover.Button>
+                        <Transition
+                          as={Fragment}
+                          show={open}
+                          enter='transition ease-out duration-150'
+                          enterFrom='opacity-0 translate-y-1'
+                          enterTo='opacity-100 translate-y-0'
+                          leave='transition ease-in duration-100'
+                          leaveFrom='opacity-100 translate-y-0'
+                          leaveTo='opacity-0 translate-y-1'
+                        >
+                          <Popover.Panel className='absolute right-0 mt-2 w-[360px] max-w-[calc(100vw-2rem)] bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden z-50'>
+                            <div className='p-4 border-b border-gray-100'>
+                              <div className='flex items-center justify-between gap-3'>
+                                <div className='min-w-0'>
+                                  <div className='text-sm font-semibold text-gray-900'>
+                                    Panier
+                                  </div>
+                                  <div className='text-xs text-gray-500 truncate'>
+                                    {currentGroup?.store?.name ||
+                                      'Sélectionnez une boutique'}
+                                  </div>
                                 </div>
-                                <div className='text-xs text-gray-500 truncate'>
-                                  {currentGroup?.store?.name ||
-                                    'Sélectionnez une boutique'}
+                                <div className='text-xs text-gray-500'>
+                                  {cartSummaryLoading ? 'Chargement…' : null}
                                 </div>
                               </div>
-                              <div className='text-xs text-gray-500'>
-                                {cartSummaryLoading ? 'Chargement…' : null}
-                              </div>
+
+                              {filteredCartItemsByStore.length > 1 ? (
+                                <div className='mt-3'>
+                                  <select
+                                    value={selectedStoreSlug}
+                                    onChange={e => {
+                                      setSelectedStoreSlug(e.target.value);
+                                    }}
+                                    className='w-full h-9 rounded-md border border-gray-200 bg-white px-2 text-sm text-gray-900'
+                                  >
+                                    {filteredCartItemsByStore
+                                      .filter(g => Boolean(g?.store?.slug))
+                                      .map(g => (
+                                        <option
+                                          key={String(g.store?.slug || '')}
+                                          value={String(g.store?.slug || '')}
+                                        >
+                                          {g.store?.name || g.store?.slug}
+                                        </option>
+                                      ))}
+                                  </select>
+                                </div>
+                              ) : null}
                             </div>
 
-                            {filteredCartItemsByStore.length > 1 ? (
-                              <div className='mt-3'>
-                                <select
-                                  value={selectedStoreSlug}
-                                  onChange={e => {
-                                    setSelectedStoreSlug(e.target.value);
-                                  }}
-                                  className='w-full h-9 rounded-md border border-gray-200 bg-white px-2 text-sm text-gray-900'
-                                >
-                                  {filteredCartItemsByStore
-                                    .filter(g => Boolean(g?.store?.slug))
-                                    .map(g => (
-                                      <option
-                                        key={String(g.store?.slug || '')}
-                                        value={String(g.store?.slug || '')}
-                                      >
-                                        {g.store?.name || g.store?.slug}
-                                      </option>
-                                    ))}
-                                </select>
-                              </div>
-                            ) : null}
-                          </div>
-
-                          <div className='p-4'>
-                            {currentItems.length === 0 ? (
-                              <div className='text-sm text-gray-600'>
-                                Votre panier est vide.
-                              </div>
-                            ) : (
-                              <>
-                                <div className='mt-3 max-h-[280px] overflow-auto divide-y divide-gray-100'>
-                                  {currentItems.map(it => {
-                                    const id = Number(it?.id || 0);
-                                    const title =
-                                      String(it?.description || '').trim() ||
-                                      String(
+                            <div className='p-4'>
+                              {currentItems.length === 0 ? (
+                                <div className='text-sm text-gray-600'>
+                                  Votre panier est vide.
+                                </div>
+                              ) : (
+                                <>
+                                  <div className='mt-3 max-h-[280px] overflow-auto divide-y divide-gray-100'>
+                                    {currentItems.map(it => {
+                                      const id = Number(it?.id || 0);
+                                      const title =
+                                        String(it?.description || '').trim() ||
+                                        String(
+                                          it?.product_reference || ''
+                                        ).trim();
+                                      const ref = String(
                                         it?.product_reference || ''
                                       ).trim();
-                                    const ref = String(
-                                      it?.product_reference || ''
-                                    ).trim();
-                                    const qty = Math.max(
-                                      1,
-                                      Number(it?.quantity || 1)
-                                    );
-                                    const price = Number(it?.value || 0);
-                                    return (
-                                      <div
-                                        key={id || ref}
-                                        className='py-3 flex gap-3'
-                                      >
-                                        <div className='min-w-0 flex-1'>
-                                          <div className='text-sm font-medium text-gray-900 truncate'>
-                                            {title}
+                                      const qty = Math.max(
+                                        1,
+                                        Number(it?.quantity || 1)
+                                      );
+                                      const price = Number(it?.value || 0);
+                                      return (
+                                        <div
+                                          key={id || ref}
+                                          className='py-3 flex gap-3'
+                                        >
+                                          <div className='min-w-0 flex-1'>
+                                            <div className='text-sm font-medium text-gray-900 truncate'>
+                                              {title}
+                                            </div>
+                                            <div className='text-xs text-gray-500 truncate'>
+                                              Réf: {ref} • Qté: {qty}
+                                            </div>
                                           </div>
-                                          <div className='text-xs text-gray-500 truncate'>
-                                            Réf: {ref} • Qté: {qty}
+                                          <div className='text-sm font-semibold text-gray-900'>
+                                            {price > 0
+                                              ? formatEur(price * qty)
+                                              : '—'}
                                           </div>
                                         </div>
-                                        <div className='text-sm font-semibold text-gray-900'>
-                                          {price > 0
-                                            ? formatEur(price * qty)
-                                            : '—'}
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-
-                                <div className='mt-4 flex items-center justify-between'>
-                                  <div className='text-sm text-gray-700'>
-                                    Total panier
+                                      );
+                                    })}
                                   </div>
-                                  <div className='text-sm font-semibold text-gray-900'>
-                                    {formatEur(currentTotal)}
-                                  </div>
-                                </div>
-                              </>
-                            )}
-                          </div>
 
-                          <div className='p-4 border-t border-gray-100'>
-                            <button
-                              disabled={
-                                !selectedStoreSlug || currentItems.length === 0
-                              }
-                              onClick={() => {
-                                navigate(
-                                  `/checkout/${encodeURIComponent(selectedStoreSlug)}`
-                                );
-                              }}
-                              className='w-full inline-flex items-center justify-center px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60'
-                            >
-                              Procéder au paiement
-                            </button>
-                          </div>
-                        </Popover.Panel>
-                      </Transition>
-                    </>
-                  )}
-                </Popover>
+                                  <div className='mt-4 flex items-center justify-between'>
+                                    <div className='text-sm text-gray-700'>
+                                      Total panier
+                                    </div>
+                                    <div className='text-sm font-semibold text-gray-900'>
+                                      {formatEur(currentTotal)}
+                                    </div>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+
+                            <div className='p-4 border-t border-gray-100'>
+                              <button
+                                disabled={
+                                  !selectedStoreSlug ||
+                                  currentItems.length === 0
+                                }
+                                onClick={() => {
+                                  navigate(
+                                    `/checkout/${encodeURIComponent(
+                                      selectedStoreSlug
+                                    )}`
+                                  );
+                                }}
+                                className='w-full inline-flex items-center justify-center px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60'
+                              >
+                                Procéder au paiement
+                              </button>
+                            </div>
+                          </Popover.Panel>
+                        </Transition>
+                      </>
+                    )}
+                  </Popover>
+                ) : null}
                 <UserButton userProfileMode='modal' />
               </div>
             </SignedIn>
