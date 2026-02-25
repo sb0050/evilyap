@@ -13,6 +13,7 @@ import {
   useLocation,
 } from 'react-router-dom';
 import { dark, neobrutalism } from '@clerk/themes';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 
 import LandingPage from './pages/LandingPage';
 import CheckoutPage from './pages/CheckoutPage';
@@ -63,6 +64,7 @@ function App() {
       <Router>
         <div className='min-h-screen bg-gray-50'>
           <LocationTracker />
+          <SpeedInsights />
           <Routes>
             <Route path='/' element={<LandingPage />} />
             {/* Pages publiques: PDF */}
