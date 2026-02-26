@@ -780,7 +780,12 @@ export default function OrdersPage() {
   const selectedForCancel = selectedOrders.filter(
     s =>
       !s.is_final_destination &&
-      (s.status == null || String(s.status).toUpperCase() === 'PENDING') &&
+      (() => {
+        const st = String(s.status ?? '')
+          .trim()
+          .toUpperCase();
+        return st === '' || st === 'PENDING';
+      })() &&
       cancelStatus[s.id] !== 'loading'
   );
   const visibleOrderIds = visibleShipments.map(s => s.id);
@@ -1199,14 +1204,10 @@ export default function OrdersPage() {
 
   const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
     const silent = options?.silent;
-    const stRaw = s.status;
-    const st =
-      stRaw == null
-        ? null
-        : String(stRaw || '')
-            .trim()
-            .toUpperCase();
-    if (st !== null && st !== 'PENDING') {
+    const st = String(s.status ?? '')
+      .trim()
+      .toUpperCase();
+    if (st !== '' && st !== 'PENDING') {
       setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
       if (!silent) {
         showToast('Annulation non autorisée pour ce statut', 'error');
@@ -1243,6 +1244,54 @@ export default function OrdersPage() {
             refs ? `Commande annulée : ${refs}` : 'Commande annulée',
             'success'
           );
+          const bc = (json as any)?.boxtalCancel || null;
+          if (bc) {
+            if (bc.ok === true) {
+              const boxtalOk = (bc as any)?.body?.boxtal?.ok;
+              if (boxtalOk === false) {
+                showToast('Annulation Boxtal échouée', 'error');
+              }
+              const credit = (bc as any)?.body?.credit || null;
+              const creditCentsRaw = Number(credit?.creditCents || 0);
+              const creditCents =
+                Number.isFinite(creditCentsRaw) && creditCentsRaw > 0
+                  ? Math.round(creditCentsRaw)
+                  : 0;
+              if (creditCents > 0) {
+                if (credit?.updated === true) {
+                  showToast(
+                    `Crédit ajouté: ${formatValue(creditCents / 100)}`,
+                    'success'
+                  );
+                } else if (credit?.alreadyIssued === true) {
+                  showToast('Crédit déjà appliqué', 'info');
+                } else {
+                  showToast('Crédit non appliqué (voir logs)', 'error');
+                }
+              }
+            } else {
+              showToast('Annulation Boxtal: requête échouée', 'error');
+            }
+          } else {
+            const credit = (json as any)?.credit || null;
+            const creditCentsRaw = Number(credit?.creditCents || 0);
+            const creditCents =
+              Number.isFinite(creditCentsRaw) && creditCentsRaw > 0
+                ? Math.round(creditCentsRaw)
+                : 0;
+            if (creditCents > 0) {
+              if (credit?.updated === true) {
+                showToast(
+                  `Crédit ajouté: ${formatValue(creditCents / 100)}`,
+                  'success'
+                );
+              } else if (credit?.alreadyIssued === true) {
+                showToast('Crédit déjà appliqué', 'info');
+              } else {
+                showToast('Crédit non appliqué (voir logs)', 'error');
+              }
+            }
+          }
         }
         return true;
       } else {

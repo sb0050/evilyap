@@ -1175,14 +1175,10 @@ export default function DashboardPage() {
 
   const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
     const silent = options?.silent;
-    const stRaw = s.status;
-    const st =
-      stRaw == null
-        ? null
-        : String(stRaw || '')
-            .trim()
-            .toUpperCase();
-    if (st !== null && st !== 'PENDING') {
+    const st = String(s.status ?? '')
+      .trim()
+      .toUpperCase();
+    if (st !== '' && st !== 'PENDING') {
       setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
       if (!silent) {
         showToast('Annulation non autorisée pour ce statut', 'error');
@@ -2732,7 +2728,12 @@ export default function DashboardPage() {
   const selectedForCancel = selectedSales.filter(
     s =>
       !s.is_final_destination &&
-      (s.status == null || String(s.status).toUpperCase() === 'PENDING')
+      (() => {
+        const st = String(s.status ?? '')
+          .trim()
+          .toUpperCase();
+        return st === '' || st === 'PENDING';
+      })()
   );
   const visibleSaleIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =

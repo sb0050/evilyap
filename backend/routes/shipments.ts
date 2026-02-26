@@ -35,6 +35,16 @@ const formatMonthYearFr = (d: Date) =>
     year: "numeric",
   }).format(d);
 
+const getInternalBase = (): string => {
+  const explicit = String(process.env.INTERNAL_API_BASE || "").trim();
+  if (explicit) return explicit;
+  const vercelUrl = String(process.env.VERCEL_URL || "").trim();
+  if (vercelUrl) {
+    return /^https?:\/\//i.test(vercelUrl) ? vercelUrl : `https://${vercelUrl}`;
+  }
+  return `http://localhost:${process.env.PORT || 5000}`;
+};
+
 const capitalizeFirst = (s: string) => {
   const v = String(s || "").trim();
   if (!v) return "";
@@ -1383,10 +1393,14 @@ router.post("/:id/cancel", async (req, res) => {
     if (!Number.isFinite(id) || id <= 0) {
       return res.status(400).json({ error: "Invalid shipment id" });
     }
+    const traceId = `SHIPMENT_CANCEL:${id}:${Date.now()}`;
+    console.log("SHIPMENT_CANCEL: start", { traceId, id });
 
     const { data: shipment, error: shipErr } = await supabase
       .from("shipments")
-      .select("id,store_id,customer_stripe_id,status,product_reference")
+      .select(
+        "id,store_id,customer_stripe_id,status,product_reference,shipment_id,payment_id,customer_spent_amount",
+      )
       .eq("id", id)
       .maybeSingle();
     if (shipErr) {
@@ -1435,17 +1449,15 @@ router.post("/:id/cancel", async (req, res) => {
       requesterStripeId === shipmentCustomerStripeId;
 
     if (!isOwner && !isCustomer) {
+      console.warn("SHIPMENT_CANCEL: forbidden", { traceId, id });
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const stRaw = (shipment as any)?.status;
-    const st =
-      stRaw == null
-        ? null
-        : String(stRaw || "")
-            .trim()
-            .toUpperCase();
-    if (st !== null && st !== "PENDING") {
+    const st = String((shipment as any)?.status ?? "")
+      .trim()
+      .toUpperCase();
+    if (st !== "" && st !== "PENDING") {
+      console.warn("SHIPMENT_CANCEL: invalid status", { traceId, id, st });
       return res.status(400).json({ error: "Annulation non autorisée" });
     }
 
@@ -1453,6 +1465,11 @@ router.post("/:id/cancel", async (req, res) => {
       .trim()
       .toString();
     const productItems = parseProductReferenceItems(productRefRaw);
+    console.log("SHIPMENT_CANCEL: parsed items", {
+      traceId,
+      id,
+      itemsCount: productItems.length,
+    });
     if (productItems.length > 0) {
       const stripeIds = productItems
         .map((it) => String(it.reference || "").trim())
@@ -1532,6 +1549,8 @@ router.post("/:id/cancel", async (req, res) => {
       }
     }
 
+    console.log("SHIPMENT_CANCEL: stock updated", { traceId, id });
+
     const { error: updErr } = await supabase
       .from("shipments")
       .update({ status: "CANCELLED" })
@@ -1549,7 +1568,196 @@ router.post("/:id/cancel", async (req, res) => {
       return res.status(500).json({ error: rereadErr.message });
     }
 
-    return res.json({ shipment: updated });
+    const shippingOrderId = String((shipment as any)?.shipment_id || "").trim();
+    let boxtalCancel: any = null;
+    let credit: any = null;
+    if (shippingOrderId) {
+      try {
+        const base = getInternalBase();
+        const url = `${base}/api/boxtal/shipping-orders/${encodeURIComponent(
+          shippingOrderId,
+        )}?silent=true&via=shipments_cancel&traceId=${encodeURIComponent(
+          traceId,
+        )}`;
+        console.log("SHIPMENT_CANCEL: boxtal delete request", {
+          traceId,
+          id,
+          shippingOrderId,
+          url,
+        });
+        const resp = await fetch(url, { method: "DELETE" });
+        const contentType = resp.headers.get("content-type") || "";
+        const body = contentType.includes("application/json")
+          ? await resp.json().catch(() => null as any)
+          : await resp.text().catch(() => "");
+        boxtalCancel = {
+          ok: resp.ok,
+          status: resp.status,
+          body,
+        };
+        credit = (body as any)?.credit || null;
+        console.log("SHIPMENT_CANCEL: boxtal delete response", {
+          traceId,
+          id,
+          shippingOrderId,
+          ok: resp.ok,
+          status: resp.status,
+        });
+      } catch (boxtalEx) {
+        boxtalCancel = {
+          ok: false,
+          status: 0,
+          error:
+            boxtalEx instanceof Error ? boxtalEx.message : String(boxtalEx),
+        };
+        console.error("SHIPMENT_CANCEL: boxtal delete exception", {
+          traceId,
+          id,
+          shippingOrderId,
+        });
+      }
+    } else {
+      console.log("SHIPMENT_CANCEL: no shipment_id, skipping boxtal delete", {
+        traceId,
+        id,
+      });
+      const customerStripeId = String(
+        (shipment as any)?.customer_stripe_id || "",
+      ).trim();
+      const paymentId = String((shipment as any)?.payment_id || "").trim();
+      const customerSpentAmountCents = Math.max(
+        0,
+        Math.round(Number((shipment as any)?.customer_spent_amount || 0)),
+      );
+      const creditCents = Number.isFinite(customerSpentAmountCents)
+        ? customerSpentAmountCents
+        : 0;
+
+      credit = {
+        attempted: false,
+        updated: false,
+        alreadyIssued: false,
+        creditCents,
+        prevBalanceCents: null,
+        nextBalanceCents: null,
+        customerStripeId: customerStripeId || null,
+        paymentId: paymentId || null,
+        error: null,
+        source: "shipments_cancel",
+      };
+
+      if (!stripe) {
+        credit.error = "stripe_client_unavailable";
+        console.warn("SHIPMENT_CANCEL: stripe client unavailable", {
+          traceId,
+          id,
+        });
+      } else if (!customerStripeId) {
+        credit.error = "missing_customer_stripe_id";
+        console.warn("SHIPMENT_CANCEL: missing customer_stripe_id", {
+          traceId,
+          id,
+        });
+      } else if (!(creditCents > 0)) {
+        console.log("SHIPMENT_CANCEL: no credit to issue", {
+          traceId,
+          id,
+          creditCents,
+        });
+      } else {
+        try {
+          credit.attempted = true;
+          let alreadyIssued = false;
+          if (paymentId) {
+            try {
+              const pi = await stripe.paymentIntents.retrieve(paymentId);
+              const keys = [
+                "shipment_cancel_credit_cents",
+                "boxtal_cancel_credit_cents",
+              ];
+              for (const k of keys) {
+                const issuedParsed = Number.parseInt(
+                  String((pi.metadata as any)?.[k] || "0"),
+                  10,
+                );
+                if (Number.isFinite(issuedParsed) && issuedParsed === creditCents) {
+                  alreadyIssued = true;
+                  break;
+                }
+              }
+            } catch (_e) {}
+          }
+          credit.alreadyIssued = alreadyIssued;
+
+          if (!alreadyIssued) {
+            const cust = (await stripe.customers.retrieve(
+              customerStripeId,
+            )) as Stripe.Customer;
+            if (cust && !("deleted" in cust)) {
+              const meta = (cust as any)?.metadata || {};
+              const prevBalanceParsed = Number.parseInt(
+                String(meta?.credit_balance || "0"),
+                10,
+              );
+              const prevBalanceCents = Number.isFinite(prevBalanceParsed)
+                ? prevBalanceParsed
+                : 0;
+              const nextBalanceCents = prevBalanceCents + creditCents;
+              credit.prevBalanceCents = prevBalanceCents;
+              credit.nextBalanceCents = nextBalanceCents;
+              await stripe.customers.update(
+                customerStripeId,
+                {
+                  metadata: {
+                    ...meta,
+                    credit_balance: String(nextBalanceCents),
+                  },
+                } as any,
+                {
+                  idempotencyKey: `credit-shipment-cancel-${id}-${creditCents}`,
+                } as any,
+              );
+              credit.updated = true;
+              console.log("SHIPMENT_CANCEL: credit_balance updated", {
+                traceId,
+                id,
+                creditCents,
+                prevBalanceCents,
+                nextBalanceCents,
+              });
+              if (paymentId) {
+                try {
+                  await stripe.paymentIntents.update(paymentId, {
+                    metadata: {
+                      shipment_cancel_credit_cents: String(creditCents),
+                      shipment_cancel_shipment_row_id: String(id),
+                    },
+                  });
+                } catch (_e) {}
+              }
+            } else {
+              credit.error = "stripe_customer_deleted_or_missing";
+            }
+          } else {
+            console.log("SHIPMENT_CANCEL: credit already issued", {
+              traceId,
+              id,
+              creditCents,
+            });
+          }
+        } catch (creditErr) {
+          credit.error =
+            creditErr instanceof Error ? creditErr.message : String(creditErr);
+          console.error("SHIPMENT_CANCEL: credit exception", {
+            traceId,
+            id,
+          });
+        }
+      }
+    }
+
+    console.log("SHIPMENT_CANCEL: done", { traceId, id });
+    return res.json({ shipment: updated, boxtalCancel, credit });
   } catch (e) {
     console.error("Error cancelling shipment:", e);
     return res.status(500).json({ error: "Internal server error" });
