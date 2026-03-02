@@ -68,6 +68,7 @@ router.post("/", async (req, res) => {
       product_reference,
       value,
       customer_stripe_id,
+      payment_id,
       description,
       quantity,
       weight,
@@ -106,6 +107,13 @@ router.post("/", async (req, res) => {
           : NaN;
 
     const refTrimmed = String(product_reference || "").trim();
+    const deliveryRegulationRegex = /r[ée]gularisation\s+livraison/i;
+    if (
+      deliveryRegulationRegex.test(refTrimmed) ||
+      deliveryRegulationRegex.test(descriptionTrimmed)
+    ) {
+      return res.status(400).json({ error: "Référence interdite" });
+    }
     const refCandidates = Array.from(
       new Set(
         [refTrimmed, refTrimmed.toLowerCase(), refTrimmed.toUpperCase()].filter(
@@ -203,12 +211,19 @@ router.post("/", async (req, res) => {
           ? incomingValueRaw
           : 0;
 
+    const paymentIdTrimmed =
+      typeof payment_id === "string" ? payment_id.trim() : "";
+    if (paymentIdTrimmed && /[,()]/.test(paymentIdTrimmed)) {
+      return res.status(400).json({ error: "payment_id invalide" });
+    }
+
     const row: any = {
       store_id,
       product_reference,
       value: normalizedValue,
       customer_stripe_id,
       description: descriptionTrimmed,
+      ...(paymentIdTrimmed ? { payment_id: paymentIdTrimmed } : {}),
       quantity: normalizedQuantity,
       weight: normalizedWeight,
       created_at: new Date().toISOString(),
@@ -239,6 +254,20 @@ router.post("/", async (req, res) => {
         return { ...withoutWeight };
       })(),
     );
+    if (paymentIdTrimmed) {
+      pushCandidate(
+        (() => {
+          const { payment_id: _pid, ...withoutPaymentId } = row;
+          return { ...withoutPaymentId };
+        })(),
+      );
+      pushCandidate(
+        (() => {
+          const { payment_id: _pid, weight: _w, ...rest } = row;
+          return { ...rest };
+        })(),
+      );
+    }
 
     for (const cand of candidates) {
       const { __key: _k, ...payload } = cand as any;

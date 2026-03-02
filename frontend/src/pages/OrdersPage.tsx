@@ -10,6 +10,7 @@ import {
   RefreshCw,
   ExternalLink,
   ShoppingCart,
+  Info,
 } from 'lucide-react';
 import { Popover, Transition } from '@headlessui/react';
 import { apiPostForm, API_BASE_URL } from '../utils/api';
@@ -52,7 +53,6 @@ type Shipment = {
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
-  cancel_requested?: boolean | null;
   return_requested?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
@@ -84,6 +84,9 @@ export default function OrdersPage() {
   );
   const [reloadingBalance, setReloadingBalance] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [returnStatus, setReturnStatus] = useState<
+    Record<number, 'idle' | 'loading' | 'success' | 'error'>
+  >({});
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState<number>(1);
   const [estimatedSortOrder, setEstimatedSortOrder] = useState<
@@ -279,6 +282,50 @@ export default function OrdersPage() {
     );
   }
 
+  function BalanceInfoPopover({ message }: { message: string }) {
+    const [pos, setPos] = useState<{ top: number; left: number }>({
+      top: 0,
+      left: 0,
+    });
+
+    const computePos = (el: HTMLElement) => {
+      const rect = el.getBoundingClientRect();
+      const panelWidth = 320;
+      const margin = 8;
+      const maxLeft = window.innerWidth - panelWidth - margin;
+      const left = Math.max(margin, Math.min(rect.left, maxLeft));
+      const top = rect.bottom + margin;
+      setPos({ top, left });
+    };
+
+    return (
+      <Popover className='relative inline-flex items-center'>
+        <Popover.Button
+          aria-label='Informations sur le solde'
+          onClick={e => computePos(e.currentTarget)}
+          className='inline-flex items-center justify-center text-gray-500 hover:text-gray-700 leading-none'
+        >
+          <Info className='w-4 h-4' />
+        </Popover.Button>
+        <Transition
+          enter='transition ease-out duration-150'
+          enterFrom='opacity-0 translate-y-1'
+          enterTo='opacity-100 translate-y-0'
+          leave='transition ease-in duration-100'
+          leaveFrom='opacity-100 translate-y-0'
+          leaveTo='opacity-0 translate-y-1'
+        >
+          <Popover.Panel
+            style={{ top: pos.top, left: pos.left, position: 'fixed' }}
+            className='mt-0 w-80 rounded-md border border-gray-200 bg-white shadow-lg p-3 z-50'
+          >
+            <div className='text-xs text-gray-700 leading-snug'>{message}</div>
+          </Popover.Panel>
+        </Transition>
+      </Popover>
+    );
+  }
+
   // Popover Headless UI gère la fermeture extérieure et via Esc
 
   const loadCreditBalance = async (stripeId: string, token: string | null) => {
@@ -416,6 +463,14 @@ export default function OrdersPage() {
       String(raw || '')
         .split(';')
         .map(s => String(s || '').trim())
+        .map(s => {
+          const seg = String(s || '').trim();
+          const idx = seg.indexOf('**');
+          const head = idx >= 0 ? seg.slice(0, idx) : seg;
+          return String(head || '')
+            .replace(/\((.*)\)$/, '')
+            .trim();
+        })
         .filter(s => s.startsWith('prod_')),
     []
   );
@@ -564,6 +619,20 @@ export default function OrdersPage() {
     }));
   };
 
+  const formatProductReferenceForToast = (raw: string | null | undefined) => {
+    const items = parseProductReferenceItems(raw);
+    if (items.length === 0) return '';
+    return items
+      .map(it => {
+        const ref = String(it.reference || '').trim();
+        const label = ref.startsWith('prod_')
+          ? stripeProductsLiteById[ref]?.name || ref
+          : ref;
+        return `${label}(x${Math.max(1, Number(it.quantity || 1))})`;
+      })
+      .join(', ');
+  };
+
   type ProductItem = {
     reference: string;
     quantity: number;
@@ -605,6 +674,7 @@ export default function OrdersPage() {
           const d =
             String(sp?.description || '').trim() ||
             String(it.description || '').trim();
+          const qtyText = `qté: ${Math.max(1, Number(it.quantity || 1))}`;
           const price =
             sp?.unit_amount_cents != null
               ? formatValue(
@@ -613,18 +683,15 @@ export default function OrdersPage() {
               : '';
           return (
             <div key={`${s.id}-${idx}`} className='space-y-0.5'>
-              <div
-                className='font-medium truncate max-w-[280px]'
-                title={`${label}(x${it.quantity})`}
-              >
-                {label}(x{it.quantity})
+              <div className='font-medium truncate max-w-[280px]' title={label}>
+                {label}
               </div>
-              {d || price ? (
+              {d || price || qtyText ? (
                 <div
                   className='text-xs text-gray-500 truncate max-w-[280px]'
-                  title={[d, price].filter(Boolean).join(' — ')}
+                  title={[d, qtyText, price].filter(Boolean).join(' — ')}
                 >
-                  {[d, price].filter(Boolean).join(' — ')}
+                  {[d, qtyText, price].filter(Boolean).join(' — ')}
                 </div>
               ) : null}
             </div>
@@ -667,9 +734,11 @@ export default function OrdersPage() {
           (s.store?.name || '').toLowerCase().includes(term)
         );
       } else {
-        arr = arr.filter(s =>
-          (s.product_reference || '').toLowerCase().includes(term)
-        );
+        arr = arr.filter(s => {
+          const formatted = formatShipmentProductReference(s).toLowerCase();
+          const raw = String(s.product_reference || '').toLowerCase();
+          return formatted.includes(term) || raw.includes(term);
+        });
       }
     }
     if (estimatedSortOrder) {
@@ -695,12 +764,21 @@ export default function OrdersPage() {
   const canModifySelectedOrder = (() => {
     if (selectedOrders.length !== 1) return false;
     const s = selectedOrders[0];
-    const status = String(s.status || '').trim();
-    const okStatus = status === 'PENDING' || status === 'ANNOUNCED';
+    const status = String(s.status ?? '')
+      .trim()
+      .toUpperCase();
+    const okStatus =
+      status === '' || status === 'PENDING' || status === 'ANNOUNCED';
     const storeSlug = String(s.store?.slug || '').trim();
     const paymentId = String(s.payment_id || '').trim();
     const isOpening = openingShipmentId != null && openingShipmentId !== s.id;
-    return okStatus && Boolean(storeSlug) && Boolean(paymentId) && !isOpening;
+    return (
+      okStatus &&
+      Boolean(storeSlug) &&
+      Boolean(paymentId) &&
+      !isOpening &&
+      String(s.status || '').toUpperCase() !== 'CANCELLED'
+    );
   })();
   const canReturnSelectedOrder = (() => {
     if (selectedOrders.length !== 1) return false;
@@ -711,12 +789,9 @@ export default function OrdersPage() {
     return (
       Boolean(s.shipment_id) &&
       !s.return_requested &&
-      s.is_final_destination === true &&
-      Boolean(storeSlug) &&
-      Boolean(paymentId) &&
-      !isOpening
-    );
-  })();
+      !!s.is_final_destination &&
+      returnStatus[s.id] !== 'loading'
+  );
   const selectedForContact = selectedOrders.filter(s => !!s.shipment_id);
   const visibleOrderIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
@@ -729,6 +804,10 @@ export default function OrdersPage() {
       else next.add(id);
       return next;
     });
+  };
+  const isInteractiveRowClick = (target: EventTarget | null) => {
+    const el = target as HTMLElement | null;
+    return Boolean(el?.closest?.('button,a,input,select,textarea,label'));
   };
   const toggleSelectAllVisible = () => {
     setSelectedOrderIds(prev => {
@@ -760,8 +839,10 @@ export default function OrdersPage() {
   const handleModifySelectedOrder = async () => {
     if (selectedOrders.length !== 1) return;
     const s = selectedOrders[0];
-    const status = String(s.status || '').trim();
-    if (status !== 'PENDING' && status !== 'ANNOUNCED') return;
+    const status = String(s.status ?? '')
+      .trim()
+      .toUpperCase();
+    if (status !== '' && status !== 'PENDING' && status !== 'ANNOUNCED') return;
     const storeSlug = String(s.store?.slug || '').trim();
     const paymentId = String(s.payment_id || '').trim();
     if (!storeSlug || !paymentId) {
@@ -814,8 +895,10 @@ export default function OrdersPage() {
   const handleConfirmSwitchShipment = async () => {
     const s = switchShipmentTarget;
     if (!s) return;
-    const status = String(s.status || '').trim();
-    if (status !== 'PENDING' && status !== 'ANNOUNCED') return;
+    const status = String(s.status ?? '')
+      .trim()
+      .toUpperCase();
+    if (status !== '' && status !== 'PENDING' && status !== 'ANNOUNCED') return;
     const storeSlug = String(s.store?.slug || '').trim();
     const paymentId = String(s.payment_id || '').trim();
     if (!storeSlug || !paymentId) {
@@ -1027,7 +1110,7 @@ export default function OrdersPage() {
 
   const handleOpenContact = (s?: Shipment | Shipment[]) => {
     const list = Array.isArray(s) ? s : s ? [s] : selectedForContact;
-    const effective = (list || []).filter(it => !!it?.shipment_id);
+    const effective = (list || []).filter(it => !!it?.store_id);
     if (effective.length === 0) {
       showToast('Sélectionnez au moins une commande', 'error');
       return;
@@ -1052,16 +1135,19 @@ export default function OrdersPage() {
       const token = await getToken();
       const references: string[] = [];
       for (const s of contactShipments) {
-        if (!s?.shipment_id) continue;
+        const shipmentId = String(s?.shipment_id || s?.id || '').trim();
+        if (!shipmentId) continue;
         const fd = new FormData();
-        fd.append('shipmentId', s.shipment_id);
+        fd.append('shipmentId', shipmentId);
         fd.append('message', msg);
         if (contactFile) fd.append('attachment', contactFile);
         await apiPostForm('/api/support/customer-contact', fd, {
           headers: { Authorization: token ? `Bearer ${token}` : '' },
         });
-        const ref = String(s.product_reference || s.shipment_id || '').trim();
-        references.push(ref || String(s.shipment_id));
+        const ref = String(
+          s.product_reference || s.shipment_id || String(s.id || '')
+        ).trim();
+        references.push(ref || shipmentId);
       }
       if (references.length === 0) {
         showToast("Aucune commande n'a été traitée", 'error');
@@ -1145,6 +1231,164 @@ export default function OrdersPage() {
     }
   };
 
+  const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
+    const silent = options?.silent;
+    const st = String(s.status ?? '')
+      .trim()
+      .toUpperCase();
+    if (st !== '' && st !== 'PENDING') {
+      setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) {
+        showToast('Annulation non autorisée pour ce statut', 'error');
+      }
+      return false;
+    }
+    try {
+      setCancelStatus(prev => ({ ...prev, [s.id]: 'loading' }));
+      const token = await getToken();
+      const url = `${apiBase}/api/shipments/${encodeURIComponent(
+        String(s.id)
+      )}/cancel`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        setCancelStatus(prev => ({ ...prev, [s.id]: 'success' }));
+        const updated = json?.shipment;
+        setShipments(prev =>
+          (prev || []).map(it => {
+            if (it.id !== s.id) return it;
+            if (updated && typeof updated === 'object')
+              return { ...it, ...updated };
+            return { ...it, status: 'CANCELLED' };
+          })
+        );
+        if (!silent) {
+          const refs = formatProductReferenceForToast(s.product_reference);
+          showToast(
+            refs ? `Commande annulée : ${refs}` : 'Commande annulée',
+            'success'
+          );
+          const bc = (json as any)?.boxtalCancel || null;
+          if (bc) {
+            if (bc.ok === true) {
+              const boxtalOk = (bc as any)?.body?.boxtal?.ok;
+              if (boxtalOk === false) {
+                showToast('Annulation Boxtal échouée', 'error');
+              }
+              const credit = (bc as any)?.body?.credit || null;
+              const creditCentsRaw = Number(credit?.creditCents || 0);
+              const creditCents =
+                Number.isFinite(creditCentsRaw) && creditCentsRaw > 0
+                  ? Math.round(creditCentsRaw)
+                  : 0;
+              if (creditCents > 0) {
+                if (credit?.updated === true) {
+                  showToast(
+                    `Crédit ajouté: ${formatValue(creditCents / 100)}`,
+                    'success'
+                  );
+                } else if (credit?.alreadyIssued === true) {
+                  showToast('Crédit déjà appliqué', 'info');
+                } else {
+                  showToast('Crédit non appliqué (voir logs)', 'error');
+                }
+              }
+            } else {
+              showToast('Annulation Boxtal: requête échouée', 'error');
+            }
+          } else {
+            const credit = (json as any)?.credit || null;
+            const creditCentsRaw = Number(credit?.creditCents || 0);
+            const creditCents =
+              Number.isFinite(creditCentsRaw) && creditCentsRaw > 0
+                ? Math.round(creditCentsRaw)
+                : 0;
+            if (creditCents > 0) {
+              if (credit?.updated === true) {
+                showToast(
+                  `Crédit ajouté: ${formatValue(creditCents / 100)}`,
+                  'success'
+                );
+              } else if (credit?.alreadyIssued === true) {
+                showToast('Crédit déjà appliqué', 'info');
+              } else {
+                showToast('Crédit non appliqué (voir logs)', 'error');
+              }
+            }
+          }
+        }
+        return true;
+      } else {
+        setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+        const msg =
+          json?.error || json?.message || "Erreur lors de l'annulation";
+        if (!silent) {
+          showToast(
+            typeof msg === 'string' ? msg : "Erreur d'annulation",
+            'error'
+          );
+        }
+        return false;
+      }
+    } catch (e: any) {
+      setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      const rawMsg = e?.message || "Erreur lors de l'annulation";
+      if (!silent) {
+        showToast(
+          typeof rawMsg === 'string' ? rawMsg : "Erreur d'annulation",
+          'error'
+        );
+      }
+      return false;
+    }
+  };
+
+  const handleBatchCancel = async () => {
+    if (selectedForCancel.length === 0) {
+      showToast("Aucune commande sélectionnée pour l'annulation", 'error');
+      return;
+    }
+    showToast('Chargement...', 'info');
+    const counts = new Map<string, number>();
+    for (const s of selectedForCancel) {
+      const ok = await handleCancel(s, { silent: true });
+      if (ok) {
+        const items = parseProductReferenceItems(s.product_reference);
+        if (items.length === 0) {
+          const fallback = String(s.product_reference || '').trim();
+          if (fallback) counts.set(fallback, (counts.get(fallback) || 0) + 1);
+        } else {
+          for (const it of items) {
+            const ref = String(it.reference || '').trim();
+            if (!ref) continue;
+            const qty = Math.max(1, Number(it.quantity || 1));
+            counts.set(ref, (counts.get(ref) || 0) + qty);
+          }
+        }
+      }
+    }
+    if (counts.size === 0) {
+      showToast("Aucune commande n'a été annulée", 'error');
+      return;
+    }
+    const parts = Array.from(counts.entries()).map(([ref, qty]) => {
+      const label = ref.startsWith('prod_')
+        ? stripeProductsLiteById[ref]?.name || ref
+        : ref;
+      return `${label}(x${qty})`;
+    });
+    const msg =
+      parts.length <= 3
+        ? `Commandes annulées : ${parts.join(', ')}`
+        : `Commandes annulées : ${parts.slice(0, 3).join(', ')}...`;
+    showToast(msg, 'success');
+  };
+
   return (
     <div className='min-h-screen bg-gray-50'>
       <Header />
@@ -1161,12 +1405,13 @@ export default function OrdersPage() {
           setSwitchShipmentModalOpen(false);
           setSwitchShipmentTarget(null);
         }}
-        title='Commande déjà en modification'
+        title='Commande déjà en cours de modification'
       >
         <div className='space-y-4'>
           <div className='text-sm text-gray-700'>
-            Une autre commande est en cours de modification. Voulez-vous
-            modifier cette commande et annuler les modifications de l’autre ?
+            Vous modifiez actuellement une autre commande. Si vous continuez,
+            les modifications en cours seront annulées. Souhaitez-vous
+            poursuivre avec cette nouvelle commande ?
           </div>
           <div className='flex items-center justify-end gap-2'>
             <button
@@ -1189,7 +1434,7 @@ export default function OrdersPage() {
               }
               className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
             >
-              Modifier
+              Continuer
             </button>
           </div>
         </div>
@@ -1261,6 +1506,15 @@ export default function OrdersPage() {
                 {formatValue(creditBalanceCents / 100)}
               </span>
             )}
+            {creditBalanceCents != null && creditBalanceCents !== 0 ? (
+              <BalanceInfoPopover
+                message={
+                  creditBalanceCents > 0
+                    ? 'Ce montant correspond à un remboursement. Il sera automatiquement appliqué lors de votre prochain achat, dans n’importe quelle boutique.'
+                    : 'Ce montant correspond à un écart constaté lors de la livraison. Il sera automatiquement appliqué lors de votre prochain achat, dans n’importe quelle boutique.'
+                }
+              />
+            ) : null}
           </div>
         </div>
 
@@ -1359,7 +1613,7 @@ export default function OrdersPage() {
                       className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
                     >
                       <option value='store'>Boutique</option>
-                      <option value='reference'>Référence produit</option>
+                      <option value='reference'>Référence</option>
                     </select>
                     <input
                       type='text'
@@ -1437,6 +1691,18 @@ export default function OrdersPage() {
                   Modifier la commande
                 </button>
                 <button
+                  onClick={handleBatchCancel}
+                  disabled={selectedForCancel.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedForCancel.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Annuler la commande'
+                >
+                  Annuler la commande
+                </button>
+                <button
                   onClick={handleBatchReturn}
                   disabled={!canReturnSelectedOrder}
                   className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
@@ -1477,7 +1743,19 @@ export default function OrdersPage() {
                 {sortedShipments.map((s, idx) => (
                   <div
                     key={s.id}
-                    className='rounded-lg border border-gray-200 bg-white p-3 shadow-sm'
+                    onClick={e => {
+                      if (isInteractiveRowClick(e.target)) return;
+                      toggleOrderSelection(s.id);
+                    }}
+                    className={`rounded-lg border p-3 shadow-sm cursor-pointer ${
+                      selectedOrderIds.has(s.id)
+                        ? 'ring-2 ring-indigo-500 ring-inset'
+                        : ''
+                    } ${
+                      String(s.status || '').toUpperCase() === 'CANCELLED'
+                        ? 'border-red-200 bg-red-50'
+                        : 'border-gray-200 bg-white'
+                    }`}
                   >
                     <div className='flex items-start justify-between'>
                       <div className='flex items-center space-x-2'>
@@ -1548,7 +1826,14 @@ export default function OrdersPage() {
                       </div>
                       <div>
                         <span className='font-medium'>Statut:</span>{' '}
-                        {s.status || '—'}
+                        {String(s.status || '').toUpperCase() ===
+                        'CANCELLED' ? (
+                          <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
+                            Annulée
+                          </span>
+                        ) : (
+                          s.status || '—'
+                        )}
                       </div>
                       <div>
                         <span className='font-medium'>Méthode:</span>{' '}
@@ -1673,7 +1958,19 @@ export default function OrdersPage() {
                   {visibleShipments.map((s, idx) => (
                     <tr
                       key={s.id}
-                      className='border-b border-gray-100 hover:bg-gray-50'
+                      onClick={e => {
+                        if (isInteractiveRowClick(e.target)) return;
+                        toggleOrderSelection(s.id);
+                      }}
+                      className={`border-b border-gray-100 cursor-pointer ${
+                        selectedOrderIds.has(s.id)
+                          ? 'outline outline-2 outline-indigo-500 outline-offset-[-2px]'
+                          : ''
+                      } ${
+                        String(s.status || '').toUpperCase() === 'CANCELLED'
+                          ? 'bg-red-50'
+                          : 'hover:bg-gray-50'
+                      }`}
                     >
                       <td className='py-4 px-4 text-gray-700'>
                         <input
@@ -1736,7 +2033,16 @@ export default function OrdersPage() {
                       </td>
                       <td className='py-4 px-4 text-gray-700'>
                         <div className='space-y-1'>
-                          <div className='font-medium'>{s.status || '—'}</div>
+                          <div className='font-medium'>
+                            {String(s.status || '').toUpperCase() ===
+                            'CANCELLED' ? (
+                              <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-red-700'>
+                                ANNULÉE
+                              </span>
+                            ) : (
+                              s.status || '—'
+                            )}
+                          </div>
                           <div className='text-xs text-gray-500'>
                             {getStatusDescription(s.status)}
                           </div>

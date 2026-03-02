@@ -1,5 +1,11 @@
-import { useState, useEffect, type Dispatch, type SetStateAction } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+﻿import {
+  useState,
+  useEffect,
+  useRef,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   useStripe,
   useElements,
@@ -35,6 +41,7 @@ import { Toast } from '../components/Toast';
 import Modal from '../components/Modal';
 import { search } from 'fast-fuzzy';
 import { DICTIONARY_ITEMS } from '../types/dictionnary_items';
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
 
 const getStockItemUnitPrice = (item: any): number | null => {
   const direct = Number((item as any)?.unit_price);
@@ -64,30 +71,39 @@ const fetchStockSearchExactMatch = async (
   const slug = String(storeSlug || '').trim();
   const q = String(ref || '').trim();
   if (!slug || q.length < 2) return null;
-  const resp = await fetch(
-    `${API_BASE_URL}/api/stores/${encodeURIComponent(
-      slug
-    )}/stock/search?q=${encodeURIComponent(q)}`
-  );
-  if (!resp.ok) return null;
-  const json = await resp.json().catch(() => null as any);
-  const items = Array.isArray(json?.items) ? json.items : [];
-  const qKey = q.toLowerCase();
-  const exact = items.find((it: any) => {
-    const r = String(it?.stock?.product_reference || '')
-      .trim()
-      .toLowerCase();
-    return r === qKey;
-  });
-  return exact || null;
+  const url = `${API_BASE_URL}/api/stores/${encodeURIComponent(
+    slug
+  )}/stock/search?q=${encodeURIComponent(q)}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const resp = await fetch(url, { cache: 'no-store' });
+    if (resp.ok) {
+      const json = await resp.json().catch(() => null as any);
+      const items = Array.isArray(json?.items) ? json.items : [];
+      const qKey = q.toLowerCase();
+      const exact = items.find((it: any) => {
+        const r = String(it?.stock?.product_reference || '')
+          .trim()
+          .toLowerCase();
+        return r === qKey;
+      });
+      return exact || null;
+    }
+    if (attempt === 0) {
+      await new Promise(resolve => setTimeout(resolve, 150));
+      continue;
+    }
+    return null;
+  }
+  return null;
 };
 
-const normalizePhoneForPrefixCheck = (phone: unknown) => {
-  let raw = String(phone || '').trim();
-  if (!raw) return '';
-  raw = raw.replace(/[()\s.-]/g, '');
-  if (raw.startsWith('00')) raw = `+${raw.slice(2)}`;
-  return raw;
+const isDeliveryRegulationText = (text: unknown) => {
+  const normalized = String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+  return /\b(?:regulation|regularisation)\s+livraison\b/i.test(normalized);
 };
 
 const getExpectedPhonePrefixForCountry = (country: unknown) => {
@@ -98,6 +114,17 @@ const getExpectedPhonePrefixForCountry = (country: unknown) => {
   if (c === 'FR') return { country: 'FR', prefix: '+33', label: 'France' };
   if (c === 'CH') return { country: 'CH', prefix: '+41', label: 'Suisse' };
   return null;
+};
+
+const validatePhone = (phone: unknown, country: unknown) => {
+  const p = String(phone || '').trim();
+  const c = String(country || '')
+    .trim()
+    .toUpperCase();
+  if (!p || !c) return false;
+  const parsed = parsePhoneNumberFromString(p, c as any);
+  if (!parsed) return false;
+  return parsed.isValid();
 };
 
 const getStockQuantityValue = (stockItem: any) => {
@@ -210,15 +237,6 @@ export default function CheckoutPage() {
   const [cartQtyInputById, setCartQtyInputById] = useState<
     Record<number, string>
   >({});
-  const [returnExcludedCartItemIds, setReturnExcludedCartItemIds] = useState<
-    Record<number, boolean>
-  >({});
-  const [returnQtyInputByCartItemId, setReturnQtyInputByCartItemId] = useState<
-    Record<number, string>
-  >({});
-  const [returnQtyByCartItemId, setReturnQtyByCartItemId] = useState<
-    Record<number, number>
-  >({});
 
   const [storePickupAddress, setStorePickupAddress] = useState<
     Address | undefined
@@ -239,18 +257,58 @@ export default function CheckoutPage() {
     useState(false);
   const [openShipmentBlockShipmentId, setOpenShipmentBlockShipmentId] =
     useState('');
+  const [openShipmentBlockShipmentRowId, setOpenShipmentBlockShipmentRowId] =
+    useState<number | null>(null);
   const [openShipmentBlockPaymentId, setOpenShipmentBlockPaymentId] =
     useState('');
   const [openShipmentAttemptPaymentId, setOpenShipmentAttemptPaymentId] =
     useState('');
   const [openShipmentEditingShipmentId, setOpenShipmentEditingShipmentId] =
     useState('');
+  const [
+    openShipmentEditingShipmentRowId,
+    setOpenShipmentEditingShipmentRowId,
+  ] = useState<number | null>(null);
   const [openShipmentActionLoading, setOpenShipmentActionLoading] =
     useState(false);
   const [tempCreditBalanceCents, setTempCreditBalanceCents] = useState(0);
   const [createdCreditCouponId, setCreatedCreditCouponId] = useState('');
   const [createdCreditPromotionCodeId, setCreatedCreditPromotionCodeId] =
     useState('');
+
+  const openShipmentParam =
+    String(searchParams.get('open_shipment') || '') === 'true';
+  const paymentIdParam = String(searchParams.get('payment_id') || '').trim();
+  const isOpenShipmentUrl = openShipmentParam && Boolean(paymentIdParam);
+
+  useEffect(() => {
+    if (!isOpenShipmentUrl) {
+      if (openShipmentBlockModalOpen) setOpenShipmentBlockModalOpen(false);
+      if (openShipmentBlockShipmentId) setOpenShipmentBlockShipmentId('');
+      if (openShipmentBlockPaymentId) setOpenShipmentBlockPaymentId('');
+      if (openShipmentAttemptPaymentId) setOpenShipmentAttemptPaymentId('');
+      return;
+    }
+
+    if (
+      openShipmentBlockModalOpen &&
+      openShipmentAttemptPaymentId &&
+      openShipmentAttemptPaymentId !== paymentIdParam
+    ) {
+      setOpenShipmentBlockModalOpen(false);
+      setOpenShipmentBlockShipmentId('');
+      setOpenShipmentBlockPaymentId('');
+      setOpenShipmentAttemptPaymentId('');
+    }
+  }, [
+    isOpenShipmentUrl,
+    paymentIdParam,
+    store?.id,
+    openShipmentBlockModalOpen,
+    openShipmentBlockShipmentId,
+    openShipmentBlockPaymentId,
+    openShipmentAttemptPaymentId,
+  ]);
 
   // useEffect de debug pour surveiller selectedParcelPoint
   useEffect(() => {
@@ -379,8 +437,14 @@ export default function CheckoutPage() {
     const productStripeIdByRefKey = new Map<string, string>();
     const existingRefKeys = new Set<string>();
     const slug = String(storeSlug || '').trim();
+    const stockByRefKey: Record<string, any> = {};
     if (!slug)
-      return { weightByRefKey, productStripeIdByRefKey, existingRefKeys };
+      return {
+        weightByRefKey,
+        productStripeIdByRefKey,
+        existingRefKeys,
+        stockByRefKey,
+      };
 
     const refs = Array.from(
       new Set(
@@ -390,7 +454,12 @@ export default function CheckoutPage() {
       )
     );
     if (refs.length === 0)
-      return { weightByRefKey, productStripeIdByRefKey, existingRefKeys };
+      return {
+        weightByRefKey,
+        productStripeIdByRefKey,
+        existingRefKeys,
+        stockByRefKey,
+      };
 
     try {
       const maxConcurrent = 4;
@@ -417,6 +486,7 @@ export default function CheckoutPage() {
         const next = { ...prev };
         for (const r of results) {
           next[r.key] = r.item;
+          stockByRefKey[r.key] = r.item;
         }
         return next;
       });
@@ -437,7 +507,12 @@ export default function CheckoutPage() {
       }
     } catch (_e) {}
 
-    return { weightByRefKey, productStripeIdByRefKey, existingRefKeys };
+    return {
+      weightByRefKey,
+      productStripeIdByRefKey,
+      existingRefKeys,
+      stockByRefKey,
+    };
   };
 
   const refreshCartForStore = async () => {
@@ -458,7 +533,8 @@ export default function CheckoutPage() {
         const resp = await fetch(
           `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(
             userEmail
-          )}`
+          )}`,
+          { cache: 'no-store' }
         );
         const json = await resp.json().catch(() => null as any);
         if (!resp.ok) {
@@ -488,7 +564,8 @@ export default function CheckoutPage() {
       const cartResp = await fetch(
         `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(
           stripeId
-        )}${paymentId ? `&paymentId=${encodeURIComponent(paymentId)}` : ''}`
+        )}${paymentId ? `&paymentId=${encodeURIComponent(paymentId)}` : ''}`,
+        { cache: 'no-store' }
       );
       const cartJson = await cartResp.json().catch(() => null as any);
       if (!cartResp.ok) {
@@ -520,8 +597,12 @@ export default function CheckoutPage() {
 
       const storeSlug = String(store?.slug || '').trim();
       const items: CartItem[] = groupForStore.items || [];
-      const { weightByRefKey, productStripeIdByRefKey, existingRefKeys } =
-        await refreshStockDetailsForCart(items, storeSlug);
+      const {
+        weightByRefKey,
+        productStripeIdByRefKey,
+        existingRefKeys,
+        stockByRefKey,
+      } = await refreshStockDetailsForCart(items, storeSlug);
       const { unitPriceByProductId, productById } =
         await refreshStripeProductDetailsForCart(
           items,
@@ -574,18 +655,25 @@ export default function CheckoutPage() {
         };
       });
 
-      const total = nextItems.reduce(
+      const filteredItems = nextItems.filter(
+        it =>
+          !isDeliveryRegulationText(it.product_reference) &&
+          !isDeliveryRegulationText((it as any)?.description)
+      );
+
+      const total = filteredItems.reduce(
         (sum, it) => sum + Number(it.value || 0) * Number(it.quantity || 1),
         0
       );
-      setCartItemsForStore(nextItems);
+      setCartItemsForStore(filteredItems);
       setCartTotalForStore(total);
-      return { items: nextItems, total, missingRefs };
+      return { items: filteredItems, total, missingRefs, stockByRefKey };
     } catch (_e) {
       return {
         items: cartItemsForStore || [],
         total: Number(cartTotalForStore || 0),
         missingRefs: [] as string[],
+        stockByRefKey: {} as Record<string, any>,
       };
     } finally {
       setReloadingCart(false);
@@ -873,16 +961,25 @@ export default function CheckoutPage() {
         const os = json?.openShipment || null;
         const openPaymentId = String(os?.payment_id || '').trim();
         const openShipmentId = String(os?.shipment_id || '').trim();
+        const openShipmentRowIdRaw = Number(os?.id ?? NaN);
+        const openShipmentRowId =
+          Number.isFinite(openShipmentRowIdRaw) && openShipmentRowIdRaw > 0
+            ? openShipmentRowIdRaw
+            : null;
         if (!openPaymentId) return;
 
         if (openShipment && paymentId && paymentId === openPaymentId) {
-          if (!cancelled) setOpenShipmentEditingShipmentId(openShipmentId);
+          if (!cancelled) {
+            setOpenShipmentEditingShipmentId(openShipmentId);
+            setOpenShipmentEditingShipmentRowId(openShipmentRowId);
+          }
           return;
         }
 
         if (!cancelled) {
           setOpenShipmentBlockPaymentId(openPaymentId);
           setOpenShipmentBlockShipmentId(openShipmentId);
+          setOpenShipmentBlockShipmentRowId(openShipmentRowId);
           setOpenShipmentAttemptPaymentId(openShipment ? paymentId : '');
           setOpenShipmentBlockModalOpen(true);
         }
@@ -944,7 +1041,11 @@ export default function CheckoutPage() {
         }
         if (!cancelled) {
           const sid = String(json?.shipmentDisplayId || '').trim();
-          if (sid) setOpenShipmentEditingShipmentId(sid);
+          setOpenShipmentEditingShipmentId(sid);
+          const rowIdRaw = Number((json as any)?.shipmentId ?? NaN);
+          setOpenShipmentEditingShipmentRowId(
+            Number.isFinite(rowIdRaw) && rowIdRaw > 0 ? rowIdRaw : null
+          );
           const paidValue = Number(json?.paidValue || 0);
           setTempCreditBalanceCents(Math.max(0, Math.round(paidValue * 100)));
         }
@@ -1143,7 +1244,10 @@ export default function CheckoutPage() {
     return hasEmail && hasDeliveryInfo && hasContactInfo;
   };
 
-  const validateCartQuantitiesInStock = async (items: CartItem[]) => {
+  const validateCartQuantitiesInStock = async (
+    items: CartItem[],
+    freshStockByRefKey?: Record<string, any>
+  ) => {
     const slug = String((store as any)?.slug || storeName || '').trim();
     if (!slug) return;
 
@@ -1165,11 +1269,9 @@ export default function CheckoutPage() {
     const resolvedByRefKey = new Map<string, any | null>();
     for (const ref of refs) {
       const key = getRefKey(ref);
-      const cached = Object.prototype.hasOwnProperty.call(
-        cartStockByRefKey,
-        key
-      )
-        ? (cartStockByRefKey as any)[key]
+      const source = freshStockByRefKey || cartStockByRefKey;
+      const cached = Object.prototype.hasOwnProperty.call(source, key)
+        ? (source as any)[key]
         : undefined;
       if (cached !== undefined) resolvedByRefKey.set(key, cached);
     }
@@ -1230,7 +1332,13 @@ export default function CheckoutPage() {
     return Number.isFinite(parsed) ? parsed : 0;
   })();
 
-  const canEnterPromoCode = customerDetailsLoaded && creditBalanceCents <= 0;
+  const openShipmentModeForPromo =
+    String(searchParams.get('open_shipment') || '') === 'true' &&
+    Boolean(String(searchParams.get('payment_id') || '').trim());
+  const canEnterPromoCode =
+    !openShipmentModeForPromo &&
+    customerDetailsLoaded &&
+    creditBalanceCents <= 0;
 
   const handleProceedToPayment = async () => {
     const isReturnFlow =
@@ -1266,6 +1374,7 @@ export default function CheckoutPage() {
       let latestCartItems = [...(cartItemsForStore || [])];
       let latestCartTotal = Number(cartTotalForStore || 0);
       let missingRefs: string[] = [];
+      let latestStockByRefKey: Record<string, any> | undefined;
 
       try {
         const refreshed = await handleReloadCartItems();
@@ -1280,6 +1389,7 @@ export default function CheckoutPage() {
         missingRefs = Array.isArray(refreshed?.missingRefs)
           ? refreshed.missingRefs
           : [];
+        latestStockByRefKey = refreshed?.stockByRefKey;
       } catch (e: any) {
         const msg = e?.message || 'Erreur lors du rechargement du panier';
         setPaymentError(msg);
@@ -1300,6 +1410,19 @@ export default function CheckoutPage() {
         return;
       }
 
+      const blockedDeliveryRegulationItems = latestCartItems.filter(
+        it =>
+          isDeliveryRegulationText(it.product_reference) ||
+          isDeliveryRegulationText((it as any)?.description)
+      );
+      if (blockedDeliveryRegulationItems.length > 0) {
+        const msg =
+          "Les articles 'regulation livraison' sont interdits au paiement.";
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return;
+      }
+
       const refs = latestCartItems.map(it =>
         String(it.product_reference || '').trim()
       );
@@ -1313,13 +1436,27 @@ export default function CheckoutPage() {
         seen.add(r);
       }
       if (hasDuplicate) {
-        const msg = 'Vous avez la m�me r�f�rence plusieurs fois dans le panier';
+        const msg =
+          "Vous avez la même référence plusieurs fois dans le panier. Supprimez la référence en double et modfiier la quantité de l'autre";
         setPaymentError(msg);
         showToast(msg, 'error');
         return;
       }
 
-      await validateCartQuantitiesInStock(latestCartItems);
+      const forbiddenItems = (latestCartItems || []).filter(
+        it =>
+          isDeliveryRegulationText(it.product_reference) ||
+          isDeliveryRegulationText((it as any)?.description)
+      );
+      if (forbiddenItems.length > 0) {
+        const msg =
+          'Votre panier contient un article interdit (régulation livraison). Veuillez le retirer.';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return;
+      }
+
+      await validateCartQuantitiesInStock(latestCartItems, latestStockByRefKey);
 
       // Ajout automatique au panier si référence et montant renseignés
 
@@ -1428,18 +1565,21 @@ export default function CheckoutPage() {
         countryForPhoneValidation
       );
       if (expectedPhone) {
-        const normalizedPhone = normalizePhoneForPrefixCheck(
-          customerInfo.phone
-        );
-        if (!normalizedPhone.startsWith(expectedPhone.prefix)) {
-          const msg = `Le numéro de téléphone doit commencer par ${expectedPhone.prefix} (${expectedPhone.label}).`;
+        const ok = validatePhone(customerInfo.phone, expectedPhone.country);
+        if (!ok) {
+          const msg = `Numéro de téléphone invalide (${expectedPhone.label}).`;
           setPaymentError(msg);
           showToast(msg, 'error');
           return;
         }
       }
 
-      const enteredPromoCodeId = String(promoCodeId || '').trim();
+      const openShipmentMode =
+        String(searchParams.get('open_shipment') || '') === 'true' &&
+        Boolean(String(searchParams.get('payment_id') || '').trim());
+
+      const enteredPromoCodeIdRaw = String(promoCodeId || '').trim();
+      const enteredPromoCodeId = openShipmentMode ? '' : enteredPromoCodeIdRaw;
       if (enteredPromoCodeId) {
         if (!customerDetailsLoaded) {
           const msg = 'Chargement des informations client…';
@@ -1464,6 +1604,13 @@ export default function CheckoutPage() {
           return;
         }
         const normalizedPromo = enteredPromoCodeId.toUpperCase();
+        if (normalizedPromo.startsWith('CREDIT-')) {
+          const msg = 'Ce préfixe est réservé.';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
         const isPayliveCode = normalizedPromo.startsWith('PAYLIVE-');
         const isValidChars = /^[A-Z0-9_-]+$/.test(normalizedPromo);
         if (!isPayliveCode && !isValidChars) {
@@ -1474,10 +1621,6 @@ export default function CheckoutPage() {
           return;
         }
       }
-
-      const openShipmentMode =
-        String(searchParams.get('open_shipment') || '') === 'true' &&
-        Boolean(String(searchParams.get('payment_id') || '').trim());
 
       if (openShipmentMode && createdCreditCouponId) {
         const { resp } = await deleteCreditCoupon(createdCreditCouponId);
@@ -1775,6 +1918,66 @@ export default function CheckoutPage() {
     setEmbeddedClientSecret('');
   };
 
+  useEffect(() => {
+    if (!showPayment) return;
+    if (!(store as any)?.slug && !storeName) return;
+
+    let cancelled = false;
+
+    const validateOrRollback = async () => {
+      if (cancelled) return;
+      if (postPaymentStockCheckInFlightRef.current) return;
+      postPaymentStockCheckInFlightRef.current = true;
+      try {
+        const refreshed = await handleReloadCartItems();
+        if (cancelled) return;
+
+        const missingRefs = Array.isArray(refreshed?.missingRefs)
+          ? refreshed.missingRefs
+          : [];
+        if (missingRefs.length > 0) {
+          throw new Error(
+            `Les articles ${missingRefs.join(', ')} ne sont plus disponibles. Veuillez les retirer de votre panier.`
+          );
+        }
+
+        const latestCartItems = Array.isArray(refreshed?.items)
+          ? refreshed.items
+          : [];
+        if (latestCartItems.length === 0) {
+          throw new Error('Votre panier est vide');
+        }
+
+        await validateCartQuantitiesInStock(
+          latestCartItems,
+          refreshed?.stockByRefKey
+        );
+      } catch (e: any) {
+        const msg = e?.message || 'Erreur lors de la vérification du stock';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        handleModifyOrder();
+      } finally {
+        postPaymentStockCheckInFlightRef.current = false;
+      }
+    };
+
+    validateOrRollback();
+    postPaymentStockCheckTimerRef.current = setInterval(
+      validateOrRollback,
+      1000
+    );
+
+    return () => {
+      cancelled = true;
+      if (postPaymentStockCheckTimerRef.current) {
+        clearInterval(postPaymentStockCheckTimerRef.current);
+      }
+      postPaymentStockCheckTimerRef.current = null;
+      postPaymentStockCheckInFlightRef.current = false;
+    };
+  }, [showPayment, store, storeName]);
+
   const handleModifyDelivery = () => {
     const shouldForceReset = modifyDeliveryClickCount >= 1;
     setModifyDeliveryClickCount(c => c + 1);
@@ -1846,62 +2049,9 @@ export default function CheckoutPage() {
   ).replace(/\/+$/, '');
   const storeLogo = store?.id ? `${cloudBase}/images/${store.id}` : undefined;
   const isOpenShipmentMode =
-    (String(searchParams.get('open_shipment') || '') === 'true' ||
-      String(searchParams.get('return_shipment') || '') === 'true') &&
-    Boolean(String(searchParams.get('payment_id') || '').trim());
-  const isReturnShipmentMode =
-    String(searchParams.get('return_shipment') || '') === 'true' &&
+    String(searchParams.get('open_shipment') || '') === 'true' &&
     Boolean(String(searchParams.get('payment_id') || '').trim());
   const currentPaymentId = String(searchParams.get('payment_id') || '').trim();
-  const returnVisibleCartItems = isReturnShipmentMode
-    ? (cartItemsForStore || []).filter(it => !returnExcludedCartItemIds[it.id])
-    : cartItemsForStore || [];
-  const returnHasInvalidQty = (() => {
-    if (!isReturnShipmentMode) return false;
-    for (const it of returnVisibleCartItems) {
-      const maxQty = Math.max(1, Math.round(Number(it.quantity || 1)));
-      const raw = returnQtyInputByCartItemId[it.id];
-      if (raw !== undefined) {
-        const trimmed = String(raw).trim();
-        if (!trimmed) return true;
-        const n = Number(trimmed);
-        if (!Number.isFinite(n)) return true;
-        const rounded = Math.round(n);
-        if (rounded < 1 || rounded > maxQty) return true;
-      }
-      const desired = returnQtyByCartItemId[it.id];
-      if (desired === undefined) continue;
-      if (!Number.isFinite(desired)) return true;
-      const rounded = Math.round(desired);
-      if (rounded < 1 || rounded > maxQty) return true;
-    }
-    return false;
-  })();
-  const getReturnQtyForItem = (it: CartItem) => {
-    const maxQty = Math.max(1, Math.round(Number(it.quantity || 1)));
-    const raw = returnQtyInputByCartItemId[it.id];
-    if (raw !== undefined) {
-      const trimmed = String(raw).trim();
-      if (!trimmed) return maxQty;
-      const n = Number(trimmed);
-      if (Number.isFinite(n)) {
-        return Math.min(maxQty, Math.max(1, Math.round(n)));
-      }
-      return maxQty;
-    }
-    const desired = returnQtyByCartItemId[it.id];
-    if (Number.isFinite(desired)) {
-      return Math.min(maxQty, Math.max(1, Math.round(desired)));
-    }
-    return maxQty;
-  };
-  const returnSelectedCartItems = returnVisibleCartItems || [];
-  const returnSelectedTotal = isReturnShipmentMode
-    ? returnSelectedCartItems.reduce(
-        (sum, it) => sum + Number(it.value || 0) * getReturnQtyForItem(it),
-        0
-      )
-    : Number(cartTotalForStore || 0);
 
   const cancelOpenShipmentAndVerify = async (preferredPaymentId?: string) => {
     if (!store?.id) return false;
@@ -1970,12 +2120,15 @@ export default function CheckoutPage() {
   return (
     <StripeWrapper>
       {isOpenShipmentMode ? (
-        <div className='bg-blue-50 border-b border-blue-200'>
+        <div className='sticky top-0 z-50 bg-blue-50 border-b border-blue-200'>
           <div className='max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center justify-between gap-3'>
             <div className='text-sm text-blue-800 truncate'>
               Modification de la commande{' '}
               <span className='font-semibold'>
-                {openShipmentEditingShipmentId}
+                {openShipmentEditingShipmentId ||
+                  (openShipmentEditingShipmentRowId != null
+                    ? String(openShipmentEditingShipmentRowId)
+                    : '')}
               </span>
               .
             </div>
@@ -2001,7 +2154,9 @@ export default function CheckoutPage() {
                     await cancelOpenShipmentAndVerify(currentPaymentId);
                   if (!ok) return;
                   setOpenShipmentEditingShipmentId('');
+                  setOpenShipmentEditingShipmentRowId(null);
                   setOpenShipmentBlockShipmentId('');
+                  setOpenShipmentBlockShipmentRowId(null);
                   setOpenShipmentBlockPaymentId('');
                   setOpenShipmentAttemptPaymentId('');
                   setOpenShipmentBlockModalOpen(false);
@@ -2016,6 +2171,14 @@ export default function CheckoutPage() {
                     window.dispatchEvent(new Event('cart:updated'));
                   }
                   showToast('Modifications annulées', 'success');
+                  const targetSlug = String(
+                    store?.slug || storeName || ''
+                  ).trim();
+                  if (targetSlug && typeof window !== 'undefined') {
+                    window.location.href = `/checkout/${encodeURIComponent(
+                      targetSlug
+                    )}`;
+                  }
                 } finally {
                   setOpenShipmentActionLoading(false);
                 }
@@ -2038,7 +2201,7 @@ export default function CheckoutPage() {
           />
         )}
         <Modal
-          isOpen={openShipmentBlockModalOpen}
+          isOpen={isOpenShipmentMode && openShipmentBlockModalOpen}
           onClose={() => {}}
           title='Modification de commande en cours'
         >
@@ -2046,7 +2209,10 @@ export default function CheckoutPage() {
             <div className='text-sm text-gray-700'>
               Veuillez compléter ou annuler la modification de votre commande :{' '}
               <span className='font-semibold'>
-                {openShipmentBlockShipmentId || '—'}
+                {openShipmentBlockShipmentId ||
+                  (openShipmentBlockShipmentRowId != null
+                    ? String(openShipmentBlockShipmentRowId)
+                    : '—')}
               </span>
             </div>
             <div className='flex items-center justify-end gap-2'>
@@ -2073,6 +2239,7 @@ export default function CheckoutPage() {
                     if (!ok) return;
                     setOpenShipmentBlockModalOpen(false);
                     setOpenShipmentBlockShipmentId('');
+                    setOpenShipmentBlockShipmentRowId(null);
                     setOpenShipmentBlockPaymentId('');
                     const attempted = String(
                       openShipmentAttemptPaymentId || ''
@@ -2087,6 +2254,14 @@ export default function CheckoutPage() {
                       await refreshCartForStore();
                       if (typeof window !== 'undefined') {
                         window.dispatchEvent(new Event('cart:updated'));
+                      }
+                      const targetSlug = String(
+                        store?.slug || storeName || ''
+                      ).trim();
+                      if (targetSlug && typeof window !== 'undefined') {
+                        window.location.href = `/checkout/${encodeURIComponent(
+                          targetSlug
+                        )}`;
                       }
                     }
                     setTempCreditBalanceCents(0);
@@ -2112,6 +2287,9 @@ export default function CheckoutPage() {
                   setShipmentCartRebuilt(false);
                   setOpenShipmentInitHandled(false);
                   setOpenShipmentEditingShipmentId(openShipmentBlockShipmentId);
+                  setOpenShipmentEditingShipmentRowId(
+                    openShipmentBlockShipmentRowId
+                  );
                   setOpenShipmentParams(pid);
                 }}
                 disabled={openShipmentActionLoading}
@@ -2126,46 +2304,61 @@ export default function CheckoutPage() {
           {/* En-tête de la boutique */}
           <div className='bg-white rounded-lg shadow-sm p-6 mb-6'>
             <div className='flex items-center space-x-4'>
-              {storeLogo ? (
-                <img
-                  src={storeLogo}
-                  alt={store?.name}
-                  className='w-16 h-16 rounded-lg object-cover'
-                />
-              ) : (
-                <div className='w-16 h-16 rounded-lg bg-gray-200 flex items-center justify-center'>
-                  <ShoppingBag className='w-8 h-8 text-gray-500' />
-                </div>
-              )}
+              <Link
+                to={`/store/${encodeURIComponent(
+                  String(store?.slug ?? storeName ?? '').trim()
+                )}`}
+                className='shrink-0'
+                aria-label='Aller à la boutique'
+              >
+                {storeLogo ? (
+                  <img
+                    src={storeLogo}
+                    alt={store?.name}
+                    className='w-16 h-16 rounded-lg object-cover hover:opacity-95'
+                  />
+                ) : (
+                  <div className='w-16 h-16 rounded-lg bg-gray-200 flex items-center justify-center hover:bg-gray-300'>
+                    <ShoppingBag className='w-8 h-8 text-gray-500' />
+                  </div>
+                )}
+              </Link>
               <div className='min-w-0'>
                 <div className='flex flex-col sm:flex-row sm:items-center gap-2 min-w-0'>
-                  <h1
-                    className='text-2xl font-bold text-gray-900 truncate max-w-full'
+                  <Link
+                    to={`/store/${encodeURIComponent(
+                      String(store?.slug ?? storeName ?? '').trim()
+                    )}`}
+                    className='text-2xl font-bold text-gray-900 truncate max-w-full hover:underline'
                     title={store?.name ?? storeName}
                   >
                     {store?.name ?? storeName}
-                  </h1>
+                  </Link>
                 </div>
-                {store?.description && (
-                  <p
-                    className='text-gray-600 mt-1'
-                    title={store.description}
-                    style={{
-                      display: '-webkit-box',
-                      WebkitLineClamp: 2,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden',
-                    }}
-                  >
-                    {store.description}
-                  </p>
-                )}
-                {store?.is_verified ? (
-                  <div
-                    title="Le SIRET de la boutique a été vérifié via l'INSEE"
-                    className='inline-flex items-center gap-1 mt-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit'
-                  >
-                    <BadgeCheck className='w-3 h-3' /> Boutique Vérifiée
+                {store?.description || store?.is_verified ? (
+                  <div className='mt-1'>
+                    {store?.description ? (
+                      <p
+                        className='text-gray-600'
+                        title={store.description}
+                        style={{
+                          display: '-webkit-box',
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {store.description}
+                      </p>
+                    ) : null}
+                    {store?.is_verified ? (
+                      <div
+                        title="Le SIRET de la boutique a été vérifié via l'INSEE"
+                        className='inline-flex items-center gap-1 mt-1 rounded-full bg-green-100 text-green-800 px-2 py-1 text-xs font-medium size-fit'
+                      >
+                        <BadgeCheck className='w-3 h-3' /> Boutique Vérifiée
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
@@ -2190,7 +2383,7 @@ export default function CheckoutPage() {
               )}
 
               <div className='p-6'>
-                {returnVisibleCartItems.length > 0 && !showPayment && (
+                {cartItemsForStore.length > 0 && !showPayment && (
                   <div className='mb-6 border border-gray-200 rounded-md p-4 bg-gray-50'>
                     <div className='mb-2'>
                       <div className='flex items-center justify-between gap-3'>
@@ -2213,7 +2406,7 @@ export default function CheckoutPage() {
                       </div>
                     </div>
                     <ul className='mt-1 space-y-1 max-h-40 overflow-auto text-sm text-gray-700'>
-                      {returnSelectedCartItems.map(it => (
+                      {cartItemsForStore.map(it => (
                         <li
                           key={it.id}
                           className='flex items-center justify-between gap-3'
@@ -2292,12 +2485,8 @@ export default function CheckoutPage() {
                                 1,
                                 Math.round(Number(it.quantity || 1))
                               );
-                              const purchaseQty = currentQty;
-                              const localValue = isReturnShipmentMode
-                                ? returnQtyInputByCartItemId[it.id] !== undefined
-                                  ? returnQtyInputByCartItemId[it.id]
-                                  : String(getReturnQtyForItem(it))
-                                : cartQtyInputById[it.id] !== undefined
+                              const localValue =
+                                cartQtyInputById[it.id] !== undefined
                                   ? cartQtyInputById[it.id]
                                   : String(currentQty);
 
@@ -2309,69 +2498,36 @@ export default function CheckoutPage() {
                                   <input
                                     type='number'
                                     min='1'
-                                    max={isReturnShipmentMode ? purchaseQty : undefined}
                                     step='1'
                                     value={localValue}
                                     onChange={e => {
                                       const next = String(e.target.value || '');
-                                      if (isReturnShipmentMode) {
-                                        setReturnQtyInputByCartItemId(prev => ({
-                                          ...prev,
-                                          [it.id]: next,
-                                        }));
-                                      } else {
-                                        setCartQtyInputById(prev => ({
-                                          ...prev,
-                                          [it.id]: next,
-                                        }));
-                                      }
+                                      setCartQtyInputById(prev => ({
+                                        ...prev,
+                                        [it.id]: next,
+                                      }));
                                     }}
                                     onKeyDown={e => {
                                       if (e.key !== 'Enter') return;
                                       (e.currentTarget as any)?.blur?.();
                                     }}
                                     onBlur={() => {
-                                      if (isReturnShipmentMode) {
-                                        const raw = String(
-                                          returnQtyInputByCartItemId[it.id] ??
-                                            returnQtyByCartItemId[it.id] ??
-                                            purchaseQty
-                                        );
-                                        const n = Number(String(raw || '').trim());
-                                        const parsed = Math.min(
-                                          purchaseQty,
-                                          Math.max(
-                                            1,
-                                            Math.round(Number.isFinite(n) ? n : purchaseQty)
-                                          )
-                                        );
-                                        setReturnQtyInputByCartItemId(prev => {
-                                          const next = { ...prev };
-                                          delete next[it.id];
-                                          return next;
-                                        });
-                                        setReturnQtyByCartItemId(prev => ({
-                                          ...prev,
-                                          [it.id]: parsed,
-                                        }));
-                                      } else {
-                                        const raw = String(
-                                          cartQtyInputById[it.id] ?? currentQty
-                                        );
-                                        const parsed = Math.max(
-                                          1,
-                                          Math.round(Number(raw || 1))
-                                        );
-                                        setCartQtyInputById(prev => {
-                                          const next = { ...prev };
-                                          delete next[it.id];
-                                          return next;
-                                        });
-                                        handleUpdateCartItemQuantity(
-                                          it.id,
-                                          parsed
-                                        );
-                                      }
+                                      const raw = String(
+                                        cartQtyInputById[it.id] ?? currentQty
+                                      );
+                                      const parsed = Math.max(
+                                        1,
+                                        Math.round(Number(raw || 1))
+                                      );
+                                      setCartQtyInputById(prev => {
+                                        const next = { ...prev };
+                                        delete next[it.id];
+                                        return next;
+                                      });
+                                      handleUpdateCartItemQuantity(
+                                        it.id,
+                                        parsed
+                                      );
                                     }}
                                     className='border border-gray-300 rounded px-2 py-0.5 text-sm w-20'
                                     aria-label='Quantité'
@@ -2381,36 +2537,14 @@ export default function CheckoutPage() {
                             })()}
                             <span className='whitespace-nowrap'>
                               {(
-                                Number(it.value || 0) *
-                                Number(
-                                  isReturnShipmentMode
-                                    ? getReturnQtyForItem(it)
-                                    : Number(it.quantity || 1)
-                                )
+                                Number(it.value || 0) * Number(it.quantity || 1)
                               ).toFixed(2)}{' '}
                               €
                             </span>
                             <button
                               type='button'
-                              disabled={
-                                isReturnShipmentMode && returnSelectedCartItems.length <= 1
-                              }
-                              onClick={() => {
-                                if (isReturnShipmentMode) {
-                                  if (returnSelectedCartItems.length <= 1) return;
-                                  setReturnExcludedCartItemIds(prev => ({
-                                    ...prev,
-                                    [it.id]: true,
-                                  }));
-                                  return;
-                                }
-                                handleDeleteCartItem(it.id);
-                              }}
-                              className={`p-1 rounded text-red-600 ${
-                                isReturnShipmentMode && returnSelectedCartItems.length <= 1
-                                  ? 'opacity-40 cursor-not-allowed'
-                                  : 'hover:bg-red-50'
-                              }`}
+                              onClick={() => handleDeleteCartItem(it.id)}
+                              className='p-1 rounded hover:bg-red-50 text-red-600'
                               aria-label='Supprimer cet article'
                             >
                               <Trash2 className='w-4 h-4' />
@@ -2421,7 +2555,7 @@ export default function CheckoutPage() {
                     </ul>
                     <div className='mt-3 flex items-center justify-between border-t border-gray-200 pt-2 text-sm font-semibold text-gray-900'>
                       <span>Total</span>
-                      <span>{Number(returnSelectedTotal || 0).toFixed(2)} €</span>
+                      <span>{Number(cartTotalForStore || 0).toFixed(2)} €</span>
                     </div>
                     {canEnterPromoCode ? (
                       <div className='mt-3'>
@@ -2512,9 +2646,139 @@ export default function CheckoutPage() {
                   setShippingHasBeenModified={setShippingHasBeenModified}
                   isEditingDelivery={isEditingDelivery}
                   isEditingOrder={isEditingOrder}
+                  isOpenShipmentMode={isOpenShipmentMode}
+                  currentPaymentId={currentPaymentId}
                   cartItemsCount={cartItemsForStore.length}
                   refreshCartForStore={handleReloadCartItems}
                 />
+                {!orderCompleted &&
+                  customerDetailsLoaded &&
+                  !isEditingDelivery &&
+                  (() => {
+                    if (deliveryMethod === 'home_delivery') {
+                      const homeAddr =
+                        address || (customerData?.address as any);
+                      return Boolean(
+                        homeAddr?.line1 &&
+                          homeAddr?.postal_code &&
+                          homeAddr?.city
+                      );
+                    }
+                    if (deliveryMethod === 'pickup_point') {
+                      const ship = (customerData as any)?.shipping;
+                      const name =
+                        ship?.name || selectedParcelPoint?.name || null;
+                      const addr =
+                        ship?.address || selectedParcelPoint?.location;
+                      return Boolean(name || addr);
+                    }
+                    if (deliveryMethod === 'store_pickup') {
+                      return Boolean(storePickupAddress?.line1);
+                    }
+                    return false;
+                  })() && (
+                    <div className='p-6 bg-gray-50 mt-4'>
+                      <div className='flex items-center justify-between mb-2'>
+                        <h3 className='text-base font-semibold text-gray-900'>
+                          Méthode de livraison
+                        </h3>
+                        <button
+                          onClick={e => {
+                            e.stopPropagation();
+                            handleModifyDelivery();
+                          }}
+                          className='px-3 py-1 text-sm bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 flex items-center space-x-1'
+                        >
+                          <Edit className='w-4 h-4' />
+                          <span>Modifier</span>
+                        </button>
+                      </div>
+                      <div className='text-sm text-gray-600 space-y-2'>
+                        <p>
+                          <strong>Type:</strong>{' '}
+                          {deliveryMethod === 'home_delivery'
+                            ? 'À domicile'
+                            : deliveryMethod === 'pickup_point'
+                              ? 'Point relais'
+                              : 'Retrait en magasin'}
+                        </p>
+                        {deliveryMethod === 'home_delivery' && (
+                          <>
+                            {(() => {
+                              const homeAddr =
+                                address || (customerData?.address as any);
+                              return homeAddr ? (
+                                <p>
+                                  <strong>Adresse:</strong> {homeAddr.line1}
+                                  {homeAddr.line2
+                                    ? `, ${homeAddr.line2}`
+                                    : ''}, {homeAddr.postal_code}{' '}
+                                  {homeAddr.city}
+                                </p>
+                              ) : null;
+                            })()}
+                            {(() => {
+                              const mdNet = (customerData as any)?.metadata
+                                ?.delivery_network;
+                              const offer =
+                                (formData as any)?.shippingOfferCode || '';
+                              const code = mdNet || offer;
+                              return code ? (
+                                <p>
+                                  <strong>Réseau domicile:</strong> {code}
+                                </p>
+                              ) : null;
+                            })()}
+                          </>
+                        )}
+                        {deliveryMethod === 'pickup_point' && (
+                          <>
+                            {(() => {
+                              const ship = (customerData as any)?.shipping;
+                              const name =
+                                ship?.name || selectedParcelPoint?.name || null;
+                              const addr =
+                                ship?.address || selectedParcelPoint?.location;
+                              return name || addr ? (
+                                <>
+                                  {name && (
+                                    <p>
+                                      <strong>Point relais:</strong> {name}
+                                    </p>
+                                  )}
+                                  {addr && (
+                                    <p className='text-xs'>
+                                      {addr.number ? `${addr.number} ` : ''}
+                                      {addr?.street || addr.line1}
+                                      {addr.line2 ? `, ${addr.line2}` : ''}
+                                      {addr.postalCode || addr.postal_code
+                                        ? `, ${
+                                            addr.postalCode || addr.postal_code
+                                          }`
+                                        : ''}
+                                      {addr.city ? ` ${addr.city}` : ''}
+                                    </p>
+                                  )}
+                                </>
+                              ) : null;
+                            })()}
+                          </>
+                        )}
+                        {deliveryMethod === 'store_pickup' &&
+                          storePickupAddress && (
+                            <p>
+                              <strong>Adresse magasin:</strong>{' '}
+                              {storePickupAddress.line1}
+                              {storePickupAddress.line2
+                                ? `, ${storePickupAddress.line2}`
+                                : ''}
+                              , {storePickupAddress.postal_code}{' '}
+                              {storePickupAddress.city}
+                            </p>
+                          )}
+                      </div>
+                    </div>
+                  )}
               </div>
 
               {orderCompleted && (
@@ -2635,11 +2899,6 @@ export default function CheckoutPage() {
                         <>
                           {(() => {
                             const ship = (customerData as any)?.shipping;
-                            console.log('Shipping info:', ship);
-                            console.log(
-                              'Selected parcel point:',
-                              selectedParcelPoint
-                            );
                             const name =
                               ship?.name || selectedParcelPoint?.name || null;
                             const addr =
@@ -2841,6 +3100,8 @@ function CheckoutForm({
   shippingHasBeenModified,
   setShippingHasBeenModified,
   isEditingOrder,
+  isOpenShipmentMode,
+  currentPaymentId,
   cartItemsCount,
   refreshCartForStore,
 }: {
@@ -2888,6 +3149,8 @@ function CheckoutForm({
   shippingHasBeenModified: boolean;
   setShippingHasBeenModified: (val: boolean) => void;
   isEditingOrder: boolean;
+  isOpenShipmentMode: boolean;
+  currentPaymentId: string;
   cartItemsCount: number;
   refreshCartForStore: () => Promise<{
     items: CartItem[];
@@ -2937,11 +3200,18 @@ function CheckoutForm({
     Boolean(selectedReference) &&
     selectedReference.toLowerCase() === referenceQuery.toLowerCase();
 
+  const isDeliveryRegulationEntry =
+    isDeliveryRegulationText(referenceQuery) ||
+    isDeliveryRegulationText(
+      String((formData as any)?.description || '').trim()
+    );
+
   const isAddToCartDisabled =
     mustSelectSuggestionOrChangeReference ||
     !Boolean(referenceQuery) ||
     !(amount > 0) ||
-    !Boolean(String((formData as any).description || '').trim());
+    !Boolean(String((formData as any).description || '').trim()) ||
+    isDeliveryRegulationEntry;
 
   const refKey = (ref: string) =>
     String(ref || '')
@@ -3013,6 +3283,13 @@ function CheckoutForm({
       const product = s?.product || null;
       const ref = String(stock?.product_reference || '').trim();
       if (!ref) return;
+      const title = String(product?.name || ref || '').trim() || ref;
+      if (isDeliveryRegulationText(ref) || isDeliveryRegulationText(title)) {
+        const msg = 'Référence interdite';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return;
+      }
 
       const existing = (cartItemsForStore || []).find(
         it => refKey(it.product_reference) === refKey(ref)
@@ -3029,7 +3306,6 @@ function CheckoutForm({
       const qtyAvailable = Number(stock?.quantity ?? NaN);
       if (Number.isFinite(qtyAvailable) && qtyAvailable <= 0) return;
 
-      const title = String(product?.name || ref || '').trim() || ref;
       const unitPrice = getStockItemUnitPrice(s);
       const value =
         unitPrice && unitPrice > 0 ? unitPrice : Number(amount || 0);
@@ -3053,6 +3329,9 @@ function CheckoutForm({
         product_reference: ref,
         value: value,
         customer_stripe_id: customerStripeId,
+        ...(isOpenShipmentMode && currentPaymentId
+          ? { payment_id: currentPaymentId }
+          : {}),
         description: title,
         quantity: 1,
         weight: weightForCart === null ? undefined : weightForCart,
@@ -3148,12 +3427,30 @@ function CheckoutForm({
           return;
         }
         const items = Array.isArray(json?.items) ? json.items : [];
-        setStockSuggestions(items);
+        const filtered = items.filter((it: any) => {
+          const qRaw = (it as any)?.stock?.quantity;
+          const q =
+            typeof qRaw === 'number'
+              ? qRaw
+              : typeof qRaw === 'string'
+                ? Number(qRaw)
+                : qRaw === null || qRaw === undefined
+                  ? null
+                  : Number(qRaw);
+          const stockRef = String(it?.stock?.product_reference || '').trim();
+          const title = String(it?.product?.name || '').trim();
+          return (
+            !(q !== null && Number.isFinite(q) && q <= 0) &&
+            !isDeliveryRegulationText(stockRef) &&
+            !isDeliveryRegulationText(title)
+          );
+        });
+        setStockSuggestions(filtered);
         setStockSuggestionsOpen(true);
         const qKey = String(q || '')
           .trim()
           .toLowerCase();
-        const exact = items.find((it: any) => {
+        const exact = filtered.find((it: any) => {
           const r = String(it?.stock?.product_reference || '')
             .trim()
             .toLowerCase();
@@ -3200,6 +3497,15 @@ function CheckoutForm({
       const descriptionRaw = String((formData as any).description || '').trim();
       if (!descriptionRaw) {
         return setPaymentError('Description requise');
+      }
+      if (
+        isDeliveryRegulationText(product_reference) ||
+        isDeliveryRegulationText(descriptionRaw)
+      ) {
+        const msg = 'Référence interdite';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+        return;
       }
       if (!(amount > 0)) {
         return setPaymentError('Montant invalide');
@@ -3348,6 +3654,9 @@ function CheckoutForm({
         product_reference,
         value: resolvedValue,
         customer_stripe_id: customerStripeId,
+        ...(isOpenShipmentMode && currentPaymentId
+          ? { payment_id: currentPaymentId }
+          : {}),
         description: normalizedDescription || null,
         weight: weightForCart === null ? undefined : weightForCart,
       });
@@ -3469,7 +3778,17 @@ function CheckoutForm({
                               : qRaw === null || qRaw === undefined
                                 ? null
                                 : Number(qRaw);
-                        return !(q !== null && Number.isFinite(q) && q <= 0);
+                        const ref = String(
+                          (s as any)?.stock?.product_reference || ''
+                        ).trim();
+                        const title = String(
+                          (s as any)?.product?.name || ''
+                        ).trim();
+                        return (
+                          !(q !== null && Number.isFinite(q) && q <= 0) &&
+                          !isDeliveryRegulationText(ref) &&
+                          !isDeliveryRegulationText(title)
+                        );
                       }
                     );
                     if (

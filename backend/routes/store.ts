@@ -440,6 +440,79 @@ router.put("/:storeSlug", async (req, res) => {
   }
 });
 
+router.get("/me", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const clerkId = String(auth.userId).trim();
+    const { data: store, error } = await supabase
+      .from("stores")
+      .select("id, name, slug, clerk_id")
+      .eq("clerk_id", clerkId)
+      .maybeSingle();
+
+    if (error && (error as any)?.code !== "PGRST116") {
+      console.error("Erreur Supabase (get store by clerk_id):", error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.json({
+      success: true,
+      hasStore: Boolean(store),
+      store: store || null,
+    });
+  } catch (e) {
+    console.error("Erreur serveur:", e);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+router.post("/need-a-demo", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const emailAddresses = Array.isArray((user as any)?.emailAddresses)
+      ? (user as any).emailAddresses
+      : [];
+    const primaryEmail = String(
+      (user as any)?.primaryEmailAddress?.emailAddress || "",
+    ).trim();
+
+    const payload = {
+      clerkUserId: String((user as any)?.id || auth.userId),
+      fullName: String((user as any)?.fullName || "").trim() || null,
+      firstName: String((user as any)?.firstName || "").trim() || null,
+      lastName: String((user as any)?.lastName || "").trim() || null,
+      primaryEmail: primaryEmail || null,
+      emails: emailAddresses
+        .map((e: any) => String(e?.emailAddress || "").trim())
+        .filter(Boolean),
+      createdAt: (user as any)?.createdAt || null,
+      lastSignInAt: (user as any)?.lastSignInAt || null,
+    };
+
+    try {
+      await emailService.sendAdminError({
+        subject: "Demande de démo (NeedADemo)",
+        message: `Le user souhaite une démo. clerk_id=${String(auth.userId)}`,
+        context: JSON.stringify(payload, null, 2),
+      });
+    } catch {}
+
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("Erreur serveur:", e);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
 // GET /api/stores/:storeSlug - Récupérer une boutique par son slug
 router.get("/:storeSlug", async (req, res) => {
   try {
@@ -627,9 +700,11 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       let q = supabase
         .from("shipments")
         .select(
-          "id, payment_id, created_at, customer_stripe_id, product_reference, promo_code, store_earnings_amount",
+          "id, payment_id, created_at, customer_stripe_id, product_reference, promo_code, store_earnings_amount, stripe_fees",
         )
         .eq("store_id", storeId)
+        .eq("is_final_destination", true)
+        .or("status.is.null,status.neq.CANCELLED")
         .not("payment_id", "is", null)
         .order("created_at", { ascending: false })
         .range(from, from + pageSizeDb - 1);
@@ -647,15 +722,21 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
 
     const grossCents = payoutShipments.reduce((sum, r) => {
       const v = Number((r as any)?.store_earnings_amount || 0);
-      return sum + (Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0);
+      return sum + (Number.isFinite(v) ? Math.round(v) : 0);
     }, 0);
 
     if (!Number.isFinite(grossCents) || grossCents <= 0) {
       return res.status(400).json({ error: "Aucun gain disponible" });
     }
 
-    const platformFeeCents = Math.round(grossCents * 0.03) + 30;
-    const payoutCents = grossCents - platformFeeCents;
+    const stripeFeesCents = payoutShipments.reduce((sum, r) => {
+      const v = Number((r as any)?.stripe_fees || 0);
+      return sum + (Number.isFinite(v) ? Math.round(v) : 0);
+    }, 0);
+
+    const platformFeeCents = Math.round(grossCents * 0.015);
+    const payliveFeeCents = stripeFeesCents + platformFeeCents;
+    const payoutCents = grossCents - payliveFeeCents;
     if (!Number.isFinite(payoutCents) || payoutCents <= 0) {
       return res.status(400).json({ error: "Montant insuffisant après frais" });
     }
@@ -665,52 +746,83 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       lastPayoutTimestamp ? String(lastPayoutTimestamp) : "first"
     }_${grossCents}`;
 
-    const account: any = await stripe.accounts.retrieve();
-    const stripeAccountId = String(account?.id || "").trim();
-    if (!stripeAccountId) {
-      return res.status(500).json({ error: "Stripe account indisponible" });
-    }
+    let payout: any = null;
+    let payoutError: any = null;
+    let stripeAccountId: string | null = null;
+    let destinationId: string | null = null;
 
-    const bankAccountName = String((store as any)?.name || "").trim();
-    const externalAccount: any = await stripe.accounts.createExternalAccount(
-      stripeAccountId,
-      {
-        external_account: {
-          object: "bank_account",
-          account_number: ibanTrim,
-          country,
-          currency: "eur",
-          account_holder_name: bankAccountName || undefined,
+    try {
+      const account: any = await stripe.accounts.retrieve();
+      stripeAccountId = String(account?.id || "").trim() || null;
+      if (!stripeAccountId) throw new Error("Stripe account indisponible");
+
+      const bankAccountName = String((store as any)?.name || "").trim();
+      const externalAccount: any = await stripe.accounts.createExternalAccount(
+        stripeAccountId,
+        {
+          external_account: {
+            object: "bank_account",
+            account_number: ibanTrim,
+            country,
+            currency: "eur",
+            account_holder_name: bankAccountName || undefined,
+          } as any,
+          default_for_currency: true,
         } as any,
-        default_for_currency: true,
-      } as any,
-      { idempotencyKey: `${idempotencyBase}_external_account` } as any,
-    );
+        { idempotencyKey: `${idempotencyBase}_external_account` } as any,
+      );
 
-    const destinationId = String(externalAccount?.id || "").trim();
-    if (!destinationId) {
-      return res.status(500).json({ error: "Destination bancaire invalide" });
+      destinationId = String(externalAccount?.id || "").trim() || null;
+      if (!destinationId) throw new Error("Destination bancaire invalide");
+
+      payout = await stripe.payouts.create(
+        {
+          amount: payoutCents,
+          currency: "eur",
+          method: "standard",
+          destination: destinationId,
+          description: `Payout PayLive - ${String((store as any)?.name || "")}`,
+          metadata: {
+            store_id: String(storeId),
+            store_slug: String(decodedSlug),
+            gross_cents: String(grossCents),
+            fee_cents: String(payliveFeeCents),
+            stripe_fees_cents: String(stripeFeesCents),
+            platform_fee_cents: String(platformFeeCents),
+          },
+        } as any,
+        {
+          idempotencyKey: `${idempotencyBase}_payout`,
+          stripeAccount: "acct_1SramGC1Oc6JE3hW",
+        } as any,
+      );
+    } catch (e) {
+      payoutError = e;
+      try {
+        await emailService.sendAdminError({
+          subject: "Payout échoué (virement manuel)",
+          message: `Le client souhaite faire un payout, mais Stripe a échoué. store_id=${storeId} slug=${decodedSlug}`,
+          context: JSON.stringify(
+            {
+              storeId,
+              storeName: String((store as any)?.name || "").trim() || null,
+              storeSlug: decodedSlug,
+              ownerEmail:
+                String((store as any)?.owner_email || "").trim() || null,
+              iban: ibanTrim,
+              bic: bicTrim,
+              feeCents: payliveFeeCents,
+              stripeFeesCents,
+              platformFeeCents,
+              payoutCents,
+              error: e instanceof Error ? e.message : String(e),
+            },
+            null,
+            2,
+          ),
+        });
+      } catch {}
     }
-
-    const payout: any = await stripe.payouts.create(
-      {
-        amount: payoutCents,
-        currency: "eur",
-        method: "standard",
-        destination: destinationId,
-        description: `Payout PayLive - ${String((store as any)?.name || "")}`,
-        metadata: {
-          store_id: String(storeId),
-          store_slug: String(decodedSlug),
-          gross_cents: String(grossCents),
-          fee_cents: String(platformFeeCents),
-        },
-      } as any,
-      {
-        idempotencyKey: `${idempotencyBase}_payout`,
-        stripeAccount: "acct_1SramGC1Oc6JE3hW",
-      } as any,
-    );
 
     const ibanBic = { iban: ibanTrim, bic: bicTrim };
     const payoutAtIso = new Date().toISOString();
@@ -759,10 +871,9 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       const customerId =
         String((r as any)?.customer_stripe_id || "").trim() || null;
       const netCentsRaw = Number((r as any)?.store_earnings_amount || 0);
-      const netCents =
-        Number.isFinite(netCentsRaw) && netCentsRaw > 0
-          ? Math.round(netCentsRaw)
-          : 0;
+      const netCents = Number.isFinite(netCentsRaw)
+        ? Math.round(netCentsRaw)
+        : 0;
       return {
         payment_id: paymentId,
         created,
@@ -780,6 +891,84 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         .split(";")
         .map((s) => String(s || "").trim())
         .filter((s) => s.startsWith("prod_"));
+
+    const parseProductReferenceItems = (
+      raw: string | null | undefined,
+    ): Array<{
+      reference: string;
+      quantity: number;
+      description?: string | null;
+    }> => {
+      const txt = String(raw || "").trim();
+      if (!txt) return [];
+      const parts = txt
+        .split(";")
+        .map((s) => String(s || "").trim())
+        .filter(Boolean);
+
+      const onlyStripeIds =
+        parts.length > 0 &&
+        parts.every((p) => String(p || "").startsWith("prod_"));
+      if (onlyStripeIds) {
+        const counts = new Map<string, number>();
+        for (const pid of parts) {
+          const id = String(pid || "").trim();
+          if (!id) continue;
+          counts.set(id, (counts.get(id) || 0) + 1);
+        }
+        return Array.from(counts.entries()).map(([reference, quantity]) => ({
+          reference,
+          quantity,
+          description: null,
+        }));
+      }
+
+      const m = new Map<
+        string,
+        { quantity: number; description?: string | null }
+      >();
+      for (const p of parts) {
+        const seg = String(p || "").trim();
+        if (!seg) continue;
+
+        let reference = "";
+        let quantity = 1;
+        let description: string | null = null;
+
+        if (seg.includes("**")) {
+          const [refRaw, restRaw] = seg.split("**");
+          reference = String(refRaw || "").trim();
+          const rest = String(restRaw || "").trim();
+          const match = rest.match(/^(\d+)(?:@(\d+))?\s*(?:\((.*)\))?$/);
+          if (match) {
+            const q = Number(match[1]);
+            quantity = Number.isFinite(q) && q > 0 ? Math.floor(q) : 1;
+            const descRaw = String(match[3] || "").trim();
+            description = descRaw || null;
+          } else {
+            const qLoose = Number(rest);
+            quantity =
+              Number.isFinite(qLoose) && qLoose > 0 ? Math.floor(qLoose) : 1;
+          }
+        } else {
+          reference = seg;
+          quantity = 1;
+        }
+
+        if (!reference) continue;
+        const prev = m.get(reference) || { quantity: 0, description: null };
+        m.set(reference, {
+          quantity: prev.quantity + quantity,
+          description: description || prev.description || null,
+        });
+      }
+
+      return Array.from(m.entries()).map(([reference, v]) => ({
+        reference,
+        quantity: Math.max(1, Number(v.quantity || 1)),
+        description: v.description || null,
+      }));
+    };
 
     const formatArticlesFromIds = (
       raw: any,
@@ -808,6 +997,38 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         );
       }
       return parts.length > 0 ? parts.join(", ") : null;
+    };
+
+    const formatArticlesDetailFromRaw = (
+      raw: string | null | undefined,
+      productsById: Map<
+        string,
+        { id: string; name?: string | null; unit_amount_cents?: number | null }
+      >,
+    ): string | null => {
+      const items = parseProductReferenceItems(raw);
+      if (items.length === 0) return null;
+      const lines: string[] = [];
+      for (const it of items) {
+        const ref = String(it.reference || "").trim();
+        if (!ref) continue;
+        const p = ref.startsWith("prod_")
+          ? productsById.get(ref) || null
+          : null;
+        const label = String(p?.name || "").trim() || ref;
+        const qty = Math.max(1, Number(it.quantity || 1));
+        const price =
+          typeof p?.unit_amount_cents === "number" &&
+          Number.isFinite(p.unit_amount_cents) &&
+          p.unit_amount_cents > 0
+            ? `${(p.unit_amount_cents / 100).toFixed(2)}€`
+            : "";
+        const desc = String(it.description || "").trim();
+        lines.push(label);
+        const detail = [desc, `qté: ${qty}`, price].filter(Boolean).join(" — ");
+        if (detail) lines.push(detail);
+      }
+      return lines.length > 0 ? lines.join("\n") : null;
     };
 
     const uniqueStripeProductIds = Array.from(
@@ -855,6 +1076,45 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         (t as any)?.product_reference,
         stripeProductsById,
       );
+      (t as any).articles_detail = formatArticlesDetailFromRaw(
+        (t as any)?.product_reference,
+        stripeProductsById,
+      );
+    }
+
+    const uniqueCustomerStripeIds = Array.from(
+      new Set(
+        transactions
+          .map((t) => String((t as any)?.customer?.id || "").trim())
+          .filter((id) => id.startsWith("cus_")),
+      ),
+    );
+    const stripeCustomersById = new Map<
+      string,
+      { id: string; name?: string | null; email?: string | null }
+    >();
+    if (uniqueCustomerStripeIds.length > 0) {
+      await mapWithLimit(uniqueCustomerStripeIds, 10, async (cid) => {
+        try {
+          const c = (await stripe.customers.retrieve(cid)) as any;
+          if (!c || c.deleted) return null as any;
+          stripeCustomersById.set(cid, {
+            id: String(c.id || cid),
+            name: String(c.name || "").trim() || null,
+            email: String(c.email || "").trim() || null,
+          });
+        } catch (_e) {}
+        return null as any;
+      });
+    }
+
+    for (const t of transactions) {
+      const cid = String((t as any)?.customer?.id || "").trim();
+      const c = cid ? stripeCustomersById.get(cid) || null : null;
+      const email = String(c?.email || "").trim();
+      const name = String(c?.name || "").trim();
+      (t as any).customer_name = name || (email ? email : null);
+      (t as any).customer_email = email || null;
     }
 
     const storeName = String((store as any)?.name || "").trim() || "—";
@@ -1052,7 +1312,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       doc
         .fillColor("#374151")
         .fontSize(9)
-        .text(moneyFmt.format(platformFeeCents / 100), totalsValueX, y, {
+        .text(moneyFmt.format(payliveFeeCents / 100), totalsValueX, y, {
           width: totalsValueW,
           align: "right",
         });
@@ -1102,7 +1362,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
           width: colArticlesW - 12,
         });
         doc.text(
-          "Code",
+          "Code Promo",
           x + colDateW + colClientW + colArticlesW + 6,
           y + rowTextY,
           { width: colPromoW - 12 },
@@ -1123,37 +1383,57 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         promo: string;
         net: string;
       }) => {
+        const padY = 6;
+        const padX = 6;
+        doc.fillColor("#111827").fontSize(9);
+        const dateH = doc.heightOfString(row.date, {
+          width: colDateW - padX * 2,
+        });
+        const clientH = doc.heightOfString(row.client, {
+          width: colClientW - padX * 2,
+        });
+        const articlesH = doc.heightOfString(row.articles, {
+          width: colArticlesW - padX * 2,
+        });
+        const promoH = doc.heightOfString(row.promo, {
+          width: colPromoW - padX * 2,
+        });
+        const netH = doc.heightOfString(row.net, { width: colNetW - padX });
+        const nextRowH =
+          Math.max(dateH, clientH, articlesH, promoH, netH) + padY * 2;
+
         doc.save();
         doc
           .strokeColor("#E5E7EB")
           .lineWidth(1)
-          .rect(x, y, tableW, rowH)
+          .rect(x, y, tableW, nextRowH)
           .stroke();
         doc.restore();
         doc.fillColor("#111827").fontSize(9);
-        doc.text(row.date, x + 6, y + rowTextY, { width: colDateW - 12 });
-        doc.text(row.client, x + colDateW + 6, y + rowTextY, {
-          width: colClientW - 12,
+        const textY = y + padY;
+        doc.text(row.date, x + padX, textY, { width: colDateW - padX * 2 });
+        doc.text(row.client, x + colDateW + padX, textY, {
+          width: colClientW - padX * 2,
         });
-        doc.text(row.articles, x + colDateW + colClientW + 6, y + rowTextY, {
-          width: colArticlesW - 12,
+        doc.text(row.articles, x + colDateW + colClientW + padX, textY, {
+          width: colArticlesW - padX * 2,
         });
         doc.text(
           row.promo,
-          x + colDateW + colClientW + colArticlesW + 6,
-          y + rowTextY,
-          { width: colPromoW - 12 },
+          x + colDateW + colClientW + colArticlesW + padX,
+          textY,
+          { width: colPromoW - padX * 2 },
         );
         doc.text(
           row.net,
           x + colDateW + colClientW + colArticlesW + colPromoW,
-          y + rowTextY,
+          textY,
           {
             width: colNetW - 6,
             align: "right",
           },
         );
-        y += rowH;
+        y += nextRowH;
       };
 
       drawSummaryHeader();
@@ -1172,95 +1452,35 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         const dateText = createdTs
           ? dtShort.format(new Date(createdTs * 1000))
           : "—";
-        const customerId =
-          sanitizeOneLine(String((tx as any)?.customer?.id || "")) || "—";
-        const articles = sanitizeOneLine(
-          String(
-            (tx as any)?.articles || (tx as any)?.product_reference || "—",
-          ),
+        const clientName = sanitizeOneLine(
+          String((tx as any)?.customer_name || ""),
         );
+        const clientEmail = sanitizeOneLine(
+          String((tx as any)?.customer_email || ""),
+        );
+        const clientLine1 = clientName || clientEmail || "—";
+        const clientLine2 =
+          clientEmail && clientEmail !== clientLine1 ? clientEmail : "—";
+        const clientText = `${clientLine1}\n${clientLine2}`;
+        const articles = sanitizeOneLine(
+          String((tx as any)?.articles_detail || ""),
+        )
+          ? String((tx as any)?.articles_detail)
+          : sanitizeOneLine(
+              String(
+                (tx as any)?.articles || (tx as any)?.product_reference || "—",
+              ),
+            );
         const promo = sanitizeOneLine(String((tx as any)?.promo_code || "—"));
         const netText = moneyFmt.format(Number((tx as any)?.net_total || 0));
 
         drawSummaryRow({
           date: dateText,
-          client: customerId.slice(0, 28),
-          articles: articles.slice(0, 60),
-          promo: promo.slice(0, 14),
+          client: clientText,
+          articles: articles || "—",
+          promo,
           net: netText,
         });
-      }
-
-      y += 18;
-      doc
-        .fillColor("#374151")
-        .fontSize(9)
-        .text("Détail des transactions en pages suivantes.", x, y);
-
-      addPage();
-      doc
-        .fillColor("#111827")
-        .fontSize(14)
-        .text("Détail des transactions", x, y);
-      y += 20;
-
-      for (const tx of transactions) {
-        if (y > doc.page.height - margin - 140) addPage();
-
-        const createdTs = Number((tx as any)?.created || 0);
-        const createdText = createdTs
-          ? dtLong.format(new Date(createdTs * 1000))
-          : "—";
-        const customerId =
-          sanitizeOneLine(String((tx as any)?.customer?.id || "")) || "—";
-        const paymentId =
-          sanitizeOneLine(String((tx as any)?.payment_id || "")) || "—";
-        const articles = sanitizeOneLine(
-          String(
-            (tx as any)?.articles || (tx as any)?.product_reference || "—",
-          ),
-        );
-        const promo = sanitizeOneLine(String((tx as any)?.promo_code || ""));
-        const netText = moneyFmt.format(Number((tx as any)?.net_total || 0));
-
-        doc
-          .fillColor("#111827")
-          .fontSize(11)
-          .text(`${createdText} — ${customerId}`, x, y, {
-            width: tableW,
-          });
-        y += 14;
-        doc
-          .fillColor("#374151")
-          .fontSize(9)
-          .text(`Payment: ${paymentId}`, x, y, {
-            width: tableW,
-          });
-        y += 12;
-
-        if (y > doc.page.height - margin - 80) addPage();
-        doc
-          .fillColor("#111827")
-          .fontSize(9)
-          .text(`Articles: ${articles}`, x, y, {
-            width: tableW,
-          });
-        y += 12;
-        if (promo) {
-          if (y > doc.page.height - margin - 80) addPage();
-          doc
-            .fillColor("#111827")
-            .fontSize(9)
-            .text(`Code promo: ${promo}`, x, y, { width: tableW });
-          y += 12;
-        }
-        if (y > doc.page.height - margin - 80) addPage();
-        doc.fillColor("#111827").fontSize(9).text(`Net: ${netText}`, x, y, {
-          width: tableW,
-        });
-        y += 14;
-
-        y += 14;
       }
 
       drawFooter();
@@ -1287,7 +1507,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
           storeAddress:
             (updated as any)?.address || (store as any)?.address || null,
           grossAmount: grossCents / 100,
-          feeAmount: platformFeeCents / 100,
+          feeAmount: payliveFeeCents / 100,
           payoutAmount: payoutCents / 100,
           currency: "EUR",
           attachments: [
@@ -1308,13 +1528,18 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       store: updated,
       payout: {
         gross_cents: grossCents,
-        fee_cents: platformFeeCents,
+        fee_cents: payliveFeeCents,
         payout_cents: payoutCents,
         currency: "eur",
         recipient_id: stripeAccountId || null,
         payment_id: payout?.id || null,
-        status: payout?.status || null,
+        status: payout?.status || (payoutError ? "FAILED" : null),
         destination_id: destinationId || null,
+        error: payoutError
+          ? payoutError instanceof Error
+            ? payoutError.message
+            : String(payoutError)
+          : null,
       },
       pdf: { fileName, base64: pdfBase64 },
     });
@@ -1441,6 +1666,8 @@ router.get("/:storeSlug/transactions", async (req, res) => {
           "payment_id, created_at, customer_stripe_id, product_reference, promo_code, store_earnings_amount",
         )
         .eq("store_id", storeId)
+        .eq("is_final_destination", true)
+        .or("status.is.null,status.neq.CANCELLED")
         .not("payment_id", "is", null)
         .order("created_at", { ascending: false })
         .range(from, from + pageSizeDb - 1);
@@ -1457,10 +1684,7 @@ router.get("/:storeSlug/transactions", async (req, res) => {
       for (const r of rows) {
         totalCount += 1;
         const netCentsRaw = Number((r as any)?.store_earnings_amount || 0);
-        const netEur =
-          Number.isFinite(netCentsRaw) && netCentsRaw > 0
-            ? netCentsRaw / 100
-            : 0;
+        const netEur = Number.isFinite(netCentsRaw) ? netCentsRaw / 100 : 0;
         totalNet += netEur;
 
         if (limitAll || transactions.length < limit) {
@@ -1667,9 +1891,9 @@ router.post("/:storeSlug/stock/products", async (req, res) => {
           ? parseInt(quantity.trim(), 10)
           : NaN;
     const normalizedQty =
-      Number.isFinite(qtyRaw) && qtyRaw > 0 ? Math.floor(qtyRaw) : NaN;
-    if (!Number.isFinite(normalizedQty) || normalizedQty <= 0) {
-      return res.status(400).json({ error: "Quantité invalide (>= 1)" });
+      Number.isFinite(qtyRaw) && qtyRaw >= 0 ? Math.floor(qtyRaw) : NaN;
+    if (!Number.isFinite(normalizedQty) || normalizedQty < 0) {
+      return res.status(400).json({ error: "Quantité invalide (>= 0)" });
     }
 
     const weightRaw =
@@ -1980,6 +2204,120 @@ router.post("/:storeSlug/stock/by-stripe-product-ids", async (req, res) => {
   }
 });
 
+router.get("/:storeSlug/stock/public", async (req, res) => {
+  try {
+    const { storeSlug } = req.params as { storeSlug?: string };
+    if (!storeSlug) {
+      return res.status(400).json({ error: "Slug de boutique requis" });
+    }
+    const decodedSlug = decodeURIComponent(storeSlug);
+
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id, slug")
+      .eq("slug", decodedSlug)
+      .maybeSingle();
+    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    if (!storeRow) {
+      return res.status(404).json({ error: "Boutique introuvable" });
+    }
+
+    const storeId = Number((storeRow as any)?.id);
+    if (!Number.isFinite(storeId) || storeId <= 0) {
+      return res.status(500).json({ error: "store_id invalide" });
+    }
+
+    const stockSelect =
+      "id, created_at, store_id, product_reference, quantity, weight, image_url, product_stripe_id, bought";
+
+    const { data: stockRows, error: stockErr } = await supabase
+      .from("stock")
+      .select(stockSelect)
+      .eq("store_id", storeId)
+      .gt("quantity", 0)
+      .order("id", { ascending: false });
+    if (stockErr) return res.status(500).json({ error: stockErr.message });
+
+    const rows = Array.isArray(stockRows) ? stockRows : [];
+
+    const mapWithLimit = async <T, R>(
+      items: T[],
+      maxConcurrent: number,
+      fn: (item: T, idx: number) => Promise<R>,
+    ): Promise<R[]> => {
+      const out: R[] = new Array(items.length);
+      let idx = 0;
+      const workers = new Array(Math.max(1, maxConcurrent))
+        .fill(null)
+        .map(async () => {
+          while (idx < items.length) {
+            const current = idx++;
+            out[current] = await fn(items[current], current);
+          }
+        });
+      await Promise.all(workers);
+      return out;
+    };
+
+    const items = await mapWithLimit(rows, 6, async (r: any) => {
+      const boughtRaw = Number((r as any)?.bought || 0);
+      const bought =
+        Number.isFinite(boughtRaw) && boughtRaw > 0 ? boughtRaw : 0;
+
+      const raw = (r as any)?.product_stripe_id;
+      const asString = String(raw ?? "").trim();
+      if (!asString || !asString.startsWith("prod_")) {
+        return { stock: { ...r, bought }, product: null, unit_price: null };
+      }
+
+      let product: any = null;
+      try {
+        product = await stripe.products.retrieve(asString);
+      } catch {
+        product = null;
+      }
+      if (product && (product as any)?.active === false) {
+        return { stock: { ...r, bought }, product: null, unit_price: null };
+      }
+
+      let unit_price: number | null = null;
+      if (product?.id) {
+        try {
+          const p = await stripe.prices.list({
+            product: product.id,
+            active: true,
+            limit: 100,
+          } as any);
+          const prices = Array.isArray((p as any)?.data) ? (p as any).data : [];
+          const eur = prices.find(
+            (pr: any) =>
+              String(pr?.currency || "").toLowerCase() === "eur" &&
+              Number(pr?.unit_amount || 0) > 0,
+          );
+          if (eur) {
+            const v = Number((eur as any)?.unit_amount || 0) / 100;
+            unit_price = Number.isFinite(v) && v > 0 ? v : null;
+          }
+        } catch {
+          unit_price = null;
+        }
+      }
+
+      return { stock: { ...r, bought }, product, unit_price };
+    });
+
+    return res.json({ success: true, items });
+  } catch (e: any) {
+    const msg = e?.message || "Erreur interne du serveur";
+    console.error("Error listing public stock products:", e);
+    return res.status(500).json({
+      error: typeof msg === "string" ? msg : "Erreur interne du serveur",
+    });
+  }
+});
+
 router.get("/:storeSlug/stock/products", async (req, res) => {
   try {
     const auth = getAuth(req);
@@ -2209,9 +2547,9 @@ router.put("/:storeSlug/stock/products/:stockId", async (req, res) => {
           ? parseInt(quantity.trim(), 10)
           : NaN;
     const normalizedQty =
-      Number.isFinite(qtyRaw) && qtyRaw > 0 ? Math.floor(qtyRaw) : NaN;
-    if (!Number.isFinite(normalizedQty) || normalizedQty <= 0) {
-      return res.status(400).json({ error: "Quantité invalide (>= 1)" });
+      Number.isFinite(qtyRaw) && qtyRaw >= 0 ? Math.floor(qtyRaw) : NaN;
+    if (!Number.isFinite(normalizedQty) || normalizedQty < 0) {
+      return res.status(400).json({ error: "Quantité invalide (>= 0)" });
     }
 
     const weightRaw =
@@ -2501,20 +2839,6 @@ router.delete("/:storeSlug/stock/products", async (req, res) => {
         }
       }
 
-      if (bought > 0) {
-        const { error: updErr } = await supabase
-          .from("stock")
-          .update({ quantity: 0 })
-          .eq("id", id)
-          .eq("store_id", storeId);
-        if (updErr) {
-          results.push({ id, ok: false, error: updErr.message });
-          continue;
-        }
-        results.push({ id, ok: true, archived: true });
-        continue;
-      }
-
       const { error: delErr } = await supabase
         .from("stock")
         .delete()
@@ -2524,7 +2848,7 @@ router.delete("/:storeSlug/stock/products", async (req, res) => {
         results.push({ id, ok: false, error: delErr.message });
         continue;
       }
-      results.push({ id, ok: true, deleted: true });
+      results.push({ id, ok: true, deleted: true, bought });
     }
 
     return res.json({ success: true, results });
