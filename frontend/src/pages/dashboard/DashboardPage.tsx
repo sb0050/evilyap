@@ -5222,302 +5222,350 @@ export default function DashboardPage() {
                       pageGroups.map(g => (
                         <div
                           key={g.stripeId}
-                          className='border border-gray-200 rounded-md'
+                          className={`rounded-md ${
+                            selectedCartGroupIds.has(g.stripeId)
+                              ? 'ring-2 ring-indigo-500 ring-offset-1 ring-offset-gray-50'
+                              : ''
+                          }`}
                         >
-                          <div className='flex items-center justify-between p-3 bg-gray-50 border-b border-gray-200'>
-                            <div className='flex items-center gap-3'>
-                              <input
-                                type='checkbox'
-                                className='w-4 h-4 accent-blue-600'
-                                checked={selectedCartGroupIds.has(g.stripeId)}
-                                onChange={() => {
-                                  setSelectedCartGroupIds(prev => {
-                                    const next = new Set([...prev]);
-                                    if (next.has(g.stripeId)) {
-                                      next.delete(g.stripeId);
-                                    } else {
-                                      next.add(g.stripeId);
-                                    }
-                                    return next;
-                                  });
-                                }}
-                                aria-label='Sélectionner ce panier'
-                              />
-                              {g.user?.hasImage && g.user?.imageUrl ? (
-                                <img
-                                  src={g.user.imageUrl}
-                                  alt={g.user.fullName || 'Client'}
-                                  className='w-8 h-8 rounded-full object-cover'
+                          <div className='border border-gray-200 rounded-md overflow-hidden bg-white'>
+                            <div
+                              role='button'
+                              tabIndex={0}
+                              onClick={e => {
+                                if (isInteractiveRowClick(e.target)) return;
+                                setSelectedCartGroupIds(prev => {
+                                  const next = new Set([...prev]);
+                                  if (next.has(g.stripeId)) {
+                                    next.delete(g.stripeId);
+                                  } else {
+                                    next.add(g.stripeId);
+                                  }
+                                  return next;
+                                });
+                              }}
+                              onKeyDown={e => {
+                                if (e.key !== 'Enter' && e.key !== ' ') return;
+                                if (isInteractiveRowClick(e.target)) return;
+                                e.preventDefault();
+                                setSelectedCartGroupIds(prev => {
+                                  const next = new Set([...prev]);
+                                  if (next.has(g.stripeId)) {
+                                    next.delete(g.stripeId);
+                                  } else {
+                                    next.add(g.stripeId);
+                                  }
+                                  return next;
+                                });
+                              }}
+                              className='flex items-center justify-between p-3 bg-gray-50 border-b border-gray-200 cursor-pointer'
+                            >
+                              <div className='flex items-center gap-3'>
+                                <input
+                                  type='checkbox'
+                                  className='w-4 h-4 accent-blue-600'
+                                  checked={selectedCartGroupIds.has(g.stripeId)}
+                                  onChange={() => {
+                                    setSelectedCartGroupIds(prev => {
+                                      const next = new Set([...prev]);
+                                      if (next.has(g.stripeId)) {
+                                        next.delete(g.stripeId);
+                                      } else {
+                                        next.add(g.stripeId);
+                                      }
+                                      return next;
+                                    });
+                                  }}
+                                  aria-label='Sélectionner ce panier'
                                 />
-                              ) : (
-                                <div className='w-8 h-8 rounded-full bg-gray-300'></div>
-                              )}
-                              <div>
-                                <div className='flex items-center gap-2 text-gray-900 font-semibold text-sm'>
-                                  <span>
-                                    {g.user?.fullName || g.stripeId || 'Client'}
-                                  </span>
-                                  {recapSentByGroup[g.stripeId] && (
-                                    <span className='inline-flex items-center text-green-600 text-xs font-medium'>
-                                      <Check className='w-4 h-4 mr-1' />
-                                      {(() => {
-                                        const rel = formatRelativeSent(
-                                          recapSentAtByGroup[g.stripeId]
-                                        );
-                                        return rel
-                                          ? `recap envoyé · ${rel}`
-                                          : 'recap envoyé';
-                                      })()}
+                                {g.user?.hasImage && g.user?.imageUrl ? (
+                                  <img
+                                    src={g.user.imageUrl}
+                                    alt={g.user.fullName || 'Client'}
+                                    className='w-8 h-8 rounded-full object-cover'
+                                  />
+                                ) : (
+                                  <div className='w-8 h-8 rounded-full bg-gray-300'></div>
+                                )}
+                                <div>
+                                  <div className='flex items-center gap-2 text-gray-900 font-semibold text-sm'>
+                                    <span>
+                                      {g.user?.fullName ||
+                                        g.stripeId ||
+                                        'Client'}
                                     </span>
-                                  )}
-                                </div>
-                                <div className='text-xs text-gray-600'>
-                                  {g.user?.email || ''}
+                                    {recapSentByGroup[g.stripeId] && (
+                                      <span className='inline-flex items-center text-green-600 text-xs font-medium'>
+                                        <Check className='w-4 h-4 mr-1' />
+                                        {(() => {
+                                          const rel = formatRelativeSent(
+                                            recapSentAtByGroup[g.stripeId]
+                                          );
+                                          return rel
+                                            ? `recap envoyé · ${rel}`
+                                            : 'recap envoyé';
+                                        })()}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className='text-xs text-gray-600'>
+                                    {g.user?.email || ''}
+                                  </div>
                                 </div>
                               </div>
                             </div>
-                          </div>
-                          <div className='overflow-x-auto'>
-                            <table className='min-w-full divide-y divide-gray-200 text-sm'>
-                              <thead className='bg-white'>
-                                <tr>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Référence
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Description
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Prix unitaire (€)
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Quantité
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Total (€)
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Poids (kg)
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Créé
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Actions
-                                  </th>
-                                </tr>
-                              </thead>
-                              <tbody className='bg-white divide-y divide-gray-200'>
-                                {(() => {
-                                  const gid = g.stripeId;
-                                  const size = cartGroupPageSize[gid] ?? 10;
-                                  const page = cartGroupPage[gid] ?? 1;
-                                  const filtered = (g.items || []).filter(
-                                    (c: any) => {
-                                      const cartReference = String(
-                                        c?.product_reference || ''
-                                      ).trim();
-                                      const cartDescription = String(
-                                        c?.description || ''
-                                      ).trim();
-                                      return (
-                                        !isDeliveryRegulationText(
-                                          cartReference
-                                        ) &&
-                                        !isDeliveryRegulationText(
-                                          cartDescription
-                                        )
-                                      );
-                                    }
-                                  );
-                                  const totalPages = Math.max(
-                                    1,
-                                    Math.ceil(filtered.length / size)
-                                  );
-                                  const safePage = Math.min(
-                                    Math.max(1, page),
-                                    totalPages
-                                  );
-                                  const start = (safePage - 1) * size;
-                                  const items = filtered.slice(
-                                    start,
-                                    start + size
-                                  );
-                                  return items.map((c: any) => (
-                                    <tr key={c.id}>
-                                      <td className='px-4 py-3 text-gray-900 font-medium'>
-                                        {c.product_reference || '—'}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {c.description || '—'}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {typeof c.value === 'number'
-                                          ? c.value.toLocaleString('fr-FR', {
-                                              minimumFractionDigits: 2,
-                                              maximumFractionDigits: 2,
-                                            })
-                                          : '—'}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {Number.isFinite(Number(c.quantity))
-                                          ? Number(c.quantity)
-                                          : 1}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {(() => {
-                                          const unit = Number(c.value);
-                                          const qty = Number(c.quantity);
-                                          if (
-                                            !Number.isFinite(unit) ||
-                                            !Number.isFinite(qty)
-                                          ) {
-                                            return '—';
-                                          }
-                                          const total = unit * qty;
-                                          return total.toLocaleString('fr-FR', {
-                                            minimumFractionDigits: 2,
-                                            maximumFractionDigits: 2,
-                                          });
-                                        })()}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {Number.isFinite(Number(c.weight))
-                                          ? Number(c.weight).toLocaleString(
+                            <div className='overflow-x-auto'>
+                              <table className='min-w-full divide-y divide-gray-200 text-sm'>
+                                <thead className='bg-white'>
+                                  <tr>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Référence
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Description
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Prix unitaire (€)
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Quantité
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Total (€)
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Poids (kg)
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Créé
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Actions
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody className='bg-white divide-y divide-gray-200'>
+                                  {(() => {
+                                    const gid = g.stripeId;
+                                    const size = cartGroupPageSize[gid] ?? 10;
+                                    const page = cartGroupPage[gid] ?? 1;
+                                    const filtered = (g.items || []).filter(
+                                      (c: any) => {
+                                        const cartReference = String(
+                                          c?.product_reference || ''
+                                        ).trim();
+                                        const cartDescription = String(
+                                          c?.description || ''
+                                        ).trim();
+                                        return (
+                                          !isDeliveryRegulationText(
+                                            cartReference
+                                          ) &&
+                                          !isDeliveryRegulationText(
+                                            cartDescription
+                                          )
+                                        );
+                                      }
+                                    );
+                                    const totalPages = Math.max(
+                                      1,
+                                      Math.ceil(filtered.length / size)
+                                    );
+                                    const safePage = Math.min(
+                                      Math.max(1, page),
+                                      totalPages
+                                    );
+                                    const start = (safePage - 1) * size;
+                                    const items = filtered.slice(
+                                      start,
+                                      start + size
+                                    );
+                                    return items.map((c: any) => (
+                                      <tr key={c.id}>
+                                        <td className='px-4 py-3 text-gray-900 font-medium'>
+                                          {c.product_reference || '—'}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          {c.description || '—'}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          {typeof c.value === 'number'
+                                            ? c.value.toLocaleString('fr-FR', {
+                                                minimumFractionDigits: 2,
+                                                maximumFractionDigits: 2,
+                                              })
+                                            : '—'}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          {Number.isFinite(Number(c.quantity))
+                                            ? Number(c.quantity)
+                                            : 1}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          {(() => {
+                                            const unit = Number(c.value);
+                                            const qty = Number(c.quantity);
+                                            if (
+                                              !Number.isFinite(unit) ||
+                                              !Number.isFinite(qty)
+                                            ) {
+                                              return '—';
+                                            }
+                                            const total = unit * qty;
+                                            return total.toLocaleString(
                                               'fr-FR',
                                               {
                                                 minimumFractionDigits: 2,
                                                 maximumFractionDigits: 2,
                                               }
-                                            )
-                                          : '—'}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {c.created_at
-                                          ? new Date(
-                                              c.created_at
-                                            ).toLocaleString('fr-FR', {
-                                              dateStyle: 'short',
-                                              timeStyle: 'short',
-                                            })
-                                          : '—'}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
+                                            );
+                                          })()}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          {Number.isFinite(Number(c.weight))
+                                            ? Number(c.weight).toLocaleString(
+                                                'fr-FR',
+                                                {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                }
+                                              )
+                                            : '—'}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          {c.created_at
+                                            ? new Date(
+                                                c.created_at
+                                              ).toLocaleString('fr-FR', {
+                                                dateStyle: 'short',
+                                                timeStyle: 'short',
+                                              })
+                                            : '—'}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          <button
+                                            onClick={() =>
+                                              handleDeleteCart(c.id)
+                                            }
+                                            disabled={!!cartDeletingIds[c.id]}
+                                            className={`inline-flex items-center p-2 rounded-md border ${cartDeletingIds[c.id] ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-700 border-gray-300'}`}
+                                            title={'Supprimer'}
+                                          >
+                                            <Trash2
+                                              className={`w-4 h-4 ${cartDeletingIds[c.id] ? 'opacity-60' : ''}`}
+                                            />
+                                            <span className='ml-1'>
+                                              Supprimer
+                                            </span>
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    ));
+                                  })()}
+                                </tbody>
+                              </table>
+                              {(() => {
+                                const gid = g.stripeId;
+                                const size = cartGroupPageSize[gid] ?? 10;
+                                const page = cartGroupPage[gid] ?? 1;
+                                const filtered = (g.items || []).filter(
+                                  (c: any) => {
+                                    const cartReference = String(
+                                      c?.product_reference || ''
+                                    ).trim();
+                                    const cartDescription = String(
+                                      c?.description || ''
+                                    ).trim();
+                                    return (
+                                      !isDeliveryRegulationText(
+                                        cartReference
+                                      ) &&
+                                      !isDeliveryRegulationText(cartDescription)
+                                    );
+                                  }
+                                );
+                                const totalPages = Math.max(
+                                  1,
+                                  Math.ceil(filtered.length / size)
+                                );
+                                const safePage = Math.min(
+                                  Math.max(1, page),
+                                  totalPages
+                                );
+                                return (
+                                  <div className='flex items-center justify-end gap-2 p-3'>
+                                    <div className='hidden sm:flex items-center space-x-3'>
+                                      <div className='text-sm text-gray-600'>
+                                        Page {safePage} / {totalPages} —{' '}
+                                        {filtered.length}
+                                      </div>
+                                      <label className='text-sm text-gray-700'>
+                                        Lignes
+                                      </label>
+                                      <select
+                                        value={size}
+                                        onChange={e => {
+                                          const v = parseInt(
+                                            e.target.value,
+                                            10
+                                          );
+                                          setCartGroupPageSize(prev => ({
+                                            ...prev,
+                                            [gid]: isNaN(v) ? 10 : v,
+                                          }));
+                                          setCartGroupPage(prev => ({
+                                            ...prev,
+                                            [gid]: 1,
+                                          }));
+                                        }}
+                                        className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                                      >
+                                        <option value={5}>5</option>
+                                        <option value={10}>10</option>
+                                        <option value={20}>20</option>
+                                      </select>
+                                      <div className='flex items-center space-x-2'>
                                         <button
-                                          onClick={() => handleDeleteCart(c.id)}
-                                          disabled={!!cartDeletingIds[c.id]}
-                                          className={`inline-flex items-center p-2 rounded-md border ${cartDeletingIds[c.id] ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-700 border-gray-300'}`}
-                                          title={'Supprimer'}
+                                          onClick={() =>
+                                            setCartGroupPage(prev => ({
+                                              ...prev,
+                                              [gid]: Math.max(1, page - 1),
+                                            }))
+                                          }
+                                          disabled={page <= 1}
+                                          className={`px-3 py-1 text-sm rounded-md border ${
+                                            page <= 1
+                                              ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                          }`}
                                         >
-                                          <Trash2
-                                            className={`w-4 h-4 ${cartDeletingIds[c.id] ? 'opacity-60' : ''}`}
-                                          />
-                                          <span className='ml-1'>
-                                            Supprimer
-                                          </span>
+                                          Précédent
                                         </button>
-                                      </td>
-                                    </tr>
-                                  ));
-                                })()}
-                              </tbody>
-                            </table>
-                            {(() => {
-                              const gid = g.stripeId;
-                              const size = cartGroupPageSize[gid] ?? 10;
-                              const page = cartGroupPage[gid] ?? 1;
-                              const filtered = (g.items || []).filter(
-                                (c: any) => {
-                                  const cartReference = String(
-                                    c?.product_reference || ''
-                                  ).trim();
-                                  const cartDescription = String(
-                                    c?.description || ''
-                                  ).trim();
-                                  return (
-                                    !isDeliveryRegulationText(cartReference) &&
-                                    !isDeliveryRegulationText(cartDescription)
-                                  );
-                                }
-                              );
-                              const totalPages = Math.max(
-                                1,
-                                Math.ceil(filtered.length / size)
-                              );
-                              const safePage = Math.min(
-                                Math.max(1, page),
-                                totalPages
-                              );
-                              return (
-                                <div className='flex items-center justify-end gap-2 p-3'>
-                                  <div className='hidden sm:flex items-center space-x-3'>
-                                    <div className='text-sm text-gray-600'>
-                                      Page {safePage} / {totalPages} —{' '}
-                                      {filtered.length}
-                                    </div>
-                                    <label className='text-sm text-gray-700'>
-                                      Lignes
-                                    </label>
-                                    <select
-                                      value={size}
-                                      onChange={e => {
-                                        const v = parseInt(e.target.value, 10);
-                                        setCartGroupPageSize(prev => ({
-                                          ...prev,
-                                          [gid]: isNaN(v) ? 10 : v,
-                                        }));
-                                        setCartGroupPage(prev => ({
-                                          ...prev,
-                                          [gid]: 1,
-                                        }));
-                                      }}
-                                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                                    >
-                                      <option value={5}>5</option>
-                                      <option value={10}>10</option>
-                                      <option value={20}>20</option>
-                                    </select>
-                                    <div className='flex items-center space-x-2'>
-                                      <button
-                                        onClick={() =>
-                                          setCartGroupPage(prev => ({
-                                            ...prev,
-                                            [gid]: Math.max(1, page - 1),
-                                          }))
-                                        }
-                                        disabled={page <= 1}
-                                        className={`px-3 py-1 text-sm rounded-md border ${
-                                          page <= 1
-                                            ? 'bg-gray-100 text-gray-400 border-gray-200'
-                                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                                        }`}
-                                      >
-                                        Précédent
-                                      </button>
-                                      <button
-                                        onClick={() =>
-                                          setCartGroupPage(prev => ({
-                                            ...prev,
-                                            [gid]: Math.min(
-                                              totalPages,
-                                              page + 1
-                                            ),
-                                          }))
-                                        }
-                                        disabled={page >= totalPages}
-                                        className={`px-3 py-1 text-sm rounded-md border ${
-                                          page >= totalPages
-                                            ? 'bg-gray-100 text-gray-400 border-gray-200'
-                                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                                        }`}
-                                      >
-                                        Suivant
-                                      </button>
+                                        <button
+                                          onClick={() =>
+                                            setCartGroupPage(prev => ({
+                                              ...prev,
+                                              [gid]: Math.min(
+                                                totalPages,
+                                                page + 1
+                                              ),
+                                            }))
+                                          }
+                                          disabled={page >= totalPages}
+                                          className={`px-3 py-1 text-sm rounded-md border ${
+                                            page >= totalPages
+                                              ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                          }`}
+                                        >
+                                          Suivant
+                                        </button>
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                              );
-                            })()}
+                                );
+                              })()}
+                            </div>
                           </div>
                         </div>
                       ))
@@ -6235,7 +6283,23 @@ export default function DashboardPage() {
                           return (
                             <div
                               key={d.idKey}
-                              className='rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden'
+                              role='button'
+                              tabIndex={0}
+                              onClick={e => {
+                                if (isInteractiveRowClick(e.target)) return;
+                                toggleStockSelected(Number(d.stockId));
+                              }}
+                              onKeyDown={e => {
+                                if (e.key !== 'Enter' && e.key !== ' ') return;
+                                if (isInteractiveRowClick(e.target)) return;
+                                e.preventDefault();
+                                toggleStockSelected(Number(d.stockId));
+                              }}
+                              className={`rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden cursor-pointer ${
+                                isSelected
+                                  ? 'ring-2 ring-indigo-500 ring-inset'
+                                  : ''
+                              }`}
                             >
                               <div className='p-4 flex gap-4'>
                                 <div className='w-28 shrink-0'>
