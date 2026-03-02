@@ -29,7 +29,6 @@ import {
   BadgeCheck,
   Trash2,
   RefreshCw,
-  RotateCcw,
 } from 'lucide-react';
 import StripeWrapper from '../components/StripeWrapper';
 import ParcelPointMap from '../components/ParcelPointMap';
@@ -237,17 +236,6 @@ export default function CheckoutPage() {
   const [cartQtyInputById, setCartQtyInputById] = useState<
     Record<number, string>
   >({});
-<<<<<<< HEAD
-  const [returnExcludedCartItemIds, setReturnExcludedCartItemIds] = useState<
-    Record<number, boolean>
-  >({});
-  const [returnQtyInputByCartItemId, setReturnQtyInputByCartItemId] = useState<
-    Record<number, string>
-  >({});
-  const [returnQtyByCartItemId, setReturnQtyByCartItemId] = useState<
-    Record<number, number>
-  >({});
-=======
   const postPaymentStockCheckTimerRef = useRef<ReturnType<
     typeof setInterval
   > | null>(null);
@@ -262,7 +250,6 @@ export default function CheckoutPage() {
       postPaymentStockCheckInFlightRef.current = false;
     };
   }, []);
->>>>>>> 5bb8d3db53140dd24dfdc88d1e3ddab2bfc8b966
 
   const [storePickupAddress, setStorePickupAddress] = useState<
     Address | undefined
@@ -782,7 +769,6 @@ export default function CheckoutPage() {
     try {
       const next = new URLSearchParams(searchParams);
       next.delete('open_shipment');
-      next.delete('return_shipment');
       next.delete('payment_id');
       setSearchParams(next, { replace: true });
     } catch {}
@@ -979,8 +965,7 @@ export default function CheckoutPage() {
     const run = async () => {
       try {
         const openShipment =
-          String(searchParams.get('open_shipment') || '') === 'true' ||
-          String(searchParams.get('return_shipment') || '') === 'true';
+          String(searchParams.get('open_shipment') || '') === 'true';
         const paymentId = String(searchParams.get('payment_id') || '').trim();
         const { resp, json } = await getActiveOpenShipment();
         if (!resp.ok) return;
@@ -1019,8 +1004,7 @@ export default function CheckoutPage() {
 
   useEffect(() => {
     const openShipment =
-      String(searchParams.get('open_shipment') || '') === 'true' ||
-      String(searchParams.get('return_shipment') || '') === 'true';
+      String(searchParams.get('open_shipment') || '') === 'true';
     const paymentId = String(searchParams.get('payment_id') || '').trim();
     if (openShipmentInitHandled || shipmentCartRebuilt) return;
     if (openShipmentBlockModalOpen) return;
@@ -1186,9 +1170,6 @@ export default function CheckoutPage() {
         if (response.ok) {
           const data = await response.json();
           if (data.customer) {
-            const returnFlow =
-              String(searchParams.get('return_shipment') || '') === 'true' &&
-              Boolean(String(searchParams.get('payment_id') || '').trim());
             setCustomerData(data.customer);
             if (data.customer.name) {
               setFormData(prev => ({ ...prev, name: data.customer.name }));
@@ -1196,22 +1177,17 @@ export default function CheckoutPage() {
             if (data.customer.phone) {
               setFormData(prev => ({ ...prev, phone: data.customer.phone }));
             }
-            if (returnFlow) {
-              if (storePickupAddress) setAddress(storePickupAddress);
-              setDeliveryMethod('pickup_point');
-            } else {
-              if (data.customer.address) {
-                setAddress(data.customer.address);
-              } else if (data.customer?.metadata?.delivery_method) {
-                setDeliveryMethod(
-                  data.customer.metadata.delivery_method as
-                    | 'home_delivery'
-                    | 'pickup_point'
-                );
-              }
-              if ((data.customer as any)?.deliveryMethod) {
-                setDeliveryMethod((data.customer as any).deliveryMethod);
-              }
+            if (data.customer.address) {
+              setAddress(data.customer.address);
+            } else if (data.customer?.metadata?.delivery_method) {
+              setDeliveryMethod(
+                data.customer.metadata.delivery_method as
+                  | 'home_delivery'
+                  | 'pickup_point'
+              );
+            }
+            if ((data.customer as any)?.deliveryMethod) {
+              setDeliveryMethod((data.customer as any).deliveryMethod);
             }
             setSelectedParcelPoint(null);
             // Préselection via metadata
@@ -1367,26 +1343,6 @@ export default function CheckoutPage() {
     creditBalanceCents <= 0;
 
   const handleProceedToPayment = async () => {
-    const isReturnFlow =
-      String(searchParams.get('return_shipment') || '') === 'true' &&
-      Boolean(String(searchParams.get('payment_id') || '').trim());
-    if (isReturnFlow) {
-      setShowDelivery(true);
-      setIsEditingOrder(false);
-      setIsEditingDelivery(true);
-      setShowPayment(false);
-      setOrderAccordionOpen(true);
-      setPaymentAccordionOpen(false);
-      setPaymentError(null);
-      setSelectedParcelPoint(null);
-      setDeliveryMethod('pickup_point');
-      setFormData((prev: any) => ({ ...prev, shippingOfferCode: '' }));
-      if (storePickupAddress) {
-        setAddress(storePickupAddress);
-      }
-      return;
-    }
-
     if (
       (!isFormComplete() && cartItemsForStore.length === 0) ||
       !store ||
@@ -2074,68 +2030,8 @@ export default function CheckoutPage() {
     'https://d1tmgyvizond6e.cloudfront.net'
   ).replace(/\/+$/, '');
   const storeLogo = store?.id ? `${cloudBase}/images/${store.id}` : undefined;
-<<<<<<< HEAD
-  const isOpenShipmentMode =
-    (String(searchParams.get('open_shipment') || '') === 'true' ||
-      String(searchParams.get('return_shipment') || '') === 'true') &&
-    Boolean(String(searchParams.get('payment_id') || '').trim());
-  const isReturnShipmentMode =
-    String(searchParams.get('return_shipment') || '') === 'true' &&
-    Boolean(String(searchParams.get('payment_id') || '').trim());
-  const currentPaymentId = String(searchParams.get('payment_id') || '').trim();
-  const returnVisibleCartItems = isReturnShipmentMode
-    ? (cartItemsForStore || []).filter(it => !returnExcludedCartItemIds[it.id])
-    : cartItemsForStore || [];
-  const returnHasInvalidQty = (() => {
-    if (!isReturnShipmentMode) return false;
-    for (const it of returnVisibleCartItems) {
-      const maxQty = Math.max(1, Math.round(Number(it.quantity || 1)));
-      const raw = returnQtyInputByCartItemId[it.id];
-      if (raw !== undefined) {
-        const trimmed = String(raw).trim();
-        if (!trimmed) return true;
-        const n = Number(trimmed);
-        if (!Number.isFinite(n)) return true;
-        const rounded = Math.round(n);
-        if (rounded < 1 || rounded > maxQty) return true;
-      }
-      const desired = returnQtyByCartItemId[it.id];
-      if (desired === undefined) continue;
-      if (!Number.isFinite(desired)) return true;
-      const rounded = Math.round(desired);
-      if (rounded < 1 || rounded > maxQty) return true;
-    }
-    return false;
-  })();
-  const getReturnQtyForItem = (it: CartItem) => {
-    const maxQty = Math.max(1, Math.round(Number(it.quantity || 1)));
-    const raw = returnQtyInputByCartItemId[it.id];
-    if (raw !== undefined) {
-      const trimmed = String(raw).trim();
-      if (!trimmed) return maxQty;
-      const n = Number(trimmed);
-      if (Number.isFinite(n)) {
-        return Math.min(maxQty, Math.max(1, Math.round(n)));
-      }
-      return maxQty;
-    }
-    const desired = returnQtyByCartItemId[it.id];
-    if (Number.isFinite(desired)) {
-      return Math.min(maxQty, Math.max(1, Math.round(desired)));
-    }
-    return maxQty;
-  };
-  const returnSelectedCartItems = returnVisibleCartItems || [];
-  const returnSelectedTotal = isReturnShipmentMode
-    ? returnSelectedCartItems.reduce(
-        (sum, it) => sum + Number(it.value || 0) * getReturnQtyForItem(it),
-        0
-      )
-    : Number(cartTotalForStore || 0);
-=======
   const isOpenShipmentMode = isOpenShipmentUrl;
   const currentPaymentId = paymentIdParam;
->>>>>>> 5bb8d3db53140dd24dfdc88d1e3ddab2bfc8b966
 
   const cancelOpenShipmentAndVerify = async (preferredPaymentId?: string) => {
     if (!store?.id) return false;
@@ -2467,18 +2363,12 @@ export default function CheckoutPage() {
               )}
 
               <div className='p-6'>
-<<<<<<< HEAD
-                {returnVisibleCartItems.length > 0 && !showPayment && (
-=======
                 {!showPayment && (
->>>>>>> 5bb8d3db53140dd24dfdc88d1e3ddab2bfc8b966
                   <div className='mb-6 border border-gray-200 rounded-md p-4 bg-gray-50'>
                     <div className='mb-2'>
                       <div className='flex items-center justify-between gap-3'>
                         <h3 className='text-base font-semibold text-gray-900'>
-                          {isReturnShipmentMode
-                            ? 'Articles à retourner'
-                            : 'Articles du panier'}
+                          Articles du panier
                         </h3>
                         <button
                           type='button'
@@ -2493,96 +2383,6 @@ export default function CheckoutPage() {
                         </button>
                       </div>
                     </div>
-<<<<<<< HEAD
-                    <ul className='mt-1 space-y-1 max-h-40 overflow-auto text-sm text-gray-700'>
-                      {returnSelectedCartItems.map(it => (
-                        <li
-                          key={it.id}
-                          className='flex items-center justify-between gap-3'
-                        >
-                          <div className='min-w-0 flex-1'>
-                            {(() => {
-                              const ref = String(
-                                it.product_reference || ''
-                              ).trim();
-                              const key = getRefKey(ref);
-                              const info = cartStockByRefKey[key] || null;
-                              const stock = info?.stock || null;
-                              const product = info?.product || null;
-                              const stripePid = String(
-                                stock?.product_stripe_id ||
-                                  (it as any)?.product_stripe_id ||
-                                  ''
-                              ).trim();
-                              const hasStripeProduct =
-                                stripePid.startsWith('prod_');
-                              const title = String(
-                                product?.name ||
-                                  (!hasStripeProduct
-                                    ? (it as any)?.description
-                                    : null) ||
-                                  ref ||
-                                  ''
-                              ).trim();
-                              const stripeDesc = hasStripeProduct
-                                ? String(product?.description || '').trim()
-                                : '';
-                              const cartDesc = String(
-                                hasStripeProduct
-                                  ? stripeDesc
-                                  : (it as any)?.description || ''
-                              ).trim();
-                              const showDesc = Boolean(cartDesc);
-                              const imgRaw =
-                                Array.isArray(product?.images) &&
-                                product.images.length > 0
-                                  ? String(product.images[0] || '').trim()
-                                  : String(stock?.image_url || '')
-                                      .split(',')[0]
-                                      ?.trim() || '';
-                              return (
-                                <div className='flex items-center gap-2 min-w-0'>
-                                  {imgRaw ? (
-                                    <img
-                                      src={imgRaw}
-                                      alt={title || ref}
-                                      className='w-8 h-8 rounded object-cover bg-gray-100 shrink-0'
-                                    />
-                                  ) : (
-                                    <div className='w-8 h-8 rounded bg-gray-100 shrink-0' />
-                                  )}
-                                  <div className='min-w-0'>
-                                    <div className='truncate font-medium'>
-                                      {ref || '—'}
-                                    </div>
-                                    <div className='truncate text-xs text-gray-600'>
-                                      {title || '—'}
-                                    </div>
-                                    {showDesc ? (
-                                      <div className='truncate text-xs text-gray-500'>
-                                        {cartDesc}
-                                      </div>
-                                    ) : null}
-                                  </div>
-                                </div>
-                              );
-                            })()}
-                          </div>
-                          <div className='flex items-center gap-2'>
-                            {(() => {
-                              const currentQty = Math.max(
-                                1,
-                                Math.round(Number(it.quantity || 1))
-                              );
-                              const purchaseQty = currentQty;
-                              const localValue = isReturnShipmentMode
-                                ? returnQtyInputByCartItemId[it.id] !== undefined
-                                  ? returnQtyInputByCartItemId[it.id]
-                                  : String(getReturnQtyForItem(it))
-                                : cartQtyInputById[it.id] !== undefined
-                                  ? cartQtyInputById[it.id]
-                                  : String(currentQty);
-=======
                     {cartItemsForStore.length === 0 ? (
                       <div className='text-sm text-gray-600'>
                         Aucun article dans votre panier
@@ -2693,7 +2493,6 @@ export default function CheckoutPage() {
                                       cartQtyInputById[it.id] !== undefined
                                         ? cartQtyInputById[it.id]
                                         : String(currentQty);
->>>>>>> 5bb8d3db53140dd24dfdc88d1e3ddab2bfc8b966
 
                                     return (
                                       <div className='flex items-center gap-1'>
@@ -2789,166 +2588,6 @@ export default function CheckoutPage() {
                                   <span className='whitespace-nowrap text-xs text-gray-600'>
                                     {Number(it.value || 0).toFixed(2)} €/u
                                   </span>
-<<<<<<< HEAD
-                                  <input
-                                    type='number'
-                                    min='1'
-                                    max={isReturnShipmentMode ? purchaseQty : undefined}
-                                    step='1'
-                                    value={localValue}
-                                    onChange={e => {
-                                      const next = String(e.target.value || '');
-                                      if (isReturnShipmentMode) {
-                                        setReturnQtyInputByCartItemId(prev => ({
-                                          ...prev,
-                                          [it.id]: next,
-                                        }));
-                                      } else {
-                                        setCartQtyInputById(prev => ({
-                                          ...prev,
-                                          [it.id]: next,
-                                        }));
-                                      }
-                                    }}
-                                    onKeyDown={e => {
-                                      if (e.key !== 'Enter') return;
-                                      (e.currentTarget as any)?.blur?.();
-                                    }}
-                                    onBlur={() => {
-                                      if (isReturnShipmentMode) {
-                                        const raw = String(
-                                          returnQtyInputByCartItemId[it.id] ??
-                                            returnQtyByCartItemId[it.id] ??
-                                            purchaseQty
-                                        );
-                                        const n = Number(String(raw || '').trim());
-                                        const parsed = Math.min(
-                                          purchaseQty,
-                                          Math.max(
-                                            1,
-                                            Math.round(Number.isFinite(n) ? n : purchaseQty)
-                                          )
-                                        );
-                                        setReturnQtyInputByCartItemId(prev => {
-                                          const next = { ...prev };
-                                          delete next[it.id];
-                                          return next;
-                                        });
-                                        setReturnQtyByCartItemId(prev => ({
-                                          ...prev,
-                                          [it.id]: parsed,
-                                        }));
-                                      } else {
-                                        const raw = String(
-                                          cartQtyInputById[it.id] ?? currentQty
-                                        );
-                                        const parsed = Math.max(
-                                          1,
-                                          Math.round(Number(raw || 1))
-                                        );
-                                        setCartQtyInputById(prev => {
-                                          const next = { ...prev };
-                                          delete next[it.id];
-                                          return next;
-                                        });
-                                        handleUpdateCartItemQuantity(
-                                          it.id,
-                                          parsed
-                                        );
-                                      }
-                                    }}
-                                    className='border border-gray-300 rounded px-2 py-0.5 text-sm w-20'
-                                    aria-label='Quantité'
-                                  />
-                                </>
-                              );
-                            })()}
-                            <span className='whitespace-nowrap'>
-                              {(
-                                Number(it.value || 0) *
-                                Number(
-                                  isReturnShipmentMode
-                                    ? getReturnQtyForItem(it)
-                                    : Number(it.quantity || 1)
-                                )
-                              ).toFixed(2)}{' '}
-                              €
-                            </span>
-                            <button
-                              type='button'
-                              disabled={
-                                isReturnShipmentMode && returnSelectedCartItems.length <= 1
-                              }
-                              onClick={() => {
-                                if (isReturnShipmentMode) {
-                                  if (returnSelectedCartItems.length <= 1) return;
-                                  setReturnExcludedCartItemIds(prev => ({
-                                    ...prev,
-                                    [it.id]: true,
-                                  }));
-                                  return;
-                                }
-                                handleDeleteCartItem(it.id);
-                              }}
-                              className={`p-1 rounded text-red-600 ${
-                                isReturnShipmentMode && returnSelectedCartItems.length <= 1
-                                  ? 'opacity-40 cursor-not-allowed'
-                                  : 'hover:bg-red-50'
-                              }`}
-                              aria-label='Supprimer cet article'
-                            >
-                              <Trash2 className='w-4 h-4' />
-                            </button>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                    <div className='mt-3 flex items-center justify-between border-t border-gray-200 pt-2 text-sm font-semibold text-gray-900'>
-                      <span>Total</span>
-                      <span>{Number(returnSelectedTotal || 0).toFixed(2)} €</span>
-                    </div>
-                    {canEnterPromoCode ? (
-                      <div className='mt-3'>
-                        <label
-                          htmlFor='cart-promo-code'
-                          className='block text-sm font-medium text-gray-700 mb-1'
-                        >
-                          Code promo
-                        </label>
-                        <input
-                          id='cart-promo-code'
-                          value={promoCodeId}
-                          onChange={e => {
-                            setPromoCodeId(
-                              String(e.target.value || '').toUpperCase()
-                            );
-                            const next = String(
-                              e.target.value || ''
-                            ).toUpperCase();
-                            if (!next) {
-                              setPromoCodeError(null);
-                              return;
-                            }
-                            if (next.startsWith('PAYLIVE-')) {
-                              setPromoCodeError(null);
-                              return;
-                            }
-                            setPromoCodeError(null);
-                          }}
-                          placeholder='PAYLIVE-...'
-                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                        />
-                        {promoCodeError ? (
-                          <p className='text-xs text-red-600 mt-1'>
-                            {promoCodeError}
-                          </p>
-                        ) : (
-                          <p className='text-xs text-gray-500 mt-1'>
-                            Un seul code promo (optionnel).
-                          </p>
-                        )}
-                      </div>
-=======
                                   <span className='whitespace-nowrap font-semibold text-gray-900'>
                                     {(
                                       Number(it.value || 0) *
@@ -3013,7 +2652,6 @@ export default function CheckoutPage() {
                           </div>
                         ) : null}
                       </>
->>>>>>> 5bb8d3db53140dd24dfdc88d1e3ddab2bfc8b966
                     ) : null}
                   </div>
                 )}
@@ -3051,7 +2689,6 @@ export default function CheckoutPage() {
                   email={email}
                   setEmail={setEmail}
                   themeColor={themeColor}
-                  isReturnShipmentMode={isReturnShipmentMode}
                   showDelivery={showDelivery}
                   setShowDelivery={setShowDelivery}
                   showToast={showToast}
@@ -3372,9 +3009,7 @@ export default function CheckoutPage() {
                     (customerData as any)?.delivery_method ||
                     md?.delivery_method ||
                     null;
-                  const hasItems = isReturnShipmentMode
-                    ? returnSelectedCartItems.length > 0
-                    : cartItemsForStore.length > 0;
+                  const hasItems = cartItemsForStore.length > 0;
                   const deliveryIsValid = isEditingDelivery
                     ? isFormComplete()
                     : savedMethod
@@ -3400,8 +3035,7 @@ export default function CheckoutPage() {
                     hasItems &&
                     deliveryIsValid &&
                     parcelPointOk &&
-                    addressElementOk &&
-                    (!isReturnShipmentMode || !returnHasInvalidQty);
+                    addressElementOk;
 
                   const btnColor = canProceed ? '#0074D4' : '#6B7280';
                   return (
@@ -3418,16 +3052,8 @@ export default function CheckoutPage() {
                         </>
                       ) : (
                         <>
-                          {isReturnShipmentMode ? (
-                            <RotateCcw className='w-5 h-5' />
-                          ) : (
-                            <CreditCard className='w-5 h-5' />
-                          )}
-                          <span>
-                            {isReturnShipmentMode
-                              ? 'Procéder au retour'
-                              : 'Procéder au paiement'}
-                          </span>
+                          <CreditCard className='w-5 h-5' />
+                          <span>Procéder au paiement</span>
                         </>
                       )}
                     </button>
@@ -3504,7 +3130,6 @@ function CheckoutForm({
   email,
   setEmail,
   themeColor,
-  isReturnShipmentMode,
 
   showDelivery,
   setShowDelivery,
@@ -3553,7 +3178,6 @@ function CheckoutForm({
   email: string;
   setEmail: any;
   themeColor: string;
-  isReturnShipmentMode: boolean;
 
   showDelivery: boolean;
   setShowDelivery: (val: boolean) => void;
@@ -3588,7 +3212,7 @@ function CheckoutForm({
 
   const hasCartItems = cartItemsCount > 0;
 
-  const showOrderFields = !showPayment && !isReturnShipmentMode;
+  const showOrderFields = !showPayment;
 
   const showDeliveryFields = (() => {
     if (isEditingOrder) return false;
@@ -4429,7 +4053,7 @@ function CheckoutForm({
         </>
       )}
 
-      {showDeliveryFields && customerDetailsLoaded && !isReturnShipmentMode && (
+      {showDeliveryFields && customerDetailsLoaded && (
         <div className='bg-white rounded-lg shadow-sm'>
           <div className='pb-6 pt-6 border-b flex items-center space-x-3'>
             <MapPin className='w-6 h-6' style={{ color: themeColor }} />
@@ -4532,14 +4156,12 @@ function CheckoutForm({
                   ? savedMethod
                   : null;
               const mapDefaultDeliveryMethod = deliveryMethod;
-              const mapAddress = isReturnShipmentMode
-                ? storePickupAddress
-                : address || ((customerData as any)?.address as any) || undefined;
+              const mapAddress =
+                address || ((customerData as any)?.address as any) || undefined;
 
               return (
                 showMap && (
                   <ParcelPointMap
-                    mode={isReturnShipmentMode ? 'return' : 'delivery'}
                     address={mapAddress}
                     storePickupAddress={storePickupAddress}
                     storePickupPhone={storePickupPhone}
