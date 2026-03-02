@@ -970,11 +970,6 @@ class EmailService {
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin:0; padding:0;">
           <div style="max-width:600px;margin:0 auto;padding:20px;">
             <div style="background:linear-gradient(135deg,#28a745 0%,#20c997 100%);color:#ffffff;padding:30px;text-align:center;border-radius:10px 10px 0 0;">
-              ${
-                shouldShowLogo
-                  ? `<img src="${data.storeLogo}" alt="${data.storeName}" style="max-width:100px;margin-bottom:20px;">`
-                  : ""
-              }
               <h1>🧾 Récapitulatif de votre panier</h1>
               <p>${data.storeName}</p>
             </div>
@@ -1011,7 +1006,7 @@ class EmailService {
               </div>
 
               <div style="margin-top:24px;">
-                <a href="${data.checkoutLink}" style="display:block;width:94%;margin:0 auto;text-align:center;padding:16px 0;background:#0074d4;background-color:#0074d4;color:#ffffff !important;border-radius:8px;text-decoration:none;font-weight:700;font-size:18px;">Procéder au paiement</a>
+                <a href="${data.checkoutLink}" target="_blank" rel="noopener noreferrer" style="display:block;width:94%;margin:0 auto;text-align:center;padding:16px 0;background:#0074d4;background-color:#0074d4;color:#ffffff !important;border-radius:8px;text-decoration:none;font-weight:700;font-size:18px;">Procéder au paiement</a>
               </div>
 
               <div style="text-align:center;margin-top:30px;color:#666;font-size:14px;">
@@ -1800,10 +1795,12 @@ class EmailService {
     customerEmail: string;
     customerName?: string;
     storeName: string;
-    amount: number;
+    customerSpentAmount: number;
     currency: string;
     refundCreditAmount?: number;
     shipmentId?: string;
+    productReference?: string;
+    paymentId?: string;
   }): Promise<boolean> {
     try {
       const escapeHtml = (raw: string) =>
@@ -1817,7 +1814,10 @@ class EmailService {
       const to = String(data.customerEmail || "").trim();
       if (!to) return false;
 
-      const formattedAmount = this.formatAmount(data.amount, data.currency);
+      const formattedAmount = this.formatAmount(
+        data.customerSpentAmount,
+        data.currency,
+      );
       const refundCredit =
         typeof data.refundCreditAmount === "number" &&
         Number.isFinite(data.refundCreditAmount) &&
@@ -1829,6 +1829,28 @@ class EmailService {
           ? this.formatAmount(refundCredit, data.currency) ||
             String(refundCredit)
           : "";
+
+      const itemsRowsHtml = (() => {
+        const refs = String(data.productReference || "")
+          .split(/[;,]+/g)
+          .map((s) => String(s || "").trim())
+          .filter(Boolean);
+        if (refs.length === 0) return "";
+        return refs
+          .map((ref) => {
+            return `
+              <tr>
+                <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                  <div style="font-weight:700; color:#111;">${escapeHtml(ref)}</div>
+                </td>
+                <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                  1
+                </td>
+              </tr>
+            `;
+          })
+          .join("");
+      })();
 
       const htmlContent = `
         <!DOCTYPE html>
@@ -1864,10 +1886,37 @@ class EmailService {
                       )}</p>`
                     : ""
                 }
-                <p><strong>Montant :</strong> <span class="amount">${
+                ${
+                  data.paymentId
+                    ? `<p><strong>ID de transaction :</strong> ${escapeHtml(
+                        data.paymentId,
+                      )}</p>`
+                    : ""
+                }
+                <p><strong>Montant payé :</strong> <span class="amount">${
                   formattedAmount || ""
                 }</span></p>
               </div>
+              ${
+                itemsRowsHtml
+                  ? `
+                    <div class="order-details">
+                      <p style="margin:0 0 10px 0;"><strong>Articles :</strong></p>
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                        <thead>
+                          <tr>
+                            <th align="left" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Référence</th>
+                            <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Qté</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${itemsRowsHtml}
+                        </tbody>
+                      </table>
+                    </div>
+                  `
+                  : ""
+              }
               <p>
                 ${
                   formattedRefundCredit
@@ -1910,9 +1959,12 @@ class EmailService {
     storeName: string;
     customerName?: string;
     customerEmail?: string;
-    amount: number;
+    storeEarningsAmount: number;
+    customerSpentAmount?: number;
     currency: string;
     shipmentId?: string;
+    productReference?: string;
+    paymentId?: string;
   }): Promise<boolean> {
     try {
       const escapeHtml = (raw: string) =>
@@ -1926,7 +1978,43 @@ class EmailService {
       const to = String(data.ownerEmail || "").trim();
       if (!to) return false;
 
-      const formattedAmount = this.formatAmount(data.amount, data.currency);
+      const formattedEarnings = this.formatAmount(
+        data.storeEarningsAmount,
+        data.currency,
+      );
+      const spent =
+        typeof data.customerSpentAmount === "number" &&
+        Number.isFinite(data.customerSpentAmount) &&
+        data.customerSpentAmount > 0
+          ? data.customerSpentAmount
+          : 0;
+      const formattedSpent =
+        spent > 0
+          ? this.formatAmount(spent, data.currency) || String(spent)
+          : "";
+
+      const itemsRowsHtml = (() => {
+        const refs = String(data.productReference || "")
+          .split(/[;,]+/g)
+          .map((s) => String(s || "").trim())
+          .filter(Boolean);
+        if (refs.length === 0) return "";
+        return refs
+          .map((ref) => {
+            return `
+              <tr>
+                <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                  <div style="font-weight:700; color:#111;">${escapeHtml(ref)}</div>
+                </td>
+                <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                  1
+                </td>
+              </tr>
+            `;
+          })
+          .join("");
+      })();
+
       const htmlContent = `
         <!DOCTYPE html>
         <html>
@@ -1953,9 +2041,7 @@ class EmailService {
               <h2>Bonjour,</h2>
               <p>Une commande a été annulée.</p>
               <div class="order-details">
-                <p><strong>Client :</strong> ${escapeHtml(
-                  data.customerName || "Client",
-                )}</p>
+                <p><strong>Client :</strong> ${escapeHtml(data.customerName || "Client")}</p>
                 ${
                   data.customerEmail
                     ? `<p><strong>Email :</strong> ${escapeHtml(
@@ -1970,10 +2056,44 @@ class EmailService {
                       )}</p>`
                     : ""
                 }
-                <p><strong>Montant :</strong> <span class="amount">${
-                  formattedAmount || ""
+                ${
+                  data.paymentId
+                    ? `<p><strong>ID de transaction :</strong> ${escapeHtml(
+                        data.paymentId,
+                      )}</p>`
+                    : ""
+                }
+                ${
+                  formattedSpent
+                    ? `<p><strong>Montant payé client :</strong> ${escapeHtml(
+                        formattedSpent,
+                      )}</p>`
+                    : ""
+                }
+                <p><strong>Gains boutique :</strong> <span class="amount">${
+                  formattedEarnings || ""
                 }</span></p>
               </div>
+              ${
+                itemsRowsHtml
+                  ? `
+                    <div class="order-details">
+                      <p style="margin:0 0 10px 0;"><strong>Articles :</strong></p>
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                        <thead>
+                          <tr>
+                            <th align="left" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Référence</th>
+                            <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Qté</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${itemsRowsHtml}
+                        </tbody>
+                      </table>
+                    </div>
+                  `
+                  : ""
+              }
               <div class="footer">
                 <p>Le montant a été reversé à la cagnotte du client.</p>
               </div>

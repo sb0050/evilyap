@@ -695,10 +695,13 @@ export default function Header() {
                                   currentItems.length === 0
                                 }
                                 onClick={() => {
-                                  navigate(
-                                    `/checkout/${encodeURIComponent(
-                                      selectedStoreSlug
-                                    )}`
+                                  const url = `/checkout/${encodeURIComponent(
+                                    selectedStoreSlug
+                                  )}`;
+                                  window.open(
+                                    url,
+                                    '_blank',
+                                    'noopener,noreferrer'
                                   );
                                 }}
                                 className='w-full inline-flex items-center justify-center px-3 py-2 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60'

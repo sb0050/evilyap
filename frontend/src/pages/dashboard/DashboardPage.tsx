@@ -327,6 +327,11 @@ export default function DashboardPage() {
   const [cartSelectedStockItem, setCartSelectedStockItem] = useState<
     any | null
   >(null);
+  const [cartSuggestedStockItem, setCartSuggestedStockItem] = useState<
+    any | null
+  >(null);
+  const [cartIsReferenceInputFocused, setCartIsReferenceInputFocused] =
+    useState(false);
   const [cartCreating, setCartCreating] = useState<boolean>(false);
   const [storeCarts, setStoreCarts] = useState<any[]>([]);
   const [cartDeletingIds, setCartDeletingIds] = useState<
@@ -1412,11 +1417,12 @@ export default function DashboardPage() {
       showToast('Aucune vente sélectionnée pour le bordereau', 'error');
       return;
     }
+    showToast('Chargement...', 'info');
     const references: string[] = [];
     for (const s of targets) {
       const ok = await handleShippingDocument(s, { silent: true });
       if (ok) {
-        const ref = String(s.product_reference || s.shipment_id || '').trim();
+        const ref = String(s.shipment_id || '').trim();
         references.push(ref || String(s.shipment_id));
       }
     }
@@ -1439,6 +1445,7 @@ export default function DashboardPage() {
       showToast("Aucune vente sélectionnée pour l'annulation", 'error');
       return;
     }
+    showToast('Chargement...', 'info');
     const counts = new Map<string, number>();
     for (const s of targets) {
       const ok = await handleCancel(s, { silent: true });
@@ -1482,18 +1489,14 @@ export default function DashboardPage() {
       showToast('Aucune vente sélectionnée pour la facture', 'error');
       return;
     }
-    setToast({
-      message: 'Génération des factures…',
-      type: 'info',
-      visible: true,
-    });
+    showToast('Chargement...', 'info');
     const references: string[] = [];
     for (const s of targets) {
       const ok = await handleInvoice(s, { silent: true });
       if (ok) {
         const formatted = formatProductReferenceForToast(s.product_reference);
         const fallback = String(s.shipment_id || s.id).trim();
-        references.push(formatted || fallback);
+        references.push(fallback);
       }
     }
     if (references.length === 0) {
@@ -2392,6 +2395,14 @@ export default function DashboardPage() {
       String(raw || '')
         .split(';')
         .map(s => String(s || '').trim())
+        .map(s => {
+          const seg = String(s || '').trim();
+          const idx = seg.indexOf('**');
+          const head = idx >= 0 ? seg.slice(0, idx) : seg;
+          return String(head || '')
+            .replace(/\((.*)\)$/, '')
+            .trim();
+        })
         .filter(s => s.startsWith('prod_')),
     []
   );
@@ -2703,7 +2714,12 @@ export default function DashboardPage() {
   const selectedForInvoice = selectedSales.filter(
     s => String(s.status || '').toUpperCase() !== 'CANCELLED'
   );
+  const isStorePickupSale = (s: any) =>
+    String(s?.delivery_method || '')
+      .trim()
+      .toLowerCase() === 'store_pickup';
   const selectedForDoc = selectedSales.filter(s => {
+    if (isStorePickupSale(s)) return false;
     const stRaw = s.status;
     const st =
       stRaw == null
@@ -2714,6 +2730,7 @@ export default function DashboardPage() {
     return st === null || (st === 'PENDING' && s.document_created === true);
   });
   const hasBlockedDocSelection = selectedSales.some(s => {
+    if (isStorePickupSale(s)) return false;
     const stRaw = s.status;
     const st =
       stRaw == null
@@ -2724,7 +2741,7 @@ export default function DashboardPage() {
     return !(st === null || (st === 'PENDING' && s.document_created === true));
   });
   const shippingDocDisabled =
-    selectedSales.length === 0 || hasBlockedDocSelection;
+    selectedForDoc.length === 0 || hasBlockedDocSelection;
   const selectedForCancel = selectedSales.filter(
     s =>
       !s.is_final_destination &&
@@ -3010,20 +3027,17 @@ export default function DashboardPage() {
     if (section !== 'carts') return;
     const storeSlug = String(store?.slug || '').trim();
     const q = String(cartReference || '').trim();
-    const selectedRef = String(
-      (cartSelectedStockItem as any)?.stock?.product_reference || ''
-    )
-      .trim()
-      .toLowerCase();
-    if (selectedRef && selectedRef === q.toLowerCase()) {
-      setCartStockSuggestions([]);
-      setCartStockSuggestionsOpen(false);
-      return;
-    }
     if (!storeSlug || q.length < 2) {
       setCartStockSuggestions([]);
       setCartStockSuggestionsOpen(false);
-      if (!q) setCartSelectedStockItem(null);
+      setCartSuggestedStockItem(null);
+      if (!q) {
+        setCartSelectedStockItem(null);
+        setCartDescription('');
+        setCartAmountEuro('');
+        setCartWeightKg('');
+        setCartQuantity('1');
+      }
       return;
     }
 
@@ -3041,11 +3055,87 @@ export default function DashboardPage() {
         if (!resp.ok) {
           setCartStockSuggestions([]);
           setCartStockSuggestionsOpen(false);
+          setCartSuggestedStockItem(null);
           return;
         }
         const items = Array.isArray(json?.items) ? json.items : [];
-        setCartStockSuggestions(items);
+        const filtered = items.filter((s: any) => {
+          const qRaw = (s as any)?.stock?.quantity;
+          const qv =
+            typeof qRaw === 'number'
+              ? qRaw
+              : typeof qRaw === 'string'
+                ? Number(qRaw)
+                : qRaw === null || qRaw === undefined
+                  ? null
+                  : Number(qRaw);
+          const ref = String((s as any)?.stock?.product_reference || '').trim();
+          const title = String((s as any)?.product?.name || '').trim();
+          return (
+            !(qv !== null && Number.isFinite(qv) && qv <= 0) &&
+            !isDeliveryRegulationText(ref) &&
+            !isDeliveryRegulationText(title)
+          );
+        });
+        setCartStockSuggestions(filtered);
         setCartStockSuggestionsOpen(true);
+        const qKey = q.toLowerCase();
+        const exact = filtered.find((it: any) => {
+          const r = String(it?.stock?.product_reference || '')
+            .trim()
+            .toLowerCase();
+          return r === qKey;
+        });
+        if (!exact) {
+          setCartSuggestedStockItem(null);
+          return;
+        }
+        setCartSelectedStockItem(exact);
+        setCartSuggestedStockItem(null);
+        setCartStockSuggestionsOpen(false);
+        {
+          const stock = (exact as any)?.stock || {};
+          const product = (exact as any)?.product || null;
+          const ref = String(stock?.product_reference || '').trim();
+          const title = String(product?.name || ref || '').trim() || ref;
+          const priceRaw = Number((exact as any)?.unit_price);
+          const price =
+            Number.isFinite(priceRaw) && priceRaw > 0 ? priceRaw : null;
+          const stripeWeightRaw = (product as any)?.metadata?.weight_kg;
+          const stripeWeightParsed = stripeWeightRaw
+            ? Number(String(stripeWeightRaw).replace(',', '.'))
+            : NaN;
+          const stockWeightRaw = Number(stock?.weight);
+          const weight =
+            Number.isFinite(stripeWeightParsed) && stripeWeightParsed >= 0
+              ? stripeWeightParsed
+              : Number.isFinite(stockWeightRaw) && stockWeightRaw >= 0
+                ? stockWeightRaw
+                : null;
+          const qtyRaw = stock?.quantity;
+          const qtyParsed =
+            typeof qtyRaw === 'number'
+              ? qtyRaw
+              : typeof qtyRaw === 'string'
+                ? Number(qtyRaw)
+                : qtyRaw === null || qtyRaw === undefined
+                  ? null
+                  : Number(qtyRaw);
+          const qtyAvailable =
+            qtyParsed !== null && Number.isFinite(qtyParsed) && qtyParsed > 0
+              ? Math.floor(qtyParsed)
+              : 1;
+
+          setCartDescription(title);
+          setCartAmountEuro(price !== null ? String(price.toFixed(2)) : '');
+          setCartWeightKg(weight !== null ? String(weight) : '');
+          setCartQuantity(prev => {
+            const parsed = parseInt(String(prev || '').trim(), 10);
+            const wanted =
+              Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1;
+            return String(Math.max(1, Math.min(wanted, qtyAvailable)));
+          });
+        }
       } finally {
         if (!cancelled) setCartStockSuggestionsLoading(false);
       }
@@ -3054,7 +3144,7 @@ export default function DashboardPage() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [section, store?.slug, cartReference, cartSelectedStockItem]);
+  }, [section, store?.slug, cartReference]);
 
   const applyCartSuggestion = (s: any) => {
     const stock = s?.stock || {};
@@ -3095,6 +3185,7 @@ export default function DashboardPage() {
           : null;
 
     setCartSelectedStockItem(s);
+    setCartSuggestedStockItem(null);
     setCartReference(ref);
     setCartDescription(title);
     setCartAmountEuro(prev =>
@@ -3107,7 +3198,12 @@ export default function DashboardPage() {
     setCartWeightKg(prev =>
       weight !== null ? String(weight) : String(prev || '').trim() ? prev : ''
     );
-    setCartQuantity(String(qtyAvailable));
+    setCartQuantity(prev => {
+      const parsed = parseInt(String(prev || '').trim(), 10);
+      const wanted =
+        Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1;
+      return String(Math.max(1, Math.min(wanted, qtyAvailable)));
+    });
     setCartStockSuggestionsOpen(false);
   };
 
@@ -3813,18 +3909,20 @@ export default function DashboardPage() {
           {store && (
             <div className='shrink-0 flex flex-col items-end gap-2'>
               <button
-                onClick={() =>
-                  navigate(`/checkout/${encodeURIComponent(store.slug)}`)
-                }
+                onClick={() => {
+                  const url = `/checkout/${encodeURIComponent(store.slug)}`;
+                  window.open(url, '_blank', 'noopener,noreferrer');
+                }}
                 className='inline-flex items-center justify-center whitespace-nowrap px-2 py-2 text-xs sm:px-4 sm:py-2 sm:text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
               >
                 Formulaire de paiement
                 <ArrowRight className='w-3 h-3 sm:w-4 sm:h-4 ml-1.5 sm:ml-2' />
               </button>
               <button
-                onClick={() =>
-                  navigate(`/store/${encodeURIComponent(store.slug)}`)
-                }
+                onClick={() => {
+                  const url = `/store/${encodeURIComponent(store.slug)}`;
+                  window.open(url, '_blank', 'noopener,noreferrer');
+                }}
                 className='inline-flex items-center justify-center whitespace-nowrap px-2 py-2 text-xs sm:px-4 sm:py-2 sm:text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700'
               >
                 Voir ma boutique
@@ -4628,17 +4726,41 @@ export default function DashboardPage() {
                       value={cartReference}
                       onChange={e => {
                         const v = e.target.value;
+                        const currentSelectedRef = String(
+                          (cartSelectedStockItem as any)?.stock
+                            ?.product_reference ||
+                            (cartSuggestedStockItem as any)?.stock
+                              ?.product_reference ||
+                            ''
+                        )
+                          .trim()
+                          .toLowerCase();
+                        const nextRef = String(v || '')
+                          .trim()
+                          .toLowerCase();
                         setCartSelectedStockItem(null);
+                        setCartSuggestedStockItem(null);
+                        if (
+                          !nextRef ||
+                          (currentSelectedRef && nextRef !== currentSelectedRef)
+                        ) {
+                          setCartDescription('');
+                          setCartAmountEuro('');
+                          setCartWeightKg('');
+                          setCartQuantity('1');
+                        }
                         setCartReference(v);
                         setCartStockSuggestionsOpen(
                           Boolean(String(v || '').trim())
                         );
                       }}
                       onFocus={() => {
+                        setCartIsReferenceInputFocused(true);
                         if (cartStockSuggestions.length > 0)
                           setCartStockSuggestionsOpen(true);
                       }}
                       onBlur={() => {
+                        setCartIsReferenceInputFocused(false);
                         setTimeout(
                           () => setCartStockSuggestionsOpen(false),
                           150
@@ -4647,90 +4769,208 @@ export default function DashboardPage() {
                       placeholder='Ex: REF-001'
                       className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                     />
-                    {cartStockSuggestionsOpen &&
-                    (cartStockSuggestionsLoading ||
-                      cartStockSuggestions.length > 0) ? (
-                      <div className='absolute z-20 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg overflow-hidden'>
-                        {cartStockSuggestionsLoading ? (
-                          <div className='px-3 py-2 text-sm text-gray-500'>
-                            Recherche…
-                          </div>
-                        ) : null}
-                        {cartStockSuggestions.map((s: any, idx: number) => {
-                          const stock = s?.stock || {};
-                          const product = s?.product || null;
-                          const ref = String(
-                            stock?.product_reference || ''
-                          ).trim();
-                          const qRaw = (stock as any)?.quantity;
-                          const qty =
-                            typeof qRaw === 'number'
-                              ? qRaw
-                              : typeof qRaw === 'string'
-                                ? Number(qRaw)
-                                : qRaw === null || qRaw === undefined
-                                  ? null
-                                  : Number(qRaw);
-                          const disabled =
-                            qty !== null && Number.isFinite(qty) && qty <= 0;
-                          const title = String(
-                            product?.name || ref || ''
-                          ).trim();
-                          const priceRaw = Number((s as any)?.unit_price);
-                          const price =
-                            Number.isFinite(priceRaw) && priceRaw > 0
-                              ? priceRaw
-                              : null;
-                          const imgRaw =
-                            Array.isArray(product?.images) &&
-                            product.images.length > 0
-                              ? String(product.images[0] || '').trim()
-                              : String(stock?.image_url || '')
-                                  .split(',')[0]
-                                  ?.trim() || '';
-
+                    {cartStockSuggestionsOpen
+                      ? (() => {
+                          const visibleSuggestions =
+                            cartStockSuggestions.filter((s: any) => {
+                              const qRaw = (s as any)?.stock?.quantity;
+                              const q =
+                                typeof qRaw === 'number'
+                                  ? qRaw
+                                  : typeof qRaw === 'string'
+                                    ? Number(qRaw)
+                                    : qRaw === null || qRaw === undefined
+                                      ? null
+                                      : Number(qRaw);
+                              const ref = String(
+                                (s as any)?.stock?.product_reference || ''
+                              ).trim();
+                              const title = String(
+                                (s as any)?.product?.name || ''
+                              ).trim();
+                              return (
+                                !(q !== null && Number.isFinite(q) && q <= 0) &&
+                                !isDeliveryRegulationText(ref) &&
+                                !isDeliveryRegulationText(title)
+                              );
+                            });
+                          if (
+                            !cartStockSuggestionsLoading &&
+                            visibleSuggestions.length === 0
+                          ) {
+                            return null;
+                          }
                           return (
-                            <button
-                              key={String(stock?.id || ref || idx)}
-                              type='button'
-                              disabled={disabled}
-                              onMouseDown={e => e.preventDefault()}
-                              onClick={() => {
-                                if (disabled) return;
-                                applyCartSuggestion(s);
-                              }}
-                              className={`w-full px-3 py-2 text-left flex items-center gap-3 ${
-                                disabled
-                                  ? 'bg-gray-50 text-gray-400 cursor-not-allowed'
-                                  : 'hover:bg-gray-50'
-                              }`}
-                            >
-                              {imgRaw ? (
-                                <img
-                                  src={imgRaw}
-                                  alt={title || ref}
-                                  className='w-10 h-10 rounded object-cover bg-gray-100 shrink-0'
-                                />
-                              ) : (
-                                <div className='w-10 h-10 rounded bg-gray-100 shrink-0' />
-                              )}
-                              <div className='min-w-0 flex-1'>
-                                <div className='text-sm font-medium truncate'>
-                                  {ref || '—'}
+                            <div className='absolute z-20 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg overflow-hidden'>
+                              {cartStockSuggestionsLoading ? (
+                                <div className='px-3 py-2 text-sm text-gray-500'>
+                                  Recherche…
                                 </div>
-                                <div className='text-xs text-gray-600 truncate'>
-                                  {title || '—'}
-                                  {price !== null
-                                    ? ` • ${price.toFixed(2)} €`
-                                    : ''}
-                                </div>
-                              </div>
-                            </button>
+                              ) : null}
+                              {visibleSuggestions.map((s: any, idx: number) => {
+                                const stock = s?.stock || {};
+                                const product = s?.product || null;
+                                const ref = String(
+                                  stock?.product_reference || ''
+                                ).trim();
+                                const qRaw = (stock as any)?.quantity;
+                                const qty =
+                                  typeof qRaw === 'number'
+                                    ? qRaw
+                                    : typeof qRaw === 'string'
+                                      ? Number(qRaw)
+                                      : qRaw === null || qRaw === undefined
+                                        ? null
+                                        : Number(qRaw);
+                                const disabled =
+                                  qty !== null &&
+                                  Number.isFinite(qty) &&
+                                  qty <= 0;
+                                const title = String(
+                                  product?.name || ref || ''
+                                ).trim();
+                                const priceRaw = Number((s as any)?.unit_price);
+                                const unitPrice =
+                                  Number.isFinite(priceRaw) && priceRaw > 0
+                                    ? priceRaw
+                                    : null;
+                                const imgRaw =
+                                  Array.isArray(product?.images) &&
+                                  product.images.length > 0
+                                    ? String(product.images[0] || '').trim()
+                                    : String(stock?.image_url || '')
+                                        .split(',')[0]
+                                        ?.trim() || '';
+                                return (
+                                  <button
+                                    key={String(stock?.id || ref || idx)}
+                                    type='button'
+                                    disabled={disabled}
+                                    onMouseDown={e => e.preventDefault()}
+                                    onClick={() => {
+                                      if (disabled) return;
+                                      applyCartSuggestion(s);
+                                    }}
+                                    className={`w-full px-3 py-2 text-left flex items-center gap-3 ${
+                                      disabled
+                                        ? 'bg-gray-50 text-gray-400 cursor-not-allowed'
+                                        : 'hover:bg-gray-50'
+                                    }`}
+                                  >
+                                    {imgRaw ? (
+                                      <img
+                                        src={imgRaw}
+                                        alt={title || ref}
+                                        className='w-10 h-10 rounded object-cover bg-gray-100 shrink-0'
+                                      />
+                                    ) : (
+                                      <div className='w-10 h-10 rounded bg-gray-100 shrink-0' />
+                                    )}
+                                    <div className='min-w-0 flex-1'>
+                                      <div className='text-sm font-medium truncate'>
+                                        {ref || '—'}
+                                      </div>
+                                      <div className='text-xs text-gray-600 truncate'>
+                                        {title || '—'}
+                                        {unitPrice !== null
+                                          ? ` • ${unitPrice.toFixed(2)} €`
+                                          : ''}
+                                      </div>
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
                           );
-                        })}
-                      </div>
-                    ) : null}
+                        })()
+                      : null}
                   </div>
+                  {(cartSelectedStockItem || cartSuggestedStockItem) &&
+                  !cartStockSuggestionsOpen ? (
+                    <div
+                      className='mt-2 rounded-md border border-gray-200 bg-gray-50 p-3 flex items-start gap-3 cursor-pointer hover:bg-gray-100'
+                      role='button'
+                      tabIndex={0}
+                      onClick={() =>
+                        applyCartSuggestion(
+                          cartSelectedStockItem || cartSuggestedStockItem
+                        )
+                      }
+                      onKeyDown={e => {
+                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                        e.preventDefault();
+                        applyCartSuggestion(
+                          cartSelectedStockItem || cartSuggestedStockItem
+                        );
+                      }}
+                    >
+                      {(() => {
+                        const item = (cartSelectedStockItem ||
+                          cartSuggestedStockItem) as any;
+                        const stock = item?.stock || {};
+                        const product = item?.product || null;
+                        const ref = String(
+                          stock?.product_reference || ''
+                        ).trim();
+                        const title = String(product?.name || ref || '').trim();
+                        const imgRaw =
+                          Array.isArray(product?.images) &&
+                          product.images.length > 0
+                            ? String(product.images[0] || '').trim()
+                            : String(stock?.image_url || '')
+                                .split(',')[0]
+                                ?.trim() || '';
+                        const priceRaw = Number((item as any)?.unit_price);
+                        const unitPrice =
+                          Number.isFinite(priceRaw) && priceRaw > 0
+                            ? priceRaw
+                            : null;
+                        const stripeWeightRaw = (product as any)?.metadata
+                          ?.weight_kg;
+                        const stripeWeightParsed = stripeWeightRaw
+                          ? Number(String(stripeWeightRaw).replace(',', '.'))
+                          : NaN;
+                        const stockWeightRaw = Number(stock?.weight);
+                        const weight =
+                          Number.isFinite(stripeWeightParsed) &&
+                          stripeWeightParsed >= 0
+                            ? stripeWeightParsed
+                            : Number.isFinite(stockWeightRaw) &&
+                                stockWeightRaw >= 0
+                              ? stockWeightRaw
+                              : null;
+                        return (
+                          <>
+                            {imgRaw ? (
+                              <img
+                                src={imgRaw}
+                                alt={title || ref}
+                                className='w-14 h-14 rounded object-cover bg-gray-100 shrink-0'
+                              />
+                            ) : (
+                              <div className='w-14 h-14 rounded bg-gray-100 shrink-0' />
+                            )}
+                            <div className='min-w-0'>
+                              <div className='text-sm font-semibold truncate'>
+                                {title || ref || '—'}
+                              </div>
+                              <div className='text-xs text-gray-600 truncate'>
+                                {ref || '—'}
+                              </div>
+                              <div className='text-xs text-gray-600'>
+                                {unitPrice !== null
+                                  ? `Prix: ${unitPrice.toFixed(2)} €`
+                                  : 'Prix: —'}
+                                {weight !== null
+                                  ? ` • Poids: ${weight} kg`
+                                  : ''}
+                              </div>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className='space-y-2'>
@@ -4744,7 +4984,9 @@ export default function DashboardPage() {
                       onChange={e => setCartDescription(e.target.value)}
                       placeholder='Ex: Robe Noire'
                       required
-                      disabled={Boolean(cartSelectedStockItem)}
+                      disabled={Boolean(
+                        cartSelectedStockItem || cartSuggestedStockItem
+                      )}
                       className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
                     />
                   </div>
@@ -4760,7 +5002,9 @@ export default function DashboardPage() {
                       onChange={e => setCartWeightKg(e.target.value)}
                       placeholder='0.5'
                       required
-                      disabled={Boolean(cartSelectedStockItem)}
+                      disabled={Boolean(
+                        cartSelectedStockItem || cartSuggestedStockItem
+                      )}
                       className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
                     />
                   </div>
@@ -4778,7 +5022,9 @@ export default function DashboardPage() {
                       value={cartAmountEuro}
                       onChange={e => setCartAmountEuro(e.target.value)}
                       placeholder='Ex: 49.90'
-                      disabled={Boolean(cartSelectedStockItem)}
+                      disabled={Boolean(
+                        cartSelectedStockItem || cartSuggestedStockItem
+                      )}
                       className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
                     />
                     <div>

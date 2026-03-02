@@ -350,6 +350,15 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               ? tempTopupCentsParsed
               : 0;
           let effectiveTempTopupCents = tempTopupCents;
+          const minChargeCreditBackCentsParsed = Number.parseInt(
+            String(session.metadata?.min_charge_credit_back_cents || "0"),
+            10,
+          );
+          const minChargeCreditBackCents =
+            Number.isFinite(minChargeCreditBackCentsParsed) &&
+            minChargeCreditBackCentsParsed > 0
+              ? minChargeCreditBackCentsParsed
+              : 0;
 
           const deliveryDebtPaidCentsParsed = Number.parseInt(
             String(session.metadata?.delivery_debt_paid_cents || "0"),
@@ -1266,6 +1275,9 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                           regulationDiscountAppliedCents,
                       )
                     : 0;
+                if (openShipmentPaymentId && minChargeCreditBackCents > 0) {
+                  effectiveTempTopupCents += minChargeCreditBackCents;
+                }
 
                 if (paymentIntent?.id) {
                   try {
@@ -1758,7 +1770,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                 const cancelResp = await fetch(
                   `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
                     oldBoxtalShipmentId,
-                  )}?skipAdminRefundEmail=true`,
+                  )}?silent=true&skipCredit=true&skipAdminRefundEmail=true`,
                   { method: "DELETE" },
                 );
                 if (!cancelResp.ok) {

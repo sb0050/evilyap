@@ -1187,6 +1187,9 @@ router.delete("/shipping-orders/:id", async (req, res) => {
     const skipAdminRefundEmail =
       String((req.query as any)?.skipAdminRefundEmail || "").toLowerCase() ===
         "true" || silent;
+    const skipCredit =
+      String((req.query as any)?.skipCredit || "").toLowerCase() === "true" ||
+      String((req.query as any)?.skip_credit || "").toLowerCase() === "true";
 
     let shipment: any = null;
     try {
@@ -1244,9 +1247,10 @@ router.delete("/shipping-orders/:id", async (req, res) => {
       0,
       Math.round(Number((shipment as any)?.customer_spent_amount || 0)),
     );
-    const creditCents = Number.isFinite(customerSpentAmountCents)
-      ? customerSpentAmountCents
-      : 0;
+    const creditCents =
+      !skipCredit && Number.isFinite(customerSpentAmountCents)
+        ? customerSpentAmountCents
+        : 0;
 
     const creditResult: any = {
       attempted: false,
@@ -1362,6 +1366,17 @@ router.delete("/shipping-orders/:id", async (req, res) => {
         : 0;
     const refundCreditAmount =
       Number.isFinite(creditCents) && creditCents > 0 ? creditCents / 100 : 0;
+    const storeEarningsAmountCents = Math.max(
+      0,
+      Math.round(Number((shipment as any)?.store_earnings_amount || 0)),
+    );
+    const storeEarningsAmount =
+      Number.isFinite(storeEarningsAmountCents) && storeEarningsAmountCents
+        ? storeEarningsAmountCents / 100
+        : 0;
+    const productReference = String(
+      (shipment as any)?.product_reference || "",
+    ).trim();
 
     if (!skipAdminRefundEmail) {
       try {
@@ -1398,9 +1413,12 @@ router.delete("/shipping-orders/:id", async (req, res) => {
           storeName,
           customerName,
           customerEmail,
-          amount: orderAmount,
+          storeEarningsAmount,
+          customerSpentAmount: orderAmount,
           currency: "EUR",
           shipmentId: id,
+          productReference: productReference || undefined,
+          paymentId: paymentId || undefined,
         });
       } catch (e) {
         console.warn("sendStoreOwnerOrderCancelled failed:", e);
@@ -1413,10 +1431,12 @@ router.delete("/shipping-orders/:id", async (req, res) => {
           customerEmail,
           customerName,
           storeName,
-          amount: orderAmount,
+          customerSpentAmount: orderAmount,
           currency: "EUR",
           refundCreditAmount,
           shipmentId: id,
+          productReference: productReference || undefined,
+          paymentId: paymentId || undefined,
         });
       } catch (e) {
         console.warn("sendCustomerOrderCancelled failed:", e);

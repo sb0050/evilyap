@@ -1443,13 +1443,13 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
               .eq("store_id", storeIdForCheck)
               .eq("product_reference", ref);
           }
-            if (unitWeight !== null) {
-              await supabase
-                .from("stock")
-                .update({ weight: unitWeight })
-                .eq("store_id", storeIdForCheck)
-                .eq("product_reference", ref)
-                .is("weight", null);
+          if (unitWeight !== null) {
+            await supabase
+              .from("stock")
+              .update({ weight: unitWeight })
+              .eq("store_id", storeIdForCheck)
+              .eq("product_reference", ref)
+              .is("weight", null);
           }
         }
       } catch (e) {
@@ -1494,9 +1494,6 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         quantity: 1,
       });
     }
-
-    const finalLineItems =
-      orderLineItems.length > 0 ? orderLineItems : undefined;
     const joinedRefs = (resolvedItems || [])
       .map((it: any) => String(it?.reference || "").trim())
       .filter((s: string) => s.length > 0)
@@ -1515,20 +1512,47 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       Number.isFinite(tempCentsParsed) && tempCentsParsed > 0
         ? tempCentsParsed
         : 0;
-    const tempEligibleSubtotalCents =
-      subtotalExclShippingCents +
-      Math.max(0, Math.round(deliveryDebtPaidCents));
-    const tempAppliedCents = Math.min(
-      tempEligibleSubtotalCents,
-      tempBalanceCents,
-    );
-    const tempTopupCents = Math.max(
-      0,
-      tempBalanceCents - tempEligibleSubtotalCents,
-    );
     const openShipmentPaymentIdTrim = String(
       openShipmentPaymentId || "",
     ).trim();
+    const shippingCostCents = Math.max(
+      0,
+      Math.round(Number(computedDeliveryCost || 0) * 100),
+    );
+    const minChargeCents = currencyLower === "eur" ? 50 : 0;
+    let minChargeCreditBackCents = 0;
+    const tempEligibleSubtotalCents =
+      subtotalExclShippingCents +
+      Math.max(0, Math.round(deliveryDebtPaidCents));
+    let tempAppliedCents = Math.min(
+      tempEligibleSubtotalCents,
+      tempBalanceCents,
+    );
+    if (
+      openShipmentPaymentIdTrim &&
+      minChargeCents > 0 &&
+      shippingCostCents === 0 &&
+      deliveryDebtPaidCents <= 0 &&
+      String(deliveryMethod || "") === "store_pickup"
+    ) {
+      const dueAfterTemp = Math.max(
+        0,
+        tempEligibleSubtotalCents - tempAppliedCents,
+      );
+      if (
+        tempEligibleSubtotalCents >= minChargeCents &&
+        dueAfterTemp < minChargeCents
+      ) {
+        const nextTempApplied = Math.max(
+          0,
+          tempEligibleSubtotalCents - minChargeCents,
+        );
+        if (nextTempApplied < tempAppliedCents) {
+          tempAppliedCents = nextTempApplied;
+        }
+      }
+    }
+    const tempTopupCents = Math.max(0, tempBalanceCents - tempAppliedCents);
 
     let creditAppliedCents = 0;
     let creditBalanceBeforeCents: number | null = null;
@@ -1554,12 +1578,41 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           0,
           creditBalanceCents - creditAppliedCents,
         );
+
+        if (
+          minChargeCents > 0 &&
+          shippingCostCents === 0 &&
+          deliveryDebtPaidCents <= 0 &&
+          String(deliveryMethod || "") === "store_pickup"
+        ) {
+          const dueAfterCredit = Math.max(
+            0,
+            remainingAfterTemp - creditAppliedCents,
+          );
+          if (
+            remainingAfterTemp >= minChargeCents &&
+            dueAfterCredit < minChargeCents
+          ) {
+            const nextCreditApplied = Math.max(
+              0,
+              remainingAfterTemp - minChargeCents,
+            );
+            if (nextCreditApplied < creditAppliedCents) {
+              const reducedBy = creditAppliedCents - nextCreditApplied;
+              creditAppliedCents = nextCreditApplied;
+              creditBalanceAfterCents = Math.max(
+                0,
+                Number(creditBalanceAfterCents || 0) + reducedBy,
+              );
+            }
+          }
+        }
       }
     }
 
     const totalDiscountCents = tempAppliedCents + creditAppliedCents;
     const couponDiscountCents = openShipmentPaymentIdTrim
-      ? tempBalanceCents
+      ? tempAppliedCents
       : totalDiscountCents;
     const totalDiscount = Math.ceil(couponDiscountCents / 100);
     const discountProductIds = Array.from(
@@ -1692,6 +1745,9 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       } catch (_e) {}
     }
 
+    const finalLineItems =
+      orderLineItems.length > 0 ? orderLineItems : undefined;
+
     // Créer la session de checkout intégrée
     const session = await stripe.checkout.sessions.create({
       ui_mode: "embedded",
@@ -1727,6 +1783,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           credit_coupon_id: creditCouponId || "",
           credit_promo_code_id: creditPromotionCodeId || "",
           open_shipment_payment_id: openShipmentPaymentIdTrim,
+          min_charge_credit_back_cents: String(minChargeCreditBackCents || 0),
         },
       },
       // Duplicate useful metadata at the session level for easier retrieval
@@ -1785,6 +1842,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         credit_coupon_id: creditCouponId || "",
         credit_promo_code_id: creditPromotionCodeId || "",
         open_shipment_payment_id: openShipmentPaymentIdTrim,
+        min_charge_credit_back_cents: String(minChargeCreditBackCents || 0),
       },
       line_items: finalLineItems as any,
       mode: "payment",

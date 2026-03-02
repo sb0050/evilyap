@@ -462,6 +462,14 @@ export default function OrdersPage() {
       String(raw || '')
         .split(';')
         .map(s => String(s || '').trim())
+        .map(s => {
+          const seg = String(s || '').trim();
+          const idx = seg.indexOf('**');
+          const head = idx >= 0 ? seg.slice(0, idx) : seg;
+          return String(head || '')
+            .replace(/\((.*)\)$/, '')
+            .trim();
+        })
         .filter(s => s.startsWith('prod_')),
     []
   );
@@ -755,8 +763,11 @@ export default function OrdersPage() {
   const canModifySelectedOrder = (() => {
     if (selectedOrders.length !== 1) return false;
     const s = selectedOrders[0];
-    const status = String(s.status || '').trim();
-    const okStatus = status === 'PENDING' || status === 'ANNOUNCED';
+    const status = String(s.status ?? '')
+      .trim()
+      .toUpperCase();
+    const okStatus =
+      status === '' || status === 'PENDING' || status === 'ANNOUNCED';
     const storeSlug = String(s.store?.slug || '').trim();
     const paymentId = String(s.payment_id || '').trim();
     const isOpening = openingShipmentId != null && openingShipmentId !== s.id;
@@ -834,8 +845,10 @@ export default function OrdersPage() {
   const handleModifySelectedOrder = async () => {
     if (selectedOrders.length !== 1) return;
     const s = selectedOrders[0];
-    const status = String(s.status || '').trim();
-    if (status !== 'PENDING' && status !== 'ANNOUNCED') return;
+    const status = String(s.status ?? '')
+      .trim()
+      .toUpperCase();
+    if (status !== '' && status !== 'PENDING' && status !== 'ANNOUNCED') return;
     const storeSlug = String(s.store?.slug || '').trim();
     const paymentId = String(s.payment_id || '').trim();
     if (!storeSlug || !paymentId) {
@@ -888,8 +901,10 @@ export default function OrdersPage() {
   const handleConfirmSwitchShipment = async () => {
     const s = switchShipmentTarget;
     if (!s) return;
-    const status = String(s.status || '').trim();
-    if (status !== 'PENDING' && status !== 'ANNOUNCED') return;
+    const status = String(s.status ?? '')
+      .trim()
+      .toUpperCase();
+    if (status !== '' && status !== 'PENDING' && status !== 'ANNOUNCED') return;
     const storeSlug = String(s.store?.slug || '').trim();
     const paymentId = String(s.payment_id || '').trim();
     if (!storeSlug || !paymentId) {
@@ -1324,6 +1339,7 @@ export default function OrdersPage() {
       showToast("Aucune commande sélectionnée pour l'annulation", 'error');
       return;
     }
+    showToast('Chargement...', 'info');
     const counts = new Map<string, number>();
     for (const s of selectedForCancel) {
       const ok = await handleCancel(s, { silent: true });
