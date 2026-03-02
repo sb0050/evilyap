@@ -237,6 +237,32 @@ export default function CheckoutPage() {
   const [cartQtyInputById, setCartQtyInputById] = useState<
     Record<number, string>
   >({});
+<<<<<<< HEAD
+  const [returnExcludedCartItemIds, setReturnExcludedCartItemIds] = useState<
+    Record<number, boolean>
+  >({});
+  const [returnQtyInputByCartItemId, setReturnQtyInputByCartItemId] = useState<
+    Record<number, string>
+  >({});
+  const [returnQtyByCartItemId, setReturnQtyByCartItemId] = useState<
+    Record<number, number>
+  >({});
+=======
+  const postPaymentStockCheckTimerRef = useRef<ReturnType<
+    typeof setInterval
+  > | null>(null);
+  const postPaymentStockCheckInFlightRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      if (postPaymentStockCheckTimerRef.current) {
+        clearInterval(postPaymentStockCheckTimerRef.current);
+      }
+      postPaymentStockCheckTimerRef.current = null;
+      postPaymentStockCheckInFlightRef.current = false;
+    };
+  }, []);
+>>>>>>> 5bb8d3db53140dd24dfdc88d1e3ddab2bfc8b966
 
   const [storePickupAddress, setStorePickupAddress] = useState<
     Address | undefined
@@ -2048,10 +2074,68 @@ export default function CheckoutPage() {
     'https://d1tmgyvizond6e.cloudfront.net'
   ).replace(/\/+$/, '');
   const storeLogo = store?.id ? `${cloudBase}/images/${store.id}` : undefined;
+<<<<<<< HEAD
   const isOpenShipmentMode =
-    String(searchParams.get('open_shipment') || '') === 'true' &&
+    (String(searchParams.get('open_shipment') || '') === 'true' ||
+      String(searchParams.get('return_shipment') || '') === 'true') &&
+    Boolean(String(searchParams.get('payment_id') || '').trim());
+  const isReturnShipmentMode =
+    String(searchParams.get('return_shipment') || '') === 'true' &&
     Boolean(String(searchParams.get('payment_id') || '').trim());
   const currentPaymentId = String(searchParams.get('payment_id') || '').trim();
+  const returnVisibleCartItems = isReturnShipmentMode
+    ? (cartItemsForStore || []).filter(it => !returnExcludedCartItemIds[it.id])
+    : cartItemsForStore || [];
+  const returnHasInvalidQty = (() => {
+    if (!isReturnShipmentMode) return false;
+    for (const it of returnVisibleCartItems) {
+      const maxQty = Math.max(1, Math.round(Number(it.quantity || 1)));
+      const raw = returnQtyInputByCartItemId[it.id];
+      if (raw !== undefined) {
+        const trimmed = String(raw).trim();
+        if (!trimmed) return true;
+        const n = Number(trimmed);
+        if (!Number.isFinite(n)) return true;
+        const rounded = Math.round(n);
+        if (rounded < 1 || rounded > maxQty) return true;
+      }
+      const desired = returnQtyByCartItemId[it.id];
+      if (desired === undefined) continue;
+      if (!Number.isFinite(desired)) return true;
+      const rounded = Math.round(desired);
+      if (rounded < 1 || rounded > maxQty) return true;
+    }
+    return false;
+  })();
+  const getReturnQtyForItem = (it: CartItem) => {
+    const maxQty = Math.max(1, Math.round(Number(it.quantity || 1)));
+    const raw = returnQtyInputByCartItemId[it.id];
+    if (raw !== undefined) {
+      const trimmed = String(raw).trim();
+      if (!trimmed) return maxQty;
+      const n = Number(trimmed);
+      if (Number.isFinite(n)) {
+        return Math.min(maxQty, Math.max(1, Math.round(n)));
+      }
+      return maxQty;
+    }
+    const desired = returnQtyByCartItemId[it.id];
+    if (Number.isFinite(desired)) {
+      return Math.min(maxQty, Math.max(1, Math.round(desired)));
+    }
+    return maxQty;
+  };
+  const returnSelectedCartItems = returnVisibleCartItems || [];
+  const returnSelectedTotal = isReturnShipmentMode
+    ? returnSelectedCartItems.reduce(
+        (sum, it) => sum + Number(it.value || 0) * getReturnQtyForItem(it),
+        0
+      )
+    : Number(cartTotalForStore || 0);
+=======
+  const isOpenShipmentMode = isOpenShipmentUrl;
+  const currentPaymentId = paymentIdParam;
+>>>>>>> 5bb8d3db53140dd24dfdc88d1e3ddab2bfc8b966
 
   const cancelOpenShipmentAndVerify = async (preferredPaymentId?: string) => {
     if (!store?.id) return false;
@@ -2383,7 +2467,11 @@ export default function CheckoutPage() {
               )}
 
               <div className='p-6'>
-                {cartItemsForStore.length > 0 && !showPayment && (
+<<<<<<< HEAD
+                {returnVisibleCartItems.length > 0 && !showPayment && (
+=======
+                {!showPayment && (
+>>>>>>> 5bb8d3db53140dd24dfdc88d1e3ddab2bfc8b966
                   <div className='mb-6 border border-gray-200 rounded-md p-4 bg-gray-50'>
                     <div className='mb-2'>
                       <div className='flex items-center justify-between gap-3'>
@@ -2405,8 +2493,9 @@ export default function CheckoutPage() {
                         </button>
                       </div>
                     </div>
+<<<<<<< HEAD
                     <ul className='mt-1 space-y-1 max-h-40 overflow-auto text-sm text-gray-700'>
-                      {cartItemsForStore.map(it => (
+                      {returnSelectedCartItems.map(it => (
                         <li
                           key={it.id}
                           className='flex items-center justify-between gap-3'
@@ -2485,49 +2574,288 @@ export default function CheckoutPage() {
                                 1,
                                 Math.round(Number(it.quantity || 1))
                               );
-                              const localValue =
-                                cartQtyInputById[it.id] !== undefined
+                              const purchaseQty = currentQty;
+                              const localValue = isReturnShipmentMode
+                                ? returnQtyInputByCartItemId[it.id] !== undefined
+                                  ? returnQtyInputByCartItemId[it.id]
+                                  : String(getReturnQtyForItem(it))
+                                : cartQtyInputById[it.id] !== undefined
                                   ? cartQtyInputById[it.id]
                                   : String(currentQty);
+=======
+                    {cartItemsForStore.length === 0 ? (
+                      <div className='text-sm text-gray-600'>
+                        Aucun article dans votre panier
+                      </div>
+                    ) : (
+                      <ul className='mt-1 max-h-40 overflow-auto text-sm text-gray-700 divide-y divide-gray-200'>
+                        {cartItemsForStore
+                          .filter(
+                            it =>
+                              !isDeliveryRegulationText(it.product_reference) &&
+                              !isDeliveryRegulationText(
+                                (it as any)?.description
+                              )
+                          )
+                          .map(it => (
+                            <li
+                              key={it.id}
+                              className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 py-3'
+                            >
+                              <div className='min-w-0 sm:flex-1'>
+                                {(() => {
+                                  const ref = String(
+                                    it.product_reference || ''
+                                  ).trim();
+                                  const key = getRefKey(ref);
+                                  const info = cartStockByRefKey[key] || null;
+                                  const stock = info?.stock || null;
+                                  const product = info?.product || null;
+                                  const stripePid = String(
+                                    stock?.product_stripe_id ||
+                                      (it as any)?.product_stripe_id ||
+                                      ''
+                                  ).trim();
+                                  const hasStripeProduct =
+                                    stripePid.startsWith('prod_');
+                                  const title = String(
+                                    product?.name ||
+                                      (!hasStripeProduct
+                                        ? (it as any)?.description
+                                        : null) ||
+                                      ref ||
+                                      ''
+                                  ).trim();
+                                  const stripeDesc = hasStripeProduct
+                                    ? String(product?.description || '').trim()
+                                    : '';
+                                  const cartDesc = String(
+                                    hasStripeProduct
+                                      ? stripeDesc
+                                      : (it as any)?.description || ''
+                                  ).trim();
+                                  const showDesc = Boolean(cartDesc);
+                                  const imgRaw =
+                                    Array.isArray(product?.images) &&
+                                    product.images.length > 0
+                                      ? String(product.images[0] || '').trim()
+                                      : String(stock?.image_url || '')
+                                          .split(',')[0]
+                                          ?.trim() || '';
+                                  return (
+                                    <div className='flex items-start justify-between gap-2'>
+                                      <div className='flex items-center gap-2 min-w-0'>
+                                        {imgRaw ? (
+                                          <img
+                                            src={imgRaw}
+                                            alt={title || ref}
+                                            className='w-8 h-8 rounded object-cover bg-gray-100 shrink-0'
+                                          />
+                                        ) : (
+                                          <div className='w-8 h-8 rounded bg-gray-100 shrink-0' />
+                                        )}
+                                        <div className='min-w-0'>
+                                          <div className='font-medium text-gray-900 break-words'>
+                                            {ref || '—'}
+                                          </div>
+                                          <div className='text-xs text-gray-600 break-words'>
+                                            {title || '—'}
+                                          </div>
+                                          {showDesc ? (
+                                            <div className='text-xs text-gray-500 break-words'>
+                                              {cartDesc}
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                      <button
+                                        type='button'
+                                        onClick={() =>
+                                          handleDeleteCartItem(it.id)
+                                        }
+                                        className='sm:hidden p-1 rounded hover:bg-red-50 text-red-600 shrink-0'
+                                        aria-label='Supprimer cet article'
+                                      >
+                                        <Trash2 className='w-4 h-4' />
+                                      </button>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                              <div className='w-full sm:w-auto'>
+                                <div className='mt-2 flex items-center justify-between gap-2 sm:mt-0 sm:justify-end sm:gap-2'>
+                                  {(() => {
+                                    const currentQty = Math.max(
+                                      1,
+                                      Math.round(Number(it.quantity || 1))
+                                    );
+                                    const localValue =
+                                      cartQtyInputById[it.id] !== undefined
+                                        ? cartQtyInputById[it.id]
+                                        : String(currentQty);
+>>>>>>> 5bb8d3db53140dd24dfdc88d1e3ddab2bfc8b966
 
-                              return (
-                                <>
+                                    return (
+                                      <div className='flex items-center gap-1'>
+                                        <button
+                                          type='button'
+                                          onClick={() => {
+                                            const next = Math.max(
+                                              1,
+                                              currentQty - 1
+                                            );
+                                            setCartQtyInputById(prev => {
+                                              const out = { ...prev };
+                                              delete out[it.id];
+                                              return out;
+                                            });
+                                            handleUpdateCartItemQuantity(
+                                              it.id,
+                                              next
+                                            );
+                                          }}
+                                          className='h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60'
+                                          aria-label='Diminuer la quantité'
+                                          disabled={currentQty <= 1}
+                                        >
+                                          -
+                                        </button>
+                                        <input
+                                          type='number'
+                                          inputMode='numeric'
+                                          min={1}
+                                          step={1}
+                                          value={localValue}
+                                          onChange={e => {
+                                            const next = String(
+                                              e.target.value || ''
+                                            );
+                                            setCartQtyInputById(prev => ({
+                                              ...prev,
+                                              [it.id]: next,
+                                            }));
+                                          }}
+                                          onKeyDown={e => {
+                                            if (e.key !== 'Enter') return;
+                                            (e.currentTarget as any)?.blur?.();
+                                          }}
+                                          onBlur={() => {
+                                            const raw = String(
+                                              cartQtyInputById[it.id] ??
+                                                currentQty
+                                            );
+                                            const parsed = Math.max(
+                                              1,
+                                              Math.floor(Number(raw || 1))
+                                            );
+                                            setCartQtyInputById(prev => {
+                                              const next = { ...prev };
+                                              delete next[it.id];
+                                              return next;
+                                            });
+                                            handleUpdateCartItemQuantity(
+                                              it.id,
+                                              parsed
+                                            );
+                                          }}
+                                          className='h-8 w-14 rounded-md border border-gray-200 px-2 text-sm text-gray-900'
+                                          aria-label='Quantité'
+                                        />
+                                        <button
+                                          type='button'
+                                          onClick={() => {
+                                            const next = Math.max(
+                                              1,
+                                              currentQty + 1
+                                            );
+                                            setCartQtyInputById(prev => {
+                                              const out = { ...prev };
+                                              delete out[it.id];
+                                              return out;
+                                            });
+                                            handleUpdateCartItemQuantity(
+                                              it.id,
+                                              next
+                                            );
+                                          }}
+                                          className='h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60'
+                                          aria-label='Augmenter la quantité'
+                                        >
+                                          +
+                                        </button>
+                                      </div>
+                                    );
+                                  })()}
                                   <span className='whitespace-nowrap text-xs text-gray-600'>
                                     {Number(it.value || 0).toFixed(2)} €/u
                                   </span>
+<<<<<<< HEAD
                                   <input
                                     type='number'
                                     min='1'
+                                    max={isReturnShipmentMode ? purchaseQty : undefined}
                                     step='1'
                                     value={localValue}
                                     onChange={e => {
                                       const next = String(e.target.value || '');
-                                      setCartQtyInputById(prev => ({
-                                        ...prev,
-                                        [it.id]: next,
-                                      }));
+                                      if (isReturnShipmentMode) {
+                                        setReturnQtyInputByCartItemId(prev => ({
+                                          ...prev,
+                                          [it.id]: next,
+                                        }));
+                                      } else {
+                                        setCartQtyInputById(prev => ({
+                                          ...prev,
+                                          [it.id]: next,
+                                        }));
+                                      }
                                     }}
                                     onKeyDown={e => {
                                       if (e.key !== 'Enter') return;
                                       (e.currentTarget as any)?.blur?.();
                                     }}
                                     onBlur={() => {
-                                      const raw = String(
-                                        cartQtyInputById[it.id] ?? currentQty
-                                      );
-                                      const parsed = Math.max(
-                                        1,
-                                        Math.round(Number(raw || 1))
-                                      );
-                                      setCartQtyInputById(prev => {
-                                        const next = { ...prev };
-                                        delete next[it.id];
-                                        return next;
-                                      });
-                                      handleUpdateCartItemQuantity(
-                                        it.id,
-                                        parsed
-                                      );
+                                      if (isReturnShipmentMode) {
+                                        const raw = String(
+                                          returnQtyInputByCartItemId[it.id] ??
+                                            returnQtyByCartItemId[it.id] ??
+                                            purchaseQty
+                                        );
+                                        const n = Number(String(raw || '').trim());
+                                        const parsed = Math.min(
+                                          purchaseQty,
+                                          Math.max(
+                                            1,
+                                            Math.round(Number.isFinite(n) ? n : purchaseQty)
+                                          )
+                                        );
+                                        setReturnQtyInputByCartItemId(prev => {
+                                          const next = { ...prev };
+                                          delete next[it.id];
+                                          return next;
+                                        });
+                                        setReturnQtyByCartItemId(prev => ({
+                                          ...prev,
+                                          [it.id]: parsed,
+                                        }));
+                                      } else {
+                                        const raw = String(
+                                          cartQtyInputById[it.id] ?? currentQty
+                                        );
+                                        const parsed = Math.max(
+                                          1,
+                                          Math.round(Number(raw || 1))
+                                        );
+                                        setCartQtyInputById(prev => {
+                                          const next = { ...prev };
+                                          delete next[it.id];
+                                          return next;
+                                        });
+                                        handleUpdateCartItemQuantity(
+                                          it.id,
+                                          parsed
+                                        );
+                                      }
                                     }}
                                     className='border border-gray-300 rounded px-2 py-0.5 text-sm w-20'
                                     aria-label='Quantité'
@@ -2537,14 +2865,36 @@ export default function CheckoutPage() {
                             })()}
                             <span className='whitespace-nowrap'>
                               {(
-                                Number(it.value || 0) * Number(it.quantity || 1)
+                                Number(it.value || 0) *
+                                Number(
+                                  isReturnShipmentMode
+                                    ? getReturnQtyForItem(it)
+                                    : Number(it.quantity || 1)
+                                )
                               ).toFixed(2)}{' '}
                               €
                             </span>
                             <button
                               type='button'
-                              onClick={() => handleDeleteCartItem(it.id)}
-                              className='p-1 rounded hover:bg-red-50 text-red-600'
+                              disabled={
+                                isReturnShipmentMode && returnSelectedCartItems.length <= 1
+                              }
+                              onClick={() => {
+                                if (isReturnShipmentMode) {
+                                  if (returnSelectedCartItems.length <= 1) return;
+                                  setReturnExcludedCartItemIds(prev => ({
+                                    ...prev,
+                                    [it.id]: true,
+                                  }));
+                                  return;
+                                }
+                                handleDeleteCartItem(it.id);
+                              }}
+                              className={`p-1 rounded text-red-600 ${
+                                isReturnShipmentMode && returnSelectedCartItems.length <= 1
+                                  ? 'opacity-40 cursor-not-allowed'
+                                  : 'hover:bg-red-50'
+                              }`}
                               aria-label='Supprimer cet article'
                             >
                               <Trash2 className='w-4 h-4' />
@@ -2555,7 +2905,7 @@ export default function CheckoutPage() {
                     </ul>
                     <div className='mt-3 flex items-center justify-between border-t border-gray-200 pt-2 text-sm font-semibold text-gray-900'>
                       <span>Total</span>
-                      <span>{Number(cartTotalForStore || 0).toFixed(2)} €</span>
+                      <span>{Number(returnSelectedTotal || 0).toFixed(2)} €</span>
                     </div>
                     {canEnterPromoCode ? (
                       <div className='mt-3'>
@@ -2598,6 +2948,72 @@ export default function CheckoutPage() {
                           </p>
                         )}
                       </div>
+=======
+                                  <span className='whitespace-nowrap font-semibold text-gray-900'>
+                                    {(
+                                      Number(it.value || 0) *
+                                      Number(it.quantity || 1)
+                                    ).toFixed(2)}{' '}
+                                    €
+                                  </span>
+                                  <button
+                                    type='button'
+                                    onClick={() => handleDeleteCartItem(it.id)}
+                                    className='hidden sm:inline-flex p-1 rounded hover:bg-red-50 text-red-600'
+                                    aria-label='Supprimer cet article'
+                                  >
+                                    <Trash2 className='w-4 h-4' />
+                                  </button>
+                                </div>
+                              </div>
+                            </li>
+                          ))}
+                      </ul>
+                    )}
+                    {cartItemsForStore.length > 0 ? (
+                      <>
+                        <div className='mt-3 flex items-center justify-between border-t border-gray-200 pt-2 text-sm font-semibold text-gray-900'>
+                          <span>Total</span>
+                          <span>
+                            {Number(cartTotalForStore || 0).toFixed(2)} €
+                          </span>
+                        </div>
+                        {canEnterPromoCode ? (
+                          <div className='mt-3'>
+                            <input
+                              id='cart-promo-code'
+                              value={promoCodeId}
+                              onChange={e => {
+                                const next = String(
+                                  e.target.value || ''
+                                ).toUpperCase();
+                                setPromoCodeId(next);
+                                if (!next) {
+                                  setPromoCodeError(null);
+                                  return;
+                                }
+                                if (next.startsWith('CREDIT-')) {
+                                  setPromoCodeError('Ce préfixe est réservé.');
+                                  return;
+                                }
+                                if (next.startsWith('PAYLIVE-')) {
+                                  setPromoCodeError(null);
+                                  return;
+                                }
+                                setPromoCodeError(null);
+                              }}
+                              placeholder='Entrer un seul code promo (optionnel)'
+                              className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                            />
+                            {promoCodeError && (
+                              <p className='text-xs text-red-600 mt-1'>
+                                {promoCodeError}
+                              </p>
+                            )}
+                          </div>
+                        ) : null}
+                      </>
+>>>>>>> 5bb8d3db53140dd24dfdc88d1e3ddab2bfc8b966
                     ) : null}
                   </div>
                 )}

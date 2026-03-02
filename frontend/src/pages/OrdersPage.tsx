@@ -84,9 +84,15 @@ export default function OrdersPage() {
   );
   const [reloadingBalance, setReloadingBalance] = useState(false);
   const [error, setError] = useState<string | null>(null);
+<<<<<<< HEAD
+=======
   const [returnStatus, setReturnStatus] = useState<
     Record<number, 'idle' | 'loading' | 'success' | 'error'>
   >({});
+  const [cancelStatus, setCancelStatus] = useState<
+    Record<number, 'idle' | 'loading' | 'success' | 'error'>
+  >({});
+>>>>>>> 5bb8d3db53140dd24dfdc88d1e3ddab2bfc8b966
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState<number>(1);
   const [estimatedSortOrder, setEstimatedSortOrder] = useState<
@@ -789,10 +795,32 @@ export default function OrdersPage() {
     return (
       Boolean(s.shipment_id) &&
       !s.return_requested &&
+<<<<<<< HEAD
+      s.is_final_destination === true &&
+      Boolean(storeSlug) &&
+      Boolean(paymentId) &&
+      !isOpening
+    );
+  })();
+  const selectedForContact = selectedOrders.filter(s => !!s.shipment_id);
+=======
       !!s.is_final_destination &&
+      String(s.status || '').toUpperCase() !== 'CANCELLED' &&
       returnStatus[s.id] !== 'loading'
   );
-  const selectedForContact = selectedOrders.filter(s => !!s.shipment_id);
+  const selectedForContact = selectedOrders.filter(s => !!s.store_id);
+  const selectedForCancel = selectedOrders.filter(
+    s =>
+      !s.is_final_destination &&
+      (() => {
+        const st = String(s.status ?? '')
+          .trim()
+          .toUpperCase();
+        return st === '' || st === 'PENDING';
+      })() &&
+      cancelStatus[s.id] !== 'loading'
+  );
+>>>>>>> 5bb8d3db53140dd24dfdc88d1e3ddab2bfc8b966
   const visibleOrderIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
     visibleOrderIds.length > 0 &&
