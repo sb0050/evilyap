@@ -90,6 +90,9 @@ export default function OrdersPage() {
   const [cancelStatus, setCancelStatus] = useState<
     Record<number, 'idle' | 'loading' | 'success' | 'error'>
   >({});
+  const [confirmPickupStatus, setConfirmPickupStatus] = useState<
+    Record<number, 'idle' | 'loading' | 'success' | 'error'>
+  >({});
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState<number>(1);
   const [estimatedSortOrder, setEstimatedSortOrder] = useState<
@@ -779,6 +782,7 @@ export default function OrdersPage() {
       okStatus &&
       Boolean(storeSlug) &&
       Boolean(paymentId) &&
+      !Boolean(s.is_final_destination) &&
       !isOpening &&
       String(s.status || '').toUpperCase() !== 'CANCELLED'
     );
@@ -818,6 +822,17 @@ export default function OrdersPage() {
       })() &&
       cancelStatus[s.id] !== 'loading'
   );
+  const selectedForConfirmPickup = selectedOrders.filter(s => {
+    const dm = String(s.delivery_method || '')
+      .trim()
+      .toLowerCase();
+    return (
+      dm === 'store_pickup' &&
+      !s.is_final_destination &&
+      String(s.status || '').toUpperCase() !== 'CANCELLED' &&
+      confirmPickupStatus[s.id] !== 'loading'
+    );
+  });
   const visibleOrderIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
     visibleOrderIds.length > 0 &&
@@ -1417,6 +1432,92 @@ export default function OrdersPage() {
     showToast(msg, 'success');
   };
 
+  const handleConfirmPickup = async (
+    s: Shipment,
+    options?: { silent?: boolean }
+  ) => {
+    const silent = options?.silent;
+    const dm = String(s.delivery_method || '')
+      .trim()
+      .toLowerCase();
+    if (dm !== 'store_pickup') {
+      setConfirmPickupStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent)
+        showToast('Cette commande n’est pas en retrait boutique', 'error');
+      return false;
+    }
+    if (s.is_final_destination) return true;
+    if (String(s.status || '').toUpperCase() === 'CANCELLED') {
+      setConfirmPickupStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) showToast('Commande annulée', 'error');
+      return false;
+    }
+    try {
+      setConfirmPickupStatus(prev => ({ ...prev, [s.id]: 'loading' }));
+      const token = await getToken();
+      const url = `${apiBase}/api/shipments/${encodeURIComponent(
+        String(s.id)
+      )}/confirm-pickup`;
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      });
+      const json = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        setConfirmPickupStatus(prev => ({ ...prev, [s.id]: 'error' }));
+        const msg = json?.error || 'Erreur lors de la confirmation';
+        if (!silent)
+          showToast(typeof msg === 'string' ? msg : 'Erreur', 'error');
+        return false;
+      }
+      setConfirmPickupStatus(prev => ({ ...prev, [s.id]: 'success' }));
+      const updated = json?.shipment;
+      setShipments(prev =>
+        (prev || []).map(it => {
+          if (it.id !== s.id) return it;
+          if (updated && typeof updated === 'object')
+            return { ...it, ...updated };
+          return { ...it, is_final_destination: true };
+        })
+      );
+      if (!silent) showToast('Retrait confirmé', 'success');
+      return true;
+    } catch (_e) {
+      setConfirmPickupStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) showToast('Erreur lors de la confirmation', 'error');
+      return false;
+    }
+  };
+
+  const handleBatchConfirmPickup = async () => {
+    if (selectedForConfirmPickup.length === 0) {
+      showToast('Aucune commande sélectionnée pour le retrait', 'error');
+      return;
+    }
+    let ref: string | null = null;
+    for (const s of selectedForConfirmPickup) {
+      const ok = await handleConfirmPickup(s, { silent: true });
+      if (ok) {
+        ref = String(s.shipment_id || s.id || '').trim();
+      }
+    }
+    if (!ref) {
+      showToast(
+        'Aucune commande traitée. Vérifiez l’éligibilité des commandes sélectionnées.',
+        'info'
+      );
+      return;
+    }
+    const msg = ref
+      ? `Retrait confirmé pour : ${ref}`
+      : `Retrait confirmé pour ${selectedForConfirmPickup.length} références (${selectedForConfirmPickup
+          .slice(0, 3)
+          .join(', ')}...)`;
+    showToast(msg, 'success');
+  };
+
   return (
     <div className='min-h-screen bg-gray-50'>
       <Header />
@@ -1743,6 +1844,18 @@ export default function OrdersPage() {
                   Demander le retour
                 </button>
                 <button
+                  onClick={handleBatchConfirmPickup}
+                  disabled={selectedForConfirmPickup.length === 0}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                    selectedForConfirmPickup.length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                  }`}
+                  title='Confirmer le retrait'
+                >
+                  Confirmer le retrait
+                </button>
+                <button
                   onClick={() => handleOpenContact(selectedForContact)}
                   disabled={selectedForContact.length === 0}
                   className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
@@ -1782,7 +1895,9 @@ export default function OrdersPage() {
                     } ${
                       String(s.status || '').toUpperCase() === 'CANCELLED'
                         ? 'border-red-200 bg-red-50'
-                        : 'border-gray-200 bg-white'
+                        : s.is_final_destination
+                          ? 'border-green-200 bg-green-50'
+                          : 'border-gray-200 bg-white'
                     }`}
                   >
                     <div className='flex items-start justify-between'>
@@ -1858,6 +1973,11 @@ export default function OrdersPage() {
                         'CANCELLED' ? (
                           <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
                             Annulée
+                          </span>
+                        ) : String(s.status || '').toUpperCase() ===
+                          'DELIVERED' ? (
+                          <span className='inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700'>
+                            Livrée
                           </span>
                         ) : (
                           s.status || '—'
@@ -1997,7 +2117,9 @@ export default function OrdersPage() {
                       } ${
                         String(s.status || '').toUpperCase() === 'CANCELLED'
                           ? 'bg-red-50'
-                          : 'hover:bg-gray-50'
+                          : s.is_final_destination
+                            ? 'bg-green-50 hover:bg-green-100'
+                            : 'hover:bg-gray-50'
                       }`}
                     >
                       <td className='py-4 px-4 text-gray-700'>
@@ -2066,6 +2188,11 @@ export default function OrdersPage() {
                             'CANCELLED' ? (
                               <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-red-700'>
                                 ANNULÉE
+                              </span>
+                            ) : String(s.status || '').toUpperCase() ===
+                              'DELIVERED' ? (
+                              <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-green-700'>
+                                LIVRÉE
                               </span>
                             ) : (
                               s.status || '—'

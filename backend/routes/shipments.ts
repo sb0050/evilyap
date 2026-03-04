@@ -2423,6 +2423,77 @@ router.post("/:id/cancel", async (req, res) => {
   }
 });
 
+router.post("/:id/confirm-pickup", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: "Invalid shipment id" });
+    }
+
+    const { data: shipment, error: shipErr } = await supabase
+      .from("shipments")
+      .select("id,customer_stripe_id,delivery_method,status,is_final_destination")
+      .eq("id", id)
+      .maybeSingle();
+    if (shipErr) {
+      if ((shipErr as any)?.code === "PGRST116") {
+        return res.status(404).json({ error: "Shipment not found" });
+      }
+      return res.status(500).json({ error: shipErr.message });
+    }
+    if (!shipment) {
+      return res.status(404).json({ error: "Shipment not found" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const requesterStripeId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    const shipmentCustomerStripeId = String(
+      (shipment as any)?.customer_stripe_id || "",
+    ).trim();
+    if (!requesterStripeId || requesterStripeId !== shipmentCustomerStripeId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const deliveryMethod = String((shipment as any)?.delivery_method || "")
+      .trim()
+      .toLowerCase();
+    if (deliveryMethod !== "store_pickup") {
+      return res.status(400).json({ error: "Not a store_pickup shipment" });
+    }
+
+    const st = String((shipment as any)?.status || "").trim().toUpperCase();
+    if (st === "CANCELLED") {
+      return res.status(400).json({ error: "Commande déjà annulée" });
+    }
+
+    if ((shipment as any)?.is_final_destination === true) {
+      return res.json({ shipment, success: true });
+    }
+
+    const { data: updated, error: updErr } = await supabase
+      .from("shipments")
+      .update({ is_final_destination: true })
+      .eq("id", id)
+      .select("id,is_final_destination,delivery_method,status")
+      .maybeSingle();
+    if (updErr) {
+      return res.status(500).json({ error: updErr.message });
+    }
+
+    return res.json({ shipment: updated, success: true });
+  } catch (e) {
+    console.error("Error confirming pickup:", e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 router.get("/:id/invoice", async (req, res) => {
   try {
     const auth = getAuth(req);

@@ -1174,7 +1174,7 @@ class EmailService {
           if (code.startsWith("FEDX")) {
             return {
               name: "Fedex",
-              link: "https://www.fedex.com/en-us.html",
+              link: "https://local.fedex.com/fr-fr",
               imageFile: "fedex.jpg",
             };
           }
@@ -1340,10 +1340,10 @@ class EmailService {
                             ? `<p>🗺️ <a href="${networkInfo.link}" target="_blank" rel="noopener">Voir la carte des points relais</a></p>`
                             : ""
                         }
-                        <p><strong>Dimensions maximales des colis</strong> (selon le réseau) :</p>
+                        <p><strong>Suggestion pour la taille du colis</strong> (selon le réseau) :</p>
                         ${
                           networkImageAttachment
-                            ? `<img src="cid:${networkImageCid}" alt="Dimensions maximales - ${networkInfo.name}" />`
+                            ? `<img src="cid:${networkImageCid}" alt="Suggestion pour la taille du colis - ${networkInfo.name}" />`
                             : ""
                         }
                       `
@@ -1554,6 +1554,13 @@ class EmailService {
               name: "Delivengo",
               link: "https://localiser.laposte.fr/",
               imageFile: "delivengo.jpg",
+            };
+          }
+          if (code.startsWith("FEDX")) {
+            return {
+              name: "Fedex",
+              link: "https://local.fedex.com/fr-fr",
+              imageFile: "fedex.jpg",
             };
           }
 
@@ -1803,16 +1810,16 @@ class EmailService {
     paymentId?: string;
   }): Promise<boolean> {
     try {
-      const escapeHtml = (raw: string) =>
-        String(raw || "")
+      const to = String(data.customerEmail || "").trim();
+      if (!to) return false;
+
+      const safe = (raw: any) =>
+        String(raw ?? "")
           .replace(/&/g, "&amp;")
           .replace(/</g, "&lt;")
           .replace(/>/g, "&gt;")
           .replace(/"/g, "&quot;")
           .replace(/'/g, "&#039;");
-
-      const to = String(data.customerEmail || "").trim();
-      if (!to) return false;
 
       const formattedAmount = this.formatAmount(
         data.customerSpentAmount,
@@ -1831,20 +1838,108 @@ class EmailService {
           : "";
 
       const itemsRowsHtml = (() => {
-        const refs = String(data.productReference || "")
-          .split(/[;,]+/g)
+        const raw = String(data.productReference || "").trim();
+        if (!raw) return "";
+        const parts = raw
+          .split(";")
           .map((s) => String(s || "").trim())
           .filter(Boolean);
-        if (refs.length === 0) return "";
-        return refs
-          .map((ref) => {
+        if (parts.length === 0) return "";
+
+        const allStripeIds =
+          parts.length > 0 &&
+          parts.every((p) =>
+            String(p || "")
+              .trim()
+              .startsWith("prod_"),
+          );
+
+        const items: Array<{
+          reference: string;
+          quantity: number;
+          description?: string | null;
+        }> = [];
+
+        if (allStripeIds) {
+          const counts = new Map<string, number>();
+          for (const pid of parts) {
+            const id = String(pid || "").trim();
+            if (!id) continue;
+            counts.set(id, (counts.get(id) || 0) + 1);
+          }
+          for (const [reference, quantity] of counts.entries()) {
+            items.push({ reference, quantity, description: null });
+          }
+        } else {
+          const m = new Map<
+            string,
+            { quantity: number; description?: string | null }
+          >();
+          for (const seg of parts) {
+            const txt = String(seg || "").trim();
+            if (!txt) continue;
+
+            let reference = "";
+            let quantity = 1;
+            let description: string | null = null;
+
+            if (txt.includes("**")) {
+              const [refRaw, restRaw] = txt.split("**");
+              reference = String(refRaw || "").trim();
+              const rest = String(restRaw || "").trim();
+              const match = rest.match(/^(\d+)(?:@(\d+))?\s*(?:\((.*)\))?$/);
+              if (match) {
+                const q = Number(match[1]);
+                quantity = Number.isFinite(q) && q > 0 ? Math.floor(q) : 1;
+                const descRaw = String(match[3] || "").trim();
+                description = descRaw || null;
+              } else {
+                const qLoose = Number(rest);
+                quantity =
+                  Number.isFinite(qLoose) && qLoose > 0
+                    ? Math.floor(qLoose)
+                    : 1;
+              }
+            } else {
+              reference = txt;
+              quantity = 1;
+            }
+
+            if (!reference) continue;
+            const prev = m.get(reference) || { quantity: 0, description: null };
+            m.set(reference, {
+              quantity: (prev.quantity || 0) + Math.max(1, quantity),
+              description: prev.description || description || null,
+            });
+          }
+          for (const [reference, v] of m.entries()) {
+            items.push({
+              reference,
+              quantity: Math.max(1, Math.floor(Number(v.quantity || 1))),
+              description: v.description || null,
+            });
+          }
+        }
+
+        return items
+          .map((it) => {
+            const ref = safe(it.reference);
+            const qty = Math.max(1, Number(it.quantity || 1));
+            const desc = String(it.description || "").trim();
             return `
               <tr>
                 <td style="padding:12px 0; border-bottom:1px solid #eee;">
-                  <div style="font-weight:700; color:#111;">${escapeHtml(ref)}</div>
+                  <div style="font-weight:700; color:#111;">${ref || "—"}</div>
+                  ${
+                    desc
+                      ? `<div style="margin-top:4px; font-size:13px; color:#555;">${safe(
+                          desc,
+                        )}</div>`
+                      : ""
+                  }
                 </td>
                 <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
-                  1
+                  ${qty}
                 </td>
               </tr>
             `;
@@ -1872,23 +1967,23 @@ class EmailService {
           <div class="container">
             <div class="header">
               <h1>Commande annulée</h1>
-              <p>${escapeHtml(data.storeName)}</p>
+              <p>${safe(data.storeName)}</p>
             </div>
             <div class="content">
-              <h2>Bonjour ${escapeHtml(data.customerName || "Client")},</h2>
+              <h2>Bonjour ${safe(data.customerName || "Client")},</h2>
               <p>Votre commande a été annulée.</p>
               <div class="order-details">
-                <p><strong>Boutique :</strong> ${escapeHtml(data.storeName)}</p>
+                <p><strong>Boutique :</strong> ${safe(data.storeName)}</p>
                 ${
                   data.shipmentId
-                    ? `<p><strong>Commande :</strong> ${escapeHtml(
+                    ? `<p><strong>Commande :</strong> ${safe(
                         data.shipmentId,
                       )}</p>`
                     : ""
                 }
                 ${
                   data.paymentId
-                    ? `<p><strong>ID de transaction :</strong> ${escapeHtml(
+                    ? `<p><strong>ID de transaction :</strong> ${safe(
                         data.paymentId,
                       )}</p>`
                     : ""
@@ -1920,7 +2015,7 @@ class EmailService {
               <p>
                 ${
                   formattedRefundCredit
-                    ? `Le montant payé a été reversé à votre cagnotte : <strong>${escapeHtml(
+                    ? `Le montant payé a été reversé à votre cagnotte : <strong>${safe(
                         formattedRefundCredit,
                       )}</strong>.`
                     : "Le montant payé a été reversé à votre cagnotte."
@@ -1936,7 +2031,7 @@ class EmailService {
       `;
 
       const info = await this.transporter.sendMail({
-        from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
+        from: `"PayLive - ${data.storeName}" <${process.env.SMTP_USER}>`,
         to,
         subject: `Commande annulée - ${data.storeName}`,
         html: htmlContent,
@@ -1967,16 +2062,16 @@ class EmailService {
     paymentId?: string;
   }): Promise<boolean> {
     try {
-      const escapeHtml = (raw: string) =>
-        String(raw || "")
+      const to = String(data.ownerEmail || "").trim();
+      if (!to) return false;
+
+      const safe = (raw: any) =>
+        String(raw ?? "")
           .replace(/&/g, "&amp;")
           .replace(/</g, "&lt;")
           .replace(/>/g, "&gt;")
           .replace(/"/g, "&quot;")
           .replace(/'/g, "&#039;");
-
-      const to = String(data.ownerEmail || "").trim();
-      if (!to) return false;
 
       const formattedEarnings = this.formatAmount(
         data.storeEarningsAmount,
@@ -1994,20 +2089,108 @@ class EmailService {
           : "";
 
       const itemsRowsHtml = (() => {
-        const refs = String(data.productReference || "")
-          .split(/[;,]+/g)
+        const raw = String(data.productReference || "").trim();
+        if (!raw) return "";
+        const parts = raw
+          .split(";")
           .map((s) => String(s || "").trim())
           .filter(Boolean);
-        if (refs.length === 0) return "";
-        return refs
-          .map((ref) => {
+        if (parts.length === 0) return "";
+
+        const allStripeIds =
+          parts.length > 0 &&
+          parts.every((p) =>
+            String(p || "")
+              .trim()
+              .startsWith("prod_"),
+          );
+
+        const items: Array<{
+          reference: string;
+          quantity: number;
+          description?: string | null;
+        }> = [];
+
+        if (allStripeIds) {
+          const counts = new Map<string, number>();
+          for (const pid of parts) {
+            const id = String(pid || "").trim();
+            if (!id) continue;
+            counts.set(id, (counts.get(id) || 0) + 1);
+          }
+          for (const [reference, quantity] of counts.entries()) {
+            items.push({ reference, quantity, description: null });
+          }
+        } else {
+          const m = new Map<
+            string,
+            { quantity: number; description?: string | null }
+          >();
+          for (const seg of parts) {
+            const txt = String(seg || "").trim();
+            if (!txt) continue;
+
+            let reference = "";
+            let quantity = 1;
+            let description: string | null = null;
+
+            if (txt.includes("**")) {
+              const [refRaw, restRaw] = txt.split("**");
+              reference = String(refRaw || "").trim();
+              const rest = String(restRaw || "").trim();
+              const match = rest.match(/^(\d+)(?:@(\d+))?\s*(?:\((.*)\))?$/);
+              if (match) {
+                const q = Number(match[1]);
+                quantity = Number.isFinite(q) && q > 0 ? Math.floor(q) : 1;
+                const descRaw = String(match[3] || "").trim();
+                description = descRaw || null;
+              } else {
+                const qLoose = Number(rest);
+                quantity =
+                  Number.isFinite(qLoose) && qLoose > 0
+                    ? Math.floor(qLoose)
+                    : 1;
+              }
+            } else {
+              reference = txt;
+              quantity = 1;
+            }
+
+            if (!reference) continue;
+            const prev = m.get(reference) || { quantity: 0, description: null };
+            m.set(reference, {
+              quantity: (prev.quantity || 0) + Math.max(1, quantity),
+              description: prev.description || description || null,
+            });
+          }
+          for (const [reference, v] of m.entries()) {
+            items.push({
+              reference,
+              quantity: Math.max(1, Math.floor(Number(v.quantity || 1))),
+              description: v.description || null,
+            });
+          }
+        }
+
+        return items
+          .map((it) => {
+            const ref = safe(it.reference);
+            const qty = Math.max(1, Number(it.quantity || 1));
+            const desc = String(it.description || "").trim();
             return `
               <tr>
                 <td style="padding:12px 0; border-bottom:1px solid #eee;">
-                  <div style="font-weight:700; color:#111;">${escapeHtml(ref)}</div>
+                  <div style="font-weight:700; color:#111;">${ref || "—"}</div>
+                  ${
+                    desc
+                      ? `<div style="margin-top:4px; font-size:13px; color:#555;">${safe(
+                          desc,
+                        )}</div>`
+                      : ""
+                  }
                 </td>
                 <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
-                  1
+                  ${qty}
                 </td>
               </tr>
             `;
@@ -2035,37 +2218,37 @@ class EmailService {
           <div class="container">
             <div class="header">
               <h1>Commande annulée</h1>
-              <p>${escapeHtml(data.storeName)}</p>
+              <p>${safe(data.storeName)}</p>
             </div>
             <div class="content">
               <h2>Bonjour,</h2>
               <p>Une commande a été annulée.</p>
               <div class="order-details">
-                <p><strong>Client :</strong> ${escapeHtml(data.customerName || "Client")}</p>
+                <p><strong>Client :</strong> ${safe(data.customerName || "Client")}</p>
                 ${
                   data.customerEmail
-                    ? `<p><strong>Email :</strong> ${escapeHtml(
+                    ? `<p><strong>Email :</strong> ${safe(
                         data.customerEmail,
                       )}</p>`
                     : ""
                 }
                 ${
                   data.shipmentId
-                    ? `<p><strong>Commande :</strong> ${escapeHtml(
+                    ? `<p><strong>Commande :</strong> ${safe(
                         data.shipmentId,
                       )}</p>`
                     : ""
                 }
                 ${
                   data.paymentId
-                    ? `<p><strong>ID de transaction :</strong> ${escapeHtml(
+                    ? `<p><strong>ID de transaction :</strong> ${safe(
                         data.paymentId,
                       )}</p>`
                     : ""
                 }
                 ${
                   formattedSpent
-                    ? `<p><strong>Montant payé client :</strong> ${escapeHtml(
+                    ? `<p><strong>Montant payé client :</strong> ${safe(
                         formattedSpent,
                       )}</p>`
                     : ""
@@ -2094,9 +2277,9 @@ class EmailService {
                   `
                   : ""
               }
-              <div class="footer">
-                <p>Le montant a été reversé à la cagnotte du client.</p>
-              </div>
+              <p style="margin:18px 0 0 0; color:#111;">
+                Le montant a été reversé à la cagnotte du client.
+              </p>
             </div>
           </div>
         </body>
@@ -2931,8 +3114,17 @@ class EmailService {
       if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
         return false;
       }
-      const name = (data.customerName || "").trim();
-      const logo = (data.storeLogo || "").trim();
+      const safe = (raw: any) =>
+        String(raw ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+
+      const name = String(data.customerName || "").trim();
+      const storeName = String(data.storeName || "").trim();
+      const logo = String(data.storeLogo || "").trim();
       const htmlContent = `
         <!DOCTYPE html>
         <html>
@@ -2942,12 +3134,12 @@ class EmailService {
           <style>
             body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
             .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .header { background: linear-gradient(135deg, #6366f1 0%, #3b82f6 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
             .brand { font-weight: 700; font-size: 18px; margin-bottom: 8px; }
-            .header h1 { font-size: 36px; font-weight: 800; margin: 4px 0; }
-            .sub { font-size: 20px; margin-top: 8px; }
+            .header h1 { font-size: 34px; font-weight: 800; margin: 4px 0; }
+            .sub { font-size: 18px; margin-top: 8px; }
             .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-            .details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #667eea; }
+            .details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #6366f1; }
             .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
             .logo { max-width: 100px; margin-bottom: 12px; border-radius: 8px; }
           </style>
@@ -2955,14 +3147,20 @@ class EmailService {
         <body>
           <div class="container">
             <div class="header">
-              ${logo ? `<img src="${logo}" alt="${data.storeName}" class="logo">` : ""}
-              <div class="brand">${data.storeName}</div>
+              ${
+                logo
+                  ? `<img src="${safe(logo)}" alt="${safe(
+                      storeName,
+                    )}" class="logo">`
+                  : ""
+              }
+              <div class="brand">${safe(storeName)}</div>
               <h1>🎉 Félicitations !</h1>
               <p class="sub">✅ Vous avez gagné lors de notre tirage au sort</p>
             </div>
 
             <div class="content">
-              <h2>Bonjour ${name || ""},</h2>
+              <h2>Bonjour ${safe(name || "Client")},</h2>
 
               <p>Nous avons le plaisir de vous annoncer que vous avez été tiré(e) au sort lors de notre live.</p>
 
@@ -2970,23 +3168,23 @@ class EmailService {
                 <h3>📬 Prochaine étape</h3>
                 <p>Notre équipe va vous recontacter très vite avec les modalités pour recevoir votre gain.</p>
                 <p>Vous pouvez répondre directement à cet email si vous avez des questions.</p>
-            </div>
+              </div>
 
               <p>🙏 Merci pour votre participation !</p>
-              <p><strong>L'équipe ${data.storeName}</strong></p>
+              <p><strong>L’équipe ${safe(storeName || "PayLive")}</strong></p>
             </div>
 
             <div class="footer">
-              <p>© ${new Date().getFullYear()} ${data.storeName} - Tous droits réservés</p>
+              <p>© ${new Date().getFullYear()} PayLive - Tous droits réservés</p>
             </div>
           </div>
         </body>
         </html>
       `;
       const info = await this.transporter.sendMail({
-        from: `"${data.storeName}" <${process.env.SMTP_USER}>`,
+        from: `"PayLive - ${storeName}" <${process.env.SMTP_USER}>`,
         to,
-        subject: `🎉 Félicitations — ${data.storeName}`,
+        subject: `🎉 Félicitations — ${storeName}`,
         html: htmlContent,
       });
       console.log("raffle congrats email:", {

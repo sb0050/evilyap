@@ -720,6 +720,31 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       if (!data || data.length < pageSizeDb) break;
     }
 
+    const cancelledFeeShipments: any[] = [];
+    for (let from = 0; ; from += pageSizeDb) {
+      let q = supabase
+        .from("shipments")
+        .select("id, created_at, stripe_fees")
+        .eq("store_id", storeId)
+        .eq("status", "CANCELLED")
+        .not("payment_id", "is", null)
+        .order("created_at", { ascending: false })
+        .range(from, from + pageSizeDb - 1);
+
+      if (payoutsSinceIso) q = q.gt("created_at", payoutsSinceIso);
+
+      const { data, error } = await q;
+      if (error) {
+        console.error(
+          "Erreur Supabase (list cancelled shipments fees for payout):",
+          error,
+        );
+        return res.status(500).json({ error: error.message });
+      }
+      cancelledFeeShipments.push(...(data || []));
+      if (!data || data.length < pageSizeDb) break;
+    }
+
     const grossCents = payoutShipments.reduce((sum, r) => {
       const v = Number((r as any)?.store_earnings_amount || 0);
       return sum + (Number.isFinite(v) ? Math.round(v) : 0);
@@ -729,10 +754,19 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       return res.status(400).json({ error: "Aucun gain disponible" });
     }
 
-    const stripeFeesCents = payoutShipments.reduce((sum, r) => {
+    const stripeFeesCentsFromPaid = payoutShipments.reduce((sum, r) => {
       const v = Number((r as any)?.stripe_fees || 0);
       return sum + (Number.isFinite(v) ? Math.round(v) : 0);
     }, 0);
+    const stripeFeesCentsFromCancelled = cancelledFeeShipments.reduce(
+      (sum, r) => {
+        const v = Number((r as any)?.stripe_fees || 0);
+        return sum + (Number.isFinite(v) ? Math.round(v) : 0);
+      },
+      0,
+    );
+    const stripeFeesCents =
+      stripeFeesCentsFromPaid + stripeFeesCentsFromCancelled;
 
     const platformFeeCents = Math.round(grossCents * 0.015);
     const payliveFeeCents = stripeFeesCents + platformFeeCents;

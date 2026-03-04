@@ -167,7 +167,7 @@ router.post("/cotation", async (req, res) => {
     },
     CH: {
       "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
-      "FEDX-FedexRegionalEconomy": { width: 20, length: 200, height: 10 },
+      "FEDX-FedexRegionalEconomy": { width: 60, length: 120, height: 40 },
     },
   };
   const { sender, recipient, weight, network } = req.body || {};

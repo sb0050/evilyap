@@ -1604,11 +1604,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
               height: 20,
             },
             "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
-            "FEDX-FedexRegionalEconomy": {
-              width: 20,
-              length: 200,
-              height: 10,
-            },
+            "FEDX-FedexRegionalEconomy": { width: 60, length: 120, height: 40 },
           };
           const dims = offerDimensions[deliveryNetwork] || {
             width: 10,
