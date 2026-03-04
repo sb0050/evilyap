@@ -789,13 +789,21 @@ export default function OrdersPage() {
     const storeSlug = String(s.store?.slug || '').trim();
     const paymentId = String(s.payment_id || '').trim();
     const isOpening = openingShipmentId != null && openingShipmentId !== s.id;
+    const storeId = Number(s.store_id || 0);
+    const hasOtherReturnForStore =
+      Number.isFinite(storeId) &&
+      storeId > 0 &&
+      (shipments || []).some(
+        other => Number(other?.store_id || 0) === storeId && other?.return_requested
+      );
     return (
       Boolean(s.shipment_id) &&
       !s.return_requested &&
       s.is_final_destination === true &&
       Boolean(storeSlug) &&
       Boolean(paymentId) &&
-      !isOpening
+      !isOpening &&
+      !hasOtherReturnForStore
     );
   })();
   const selectedForContact = selectedOrders.filter(s => !!s.store_id);
@@ -992,7 +1000,7 @@ export default function OrdersPage() {
       const url = `/checkout/${encodeURIComponent(
         storeSlug
       )}?return_shipment=true&payment_id=${encodeURIComponent(paymentId)}`;
-      window.open(url, '_blank');
+      window.location.href = url;
       await handleRefreshOrders();
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Erreur inconnue';
@@ -1241,7 +1249,7 @@ export default function OrdersPage() {
       const url = `/checkout/${encodeURIComponent(
         storeSlug
       )}?return_shipment=true&payment_id=${encodeURIComponent(paymentId)}`;
-      window.open(url, '_blank');
+      window.location.href = url;
       await handleRefreshOrders();
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Erreur inconnue';

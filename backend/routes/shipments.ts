@@ -1043,11 +1043,23 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
 
     const lineItemByProductId = new Map<
       string,
-      { name: string; description: string; value: number; weight: number }
+      {
+        name: string;
+        description: string;
+        value: number;
+        weight: number;
+        quantity: number;
+      }
     >();
     const lineItemByNameLower = new Map<
       string,
-      { name: string; description: string; value: number; weight: number }
+      {
+        name: string;
+        description: string;
+        value: number;
+        weight: number;
+        quantity: number;
+      }
     >();
 
     if (stripe) {
@@ -1067,6 +1079,10 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
             ? lineItemsResp.data
             : [];
           for (const li of lineItems) {
+            const liQtyRaw = Number((li as any)?.quantity ?? NaN);
+            const liQty = Number.isFinite(liQtyRaw)
+              ? Math.max(1, Math.round(liQtyRaw))
+              : 1;
             const priceObj: any = li?.price || null;
             const unitAmount = Number(priceObj?.unit_amount || 0);
             const value = Number.isFinite(unitAmount)
@@ -1088,7 +1104,7 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
               ? Math.max(0, parsedMetaWeight)
               : (parseWeightKgFromDescription(description) ??
                 getFallbackWeightKgFromDescription(description));
-            const entry = { name, description, value, weight };
+            const entry = { name, description, value, weight, quantity: liQty };
             if (productId && productId.startsWith("prod_")) {
               lineItemByProductId.set(productId, entry);
             }
@@ -1108,8 +1124,15 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
       parsedRefs.every((p) => String(p || "").startsWith("prod_"));
 
     const stockRefByProductId = new Map<string, string>();
-    if (onlyStripeIds) {
-      const ids = Array.from(new Set(parsedRefs));
+    {
+      const ids = Array.from(
+        new Set(
+          [
+            ...parsedRefs.filter((p) => String(p || "").startsWith("prod_")),
+            ...Array.from(lineItemByProductId.keys()),
+          ].filter(Boolean),
+        ),
+      );
       if (ids.length > 0) {
         const { data: stockRows, error: stockErr } = await supabase
           .from("stock")
@@ -1131,12 +1154,21 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
       items = parsedFromShipment
         .map((p) => {
           const refRaw = String(p?.reference || "").trim();
-          const qty = Math.max(1, Number(p?.quantity || 1));
+          const shipmentQtyRaw = Number(p?.quantity ?? NaN);
           const shippedDesc = String(p?.description || "").trim();
 
           const li = refRaw.startsWith("prod_")
             ? lineItemByProductId.get(refRaw) || null
             : lineItemByNameLower.get(refRaw.toLowerCase()) || null;
+
+          const qty =
+            Number.isFinite(shipmentQtyRaw) && shipmentQtyRaw > 0
+              ? Math.max(
+                  1,
+                  Math.round(shipmentQtyRaw),
+                  Number(li?.quantity ?? 1),
+                )
+              : Math.max(1, Number(li?.quantity ?? 1));
 
           const resolvedRef = refRaw.startsWith("prod_")
             ? String(stockRefByProductId.get(refRaw) || refRaw).trim()
@@ -1177,16 +1209,63 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
         if (!pid) continue;
         if (isDeliveryRegulationItem(li.name, li.description)) continue;
         fallbackItems.push({
-          product_reference: pid,
+          product_reference: String(stockRefByProductId.get(pid) || pid).trim(),
           description: li.description,
           value: li.value,
-          quantity: 1,
+          quantity: Math.max(1, Number(li.quantity ?? 1)),
           weight: li.weight,
         });
       }
 
       items = fallbackItems;
     }
+
+    items = Array.from(
+      items.reduce((acc, it) => {
+        const ref = String(it?.product_reference || "").trim();
+        if (!ref) return acc;
+        const key = ref.toLowerCase();
+        const existing = acc.get(key) || null;
+        if (!existing) {
+          acc.set(key, {
+            product_reference: ref,
+            description: String(it.description || "").trim(),
+            value: Number(it.value || 0),
+            quantity: Math.max(1, Number(it.quantity || 1)),
+            weight: Number.isFinite(Number(it.weight))
+              ? Math.max(0, Number(it.weight))
+              : 0,
+          });
+          return acc;
+        }
+        const nextQty =
+          Math.max(1, Number(existing.quantity || 1)) +
+          Math.max(1, Number(it.quantity || 1));
+        const nextDesc =
+          String(existing.description || "").trim() ||
+          String(it.description || "").trim();
+        const existingValue = Number(existing.value || 0);
+        const incomingValue = Number(it.value || 0);
+        const nextValue =
+          existingValue > 0 ? existingValue : incomingValue > 0 ? incomingValue : 0;
+        const existingWeight = Number(existing.weight || 0);
+        const incomingWeight = Number(it.weight || 0);
+        const nextWeight =
+          existingWeight > 0
+            ? existingWeight
+            : incomingWeight > 0
+              ? incomingWeight
+              : 0;
+        acc.set(key, {
+          ...existing,
+          description: nextDesc,
+          value: nextValue,
+          quantity: nextQty,
+          weight: nextWeight,
+        });
+        return acc;
+      }, new Map<string, any>()),
+    ).map(([, v]) => v);
 
     {
       const delResp = await supabase
@@ -1264,6 +1343,159 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
   } catch (e) {
     console.error("Error rebuilding carts from payment:", e);
     return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/transaction-by-payment", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const paymentIdStr = String((req.query.paymentId as string) || "").trim();
+    const storeIdRaw = String((req.query.storeId as string) || "").trim();
+    const storeIdNum = storeIdRaw ? Number(storeIdRaw) : NaN;
+    if (!paymentIdStr) {
+      return res.status(400).json({ error: "paymentId requis" });
+    }
+    if (paymentIdStr && /[,()]/.test(paymentIdStr)) {
+      return res.status(400).json({ error: "paymentId invalide" });
+    }
+    if (storeIdRaw && (!Number.isFinite(storeIdNum) || storeIdNum <= 0)) {
+      return res.status(400).json({ error: "storeId invalide" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const stripeCustomerId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    if (!stripeCustomerId) {
+      return res
+        .status(400)
+        .json({ error: "stripe_id manquant dans les metadata du user" });
+    }
+
+    let shipmentQuery = supabase
+      .from("shipments")
+      .select("*")
+      .eq("payment_id", paymentIdStr)
+      .eq("customer_stripe_id", stripeCustomerId);
+    if (Number.isFinite(storeIdNum) && storeIdNum > 0) {
+      shipmentQuery = shipmentQuery.eq("store_id", storeIdNum);
+    }
+
+    const { data: shipment, error: shipErr } = await shipmentQuery.maybeSingle();
+    if (shipErr) {
+      return res.status(500).json({ error: shipErr.message });
+    }
+    if (!shipment) {
+      return res.status(404).json({ error: "Commande introuvable" });
+    }
+
+    const storeId = Number((shipment as any)?.store_id || 0);
+    const { data: store, error: storeErr } = await supabase
+      .from("stores")
+      .select("id,name,slug,address")
+      .eq("id", storeId)
+      .maybeSingle();
+    if (storeErr) {
+      return res.status(500).json({ error: storeErr.message });
+    }
+
+    let cartsQuery = supabase
+      .from("carts")
+      .select(
+        "id,store_id,customer_stripe_id,payment_id,product_reference,description,value,quantity,created_at,recap_sent_at,weight",
+      )
+      .eq("customer_stripe_id", stripeCustomerId)
+      .eq("payment_id", paymentIdStr)
+      .eq("store_id", storeId)
+      .order("id", { ascending: false });
+
+    const { data: cartItems, error: cartErr } = await cartsQuery;
+    if (cartErr) {
+      if (isMissingColumnError(cartErr, "payment_id")) {
+        return res
+          .status(500)
+          .json({ error: "Impossible de filtrer: colonne payment_id manquante" });
+      }
+      if (isMissingColumnError(cartErr, "weight")) {
+        const { data: cartItems2, error: cartErr2 } = await supabase
+          .from("carts")
+          .select(
+            "id,store_id,customer_stripe_id,payment_id,product_reference,description,value,quantity,created_at,recap_sent_at",
+          )
+          .eq("customer_stripe_id", stripeCustomerId)
+          .eq("payment_id", paymentIdStr)
+          .eq("store_id", storeId)
+          .order("id", { ascending: false });
+        if (cartErr2) {
+          return res.status(500).json({ error: cartErr2.message });
+        }
+        return res.json({
+          shipment,
+          store: store || null,
+          cartItems: cartItems2 || [],
+          stripe: null,
+        });
+      }
+      return res.status(500).json({ error: cartErr.message });
+    }
+
+    let stripeData: any = null;
+    if (stripe) {
+      try {
+        const pi = await stripe.paymentIntents.retrieve(paymentIdStr, {
+          expand: ["customer"],
+        } as any);
+        const piCustomerId =
+          typeof (pi as any)?.customer === "string"
+            ? String((pi as any).customer)
+            : String(((pi as any)?.customer as any)?.id || "");
+        if (piCustomerId && piCustomerId !== stripeCustomerId) {
+          return res.status(403).json({ error: "Accès interdit à cette commande" });
+        }
+        let session: any = null;
+        let lineItems: any[] = [];
+        try {
+          const sessions: any = await stripe.checkout.sessions.list({
+            payment_intent: paymentIdStr,
+            limit: 1,
+          });
+          const sessionId = String(sessions?.data?.[0]?.id || "").trim();
+          if (sessionId) {
+            session = await stripe.checkout.sessions.retrieve(sessionId, {
+              expand: ["payment_intent", "customer"],
+            } as any);
+            const liResp: any = await stripe.checkout.sessions.listLineItems(
+              sessionId,
+              { limit: 100, expand: ["data.price.product"] } as any,
+            );
+            lineItems = Array.isArray(liResp?.data) ? liResp.data : [];
+          }
+        } catch (_e) {
+          session = null;
+          lineItems = [];
+        }
+        stripeData = {
+          paymentIntent: pi,
+          session,
+          lineItems,
+        };
+      } catch (_e) {
+        stripeData = null;
+      }
+    }
+
+    return res.json({
+      shipment,
+      store: store || null,
+      cartItems: cartItems || [],
+      stripe: stripeData,
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e?.message || "Internal server error" });
   }
 });
 
@@ -1359,6 +1591,27 @@ router.post("/request-return", async (req, res) => {
       return res
         .status(400)
         .json({ error: "stripe_id manquant dans les metadata du user" });
+    }
+
+    const { data: existingReturnRows, error: existingErr } = await supabase
+      .from("shipments")
+      .select("id,payment_id")
+      .eq("customer_stripe_id", stripeCustomerId)
+      .eq("store_id", storeIdNum)
+      .eq("return_requested", true)
+      .limit(1);
+    if (existingErr) {
+      return res.status(500).json({ error: existingErr.message });
+    }
+    const existingReturn = (existingReturnRows || [])[0] || null;
+    if (existingReturn) {
+      const existingPaymentId = String((existingReturn as any)?.payment_id || "").trim();
+      if (!existingPaymentId || existingPaymentId !== paymentIdStr) {
+        return res.status(409).json({
+          error: "Une demande de retour est déjà en cours pour cette boutique",
+        });
+      }
+      return res.status(409).json({ error: "Retour déjà demandé" });
     }
 
     const { data: shipment, error: shipErr } = await supabase
