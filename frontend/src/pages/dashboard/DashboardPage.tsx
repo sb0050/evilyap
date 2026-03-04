@@ -1585,6 +1585,22 @@ export default function DashboardPage() {
       setWalletTransactionsTotalCount(Number(json?.total_count || 0));
       setWalletTransactionsSlug(slug);
       setWalletTablePage(1);
+      try {
+        const shipResp = await fetch(
+          `${apiBase}/api/shipments/store/${encodeURIComponent(slug)}`,
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+          }
+        );
+        const shipJson = await shipResp.json().catch(() => ({}));
+        if (shipResp.ok) {
+          setShipments(
+            Array.isArray(shipJson?.shipments) ? shipJson.shipments : []
+          );
+        }
+      } catch {}
     } catch (e: any) {
       const rawMsg = e?.message || 'Erreur transactions';
       if (!silent) {
@@ -3694,7 +3710,6 @@ export default function DashboardPage() {
       }
       setWinner(w);
       setShowWinnerModal(true);
-      showToast('Tirage effectué', 'success');
     } catch (e: any) {
       const raw = e?.message || 'Erreur lors du tirage';
       const trimmed = (raw || '').replace(/^Error:\s*/, '');
@@ -5602,7 +5617,6 @@ export default function DashboardPage() {
                     let storeEarningsCents = 0;
                     let stripeFeesCents = 0;
                     (shipments || []).forEach(s => {
-                      if (!Boolean((s as any)?.is_final_destination)) return;
                       const createdAt = String(s.created_at || '').trim();
                       const createdMs = createdAt
                         ? new Date(createdAt).getTime()
@@ -5613,18 +5627,23 @@ export default function DashboardPage() {
                       }
 
                       const status = String(s.status || '').toUpperCase();
+                      const isFinalDestination = Boolean(
+                        (s as any)?.is_final_destination
+                      );
                       const earningsRaw = Number(s.store_earnings_amount || 0);
                       const earnings = Number.isFinite(earningsRaw)
                         ? Math.max(0, Math.round(earningsRaw))
                         : 0;
-                      if (status !== 'CANCELLED')
+                      if (isFinalDestination && status !== 'CANCELLED')
                         storeEarningsCents += earnings;
 
                       const feesRaw = Number(s.stripe_fees || 0);
                       const fees = Number.isFinite(feesRaw)
                         ? Math.max(0, Math.round(feesRaw))
                         : 0;
-                      stripeFeesCents += fees;
+                      if (isFinalDestination || status === 'CANCELLED') {
+                        stripeFeesCents += fees;
+                      }
                     });
 
                     const payliveFeeCents = Math.round(
@@ -6790,7 +6809,9 @@ export default function DashboardPage() {
                       } ${
                         String(s.status || '').toUpperCase() === 'CANCELLED'
                           ? 'border-red-200 bg-red-50'
-                          : 'border-gray-200 bg-white'
+                          : s.is_final_destination
+                            ? 'border-green-200 bg-green-50'
+                            : 'border-gray-200 bg-white'
                       }`}
                     >
                       <div className='flex items-start justify-between'>
@@ -6901,6 +6922,11 @@ export default function DashboardPage() {
                           'CANCELLED' ? (
                             <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
                               Annulée
+                            </span>
+                          ) : String(s.status || '').toUpperCase() ===
+                            'DELIVERED' ? (
+                            <span className='inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700'>
+                              Livrée
                             </span>
                           ) : (
                             s.status || '—'
@@ -7044,7 +7070,9 @@ export default function DashboardPage() {
                           } ${
                             String(s.status || '').toUpperCase() === 'CANCELLED'
                               ? 'bg-red-50'
-                              : 'hover:bg-gray-50'
+                              : s.is_final_destination
+                                ? 'bg-green-50 hover:bg-green-100'
+                                : 'hover:bg-gray-50'
                           }`}
                         >
                           <td className='py-4 px-4 text-gray-700'>
@@ -7161,13 +7189,25 @@ export default function DashboardPage() {
                                   String(s.status || '').toUpperCase() ===
                                   'CANCELLED'
                                     ? 'text-red-700'
-                                    : ''
+                                    : String(s.status || '').toUpperCase() ===
+                                        'DELIVERED'
+                                      ? 'text-green-700'
+                                      : ''
                                 }`}
                               >
                                 {String(s.status || '').toUpperCase() ===
-                                'CANCELLED'
-                                  ? 'ANNULÉE'
-                                  : s.status || '—'}
+                                'CANCELLED' ? (
+                                  <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-red-700'>
+                                    ANNULÉE
+                                  </span>
+                                ) : String(s.status || '').toUpperCase() ===
+                                  'DELIVERED' ? (
+                                  <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-green-700'>
+                                    LIVRÉE
+                                  </span>
+                                ) : (
+                                  s.status || '—'
+                                )}
                               </div>
                               <div className='text-xs text-gray-500'>
                                 {getStatusDescription(s.status)}
@@ -7205,12 +7245,16 @@ export default function DashboardPage() {
                         ref={drawButtonRef}
                         onClick={handleDraw}
                         disabled={selectedIds.size < 2 || drawLoading}
-                        className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                        className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                          selectedIds.size < 2 || drawLoading
+                            ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        }`}
                         title='Lancer le tirage'
                       >
                         {drawLoading ? (
                           <span className='inline-flex items-center'>
-                            <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                            <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-gray-500 border-t-transparent'></span>
                             Tirage…
                           </span>
                         ) : (
@@ -7461,9 +7505,10 @@ export default function DashboardPage() {
                     if (!id) return;
                     if (String(s.status || '').toUpperCase() === 'CANCELLED')
                       return;
+                    if (!Boolean((s as any)?.is_final_destination)) return;
                     const v = Math.max(
                       0,
-                      Number(s.customer_spent_amount || 0) / 100
+                      Number(s.store_earnings_amount || 0) / 100
                     );
                     spentMap[id] = (spentMap[id] || 0) + v;
                   });
@@ -7904,9 +7949,13 @@ export default function DashboardPage() {
                                       'CANCELLED'
                                     )
                                       return;
+                                    if (
+                                      !Boolean((s as any)?.is_final_destination)
+                                    )
+                                      return;
                                     const v = Math.max(
                                       0,
-                                      Number(s.customer_spent_amount || 0) / 100
+                                      Number(s.store_earnings_amount || 0) / 100
                                     );
                                     spentMap[id] = (spentMap[id] || 0) + v;
                                   });
@@ -7953,13 +8002,6 @@ export default function DashboardPage() {
                                           aria-label='Sélectionner tout'
                                           className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                                         />
-                                        <span>Sélectionner tout</span>
-                                      </div>
-                                      <div className='text-xs text-gray-600 mt-1 font-normal'>
-                                        {selectedIds.size}{' '}
-                                        {selectedIds.size > 1
-                                          ? 'clients sélectionnés'
-                                          : 'client sélectionné'}
                                       </div>
                                     </div>
                                   );
@@ -8336,15 +8378,29 @@ export default function DashboardPage() {
                       <h3 className='text-lg font-semibold text-gray-900'>
                         Gagnant du tirage
                       </h3>
-                      <span className='inline-flex items-center px-2 py-1 text-xs rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200'>
-                        Winner
-                      </span>
                     </div>
                     <div className='p-6'>
                       {winner ? (
                         <div className='flex items-start space-x-4'>
                           <div className='w-14 h-14 rounded-full bg-gray-200 overflow-hidden flex items-center justify-center'>
-                            <span className='text-gray-500'>👤</span>
+                            {(() => {
+                              const clerkId = String(
+                                winner?.clerkUserId || ''
+                              ).trim();
+                              const u = clerkId
+                                ? socialsMap[clerkId] || null
+                                : null;
+                              if (u?.hasImage && u?.imageUrl) {
+                                return (
+                                  <img
+                                    src={u.imageUrl}
+                                    alt='avatar'
+                                    className='w-full h-full object-cover'
+                                  />
+                                );
+                              }
+                              return <span className='text-gray-500'>👤</span>;
+                            })()}
                           </div>
                           <div className='flex-1 space-y-1'>
                             <div className='text-lg font-semibold text-gray-900'>
@@ -8368,11 +8424,6 @@ export default function DashboardPage() {
                                   .join(', ');
                                 return addr || '—';
                               })()}
-                            </div>
-                            <div className='text-sm text-gray-700'>
-                              {winner.deliveryNetwork ||
-                                winner.deliveryMethod ||
-                                '—'}
                             </div>
                           </div>
                         </div>
@@ -8412,6 +8463,12 @@ export default function DashboardPage() {
                               );
                             }
                             showToast('Email envoyé', 'success');
+                            setShowWinnerModal(false);
+                            if (drawButtonRef.current) {
+                              try {
+                                drawButtonRef.current.focus();
+                              } catch {}
+                            }
                           } catch (e: any) {
                             const msg = (
                               e?.message || "Erreur lors de l'envoi"
@@ -8424,7 +8481,7 @@ export default function DashboardPage() {
                         disabled={!winner?.email || sendingCongrats}
                         className='px-3 py-2 text-sm rounded-md border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
                       >
-                        {sendingCongrats ? 'Envoi…' : 'Envoyer email'}
+                        {sendingCongrats ? 'Envoi…' : 'Envoyer un email'}
                       </button>
                       <button
                         onClick={() => {
