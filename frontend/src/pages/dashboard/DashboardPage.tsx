@@ -327,6 +327,11 @@ export default function DashboardPage() {
   const [cartSelectedStockItem, setCartSelectedStockItem] = useState<
     any | null
   >(null);
+  const [cartSuggestedStockItem, setCartSuggestedStockItem] = useState<
+    any | null
+  >(null);
+  const [cartIsReferenceInputFocused, setCartIsReferenceInputFocused] =
+    useState(false);
   const [cartCreating, setCartCreating] = useState<boolean>(false);
   const [storeCarts, setStoreCarts] = useState<any[]>([]);
   const [cartDeletingIds, setCartDeletingIds] = useState<
@@ -1175,14 +1180,10 @@ export default function DashboardPage() {
 
   const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
     const silent = options?.silent;
-    const stRaw = s.status;
-    const st =
-      stRaw == null
-        ? null
-        : String(stRaw || '')
-            .trim()
-            .toUpperCase();
-    if (st !== null && st !== 'PENDING') {
+    const st = String(s.status ?? '')
+      .trim()
+      .toUpperCase();
+    if (st !== '' && st !== 'PENDING') {
       setCancelStatus(prev => ({ ...prev, [s.id]: 'error' }));
       if (!silent) {
         showToast('Annulation non autorisée pour ce statut', 'error');
@@ -1416,11 +1417,12 @@ export default function DashboardPage() {
       showToast('Aucune vente sélectionnée pour le bordereau', 'error');
       return;
     }
+    showToast('Chargement...', 'info');
     const references: string[] = [];
     for (const s of targets) {
       const ok = await handleShippingDocument(s, { silent: true });
       if (ok) {
-        const ref = String(s.product_reference || s.shipment_id || '').trim();
+        const ref = String(s.shipment_id || '').trim();
         references.push(ref || String(s.shipment_id));
       }
     }
@@ -1443,6 +1445,7 @@ export default function DashboardPage() {
       showToast("Aucune vente sélectionnée pour l'annulation", 'error');
       return;
     }
+    showToast('Chargement...', 'info');
     const counts = new Map<string, number>();
     for (const s of targets) {
       const ok = await handleCancel(s, { silent: true });
@@ -1486,18 +1489,14 @@ export default function DashboardPage() {
       showToast('Aucune vente sélectionnée pour la facture', 'error');
       return;
     }
-    setToast({
-      message: 'Génération des factures…',
-      type: 'info',
-      visible: true,
-    });
+    showToast('Chargement...', 'info');
     const references: string[] = [];
     for (const s of targets) {
       const ok = await handleInvoice(s, { silent: true });
       if (ok) {
         const formatted = formatProductReferenceForToast(s.product_reference);
         const fallback = String(s.shipment_id || s.id).trim();
-        references.push(formatted || fallback);
+        references.push(fallback);
       }
     }
     if (references.length === 0) {
@@ -1586,6 +1585,22 @@ export default function DashboardPage() {
       setWalletTransactionsTotalCount(Number(json?.total_count || 0));
       setWalletTransactionsSlug(slug);
       setWalletTablePage(1);
+      try {
+        const shipResp = await fetch(
+          `${apiBase}/api/shipments/store/${encodeURIComponent(slug)}`,
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+          }
+        );
+        const shipJson = await shipResp.json().catch(() => ({}));
+        if (shipResp.ok) {
+          setShipments(
+            Array.isArray(shipJson?.shipments) ? shipJson.shipments : []
+          );
+        }
+      } catch {}
     } catch (e: any) {
       const rawMsg = e?.message || 'Erreur transactions';
       if (!silent) {
@@ -2396,6 +2411,14 @@ export default function DashboardPage() {
       String(raw || '')
         .split(';')
         .map(s => String(s || '').trim())
+        .map(s => {
+          const seg = String(s || '').trim();
+          const idx = seg.indexOf('**');
+          const head = idx >= 0 ? seg.slice(0, idx) : seg;
+          return String(head || '')
+            .replace(/\((.*)\)$/, '')
+            .trim();
+        })
         .filter(s => s.startsWith('prod_')),
     []
   );
@@ -2707,7 +2730,12 @@ export default function DashboardPage() {
   const selectedForInvoice = selectedSales.filter(
     s => String(s.status || '').toUpperCase() !== 'CANCELLED'
   );
+  const isStorePickupSale = (s: any) =>
+    String(s?.delivery_method || '')
+      .trim()
+      .toLowerCase() === 'store_pickup';
   const selectedForDoc = selectedSales.filter(s => {
+    if (isStorePickupSale(s)) return false;
     const stRaw = s.status;
     const st =
       stRaw == null
@@ -2718,6 +2746,7 @@ export default function DashboardPage() {
     return st === null || (st === 'PENDING' && s.document_created === true);
   });
   const hasBlockedDocSelection = selectedSales.some(s => {
+    if (isStorePickupSale(s)) return false;
     const stRaw = s.status;
     const st =
       stRaw == null
@@ -2728,11 +2757,16 @@ export default function DashboardPage() {
     return !(st === null || (st === 'PENDING' && s.document_created === true));
   });
   const shippingDocDisabled =
-    selectedSales.length === 0 || hasBlockedDocSelection;
+    selectedForDoc.length === 0 || hasBlockedDocSelection;
   const selectedForCancel = selectedSales.filter(
     s =>
       !s.is_final_destination &&
-      (s.status == null || String(s.status).toUpperCase() === 'PENDING')
+      (() => {
+        const st = String(s.status ?? '')
+          .trim()
+          .toUpperCase();
+        return st === '' || st === 'PENDING';
+      })()
   );
   const visibleSaleIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
@@ -3009,20 +3043,17 @@ export default function DashboardPage() {
     if (section !== 'carts') return;
     const storeSlug = String(store?.slug || '').trim();
     const q = String(cartReference || '').trim();
-    const selectedRef = String(
-      (cartSelectedStockItem as any)?.stock?.product_reference || ''
-    )
-      .trim()
-      .toLowerCase();
-    if (selectedRef && selectedRef === q.toLowerCase()) {
-      setCartStockSuggestions([]);
-      setCartStockSuggestionsOpen(false);
-      return;
-    }
     if (!storeSlug || q.length < 2) {
       setCartStockSuggestions([]);
       setCartStockSuggestionsOpen(false);
-      if (!q) setCartSelectedStockItem(null);
+      setCartSuggestedStockItem(null);
+      if (!q) {
+        setCartSelectedStockItem(null);
+        setCartDescription('');
+        setCartAmountEuro('');
+        setCartWeightKg('');
+        setCartQuantity('1');
+      }
       return;
     }
 
@@ -3040,11 +3071,87 @@ export default function DashboardPage() {
         if (!resp.ok) {
           setCartStockSuggestions([]);
           setCartStockSuggestionsOpen(false);
+          setCartSuggestedStockItem(null);
           return;
         }
         const items = Array.isArray(json?.items) ? json.items : [];
-        setCartStockSuggestions(items);
+        const filtered = items.filter((s: any) => {
+          const qRaw = (s as any)?.stock?.quantity;
+          const qv =
+            typeof qRaw === 'number'
+              ? qRaw
+              : typeof qRaw === 'string'
+                ? Number(qRaw)
+                : qRaw === null || qRaw === undefined
+                  ? null
+                  : Number(qRaw);
+          const ref = String((s as any)?.stock?.product_reference || '').trim();
+          const title = String((s as any)?.product?.name || '').trim();
+          return (
+            !(qv !== null && Number.isFinite(qv) && qv <= 0) &&
+            !isDeliveryRegulationText(ref) &&
+            !isDeliveryRegulationText(title)
+          );
+        });
+        setCartStockSuggestions(filtered);
         setCartStockSuggestionsOpen(true);
+        const qKey = q.toLowerCase();
+        const exact = filtered.find((it: any) => {
+          const r = String(it?.stock?.product_reference || '')
+            .trim()
+            .toLowerCase();
+          return r === qKey;
+        });
+        if (!exact) {
+          setCartSuggestedStockItem(null);
+          return;
+        }
+        setCartSelectedStockItem(exact);
+        setCartSuggestedStockItem(null);
+        setCartStockSuggestionsOpen(false);
+        {
+          const stock = (exact as any)?.stock || {};
+          const product = (exact as any)?.product || null;
+          const ref = String(stock?.product_reference || '').trim();
+          const title = String(product?.name || ref || '').trim() || ref;
+          const priceRaw = Number((exact as any)?.unit_price);
+          const price =
+            Number.isFinite(priceRaw) && priceRaw > 0 ? priceRaw : null;
+          const stripeWeightRaw = (product as any)?.metadata?.weight_kg;
+          const stripeWeightParsed = stripeWeightRaw
+            ? Number(String(stripeWeightRaw).replace(',', '.'))
+            : NaN;
+          const stockWeightRaw = Number(stock?.weight);
+          const weight =
+            Number.isFinite(stripeWeightParsed) && stripeWeightParsed >= 0
+              ? stripeWeightParsed
+              : Number.isFinite(stockWeightRaw) && stockWeightRaw >= 0
+                ? stockWeightRaw
+                : null;
+          const qtyRaw = stock?.quantity;
+          const qtyParsed =
+            typeof qtyRaw === 'number'
+              ? qtyRaw
+              : typeof qtyRaw === 'string'
+                ? Number(qtyRaw)
+                : qtyRaw === null || qtyRaw === undefined
+                  ? null
+                  : Number(qtyRaw);
+          const qtyAvailable =
+            qtyParsed !== null && Number.isFinite(qtyParsed) && qtyParsed > 0
+              ? Math.floor(qtyParsed)
+              : 1;
+
+          setCartDescription(title);
+          setCartAmountEuro(price !== null ? String(price.toFixed(2)) : '');
+          setCartWeightKg(weight !== null ? String(weight) : '');
+          setCartQuantity(prev => {
+            const parsed = parseInt(String(prev || '').trim(), 10);
+            const wanted =
+              Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1;
+            return String(Math.max(1, Math.min(wanted, qtyAvailable)));
+          });
+        }
       } finally {
         if (!cancelled) setCartStockSuggestionsLoading(false);
       }
@@ -3053,7 +3160,7 @@ export default function DashboardPage() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [section, store?.slug, cartReference, cartSelectedStockItem]);
+  }, [section, store?.slug, cartReference]);
 
   const applyCartSuggestion = (s: any) => {
     const stock = s?.stock || {};
@@ -3094,6 +3201,7 @@ export default function DashboardPage() {
           : null;
 
     setCartSelectedStockItem(s);
+    setCartSuggestedStockItem(null);
     setCartReference(ref);
     setCartDescription(title);
     setCartAmountEuro(prev =>
@@ -3106,7 +3214,12 @@ export default function DashboardPage() {
     setCartWeightKg(prev =>
       weight !== null ? String(weight) : String(prev || '').trim() ? prev : ''
     );
-    setCartQuantity(String(qtyAvailable));
+    setCartQuantity(prev => {
+      const parsed = parseInt(String(prev || '').trim(), 10);
+      const wanted =
+        Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1;
+      return String(Math.max(1, Math.min(wanted, qtyAvailable)));
+    });
     setCartStockSuggestionsOpen(false);
   };
 
@@ -3597,7 +3710,6 @@ export default function DashboardPage() {
       }
       setWinner(w);
       setShowWinnerModal(true);
-      showToast('Tirage effectué', 'success');
     } catch (e: any) {
       const raw = e?.message || 'Erreur lors du tirage';
       const trimmed = (raw || '').replace(/^Error:\s*/, '');
@@ -3812,18 +3924,20 @@ export default function DashboardPage() {
           {store && (
             <div className='shrink-0 flex flex-col items-end gap-2'>
               <button
-                onClick={() =>
-                  navigate(`/checkout/${encodeURIComponent(store.slug)}`)
-                }
+                onClick={() => {
+                  const url = `/checkout/${encodeURIComponent(store.slug)}`;
+                  window.open(url, '_blank', 'noopener,noreferrer');
+                }}
                 className='inline-flex items-center justify-center whitespace-nowrap px-2 py-2 text-xs sm:px-4 sm:py-2 sm:text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700'
               >
                 Formulaire de paiement
                 <ArrowRight className='w-3 h-3 sm:w-4 sm:h-4 ml-1.5 sm:ml-2' />
               </button>
               <button
-                onClick={() =>
-                  navigate(`/store/${encodeURIComponent(store.slug)}`)
-                }
+                onClick={() => {
+                  const url = `/store/${encodeURIComponent(store.slug)}`;
+                  window.open(url, '_blank', 'noopener,noreferrer');
+                }}
                 className='inline-flex items-center justify-center whitespace-nowrap px-2 py-2 text-xs sm:px-4 sm:py-2 sm:text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700'
               >
                 Voir ma boutique
@@ -4627,17 +4741,41 @@ export default function DashboardPage() {
                       value={cartReference}
                       onChange={e => {
                         const v = e.target.value;
+                        const currentSelectedRef = String(
+                          (cartSelectedStockItem as any)?.stock
+                            ?.product_reference ||
+                            (cartSuggestedStockItem as any)?.stock
+                              ?.product_reference ||
+                            ''
+                        )
+                          .trim()
+                          .toLowerCase();
+                        const nextRef = String(v || '')
+                          .trim()
+                          .toLowerCase();
                         setCartSelectedStockItem(null);
+                        setCartSuggestedStockItem(null);
+                        if (
+                          !nextRef ||
+                          (currentSelectedRef && nextRef !== currentSelectedRef)
+                        ) {
+                          setCartDescription('');
+                          setCartAmountEuro('');
+                          setCartWeightKg('');
+                          setCartQuantity('1');
+                        }
                         setCartReference(v);
                         setCartStockSuggestionsOpen(
                           Boolean(String(v || '').trim())
                         );
                       }}
                       onFocus={() => {
+                        setCartIsReferenceInputFocused(true);
                         if (cartStockSuggestions.length > 0)
                           setCartStockSuggestionsOpen(true);
                       }}
                       onBlur={() => {
+                        setCartIsReferenceInputFocused(false);
                         setTimeout(
                           () => setCartStockSuggestionsOpen(false),
                           150
@@ -4646,90 +4784,208 @@ export default function DashboardPage() {
                       placeholder='Ex: REF-001'
                       className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
                     />
-                    {cartStockSuggestionsOpen &&
-                    (cartStockSuggestionsLoading ||
-                      cartStockSuggestions.length > 0) ? (
-                      <div className='absolute z-20 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg overflow-hidden'>
-                        {cartStockSuggestionsLoading ? (
-                          <div className='px-3 py-2 text-sm text-gray-500'>
-                            Recherche…
-                          </div>
-                        ) : null}
-                        {cartStockSuggestions.map((s: any, idx: number) => {
-                          const stock = s?.stock || {};
-                          const product = s?.product || null;
-                          const ref = String(
-                            stock?.product_reference || ''
-                          ).trim();
-                          const qRaw = (stock as any)?.quantity;
-                          const qty =
-                            typeof qRaw === 'number'
-                              ? qRaw
-                              : typeof qRaw === 'string'
-                                ? Number(qRaw)
-                                : qRaw === null || qRaw === undefined
-                                  ? null
-                                  : Number(qRaw);
-                          const disabled =
-                            qty !== null && Number.isFinite(qty) && qty <= 0;
-                          const title = String(
-                            product?.name || ref || ''
-                          ).trim();
-                          const priceRaw = Number((s as any)?.unit_price);
-                          const price =
-                            Number.isFinite(priceRaw) && priceRaw > 0
-                              ? priceRaw
-                              : null;
-                          const imgRaw =
-                            Array.isArray(product?.images) &&
-                            product.images.length > 0
-                              ? String(product.images[0] || '').trim()
-                              : String(stock?.image_url || '')
-                                  .split(',')[0]
-                                  ?.trim() || '';
-
+                    {cartStockSuggestionsOpen
+                      ? (() => {
+                          const visibleSuggestions =
+                            cartStockSuggestions.filter((s: any) => {
+                              const qRaw = (s as any)?.stock?.quantity;
+                              const q =
+                                typeof qRaw === 'number'
+                                  ? qRaw
+                                  : typeof qRaw === 'string'
+                                    ? Number(qRaw)
+                                    : qRaw === null || qRaw === undefined
+                                      ? null
+                                      : Number(qRaw);
+                              const ref = String(
+                                (s as any)?.stock?.product_reference || ''
+                              ).trim();
+                              const title = String(
+                                (s as any)?.product?.name || ''
+                              ).trim();
+                              return (
+                                !(q !== null && Number.isFinite(q) && q <= 0) &&
+                                !isDeliveryRegulationText(ref) &&
+                                !isDeliveryRegulationText(title)
+                              );
+                            });
+                          if (
+                            !cartStockSuggestionsLoading &&
+                            visibleSuggestions.length === 0
+                          ) {
+                            return null;
+                          }
                           return (
-                            <button
-                              key={String(stock?.id || ref || idx)}
-                              type='button'
-                              disabled={disabled}
-                              onMouseDown={e => e.preventDefault()}
-                              onClick={() => {
-                                if (disabled) return;
-                                applyCartSuggestion(s);
-                              }}
-                              className={`w-full px-3 py-2 text-left flex items-center gap-3 ${
-                                disabled
-                                  ? 'bg-gray-50 text-gray-400 cursor-not-allowed'
-                                  : 'hover:bg-gray-50'
-                              }`}
-                            >
-                              {imgRaw ? (
-                                <img
-                                  src={imgRaw}
-                                  alt={title || ref}
-                                  className='w-10 h-10 rounded object-cover bg-gray-100 shrink-0'
-                                />
-                              ) : (
-                                <div className='w-10 h-10 rounded bg-gray-100 shrink-0' />
-                              )}
-                              <div className='min-w-0 flex-1'>
-                                <div className='text-sm font-medium truncate'>
-                                  {ref || '—'}
+                            <div className='absolute z-20 mt-1 w-full rounded-md border border-gray-200 bg-white shadow-lg overflow-hidden'>
+                              {cartStockSuggestionsLoading ? (
+                                <div className='px-3 py-2 text-sm text-gray-500'>
+                                  Recherche…
                                 </div>
-                                <div className='text-xs text-gray-600 truncate'>
-                                  {title || '—'}
-                                  {price !== null
-                                    ? ` • ${price.toFixed(2)} €`
-                                    : ''}
-                                </div>
-                              </div>
-                            </button>
+                              ) : null}
+                              {visibleSuggestions.map((s: any, idx: number) => {
+                                const stock = s?.stock || {};
+                                const product = s?.product || null;
+                                const ref = String(
+                                  stock?.product_reference || ''
+                                ).trim();
+                                const qRaw = (stock as any)?.quantity;
+                                const qty =
+                                  typeof qRaw === 'number'
+                                    ? qRaw
+                                    : typeof qRaw === 'string'
+                                      ? Number(qRaw)
+                                      : qRaw === null || qRaw === undefined
+                                        ? null
+                                        : Number(qRaw);
+                                const disabled =
+                                  qty !== null &&
+                                  Number.isFinite(qty) &&
+                                  qty <= 0;
+                                const title = String(
+                                  product?.name || ref || ''
+                                ).trim();
+                                const priceRaw = Number((s as any)?.unit_price);
+                                const unitPrice =
+                                  Number.isFinite(priceRaw) && priceRaw > 0
+                                    ? priceRaw
+                                    : null;
+                                const imgRaw =
+                                  Array.isArray(product?.images) &&
+                                  product.images.length > 0
+                                    ? String(product.images[0] || '').trim()
+                                    : String(stock?.image_url || '')
+                                        .split(',')[0]
+                                        ?.trim() || '';
+                                return (
+                                  <button
+                                    key={String(stock?.id || ref || idx)}
+                                    type='button'
+                                    disabled={disabled}
+                                    onMouseDown={e => e.preventDefault()}
+                                    onClick={() => {
+                                      if (disabled) return;
+                                      applyCartSuggestion(s);
+                                    }}
+                                    className={`w-full px-3 py-2 text-left flex items-center gap-3 ${
+                                      disabled
+                                        ? 'bg-gray-50 text-gray-400 cursor-not-allowed'
+                                        : 'hover:bg-gray-50'
+                                    }`}
+                                  >
+                                    {imgRaw ? (
+                                      <img
+                                        src={imgRaw}
+                                        alt={title || ref}
+                                        className='w-10 h-10 rounded object-cover bg-gray-100 shrink-0'
+                                      />
+                                    ) : (
+                                      <div className='w-10 h-10 rounded bg-gray-100 shrink-0' />
+                                    )}
+                                    <div className='min-w-0 flex-1'>
+                                      <div className='text-sm font-medium truncate'>
+                                        {ref || '—'}
+                                      </div>
+                                      <div className='text-xs text-gray-600 truncate'>
+                                        {title || '—'}
+                                        {unitPrice !== null
+                                          ? ` • ${unitPrice.toFixed(2)} €`
+                                          : ''}
+                                      </div>
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
                           );
-                        })}
-                      </div>
-                    ) : null}
+                        })()
+                      : null}
                   </div>
+                  {(cartSelectedStockItem || cartSuggestedStockItem) &&
+                  !cartStockSuggestionsOpen ? (
+                    <div
+                      className='mt-2 rounded-md border border-gray-200 bg-gray-50 p-3 flex items-start gap-3 cursor-pointer hover:bg-gray-100'
+                      role='button'
+                      tabIndex={0}
+                      onClick={() =>
+                        applyCartSuggestion(
+                          cartSelectedStockItem || cartSuggestedStockItem
+                        )
+                      }
+                      onKeyDown={e => {
+                        if (e.key !== 'Enter' && e.key !== ' ') return;
+                        e.preventDefault();
+                        applyCartSuggestion(
+                          cartSelectedStockItem || cartSuggestedStockItem
+                        );
+                      }}
+                    >
+                      {(() => {
+                        const item = (cartSelectedStockItem ||
+                          cartSuggestedStockItem) as any;
+                        const stock = item?.stock || {};
+                        const product = item?.product || null;
+                        const ref = String(
+                          stock?.product_reference || ''
+                        ).trim();
+                        const title = String(product?.name || ref || '').trim();
+                        const imgRaw =
+                          Array.isArray(product?.images) &&
+                          product.images.length > 0
+                            ? String(product.images[0] || '').trim()
+                            : String(stock?.image_url || '')
+                                .split(',')[0]
+                                ?.trim() || '';
+                        const priceRaw = Number((item as any)?.unit_price);
+                        const unitPrice =
+                          Number.isFinite(priceRaw) && priceRaw > 0
+                            ? priceRaw
+                            : null;
+                        const stripeWeightRaw = (product as any)?.metadata
+                          ?.weight_kg;
+                        const stripeWeightParsed = stripeWeightRaw
+                          ? Number(String(stripeWeightRaw).replace(',', '.'))
+                          : NaN;
+                        const stockWeightRaw = Number(stock?.weight);
+                        const weight =
+                          Number.isFinite(stripeWeightParsed) &&
+                          stripeWeightParsed >= 0
+                            ? stripeWeightParsed
+                            : Number.isFinite(stockWeightRaw) &&
+                                stockWeightRaw >= 0
+                              ? stockWeightRaw
+                              : null;
+                        return (
+                          <>
+                            {imgRaw ? (
+                              <img
+                                src={imgRaw}
+                                alt={title || ref}
+                                className='w-14 h-14 rounded object-cover bg-gray-100 shrink-0'
+                              />
+                            ) : (
+                              <div className='w-14 h-14 rounded bg-gray-100 shrink-0' />
+                            )}
+                            <div className='min-w-0'>
+                              <div className='text-sm font-semibold truncate'>
+                                {title || ref || '—'}
+                              </div>
+                              <div className='text-xs text-gray-600 truncate'>
+                                {ref || '—'}
+                              </div>
+                              <div className='text-xs text-gray-600'>
+                                {unitPrice !== null
+                                  ? `Prix: ${unitPrice.toFixed(2)} €`
+                                  : 'Prix: —'}
+                                {weight !== null
+                                  ? ` • Poids: ${weight} kg`
+                                  : ''}
+                              </div>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className='space-y-2'>
@@ -4743,7 +4999,9 @@ export default function DashboardPage() {
                       onChange={e => setCartDescription(e.target.value)}
                       placeholder='Ex: Robe Noire'
                       required
-                      disabled={Boolean(cartSelectedStockItem)}
+                      disabled={Boolean(
+                        cartSelectedStockItem || cartSuggestedStockItem
+                      )}
                       className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
                     />
                   </div>
@@ -4759,7 +5017,9 @@ export default function DashboardPage() {
                       onChange={e => setCartWeightKg(e.target.value)}
                       placeholder='0.5'
                       required
-                      disabled={Boolean(cartSelectedStockItem)}
+                      disabled={Boolean(
+                        cartSelectedStockItem || cartSuggestedStockItem
+                      )}
                       className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
                     />
                   </div>
@@ -4777,7 +5037,9 @@ export default function DashboardPage() {
                       value={cartAmountEuro}
                       onChange={e => setCartAmountEuro(e.target.value)}
                       placeholder='Ex: 49.90'
-                      disabled={Boolean(cartSelectedStockItem)}
+                      disabled={Boolean(
+                        cartSelectedStockItem || cartSuggestedStockItem
+                      )}
                       className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-600'
                     />
                     <div>
@@ -4975,302 +5237,350 @@ export default function DashboardPage() {
                       pageGroups.map(g => (
                         <div
                           key={g.stripeId}
-                          className='border border-gray-200 rounded-md'
+                          className={`rounded-md ${
+                            selectedCartGroupIds.has(g.stripeId)
+                              ? 'ring-2 ring-indigo-500 ring-offset-1 ring-offset-gray-50'
+                              : ''
+                          }`}
                         >
-                          <div className='flex items-center justify-between p-3 bg-gray-50 border-b border-gray-200'>
-                            <div className='flex items-center gap-3'>
-                              <input
-                                type='checkbox'
-                                className='w-4 h-4 accent-blue-600'
-                                checked={selectedCartGroupIds.has(g.stripeId)}
-                                onChange={() => {
-                                  setSelectedCartGroupIds(prev => {
-                                    const next = new Set([...prev]);
-                                    if (next.has(g.stripeId)) {
-                                      next.delete(g.stripeId);
-                                    } else {
-                                      next.add(g.stripeId);
-                                    }
-                                    return next;
-                                  });
-                                }}
-                                aria-label='Sélectionner ce panier'
-                              />
-                              {g.user?.hasImage && g.user?.imageUrl ? (
-                                <img
-                                  src={g.user.imageUrl}
-                                  alt={g.user.fullName || 'Client'}
-                                  className='w-8 h-8 rounded-full object-cover'
+                          <div className='border border-gray-200 rounded-md overflow-hidden bg-white'>
+                            <div
+                              role='button'
+                              tabIndex={0}
+                              onClick={e => {
+                                if (isInteractiveRowClick(e.target)) return;
+                                setSelectedCartGroupIds(prev => {
+                                  const next = new Set([...prev]);
+                                  if (next.has(g.stripeId)) {
+                                    next.delete(g.stripeId);
+                                  } else {
+                                    next.add(g.stripeId);
+                                  }
+                                  return next;
+                                });
+                              }}
+                              onKeyDown={e => {
+                                if (e.key !== 'Enter' && e.key !== ' ') return;
+                                if (isInteractiveRowClick(e.target)) return;
+                                e.preventDefault();
+                                setSelectedCartGroupIds(prev => {
+                                  const next = new Set([...prev]);
+                                  if (next.has(g.stripeId)) {
+                                    next.delete(g.stripeId);
+                                  } else {
+                                    next.add(g.stripeId);
+                                  }
+                                  return next;
+                                });
+                              }}
+                              className='flex items-center justify-between p-3 bg-gray-50 border-b border-gray-200 cursor-pointer'
+                            >
+                              <div className='flex items-center gap-3'>
+                                <input
+                                  type='checkbox'
+                                  className='w-4 h-4 accent-blue-600'
+                                  checked={selectedCartGroupIds.has(g.stripeId)}
+                                  onChange={() => {
+                                    setSelectedCartGroupIds(prev => {
+                                      const next = new Set([...prev]);
+                                      if (next.has(g.stripeId)) {
+                                        next.delete(g.stripeId);
+                                      } else {
+                                        next.add(g.stripeId);
+                                      }
+                                      return next;
+                                    });
+                                  }}
+                                  aria-label='Sélectionner ce panier'
                                 />
-                              ) : (
-                                <div className='w-8 h-8 rounded-full bg-gray-300'></div>
-                              )}
-                              <div>
-                                <div className='flex items-center gap-2 text-gray-900 font-semibold text-sm'>
-                                  <span>
-                                    {g.user?.fullName || g.stripeId || 'Client'}
-                                  </span>
-                                  {recapSentByGroup[g.stripeId] && (
-                                    <span className='inline-flex items-center text-green-600 text-xs font-medium'>
-                                      <Check className='w-4 h-4 mr-1' />
-                                      {(() => {
-                                        const rel = formatRelativeSent(
-                                          recapSentAtByGroup[g.stripeId]
-                                        );
-                                        return rel
-                                          ? `recap envoyé · ${rel}`
-                                          : 'recap envoyé';
-                                      })()}
+                                {g.user?.hasImage && g.user?.imageUrl ? (
+                                  <img
+                                    src={g.user.imageUrl}
+                                    alt={g.user.fullName || 'Client'}
+                                    className='w-8 h-8 rounded-full object-cover'
+                                  />
+                                ) : (
+                                  <div className='w-8 h-8 rounded-full bg-gray-300'></div>
+                                )}
+                                <div>
+                                  <div className='flex items-center gap-2 text-gray-900 font-semibold text-sm'>
+                                    <span>
+                                      {g.user?.fullName ||
+                                        g.stripeId ||
+                                        'Client'}
                                     </span>
-                                  )}
-                                </div>
-                                <div className='text-xs text-gray-600'>
-                                  {g.user?.email || ''}
+                                    {recapSentByGroup[g.stripeId] && (
+                                      <span className='inline-flex items-center text-green-600 text-xs font-medium'>
+                                        <Check className='w-4 h-4 mr-1' />
+                                        {(() => {
+                                          const rel = formatRelativeSent(
+                                            recapSentAtByGroup[g.stripeId]
+                                          );
+                                          return rel
+                                            ? `recap envoyé · ${rel}`
+                                            : 'recap envoyé';
+                                        })()}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className='text-xs text-gray-600'>
+                                    {g.user?.email || ''}
+                                  </div>
                                 </div>
                               </div>
                             </div>
-                          </div>
-                          <div className='overflow-x-auto'>
-                            <table className='min-w-full divide-y divide-gray-200 text-sm'>
-                              <thead className='bg-white'>
-                                <tr>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Référence
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Description
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Prix unitaire (€)
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Quantité
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Total (€)
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Poids (kg)
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Créé
-                                  </th>
-                                  <th className='px-4 py-2 text-left font-medium text-gray-700'>
-                                    Actions
-                                  </th>
-                                </tr>
-                              </thead>
-                              <tbody className='bg-white divide-y divide-gray-200'>
-                                {(() => {
-                                  const gid = g.stripeId;
-                                  const size = cartGroupPageSize[gid] ?? 10;
-                                  const page = cartGroupPage[gid] ?? 1;
-                                  const filtered = (g.items || []).filter(
-                                    (c: any) => {
-                                      const cartReference = String(
-                                        c?.product_reference || ''
-                                      ).trim();
-                                      const cartDescription = String(
-                                        c?.description || ''
-                                      ).trim();
-                                      return (
-                                        !isDeliveryRegulationText(
-                                          cartReference
-                                        ) &&
-                                        !isDeliveryRegulationText(
-                                          cartDescription
-                                        )
-                                      );
-                                    }
-                                  );
-                                  const totalPages = Math.max(
-                                    1,
-                                    Math.ceil(filtered.length / size)
-                                  );
-                                  const safePage = Math.min(
-                                    Math.max(1, page),
-                                    totalPages
-                                  );
-                                  const start = (safePage - 1) * size;
-                                  const items = filtered.slice(
-                                    start,
-                                    start + size
-                                  );
-                                  return items.map((c: any) => (
-                                    <tr key={c.id}>
-                                      <td className='px-4 py-3 text-gray-900 font-medium'>
-                                        {c.product_reference || '—'}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {c.description || '—'}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {typeof c.value === 'number'
-                                          ? c.value.toLocaleString('fr-FR', {
-                                              minimumFractionDigits: 2,
-                                              maximumFractionDigits: 2,
-                                            })
-                                          : '—'}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {Number.isFinite(Number(c.quantity))
-                                          ? Number(c.quantity)
-                                          : 1}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {(() => {
-                                          const unit = Number(c.value);
-                                          const qty = Number(c.quantity);
-                                          if (
-                                            !Number.isFinite(unit) ||
-                                            !Number.isFinite(qty)
-                                          ) {
-                                            return '—';
-                                          }
-                                          const total = unit * qty;
-                                          return total.toLocaleString('fr-FR', {
-                                            minimumFractionDigits: 2,
-                                            maximumFractionDigits: 2,
-                                          });
-                                        })()}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {Number.isFinite(Number(c.weight))
-                                          ? Number(c.weight).toLocaleString(
+                            <div className='overflow-x-auto'>
+                              <table className='min-w-full divide-y divide-gray-200 text-sm'>
+                                <thead className='bg-white'>
+                                  <tr>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Référence
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Description
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Prix unitaire (€)
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Quantité
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Total (€)
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Poids (kg)
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Créé
+                                    </th>
+                                    <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                                      Actions
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody className='bg-white divide-y divide-gray-200'>
+                                  {(() => {
+                                    const gid = g.stripeId;
+                                    const size = cartGroupPageSize[gid] ?? 10;
+                                    const page = cartGroupPage[gid] ?? 1;
+                                    const filtered = (g.items || []).filter(
+                                      (c: any) => {
+                                        const cartReference = String(
+                                          c?.product_reference || ''
+                                        ).trim();
+                                        const cartDescription = String(
+                                          c?.description || ''
+                                        ).trim();
+                                        return (
+                                          !isDeliveryRegulationText(
+                                            cartReference
+                                          ) &&
+                                          !isDeliveryRegulationText(
+                                            cartDescription
+                                          )
+                                        );
+                                      }
+                                    );
+                                    const totalPages = Math.max(
+                                      1,
+                                      Math.ceil(filtered.length / size)
+                                    );
+                                    const safePage = Math.min(
+                                      Math.max(1, page),
+                                      totalPages
+                                    );
+                                    const start = (safePage - 1) * size;
+                                    const items = filtered.slice(
+                                      start,
+                                      start + size
+                                    );
+                                    return items.map((c: any) => (
+                                      <tr key={c.id}>
+                                        <td className='px-4 py-3 text-gray-900 font-medium'>
+                                          {c.product_reference || '—'}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          {c.description || '—'}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          {typeof c.value === 'number'
+                                            ? c.value.toLocaleString('fr-FR', {
+                                                minimumFractionDigits: 2,
+                                                maximumFractionDigits: 2,
+                                              })
+                                            : '—'}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          {Number.isFinite(Number(c.quantity))
+                                            ? Number(c.quantity)
+                                            : 1}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          {(() => {
+                                            const unit = Number(c.value);
+                                            const qty = Number(c.quantity);
+                                            if (
+                                              !Number.isFinite(unit) ||
+                                              !Number.isFinite(qty)
+                                            ) {
+                                              return '—';
+                                            }
+                                            const total = unit * qty;
+                                            return total.toLocaleString(
                                               'fr-FR',
                                               {
                                                 minimumFractionDigits: 2,
                                                 maximumFractionDigits: 2,
                                               }
-                                            )
-                                          : '—'}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
-                                        {c.created_at
-                                          ? new Date(
-                                              c.created_at
-                                            ).toLocaleString('fr-FR', {
-                                              dateStyle: 'short',
-                                              timeStyle: 'short',
-                                            })
-                                          : '—'}
-                                      </td>
-                                      <td className='px-4 py-3 text-gray-700'>
+                                            );
+                                          })()}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          {Number.isFinite(Number(c.weight))
+                                            ? Number(c.weight).toLocaleString(
+                                                'fr-FR',
+                                                {
+                                                  minimumFractionDigits: 2,
+                                                  maximumFractionDigits: 2,
+                                                }
+                                              )
+                                            : '—'}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          {c.created_at
+                                            ? new Date(
+                                                c.created_at
+                                              ).toLocaleString('fr-FR', {
+                                                dateStyle: 'short',
+                                                timeStyle: 'short',
+                                              })
+                                            : '—'}
+                                        </td>
+                                        <td className='px-4 py-3 text-gray-700'>
+                                          <button
+                                            onClick={() =>
+                                              handleDeleteCart(c.id)
+                                            }
+                                            disabled={!!cartDeletingIds[c.id]}
+                                            className={`inline-flex items-center p-2 rounded-md border ${cartDeletingIds[c.id] ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-700 border-gray-300'}`}
+                                            title={'Supprimer'}
+                                          >
+                                            <Trash2
+                                              className={`w-4 h-4 ${cartDeletingIds[c.id] ? 'opacity-60' : ''}`}
+                                            />
+                                            <span className='ml-1'>
+                                              Supprimer
+                                            </span>
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    ));
+                                  })()}
+                                </tbody>
+                              </table>
+                              {(() => {
+                                const gid = g.stripeId;
+                                const size = cartGroupPageSize[gid] ?? 10;
+                                const page = cartGroupPage[gid] ?? 1;
+                                const filtered = (g.items || []).filter(
+                                  (c: any) => {
+                                    const cartReference = String(
+                                      c?.product_reference || ''
+                                    ).trim();
+                                    const cartDescription = String(
+                                      c?.description || ''
+                                    ).trim();
+                                    return (
+                                      !isDeliveryRegulationText(
+                                        cartReference
+                                      ) &&
+                                      !isDeliveryRegulationText(cartDescription)
+                                    );
+                                  }
+                                );
+                                const totalPages = Math.max(
+                                  1,
+                                  Math.ceil(filtered.length / size)
+                                );
+                                const safePage = Math.min(
+                                  Math.max(1, page),
+                                  totalPages
+                                );
+                                return (
+                                  <div className='flex items-center justify-end gap-2 p-3'>
+                                    <div className='hidden sm:flex items-center space-x-3'>
+                                      <div className='text-sm text-gray-600'>
+                                        Page {safePage} / {totalPages} —{' '}
+                                        {filtered.length}
+                                      </div>
+                                      <label className='text-sm text-gray-700'>
+                                        Lignes
+                                      </label>
+                                      <select
+                                        value={size}
+                                        onChange={e => {
+                                          const v = parseInt(
+                                            e.target.value,
+                                            10
+                                          );
+                                          setCartGroupPageSize(prev => ({
+                                            ...prev,
+                                            [gid]: isNaN(v) ? 10 : v,
+                                          }));
+                                          setCartGroupPage(prev => ({
+                                            ...prev,
+                                            [gid]: 1,
+                                          }));
+                                        }}
+                                        className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
+                                      >
+                                        <option value={5}>5</option>
+                                        <option value={10}>10</option>
+                                        <option value={20}>20</option>
+                                      </select>
+                                      <div className='flex items-center space-x-2'>
                                         <button
-                                          onClick={() => handleDeleteCart(c.id)}
-                                          disabled={!!cartDeletingIds[c.id]}
-                                          className={`inline-flex items-center p-2 rounded-md border ${cartDeletingIds[c.id] ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'hover:bg-gray-100 text-gray-700 border-gray-300'}`}
-                                          title={'Supprimer'}
+                                          onClick={() =>
+                                            setCartGroupPage(prev => ({
+                                              ...prev,
+                                              [gid]: Math.max(1, page - 1),
+                                            }))
+                                          }
+                                          disabled={page <= 1}
+                                          className={`px-3 py-1 text-sm rounded-md border ${
+                                            page <= 1
+                                              ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                          }`}
                                         >
-                                          <Trash2
-                                            className={`w-4 h-4 ${cartDeletingIds[c.id] ? 'opacity-60' : ''}`}
-                                          />
-                                          <span className='ml-1'>
-                                            Supprimer
-                                          </span>
+                                          Précédent
                                         </button>
-                                      </td>
-                                    </tr>
-                                  ));
-                                })()}
-                              </tbody>
-                            </table>
-                            {(() => {
-                              const gid = g.stripeId;
-                              const size = cartGroupPageSize[gid] ?? 10;
-                              const page = cartGroupPage[gid] ?? 1;
-                              const filtered = (g.items || []).filter(
-                                (c: any) => {
-                                  const cartReference = String(
-                                    c?.product_reference || ''
-                                  ).trim();
-                                  const cartDescription = String(
-                                    c?.description || ''
-                                  ).trim();
-                                  return (
-                                    !isDeliveryRegulationText(cartReference) &&
-                                    !isDeliveryRegulationText(cartDescription)
-                                  );
-                                }
-                              );
-                              const totalPages = Math.max(
-                                1,
-                                Math.ceil(filtered.length / size)
-                              );
-                              const safePage = Math.min(
-                                Math.max(1, page),
-                                totalPages
-                              );
-                              return (
-                                <div className='flex items-center justify-end gap-2 p-3'>
-                                  <div className='hidden sm:flex items-center space-x-3'>
-                                    <div className='text-sm text-gray-600'>
-                                      Page {safePage} / {totalPages} —{' '}
-                                      {filtered.length}
-                                    </div>
-                                    <label className='text-sm text-gray-700'>
-                                      Lignes
-                                    </label>
-                                    <select
-                                      value={size}
-                                      onChange={e => {
-                                        const v = parseInt(e.target.value, 10);
-                                        setCartGroupPageSize(prev => ({
-                                          ...prev,
-                                          [gid]: isNaN(v) ? 10 : v,
-                                        }));
-                                        setCartGroupPage(prev => ({
-                                          ...prev,
-                                          [gid]: 1,
-                                        }));
-                                      }}
-                                      className='border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500'
-                                    >
-                                      <option value={5}>5</option>
-                                      <option value={10}>10</option>
-                                      <option value={20}>20</option>
-                                    </select>
-                                    <div className='flex items-center space-x-2'>
-                                      <button
-                                        onClick={() =>
-                                          setCartGroupPage(prev => ({
-                                            ...prev,
-                                            [gid]: Math.max(1, page - 1),
-                                          }))
-                                        }
-                                        disabled={page <= 1}
-                                        className={`px-3 py-1 text-sm rounded-md border ${
-                                          page <= 1
-                                            ? 'bg-gray-100 text-gray-400 border-gray-200'
-                                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                                        }`}
-                                      >
-                                        Précédent
-                                      </button>
-                                      <button
-                                        onClick={() =>
-                                          setCartGroupPage(prev => ({
-                                            ...prev,
-                                            [gid]: Math.min(
-                                              totalPages,
-                                              page + 1
-                                            ),
-                                          }))
-                                        }
-                                        disabled={page >= totalPages}
-                                        className={`px-3 py-1 text-sm rounded-md border ${
-                                          page >= totalPages
-                                            ? 'bg-gray-100 text-gray-400 border-gray-200'
-                                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-                                        }`}
-                                      >
-                                        Suivant
-                                      </button>
+                                        <button
+                                          onClick={() =>
+                                            setCartGroupPage(prev => ({
+                                              ...prev,
+                                              [gid]: Math.min(
+                                                totalPages,
+                                                page + 1
+                                              ),
+                                            }))
+                                          }
+                                          disabled={page >= totalPages}
+                                          className={`px-3 py-1 text-sm rounded-md border ${
+                                            page >= totalPages
+                                              ? 'bg-gray-100 text-gray-400 border-gray-200'
+                                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                          }`}
+                                        >
+                                          Suivant
+                                        </button>
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                              );
-                            })()}
+                                );
+                              })()}
+                            </div>
                           </div>
                         </div>
                       ))
@@ -5307,7 +5617,6 @@ export default function DashboardPage() {
                     let storeEarningsCents = 0;
                     let stripeFeesCents = 0;
                     (shipments || []).forEach(s => {
-                      if (!Boolean((s as any)?.is_final_destination)) return;
                       const createdAt = String(s.created_at || '').trim();
                       const createdMs = createdAt
                         ? new Date(createdAt).getTime()
@@ -5318,18 +5627,23 @@ export default function DashboardPage() {
                       }
 
                       const status = String(s.status || '').toUpperCase();
+                      const isFinalDestination = Boolean(
+                        (s as any)?.is_final_destination
+                      );
                       const earningsRaw = Number(s.store_earnings_amount || 0);
                       const earnings = Number.isFinite(earningsRaw)
                         ? Math.max(0, Math.round(earningsRaw))
                         : 0;
-                      if (status !== 'CANCELLED')
+                      if (isFinalDestination && status !== 'CANCELLED')
                         storeEarningsCents += earnings;
 
                       const feesRaw = Number(s.stripe_fees || 0);
                       const fees = Number.isFinite(feesRaw)
                         ? Math.max(0, Math.round(feesRaw))
                         : 0;
-                      stripeFeesCents += fees;
+                      if (isFinalDestination || status === 'CANCELLED') {
+                        stripeFeesCents += fees;
+                      }
                     });
 
                     const payliveFeeCents = Math.round(
@@ -5988,7 +6302,23 @@ export default function DashboardPage() {
                           return (
                             <div
                               key={d.idKey}
-                              className='rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden'
+                              role='button'
+                              tabIndex={0}
+                              onClick={e => {
+                                if (isInteractiveRowClick(e.target)) return;
+                                toggleStockSelected(Number(d.stockId));
+                              }}
+                              onKeyDown={e => {
+                                if (e.key !== 'Enter' && e.key !== ' ') return;
+                                if (isInteractiveRowClick(e.target)) return;
+                                e.preventDefault();
+                                toggleStockSelected(Number(d.stockId));
+                              }}
+                              className={`rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden cursor-pointer ${
+                                isSelected
+                                  ? 'ring-2 ring-indigo-500 ring-inset'
+                                  : ''
+                              }`}
                             >
                               <div className='p-4 flex gap-4'>
                                 <div className='w-28 shrink-0'>
@@ -6479,7 +6809,9 @@ export default function DashboardPage() {
                       } ${
                         String(s.status || '').toUpperCase() === 'CANCELLED'
                           ? 'border-red-200 bg-red-50'
-                          : 'border-gray-200 bg-white'
+                          : s.is_final_destination
+                            ? 'border-green-200 bg-green-50'
+                            : 'border-gray-200 bg-white'
                       }`}
                     >
                       <div className='flex items-start justify-between'>
@@ -6590,6 +6922,11 @@ export default function DashboardPage() {
                           'CANCELLED' ? (
                             <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
                               Annulée
+                            </span>
+                          ) : String(s.status || '').toUpperCase() ===
+                            'DELIVERED' ? (
+                            <span className='inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700'>
+                              Livrée
                             </span>
                           ) : (
                             s.status || '—'
@@ -6733,7 +7070,9 @@ export default function DashboardPage() {
                           } ${
                             String(s.status || '').toUpperCase() === 'CANCELLED'
                               ? 'bg-red-50'
-                              : 'hover:bg-gray-50'
+                              : s.is_final_destination
+                                ? 'bg-green-50 hover:bg-green-100'
+                                : 'hover:bg-gray-50'
                           }`}
                         >
                           <td className='py-4 px-4 text-gray-700'>
@@ -6850,13 +7189,25 @@ export default function DashboardPage() {
                                   String(s.status || '').toUpperCase() ===
                                   'CANCELLED'
                                     ? 'text-red-700'
-                                    : ''
+                                    : String(s.status || '').toUpperCase() ===
+                                        'DELIVERED'
+                                      ? 'text-green-700'
+                                      : ''
                                 }`}
                               >
                                 {String(s.status || '').toUpperCase() ===
-                                'CANCELLED'
-                                  ? 'ANNULÉE'
-                                  : s.status || '—'}
+                                'CANCELLED' ? (
+                                  <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-red-700'>
+                                    ANNULÉE
+                                  </span>
+                                ) : String(s.status || '').toUpperCase() ===
+                                  'DELIVERED' ? (
+                                  <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-green-700'>
+                                    LIVRÉE
+                                  </span>
+                                ) : (
+                                  s.status || '—'
+                                )}
                               </div>
                               <div className='text-xs text-gray-500'>
                                 {getStatusDescription(s.status)}
@@ -6894,12 +7245,16 @@ export default function DashboardPage() {
                         ref={drawButtonRef}
                         onClick={handleDraw}
                         disabled={selectedIds.size < 2 || drawLoading}
-                        className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+                        className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
+                          selectedIds.size < 2 || drawLoading
+                            ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                            : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                        }`}
                         title='Lancer le tirage'
                       >
                         {drawLoading ? (
                           <span className='inline-flex items-center'>
-                            <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent'></span>
+                            <span className='mr-2 inline-block animate-spin rounded-full h-4 w-4 border-2 border-gray-500 border-t-transparent'></span>
                             Tirage…
                           </span>
                         ) : (
@@ -7150,9 +7505,10 @@ export default function DashboardPage() {
                     if (!id) return;
                     if (String(s.status || '').toUpperCase() === 'CANCELLED')
                       return;
+                    if (!Boolean((s as any)?.is_final_destination)) return;
                     const v = Math.max(
                       0,
-                      Number(s.customer_spent_amount || 0) / 100
+                      Number(s.store_earnings_amount || 0) / 100
                     );
                     spentMap[id] = (spentMap[id] || 0) + v;
                   });
@@ -7593,9 +7949,13 @@ export default function DashboardPage() {
                                       'CANCELLED'
                                     )
                                       return;
+                                    if (
+                                      !Boolean((s as any)?.is_final_destination)
+                                    )
+                                      return;
                                     const v = Math.max(
                                       0,
-                                      Number(s.customer_spent_amount || 0) / 100
+                                      Number(s.store_earnings_amount || 0) / 100
                                     );
                                     spentMap[id] = (spentMap[id] || 0) + v;
                                   });
@@ -7642,13 +8002,6 @@ export default function DashboardPage() {
                                           aria-label='Sélectionner tout'
                                           className='h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500'
                                         />
-                                        <span>Sélectionner tout</span>
-                                      </div>
-                                      <div className='text-xs text-gray-600 mt-1 font-normal'>
-                                        {selectedIds.size}{' '}
-                                        {selectedIds.size > 1
-                                          ? 'clients sélectionnés'
-                                          : 'client sélectionné'}
                                       </div>
                                     </div>
                                   );
@@ -8025,15 +8378,29 @@ export default function DashboardPage() {
                       <h3 className='text-lg font-semibold text-gray-900'>
                         Gagnant du tirage
                       </h3>
-                      <span className='inline-flex items-center px-2 py-1 text-xs rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200'>
-                        Winner
-                      </span>
                     </div>
                     <div className='p-6'>
                       {winner ? (
                         <div className='flex items-start space-x-4'>
                           <div className='w-14 h-14 rounded-full bg-gray-200 overflow-hidden flex items-center justify-center'>
-                            <span className='text-gray-500'>👤</span>
+                            {(() => {
+                              const clerkId = String(
+                                winner?.clerkUserId || ''
+                              ).trim();
+                              const u = clerkId
+                                ? socialsMap[clerkId] || null
+                                : null;
+                              if (u?.hasImage && u?.imageUrl) {
+                                return (
+                                  <img
+                                    src={u.imageUrl}
+                                    alt='avatar'
+                                    className='w-full h-full object-cover'
+                                  />
+                                );
+                              }
+                              return <span className='text-gray-500'>👤</span>;
+                            })()}
                           </div>
                           <div className='flex-1 space-y-1'>
                             <div className='text-lg font-semibold text-gray-900'>
@@ -8057,11 +8424,6 @@ export default function DashboardPage() {
                                   .join(', ');
                                 return addr || '—';
                               })()}
-                            </div>
-                            <div className='text-sm text-gray-700'>
-                              {winner.deliveryNetwork ||
-                                winner.deliveryMethod ||
-                                '—'}
                             </div>
                           </div>
                         </div>
@@ -8101,6 +8463,12 @@ export default function DashboardPage() {
                               );
                             }
                             showToast('Email envoyé', 'success');
+                            setShowWinnerModal(false);
+                            if (drawButtonRef.current) {
+                              try {
+                                drawButtonRef.current.focus();
+                              } catch {}
+                            }
                           } catch (e: any) {
                             const msg = (
                               e?.message || "Erreur lors de l'envoi"
@@ -8113,7 +8481,7 @@ export default function DashboardPage() {
                         disabled={!winner?.email || sendingCongrats}
                         className='px-3 py-2 text-sm rounded-md border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400'
                       >
-                        {sendingCongrats ? 'Envoi…' : 'Envoyer email'}
+                        {sendingCongrats ? 'Envoi…' : 'Envoyer un email'}
                       </button>
                       <button
                         onClick={() => {

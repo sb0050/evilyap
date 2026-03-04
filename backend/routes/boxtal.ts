@@ -167,7 +167,7 @@ router.post("/cotation", async (req, res) => {
     },
     CH: {
       "DLVG-DelivengoEasy": { width: 20, length: 60, height: 10 },
-      "FEDX-FedexRegionalEconomy": { width: 20, length: 200, height: 10 },
+      "FEDX-FedexRegionalEconomy": { width: 60, length: 120, height: 40 },
     },
   };
   const { sender, recipient, weight, network } = req.body || {};
@@ -1082,6 +1082,10 @@ router.delete("/shipping-orders/:id", async (req, res) => {
     if (!id) {
       return res.status(400).json({ error: "Missing shipping order id" });
     }
+    const traceId = `boxtal-cancel-${String(id)}-${Date.now()}`;
+    const silent =
+      String((req.query as any)?.silent || "").toLowerCase() === "true";
+    console.log("BOXTAL_CANCEL: start", { traceId, id, silent });
 
     let boxtalOk = false;
     let boxtalStatus: number | null = null;
@@ -1109,8 +1113,18 @@ router.delete("/shipping-orders/:id", async (req, res) => {
       if (response.ok) {
         boxtalOk = true;
         boxtalPayload = await response.json().catch(() => null);
+        console.log("BOXTAL_CANCEL: Boxtal ok", {
+          traceId,
+          id,
+          status: boxtalStatus,
+        });
       } else if (contentType.includes("application/json")) {
         boxtalError = await response.json().catch(() => null);
+        console.warn("BOXTAL_CANCEL: Boxtal error json", {
+          traceId,
+          id,
+          status: boxtalStatus,
+        });
         try {
           await emailService.sendAdminError({
             subject: "Boxtal cancel échec",
@@ -1124,6 +1138,11 @@ router.delete("/shipping-orders/:id", async (req, res) => {
           error: "Failed to cancel shipping order",
           details: errText,
         };
+        console.warn("BOXTAL_CANCEL: Boxtal error text", {
+          traceId,
+          id,
+          status: boxtalStatus,
+        });
         try {
           await emailService.sendAdminError({
             subject: "Boxtal cancel échec",
@@ -1138,6 +1157,7 @@ router.delete("/shipping-orders/:id", async (req, res) => {
         message:
           boxtalEx instanceof Error ? boxtalEx.message : String(boxtalEx),
       };
+      console.error("BOXTAL_CANCEL: Boxtal exception", { traceId, id });
       try {
         await emailService.sendAdminError({
           subject: "Boxtal cancel exception",
@@ -1166,8 +1186,10 @@ router.delete("/shipping-orders/:id", async (req, res) => {
 
     const skipAdminRefundEmail =
       String((req.query as any)?.skipAdminRefundEmail || "").toLowerCase() ===
-        "true" ||
-      String((req.query as any)?.silent || "").toLowerCase() === "true";
+        "true" || silent;
+    const skipCredit =
+      String((req.query as any)?.skipCredit || "").toLowerCase() === "true" ||
+      String((req.query as any)?.skip_credit || "").toLowerCase() === "true";
 
     let shipment: any = null;
     try {
@@ -1225,9 +1247,22 @@ router.delete("/shipping-orders/:id", async (req, res) => {
       0,
       Math.round(Number((shipment as any)?.customer_spent_amount || 0)),
     );
-    const creditCents = Number.isFinite(customerSpentAmountCents)
-      ? customerSpentAmountCents
-      : 0;
+    const creditCents =
+      !skipCredit && Number.isFinite(customerSpentAmountCents)
+        ? customerSpentAmountCents
+        : 0;
+
+    const creditResult: any = {
+      attempted: false,
+      updated: false,
+      alreadyIssued: false,
+      creditCents,
+      prevBalanceCents: null,
+      nextBalanceCents: null,
+      customerStripeId: customerStripeId || null,
+      paymentId: paymentId || null,
+      error: null,
+    };
 
     if (stripe && customerStripeId && creditCents > 0) {
       try {
@@ -1243,6 +1278,8 @@ router.delete("/shipping-orders/:id", async (req, res) => {
               Number.isFinite(issuedParsed) && issuedParsed === creditCents;
           } catch (_e) {}
         }
+        creditResult.attempted = true;
+        creditResult.alreadyIssued = alreadyIssued;
 
         if (!alreadyIssued) {
           const cust = (await stripe.customers.retrieve(
@@ -1258,6 +1295,8 @@ router.delete("/shipping-orders/:id", async (req, res) => {
               ? prevBalanceParsed
               : 0;
             const nextBalanceCents = prevBalanceCents + creditCents;
+            creditResult.prevBalanceCents = prevBalanceCents;
+            creditResult.nextBalanceCents = nextBalanceCents;
             await stripe.customers.update(
               customerStripeId,
               {
@@ -1268,6 +1307,14 @@ router.delete("/shipping-orders/:id", async (req, res) => {
               } as any,
               { idempotencyKey: `credit-boxtal-cancel-${id}` } as any,
             );
+            creditResult.updated = true;
+            console.log("BOXTAL_CANCEL: credit_balance updated", {
+              traceId,
+              id,
+              creditCents,
+              prevBalanceCents,
+              nextBalanceCents,
+            });
             if (paymentId) {
               try {
                 await stripe.paymentIntents.update(paymentId, {
@@ -1278,10 +1325,38 @@ router.delete("/shipping-orders/:id", async (req, res) => {
                 });
               } catch (_e) {}
             }
+          } else {
+            creditResult.error = "stripe_customer_deleted_or_missing";
           }
+        } else {
+          console.log("BOXTAL_CANCEL: credit already issued (PI metadata)", {
+            traceId,
+            id,
+            creditCents,
+          });
         }
       } catch (creditErr) {
         console.error("Failed to issue credit after Boxtal cancel:", creditErr);
+        creditResult.error =
+          creditErr instanceof Error ? creditErr.message : String(creditErr);
+      }
+    } else {
+      if (!stripe) {
+        console.warn("BOXTAL_CANCEL: stripe client unavailable", {
+          traceId,
+          id,
+        });
+      } else if (!customerStripeId) {
+        console.warn("BOXTAL_CANCEL: missing customer_stripe_id", {
+          traceId,
+          id,
+        });
+      } else if (!(creditCents > 0)) {
+        console.log("BOXTAL_CANCEL: no credit to issue", {
+          traceId,
+          id,
+          creditCents,
+        });
       }
     }
 
@@ -1291,6 +1366,17 @@ router.delete("/shipping-orders/:id", async (req, res) => {
         : 0;
     const refundCreditAmount =
       Number.isFinite(creditCents) && creditCents > 0 ? creditCents / 100 : 0;
+    const storeEarningsAmountCents = Math.max(
+      0,
+      Math.round(Number((shipment as any)?.store_earnings_amount || 0)),
+    );
+    const storeEarningsAmount =
+      Number.isFinite(storeEarningsAmountCents) && storeEarningsAmountCents
+        ? storeEarningsAmountCents / 100
+        : 0;
+    const productReference = String(
+      (shipment as any)?.product_reference || "",
+    ).trim();
 
     if (!skipAdminRefundEmail) {
       try {
@@ -1320,43 +1406,59 @@ router.delete("/shipping-orders/:id", async (req, res) => {
       } catch {}
     }
 
-    if (storeOwnerEmail) {
+    if (!silent && storeOwnerEmail) {
       try {
         await emailService.sendStoreOwnerOrderCancelled({
           ownerEmail: storeOwnerEmail,
           storeName,
           customerName,
           customerEmail,
-          amount: orderAmount,
+          storeEarningsAmount,
+          customerSpentAmount: orderAmount,
           currency: "EUR",
           shipmentId: id,
+          productReference: productReference || undefined,
+          paymentId: paymentId || undefined,
         });
       } catch (e) {
         console.warn("sendStoreOwnerOrderCancelled failed:", e);
       }
     }
 
-    if (customerEmail) {
+    if (!silent && customerEmail) {
       try {
         await emailService.sendCustomerOrderCancelled({
           customerEmail,
           customerName,
           storeName,
-          amount: orderAmount,
+          customerSpentAmount: orderAmount,
           currency: "EUR",
           refundCreditAmount,
           shipmentId: id,
+          productReference: productReference || undefined,
+          paymentId: paymentId || undefined,
         });
       } catch (e) {
         console.warn("sendCustomerOrderCancelled failed:", e);
       }
     }
 
+    console.log("BOXTAL_CANCEL: done", {
+      traceId,
+      id,
+      boxtalOk,
+      boxtalStatus,
+      dbUpdated,
+      creditAttempted: creditResult.attempted,
+      creditUpdated: creditResult.updated,
+      creditCents,
+    });
     return res.status(200).json({
       success: true,
       boxtal: { ok: boxtalOk, status: boxtalStatus, error: boxtalError },
       dbUpdated,
       payload: boxtalPayload,
+      credit: creditResult,
     });
   } catch (error) {
     console.error("Error in DELETE /api/boxtal/shipping-orders/:id:", error);
