@@ -1821,9 +1821,9 @@ export default function OrdersPage() {
                       ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                   }`}
-                  title='Demander le retour'
+                  title='Retourner la commande'
                 >
-                  Demander le retour
+                  Retourner la commande
                 </button>
                 <button
                   onClick={handleBatchConfirmPickup}

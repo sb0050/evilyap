@@ -989,19 +989,25 @@ export default function CheckoutPage() {
 
       const storeSlug = String(store?.slug || '').trim();
       const items: CartItem[] = groupForStore.items || [];
+      const itemsForCheckout =
+        !paymentId
+          ? (items || []).filter(
+              it => !String((it as any)?.payment_id || '').trim()
+            )
+          : items;
       const {
         weightByRefKey,
         productStripeIdByRefKey,
         existingRefKeys,
         stockByRefKey,
-      } = await refreshStockDetailsForCart(items, storeSlug);
+      } = await refreshStockDetailsForCart(itemsForCheckout, storeSlug);
       const { unitPriceByProductId, productById } =
         await refreshStripeProductDetailsForCart(
-          items,
+          itemsForCheckout,
           productStripeIdByRefKey
         );
 
-      const missingRefs = (items || [])
+      const missingRefs = (itemsForCheckout || [])
         .filter(it => {
           const ref = String(it.product_reference || '').trim();
           if (!ref) return false;
@@ -1018,7 +1024,7 @@ export default function CheckoutPage() {
         .map(it => String(it.product_reference || '').trim())
         .filter(Boolean);
 
-      const nextItems = (items || []).map(it => {
+      const nextItems = (itemsForCheckout || []).map(it => {
         const ref = String(it.product_reference || '').trim();
         const refKey = getRefKey(ref);
         const pid = String(

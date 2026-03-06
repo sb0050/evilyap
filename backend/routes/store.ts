@@ -806,8 +806,24 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         { idempotencyKey: `${idempotencyBase}_external_account` } as any,
       );
 
+      const connectAccountId = "acct_1RlSb5FvgBVqiF7V"; // ID du compte du vendeur
+
       destinationId = String(externalAccount?.id || "").trim() || null;
       if (!destinationId) throw new Error("Destination bancaire invalide");
+
+      const externalAccounts = await stripe.accounts.listExternalAccounts(
+        connectAccountId,
+        { object: "bank_account", limit: 100 },
+      );
+
+      const validDestination = externalAccounts.data.some(
+        (acc) => acc.id === destinationId,
+      );
+      if (!validDestination) {
+        throw new Error(
+          `La destination ${destinationId} n'appartient pas au compte ${connectAccountId}`,
+        );
+      }
 
       payout = await stripe.payouts.create(
         {
@@ -824,11 +840,11 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
             stripe_fees_cents: String(stripeFeesCents),
             platform_fee_cents: String(platformFeeCents),
           },
-        } as any,
+        },
         {
           idempotencyKey: `${idempotencyBase}_payout`,
-          stripeAccount: "acct_1SramGC1Oc6JE3hW",
-        } as any,
+          stripeAccount: connectAccountId,
+        },
       );
     } catch (e) {
       payoutError = e;

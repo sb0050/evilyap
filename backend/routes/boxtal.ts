@@ -8,6 +8,10 @@ import {
   emailService,
   CustomerTrackingEmailData,
 } from "../services/emailService";
+import {
+  loadFallbackCotationBoxtal,
+  pickFallbackCotationBoxtal,
+} from "../services/boxtalCotationFallback";
 
 const router = express.Router();
 
@@ -187,40 +191,56 @@ router.post("/cotation", async (req, res) => {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
-  try {
-    const recipientCountry = String(recipient.country || "FR").toUpperCase();
-    const countryKey = recipientCountry;
-    const countryOffers = offerDimensions[countryKey] || {};
-    const networkKey = String(network || "").trim();
-    if (!networkKey) {
-      return res.status(400).json({ error: "Missing network" });
-    }
-    const dimForNet = countryOffers[networkKey] || {
-      width: 10,
-      length: 10,
-      height: 5,
-    };
-    const weightValue = (() => {
-      if (typeof weight === "number") return weight;
-      const w = String(weight || "")
-        .trim()
-        .toLowerCase();
-      if (!w) return NaN;
-      if (w.endsWith("kg")) {
-        const parsed = Number(w.replace("kg", "").trim().replace(",", "."));
-        return parsed;
-      }
-      if (w.endsWith("g")) {
-        const parsed = Number(w.replace("g", "").trim().replace(",", "."));
-        return parsed / 1000;
-      }
-      const parsed = Number(w.replace(",", "."));
+  const recipientCountry = String(recipient.country || "FR").toUpperCase();
+  const countryKey = recipientCountry;
+  const countryOffers = offerDimensions[countryKey] || {};
+  const networkKey = String(network || "").trim();
+  if (!networkKey) {
+    return res.status(400).json({ error: "Missing network" });
+  }
+  const dimForNet = countryOffers[networkKey] || {
+    width: 10,
+    length: 10,
+    height: 5,
+  };
+  const weightValue = (() => {
+    if (typeof weight === "number") return weight;
+    const w = String(weight || "")
+      .trim()
+      .toLowerCase();
+    if (!w) return NaN;
+    if (w.endsWith("kg")) {
+      const parsed = Number(w.replace("kg", "").trim().replace(",", "."));
       return parsed;
-    })();
-    if (!Number.isFinite(weightValue) || weightValue <= 0) {
-      return res.status(400).json({ error: "Invalid weight" });
     }
+    if (w.endsWith("g")) {
+      const parsed = Number(w.replace("g", "").trim().replace(",", "."));
+      return parsed / 1000;
+    }
+    const parsed = Number(w.replace(",", "."));
+    return parsed;
+  })();
+  if (!Number.isFinite(weightValue) || weightValue <= 0) {
+    return res.status(400).json({ error: "Invalid weight" });
+  }
 
+  const respondWithFallback = async (): Promise<boolean> => {
+    const table = await loadFallbackCotationBoxtal();
+    if (!table) return false;
+    const fallback = pickFallbackCotationBoxtal(table, networkKey, weightValue);
+    if (fallback === null || !Number.isFinite(fallback)) return false;
+    res.status(200).json({
+      network: networkKey,
+      weight,
+      price: { "tax-inclusive": fallback },
+      characteristics: null,
+      delivery: null,
+      collection: null,
+    });
+    return true;
+  };
+
+  try {
     const credentials = Buffer.from(
       `${BOXTAL_API_V1_CONFIG.client_id}:${BOXTAL_API_V1_CONFIG.client_secret}`,
     ).toString("base64");
@@ -253,12 +273,15 @@ router.post("/cotation", async (req, res) => {
     const resp = await fetch(url, options);
     if (!resp.ok) {
       const text = await resp.text();
+      if (await respondWithFallback()) return;
       return res.status(resp.status).json({ error: text || "Cotation failed" });
     }
     const xml = await resp.text();
     const json = parser.parse(xml);
+    console.log("json", JSON.stringify(json));
     const offer: any = (json as any)?.cotation?.shipment?.offer;
     if (!offer) {
+      if (await respondWithFallback()) return;
       return res.status(404).json({ error: "No offer returned" });
     }
     const singleOffer = Array.isArray(offer) ? offer[0] : offer;
@@ -272,6 +295,7 @@ router.post("/cotation", async (req, res) => {
     });
   } catch (error: any) {
     console.error("Error in /api/boxtal/cotation:", error);
+    if (await respondWithFallback()) return;
     return res.status(500).json({ error: "Failed to get Boxtal cotation" });
   }
 });
@@ -366,7 +390,10 @@ router.post("/parcel-point-by-shipping-offer", async (req, res) => {
     const data = await response.json();
     return res.json(data);
   } catch (error) {
-    console.error("Error in /api/boxtal/parcel-point-by-shipping-offer:", error);
+    console.error(
+      "Error in /api/boxtal/parcel-point-by-shipping-offer:",
+      error,
+    );
     return res.status(500).json({
       error: "Failed to get parcel point by shipping offer",
       message: error instanceof Error ? error.message : "Unknown error",
