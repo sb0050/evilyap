@@ -798,7 +798,8 @@ export default function OrdersPage() {
       Number.isFinite(storeId) &&
       storeId > 0 &&
       (shipments || []).some(
-        other => Number(other?.store_id || 0) === storeId && other?.return_requested
+        other =>
+          Number(other?.store_id || 0) === storeId && other?.return_requested
       );
     return (
       Boolean(s.shipment_id) &&
@@ -1839,9 +1840,9 @@ export default function OrdersPage() {
                       ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                   }`}
-                  title='Demander le retour'
+                  title='Retourner la commande'
                 >
-                  Demander le retour
+                  Retourner la commande
                 </button>
                 <button
                   onClick={handleBatchConfirmPickup}
