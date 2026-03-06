@@ -239,7 +239,6 @@ export default function CheckoutPage() {
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [showPayment, setShowPayment] = useState(false);
   const [email, setEmail] = useState('');
-  const [showDelivery, setShowDelivery] = useState(false);
   const [modifyDeliveryClickCount, setModifyDeliveryClickCount] = useState(0);
   const [stripeCustomerId, setStripeCustomerId] = useState<string>('');
   const [cartItemsForStore, setCartItemsForStore] = useState<CartItem[]>([]);
@@ -1731,6 +1730,12 @@ export default function CheckoutPage() {
     )
       return;
 
+    if (isReturnShipmentUrl) {
+      setPaymentError(null);
+      showToast('Succès', 'success');
+      return;
+    }
+
     setIsProcessingPayment(true);
 
     try {
@@ -1819,85 +1824,11 @@ export default function CheckoutPage() {
         return;
       }
 
-      const resolveReturnQtyForItem = (it: CartItem) => {
-        const ref = String(it?.product_reference || '').trim();
-        const key = getRefKey(ref);
-        const boughtQty = Math.max(1, Math.round(Number(it?.quantity || 1)));
-
-        const inputStr = returnQtyInputByRefKey[key];
-        if (inputStr !== undefined) {
-          if (String(inputStr) === '') return { qty: 0, invalid: true };
-          const parsedRaw = Number(String(inputStr));
-          const parsed = Number.isFinite(parsedRaw) ? Math.floor(parsedRaw) : NaN;
-          if (!Number.isFinite(parsed) || parsed < 0 || parsed > boughtQty) {
-            return { qty: 0, invalid: true };
-          }
-          return { qty: parsed, invalid: false };
-        }
-
-        const fromState = returnQtyByRefKey[key];
-        const resolved =
-          fromState === undefined
-            ? boughtQty
-            : Math.min(boughtQty, Math.max(0, Math.round(Number(fromState))));
-        return { qty: resolved, invalid: false };
-      };
-
       let effectiveCartItems = [...latestCartItems];
       let effectiveCartTotal = latestCartTotal;
       let effectiveCartItemIds = (latestCartItems || []).map(it => it.id);
 
-      if (isReturnShipmentUrl) {
-        const selectedWithQty = (latestCartItems || [])
-          .map(it => {
-            const resolved = resolveReturnQtyForItem(it);
-            return { it, resolved };
-          })
-          .filter(x => x.it && x.resolved.invalid !== true);
-
-        const hasInvalid = (latestCartItems || []).some(it => {
-          const { invalid } = resolveReturnQtyForItem(it);
-          return invalid;
-        });
-        if (hasInvalid) {
-          const msg =
-            'Veuillez corriger les quantités à retourner avant de continuer.';
-          setPaymentError(msg);
-          showToast(msg, 'error');
-          return;
-        }
-
-        const selected = selectedWithQty
-          .map(x => ({
-            ...x.it,
-            quantity: x.resolved.qty,
-          }))
-          .filter(x => Math.max(0, Number(x.quantity || 0)) > 0);
-
-        if (selected.length === 0) {
-          const msg =
-            'Sélectionnez au moins un article à retourner avant de continuer.';
-          setPaymentError(msg);
-          showToast(msg, 'error');
-          return;
-        }
-
-        effectiveCartItems = selected;
-        effectiveCartTotal = selected.reduce(
-          (sum, it) => sum + Number(it.value || 0) * Math.max(0, Number(it.quantity || 0)),
-          0
-        );
-        effectiveCartItemIds = selected.map(it => it.id);
-      } else {
-        await validateCartQuantitiesInStock(latestCartItems, latestStockByRefKey);
-      }
-
-      if (isReturnShipmentUrl && !showDelivery) {
-        setShowDelivery(true);
-        setPaymentError(null);
-        showToast('Choisissez la méthode de retour du colis.', 'info');
-        return;
-      }
+      await validateCartQuantitiesInStock(latestCartItems, latestStockByRefKey);
 
       // Ajout automatique au panier si référence et montant renseignés
 
@@ -2015,89 +1946,6 @@ export default function CheckoutPage() {
           showToast(msg, 'error');
           return;
         }
-      }
-
-      if (isReturnShipmentUrl) {
-        const paymentIdStr = String(paymentIdParam || '').trim();
-        const storeIdNum = Number(store?.id || 0);
-        if (!paymentIdStr) {
-          const msg = 'payment_id manquant';
-          setPaymentError(msg);
-          showToast(msg, 'error');
-          return;
-        }
-        if (!Number.isFinite(storeIdNum) || storeIdNum <= 0) {
-          const msg = 'Boutique invalide';
-          setPaymentError(msg);
-          showToast(msg, 'error');
-          return;
-        }
-
-        const returnDeliveryNetwork =
-          effectiveDeliveryMethod === 'store_pickup'
-            ? 'STORE_PICKUP'
-            : (resolvedParcelPoint as any)?.shippingOfferCode ||
-              (formData as any)?.shippingOfferCode ||
-              (md.deliveryNetwork as any) ||
-              ((md.metadata || {})?.delivery_network as any) ||
-              '';
-
-        if (
-          effectiveDeliveryMethod === 'home_delivery' &&
-          !String(returnDeliveryNetwork || '').trim()
-        ) {
-          const msg = 'Veuillez sélectionner un réseau de livraison à domicile.';
-          setPaymentError(msg);
-          showToast(msg, 'error');
-          return;
-        }
-
-        const itemsForReturn = (effectiveCartItems || []).map(it => ({
-          cart_item_id: Number(it.id),
-          product_reference: String(it.product_reference || '').trim(),
-          description: String((it as any)?.description || '').trim(),
-          quantity: Math.max(1, Math.round(Number(it.quantity || 1))),
-          value: Number(it.value || 0),
-        }));
-
-        const apiBase = API_BASE_URL;
-        const token = await getToken();
-        const resp = await fetch(`${apiBase}/api/shipments/request-return`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: token ? `Bearer ${token}` : '',
-          },
-          body: JSON.stringify({
-            paymentId: paymentIdStr,
-            storeId: storeIdNum,
-            items: itemsForReturn,
-            return_method: effectiveDeliveryMethod,
-            return_store_address:
-              effectiveDeliveryMethod === 'store_pickup' ? storePickupAddress : null,
-            return_parcel_point:
-              effectiveDeliveryMethod === 'pickup_point' ? resolvedParcelPoint : null,
-            return_delivery_network: returnDeliveryNetwork || null,
-          }),
-        });
-        const json = await resp.json().catch(() => null as any);
-        if (!resp.ok) {
-          const msg =
-            String(json?.error || json?.message || '').trim() ||
-            'Erreur lors de la demande de retour';
-          setPaymentError(msg);
-          showToast(msg, 'error');
-          return;
-        }
-
-        setPaymentError(null);
-        showToast('Demande de retour envoyée.', 'success');
-        setShowDelivery(false);
-        clearReturnShipmentParams();
-        if (typeof window !== 'undefined') {
-          window.location.assign('/orders');
-        }
-        return;
       }
 
       const openShipmentMode =
@@ -3417,8 +3265,6 @@ export default function CheckoutPage() {
                   email={email}
                   setEmail={setEmail}
                   themeColor={themeColor}
-                  showDelivery={showDelivery}
-                  setShowDelivery={setShowDelivery}
                   showToast={showToast}
                   cartItemsForStore={cartItemsForStore}
                   setCartItemsForStore={setCartItemsForStore}
@@ -3434,7 +3280,6 @@ export default function CheckoutPage() {
                 />
                 {!orderCompleted &&
                   customerDetailsLoaded &&
-                  !isReturnShipmentUrl &&
                   !isEditingDelivery &&
                   (() => {
                     if (deliveryMethod === 'home_delivery') {
@@ -3728,88 +3573,6 @@ export default function CheckoutPage() {
               )}
             </div>
 
-            {isReturnShipmentUrl && showDelivery && !showPayment && (
-              <div className='bg-white rounded-lg shadow-sm p-6 mt-4'>
-                <div className='flex items-center space-x-3 mb-4'>
-                  <MapPin className='w-6 h-6' style={{ color: themeColor }} />
-                  <h2 className='text-xl font-semibold text-gray-900'>
-                    Choisir la méthode de retour
-                  </h2>
-                </div>
-                <ParcelPointMap
-                  address={(() => {
-                    if (address) return address as any;
-                    const direct = (customerData as any)?.address;
-                    if (direct) return direct as any;
-                    const shipAddr = (customerData as any)?.shipping?.address;
-                    if (!shipAddr || typeof shipAddr !== 'object') return undefined;
-                    const line1 = String(
-                      shipAddr?.line1 || shipAddr?.street || ''
-                    ).trim();
-                    const line2 = String(
-                      shipAddr?.line2 || shipAddr?.number || ''
-                    ).trim();
-                    const postal_code = String(
-                      shipAddr?.postal_code || shipAddr?.postalCode || ''
-                    ).trim();
-                    const city = String(shipAddr?.city || '').trim();
-                    const country = String(
-                      shipAddr?.country || shipAddr?.countryIsoCode || 'FR'
-                    ).trim();
-                    const state = String(shipAddr?.state || '').trim();
-                    if (!line1 && !postal_code && !city) return undefined;
-                    return {
-                      line1,
-                      line2: line2 || undefined,
-                      postal_code,
-                      city,
-                      country,
-                      state: state || undefined,
-                    } as any;
-                  })()}
-                  storePickupAddress={storePickupAddress}
-                  storePickupPhone={storePickupPhone}
-                  storeWebsite={store?.website}
-                  onParcelPointSelect={(point, method, shippingOfferCode) => {
-                    setShippingHasBeenModified(true);
-                    if (typeof shippingOfferCode === 'string') {
-                      setFormData((prev: any) => ({
-                        ...prev,
-                        shippingOfferCode,
-                      }));
-
-                      if (point) {
-                        setSelectedParcelPoint({
-                          ...point,
-                          shippingOfferCode,
-                        });
-                      } else {
-                        setSelectedParcelPoint(null);
-                      }
-                    } else {
-                      setSelectedParcelPoint(point);
-                      setFormData((prev: any) => ({
-                        ...prev,
-                        shippingOfferCode: '',
-                      }));
-                    }
-
-                    setDeliveryMethod(method);
-                    setIsFormValid(true);
-                  }}
-                  defaultDeliveryMethod={deliveryMethod}
-                  defaultParcelPoint={selectedParcelPoint}
-                  defaultParcelPointCode={
-                    (customerData as any)?.parcelPointCode ||
-                    (customerData as any)?.metadata?.parcel_point ||
-                    (customerData?.parcel_point?.code ?? undefined)
-                  }
-                  initialDeliveryNetwork={(formData as any)?.shippingOfferCode}
-                  disablePopupsOnMobile={true}
-                />
-              </div>
-            )}
-
             {/* Bouton Procéder au paiement sous l'accordéon */}
             <div className='mt-4'>
               {(!showPayment || !embeddedClientSecret) &&
@@ -3847,80 +3610,9 @@ export default function CheckoutPage() {
                   const addressElementOk =
                     !needsAddressElementValidation || isFormValid;
 
-                  const returnSelection = filteredCartItems.reduce(
-                    (acc, it) => {
-                      const ref = String(it?.product_reference || '').trim();
-                      const key = getRefKey(ref);
-                      const boughtQty = Math.max(
-                        1,
-                        Math.round(Number(it?.quantity || 1))
-                      );
-
-                      const inputStr = returnQtyInputByRefKey[key];
-                      if (inputStr !== undefined) {
-                        const raw = String(inputStr);
-                        const parsedRaw = Number(raw === '' ? NaN : raw);
-                        const parsed = Number.isFinite(parsedRaw)
-                          ? Math.floor(parsedRaw)
-                          : NaN;
-                        const invalid =
-                          raw === '' ||
-                          !Number.isFinite(parsed) ||
-                          parsed < 0 ||
-                          parsed > boughtQty;
-                        if (invalid) acc.hasInvalid = true;
-                        if (!invalid && parsed > 0) acc.selectedCount += parsed;
-                        return acc;
-                      }
-
-                      const fromState = returnQtyByRefKey[key];
-                      const qty =
-                        fromState === undefined
-                          ? boughtQty
-                          : Math.min(
-                              boughtQty,
-                              Math.max(0, Math.round(Number(fromState)))
-                            );
-                      if (qty > 0) acc.selectedCount += qty;
-                      return acc;
-                    },
-                    { selectedCount: 0, hasInvalid: false }
-                  );
-
-                  const returnDeliveryOk = !showDelivery
-                    ? true
-                    : (() => {
-                        if (deliveryMethod === 'pickup_point') {
-                          return Boolean(selectedParcelPoint);
-                        }
-                        if (deliveryMethod === 'store_pickup') {
-                          return Boolean(storePickupAddress?.line1);
-                        }
-                        if (deliveryMethod === 'home_delivery') {
-                          const homeAddr =
-                            address || (customerData?.address as any);
-                          const hasAddr = Boolean(
-                            homeAddr?.line1 &&
-                              homeAddr?.postal_code &&
-                              homeAddr?.city
-                          );
-                          const hasNetwork = Boolean(
-                            String((formData as any)?.shippingOfferCode || '').trim()
-                          );
-                          return hasAddr && hasNetwork;
-                        }
-                        return false;
-                      })();
-
                   const canProceed = isReturnShipmentUrl
-                    ? hasItems &&
-                      returnSelection.selectedCount > 0 &&
-                      !returnSelection.hasInvalid &&
-                      returnDeliveryOk
-                    : hasItems &&
-                      deliveryIsValid &&
-                      parcelPointOk &&
-                      addressElementOk;
+                    ? hasItems
+                    : hasItems && deliveryIsValid && parcelPointOk && addressElementOk;
 
                   const btnColor = canProceed ? '#0074D4' : '#6B7280';
                   return (
@@ -4031,9 +3723,6 @@ function CheckoutForm({
   email,
   setEmail,
   themeColor,
-
-  showDelivery,
-  setShowDelivery,
   showToast,
   cartItemsForStore,
   setCartItemsForStore,
@@ -4080,9 +3769,6 @@ function CheckoutForm({
   email: string;
   setEmail: any;
   themeColor: string;
-
-  showDelivery: boolean;
-  setShowDelivery: (val: boolean) => void;
   showToast: (message: string, type?: 'error' | 'info' | 'success') => void;
   cartItemsForStore: CartItem[];
   setCartItemsForStore: Dispatch<SetStateAction<CartItem[]>>;
@@ -4117,7 +3803,7 @@ function CheckoutForm({
   const showOrderFields = !showPayment && !isReturnShipmentMode;
 
   const showDeliveryFields = (() => {
-    if (isReturnShipmentMode) return false;
+    if (isReturnShipmentMode) return isEditingDelivery;
     if (isEditingOrder) return false;
     if (isEditingDelivery) return true;
     if (hasDeliveryMethod && !hasCartItems) return false;
