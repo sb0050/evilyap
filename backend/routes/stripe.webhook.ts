@@ -271,6 +271,62 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
         } else {
           console.warn("checkout.session.completed without a linked customer");
         }
+
+        const flow = String((session.metadata as any)?.flow || "").trim();
+        if (flow === "return_shipment") {
+          const originalPaymentId = String(
+            (session.metadata as any)?.original_payment_id || "",
+          ).trim();
+          const storeIdRaw = String(
+            (session.metadata as any)?.store_id || "",
+          ).trim();
+          const storeIdNum = Number(storeIdRaw);
+          const itemsTotalRaw = String(
+            (session.metadata as any)?.return_items_total_cents || "0",
+          ).trim();
+          const estimatedCostRaw = String(
+            (session.metadata as any)?.estimated_delivery_cost_cents || "0",
+          ).trim();
+          const itemsTotalCentsParsed = Number.parseInt(itemsTotalRaw || "0", 10);
+          const estimatedCostCentsParsed = Number.parseInt(estimatedCostRaw || "0", 10);
+          const itemsTotalCents = Number.isFinite(itemsTotalCentsParsed)
+            ? itemsTotalCentsParsed
+            : 0;
+          const estimatedCostCents = Number.isFinite(estimatedCostCentsParsed)
+            ? estimatedCostCentsParsed
+            : 0;
+          const creditDeltaCents = itemsTotalCents - estimatedCostCents;
+
+          if (customer && !("deleted" in customer)) {
+            const currentBalanceParsed = Number.parseInt(
+              String((customer.metadata as any)?.credit_balance || "0"),
+              10,
+            );
+            const currentBalanceCents = Number.isFinite(currentBalanceParsed)
+              ? currentBalanceParsed
+              : 0;
+            const nextBalanceCents = currentBalanceCents + creditDeltaCents;
+            await stripe.customers.update(customer.id, {
+              metadata: {
+                ...(customer.metadata as Record<string, string>),
+                credit_balance: String(nextBalanceCents),
+              },
+            });
+
+            if (originalPaymentId && Number.isFinite(storeIdNum) && storeIdNum > 0) {
+              await supabase
+                .from("shipments")
+                .update({ return_requested: true })
+                .eq("payment_id", originalPaymentId)
+                .eq("store_id", storeIdNum)
+                .eq("customer_stripe_id", customer.id);
+            }
+          }
+
+          res.json({ received: true });
+          return;
+        }
+
         if (customer && !("deleted" in customer)) {
           const customerPhone = customer.phone || null;
           const customerId = customer.id;

@@ -405,7 +405,7 @@ export default function CheckoutPage() {
         const resolved =
           existing === undefined
             ? boughtQty
-            : Math.min(boughtQty, Math.max(0, Math.round(Number(existing))));
+            : Math.min(boughtQty, Math.max(1, Math.round(Number(existing))));
         next[key] = resolved;
       }
       return next;
@@ -1738,7 +1738,136 @@ export default function CheckoutPage() {
 
     if (isReturnShipmentUrl) {
       setPaymentError(null);
-      showToast('Succès', 'success');
+      setIsProcessingPayment(true);
+      try {
+        const apiBase = API_BASE_URL;
+        const paymentId = String(searchParams.get('payment_id') || '').trim();
+        if (!paymentId) {
+          throw new Error('Commande introuvable');
+        }
+
+        const md = (customerData as any)?.metadata || {};
+        const inferredName = String(
+          (formData as any)?.name ||
+            md?.name ||
+            user?.fullName ||
+            user?.username ||
+            'Client'
+        ).trim();
+        const inferredPhone = String(
+          (formData as any)?.phone || md?.phone || ''
+        ).trim();
+        const inferredEmail = String(
+          email || user?.primaryEmailAddress?.emailAddress || ''
+        ).trim();
+        if (!inferredEmail) {
+          throw new Error('Email requis');
+        }
+
+        const rawAddr: any =
+          address ||
+          (customerData as any)?.address ||
+          (customerData as any)?.shipping?.address ||
+          null;
+        const normalizedAddress = {
+          line1: String(rawAddr?.line1 || rawAddr?.street || '').trim(),
+          line2: String(rawAddr?.line2 || rawAddr?.number || '').trim(),
+          city: String(rawAddr?.city || '').trim(),
+          state: String(rawAddr?.state || '').trim(),
+          postal_code: String(
+            rawAddr?.postal_code || rawAddr?.postalCode || ''
+          ).trim(),
+          country: String(rawAddr?.country || rawAddr?.countryIsoCode || 'FR')
+            .trim()
+            .toUpperCase(),
+        };
+
+        if (
+          !normalizedAddress.line1 ||
+          !normalizedAddress.postal_code ||
+          !normalizedAddress.city
+        ) {
+          throw new Error('Adresse incomplète');
+        }
+
+        const payloadItems = (cartItemsForStore || [])
+          .filter(
+            it =>
+              !isDeliveryRegulationText(it.product_reference) &&
+              !isDeliveryRegulationText((it as any)?.description)
+          )
+          .map(it => {
+            const ref = String(it.product_reference || '').trim();
+            const key = getRefKey(ref);
+            const boughtQty = Math.max(1, Math.round(Number(it.quantity || 1)));
+            const selectedQtyRaw = returnQtyByRefKey[key];
+            const selectedQty =
+              Number.isFinite(Number(selectedQtyRaw)) && Number(selectedQtyRaw) > 0
+                ? Math.min(boughtQty, Math.round(Number(selectedQtyRaw)))
+                : boughtQty;
+            return {
+              cart_item_id: (it as any)?.id,
+              product_reference: ref,
+              description: String((it as any)?.description || '').trim(),
+              quantity: selectedQty,
+              value: Number(it.value || 0),
+            };
+          })
+          .filter(it => Boolean(it.product_reference));
+
+        if (payloadItems.length === 0) {
+          throw new Error("Aucun article n'a été sélectionné");
+        }
+
+        const token = await getToken();
+        const resp = await fetch(
+          `${apiBase}/api/stripe/create-return-checkout-session`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+            body: JSON.stringify({
+              paymentId,
+              storeId: store.id,
+              storeName: store?.name ?? storeName,
+              customerName: inferredName,
+              customerEmail: inferredEmail,
+              phone: inferredPhone,
+              address: normalizedAddress,
+              items: payloadItems,
+            }),
+          }
+        );
+
+        const json = await resp.json().catch(() => null as any);
+        if (!resp.ok) {
+          throw new Error(
+            String(
+              json?.error ||
+                `Erreur create-return-checkout-session (${resp.status || 'unknown'})`
+            )
+          );
+        }
+        const clientSecret = String(json?.clientSecret || '').trim();
+        if (!clientSecret) {
+          throw new Error('clientSecret manquant');
+        }
+
+        setEmbeddedClientSecret(clientSecret);
+        setOrderCompleted(true);
+        setOrderAccordionOpen(false);
+        setPaymentAccordionOpen(true);
+        setShowPayment(true);
+        setIsEditingDelivery(false);
+      } catch (e: any) {
+        const msg = e?.message || 'Erreur inconnue';
+        setPaymentError(msg);
+        showToast(msg, 'error');
+      } finally {
+        setIsProcessingPayment(false);
+      }
       return;
     }
 
@@ -2936,7 +3065,7 @@ export default function CheckoutPage() {
                                               type='button'
                                               onClick={() => {
                                                 const next = Math.max(
-                                                  0,
+                                                  1,
                                                   currentReturnQty - 1
                                                 );
                                                 setReturnQtyInputByRefKey(
@@ -2953,14 +3082,14 @@ export default function CheckoutPage() {
                                               }}
                                               className='h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60'
                                               aria-label='Diminuer la quantité à retourner'
-                                              disabled={currentReturnQty <= 0}
+                                              disabled={currentReturnQty <= 1}
                                             >
                                               -
                                             </button>
                                             <input
                                               type='number'
                                               inputMode='numeric'
-                                              min={0}
+                                              min={1}
                                               max={currentQty}
                                               step={1}
                                               value={localReturnValue}
@@ -2991,10 +3120,10 @@ export default function CheckoutPage() {
                                                   parsedRaw
                                                 )
                                                   ? Math.floor(parsedRaw)
-                                                  : 0;
+                                                  : 1;
                                                 const clamped = Math.min(
                                                   currentQty,
-                                                  Math.max(0, parsed)
+                                                  Math.max(1, parsed)
                                                 );
                                                 setReturnQtyInputByRefKey(
                                                   prev => {

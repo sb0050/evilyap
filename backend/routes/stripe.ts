@@ -16,7 +16,8 @@ const router = express.Router();
 
 // Configuration Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const supabaseKey =
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
   console.error("Supabase environment variables are missing");
@@ -1852,6 +1853,275 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
   }
 });
 
+router.post(
+  "/create-return-checkout-session",
+  async (req, res): Promise<void> => {
+    try {
+      const {
+        paymentId,
+        storeId,
+        storeName,
+        customerName,
+        customerEmail,
+        phone,
+        address,
+        items,
+      } = req.body || {};
+
+      const toCleanString = (v: unknown) => String(v || "").trim();
+      const paymentIdStr = toCleanString(paymentId);
+      const storeIdNum = Number(storeId);
+      const storeNameStr = toCleanString(storeName);
+      const customerEmailStr = toCleanString(customerEmail);
+      const customerNameStr = toCleanString(customerName);
+      const customerPhoneStr = toCleanString(phone);
+      const addressObj =
+        address && typeof address === "object" ? (address as any) : null;
+      const itemsArr: any[] = Array.isArray(items) ? items : [];
+
+      if (!paymentIdStr) {
+        res.status(400).json({ error: "paymentId requis" });
+        return;
+      }
+      if (!Number.isFinite(storeIdNum) || storeIdNum <= 0) {
+        res.status(400).json({ error: "storeId requis" });
+        return;
+      }
+      if (!storeNameStr) {
+        res.status(400).json({ error: "storeName requis" });
+        return;
+      }
+      if (!customerEmailStr) {
+        res.status(400).json({ error: "Email client requis" });
+        return;
+      }
+      if (!addressObj) {
+        res.status(400).json({ error: "Adresse requise" });
+        return;
+      }
+      if (itemsArr.length === 0) {
+        res.status(400).json({ error: "items requis" });
+        return;
+      }
+
+      const auth = getAuth(req);
+      if (!auth?.isAuthenticated || !auth?.userId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      const user = await clerkClient.users.getUser(auth.userId);
+      const customerId = String(
+        (user?.publicMetadata as any)?.stripe_id || "",
+      ).trim();
+      if (!customerId) {
+        res
+          .status(400)
+          .json({ error: "stripe_id manquant dans les metadata du user" });
+        return;
+      }
+
+      const customer = (await stripe.customers.retrieve(
+        customerId,
+      )) as Stripe.Customer;
+      if (!customer || ("deleted" in customer && (customer as any).deleted)) {
+        res.status(404).json({ error: "Customer not found" });
+        return;
+      }
+
+      await stripe.customers.update(customerId, {
+        name: customerNameStr || customer.name || undefined,
+        email: customerEmailStr || customer.email || undefined,
+        phone: customerPhoneStr || customer.phone || undefined,
+        address: {
+          line1: toCleanString(addressObj.line1),
+          line2: toCleanString(addressObj.line2) || "",
+          city: toCleanString(addressObj.city),
+          state: toCleanString(addressObj.state) || "",
+          postal_code: toCleanString(addressObj.postal_code),
+          country: toCleanString(addressObj.country) || "FR",
+        },
+        metadata: {
+          ...(customer.metadata as Record<string, string>),
+          store_name: storeNameStr || "",
+        },
+      });
+
+      const { data: shipment, error: shipErr } = await supabase
+        .from("shipments")
+        .select("id,customer_stripe_id,estimated_delivery_cost,delivery_method")
+        .eq("payment_id", paymentIdStr)
+        .eq("store_id", storeIdNum)
+        .maybeSingle();
+      if (shipErr) {
+        res.status(500).json({ error: shipErr.message });
+        return;
+      }
+      if (!shipment) {
+        res.status(404).json({ error: "Commande introuvable" });
+        return;
+      }
+      const shipmentCustomerId = toCleanString(
+        (shipment as any)?.customer_stripe_id,
+      );
+      if (shipmentCustomerId && shipmentCustomerId !== customerId) {
+        res.status(403).json({ error: "Accès interdit à cette commande" });
+        return;
+      }
+
+      const estimatedCostEurRaw = Number(
+        (shipment as any)?.estimated_delivery_cost ?? 0,
+      );
+      const estimatedCostEur = Number.isFinite(estimatedCostEurRaw)
+        ? Math.max(0, estimatedCostEurRaw)
+        : 0;
+      const estimatedCostCents = Math.round(estimatedCostEur * 100);
+      if (estimatedCostCents <= 0) {
+        res.status(400).json({ error: "Aucun frais de retour à payer" });
+        return;
+      }
+
+      const normalizedItems = itemsArr
+        .map((it) => {
+          const cartItemIdRaw = Number(it?.cart_item_id ?? it?.id ?? NaN);
+          const cart_item_id =
+            Number.isFinite(cartItemIdRaw) && cartItemIdRaw > 0
+              ? cartItemIdRaw
+              : null;
+          const product_reference = toCleanString(it?.product_reference);
+          const description = toCleanString(it?.description) || null;
+          const quantity = Math.max(1, Math.round(Number(it?.quantity || 1)));
+          const valueRaw = Number(it?.value ?? 0);
+          const value = Number.isFinite(valueRaw) ? valueRaw : 0;
+          return {
+            cart_item_id,
+            product_reference,
+            description,
+            quantity,
+            value,
+          };
+        })
+        .filter((it) => Boolean(it.product_reference));
+
+      if (normalizedItems.length === 0) {
+        res.status(400).json({ error: "items invalides" });
+        return;
+      }
+      const cartItemIds = Array.from(
+        new Set(
+          normalizedItems
+            .map((it) => Number(it.cart_item_id || 0))
+            .filter((n) => Number.isFinite(n) && n > 0),
+        ),
+      );
+      if (cartItemIds.length !== normalizedItems.length) {
+        res.status(400).json({ error: "cart_item_id requis" });
+        return;
+      }
+
+      const { data: cartRows, error: cartErr } = await supabase
+        .from("carts")
+        .select(
+          "id,store_id,customer_stripe_id,payment_id,product_reference,description,value,quantity",
+        )
+        .in("id", cartItemIds as any)
+        .eq("store_id", storeIdNum)
+        .eq("customer_stripe_id", customerId)
+        .eq("payment_id", paymentIdStr);
+      if (cartErr) {
+        res.status(500).json({ error: cartErr.message });
+        return;
+      }
+      const cartById = new Map<number, any>();
+      for (const r of cartRows || []) {
+        const id = Number((r as any)?.id || 0);
+        if (Number.isFinite(id) && id > 0) cartById.set(id, r);
+      }
+      if (cartById.size !== cartItemIds.length) {
+        res.status(400).json({ error: "Certains articles sont introuvables" });
+        return;
+      }
+
+      let returnItemsTotalCents = 0;
+      for (const it of normalizedItems) {
+        const cartId = Number(it.cart_item_id || 0);
+        const row = cartById.get(cartId) || null;
+        if (!row) {
+          res.status(400).json({ error: "Certains articles sont introuvables" });
+          return;
+        }
+        const rowQty = Math.max(1, Math.round(Number((row as any)?.quantity || 1)));
+        const reqQty = Math.max(1, Math.round(Number(it.quantity || 1)));
+        if (reqQty > rowQty) {
+          res.status(400).json({
+            error: `Quantité invalide pour ${toCleanString(
+              (row as any)?.product_reference,
+            )}: max ${rowQty}`,
+          });
+          return;
+        }
+        const unitValueEurRaw = Number((row as any)?.value ?? it.value ?? 0);
+        const unitValueEur = Number.isFinite(unitValueEurRaw)
+          ? Math.max(0, unitValueEurRaw)
+          : 0;
+        const unitValueCents = Math.round(unitValueEur * 100);
+        returnItemsTotalCents += unitValueCents * reqQty;
+      }
+
+      const currencyLower = "eur";
+      const storeSlug =
+        slugify(storeNameStr, { lower: true, strict: true }) || "default";
+
+      const session = await stripe.checkout.sessions.create({
+        ui_mode: "embedded",
+        mode: "payment",
+        customer: customerId,
+        currency: currencyLower,
+        line_items: [
+          {
+            price_data: {
+              currency: currencyLower,
+              product_data: { name: "Frais de retour" },
+              unit_amount: estimatedCostCents,
+            },
+            quantity: 1,
+          },
+        ],
+        metadata: {
+          flow: "return_shipment",
+          store_name: storeNameStr || "PayLive",
+          store_id: String(storeIdNum),
+          original_payment_id: paymentIdStr,
+          return_items_total_cents: String(returnItemsTotalCents),
+          estimated_delivery_cost_cents: String(estimatedCostCents),
+        },
+        return_url: `${
+          process.env.CLIENT_URL
+        }/payment/return?session_id={CHECKOUT_SESSION_ID}&store_name=${encodeURIComponent(
+          storeSlug,
+        )}`,
+        consent_collection: { terms_of_service: "required" },
+        custom_text: {
+          terms_of_service_acceptance: {
+            message: `J'accepte les conditions générales de vente et la politique de confidentialité de ${
+              storeNameStr || "PayLive"
+            }.`,
+          },
+        },
+      } as any);
+
+      res.json({
+        clientSecret: session.client_secret,
+        sessionId: session.id,
+        customerId,
+      });
+    } catch (error) {
+      console.error("Erreur lors de la création de la session retour:", error);
+      res.status(500).json({ error: "Erreur interne du serveur" });
+    }
+  },
+);
+
 router.post("/save-customer-address", async (req, res) => {
   const { customerId, address, shippingAddress } = req.body;
 
@@ -2184,6 +2454,7 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
       dropoff_point: dropoffPointMeta || undefined,
       shipping_details: shippingDetails || undefined,
       customer_details: customerDetails || undefined,
+      metadata: (session as any)?.metadata || undefined,
       line_items: detailedLineItems,
       delivery_regulation_items: detailedLineItems.filter(
         (it) => (it as any)?.is_delivery_regulation,
