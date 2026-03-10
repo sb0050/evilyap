@@ -1323,6 +1323,29 @@ export default function OrdersPage() {
       showToast('Cette commande n’est pas éligible au retour', 'error');
       return;
     }
+    const dm = String(s.delivery_method || '')
+      .trim()
+      .toLowerCase();
+    if (dm !== 'store_pickup') {
+      const dpRaw = (s as any)?.dropoff_point;
+      const dp =
+        dpRaw && typeof dpRaw === 'string'
+          ? (() => {
+              try {
+                return JSON.parse(dpRaw);
+              } catch {
+                return null;
+              }
+            })()
+          : dpRaw || null;
+      const country = String(dp?.country || '')
+        .trim()
+        .toUpperCase();
+      if (country === 'BE' || country === 'CH') {
+        await requestReturnForShipment(s);
+        return;
+      }
+    }
     const storeSlug = String(s.store?.slug || '').trim();
     const paymentId = String(s.payment_id || '').trim();
     if (!storeSlug || !paymentId) {

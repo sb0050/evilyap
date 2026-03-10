@@ -2146,12 +2146,6 @@ class EmailService {
               <p>Votre demande de retour a bien été prise en compte.</p>
               <p>Vous recevrez prochainement les instructions pour procéder au retour.</p>
 
-              <div class="details">
-                <p><strong>Boutique :</strong> ${safe(storeName || "—")}</p>
-                ${shipmentId ? `<p><strong>Commande :</strong> ${safe(shipmentId)}</p>` : ""}
-                ${paymentId ? `<p><strong>ID de transaction :</strong> ${safe(paymentId)}</p>` : ""}
-              </div>
-
               ${
                 itemsRowsHtml
                   ? `
@@ -2172,6 +2166,12 @@ class EmailService {
                   `
                   : ""
               }
+
+              <div class="details">
+                <p><strong>Boutique :</strong> ${safe(storeName || "—")}</p>
+                ${shipmentId ? `<p><strong>Commande :</strong> ${safe(shipmentId)}</p>` : ""}
+                ${paymentId ? `<p><strong>ID de transaction :</strong> ${safe(paymentId)}</p>` : ""}
+              </div>
 
               <p><strong>L’équipe PayLive</strong></p>
 

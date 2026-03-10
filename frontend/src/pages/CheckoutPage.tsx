@@ -746,8 +746,7 @@ export default function CheckoutPage() {
           const expectedPid = String(paymentId || '').trim();
           const filteredByPid = expectedPid
             ? raw.filter(
-                (it: any) =>
-                  String(it?.payment_id || '').trim() === expectedPid
+                (it: any) => String(it?.payment_id || '').trim() === expectedPid
               )
             : raw;
           return Array.isArray(filteredByPid) ? filteredByPid : [];
@@ -824,7 +823,9 @@ export default function CheckoutPage() {
 
         const singleFallbackPid =
           stripeFallbackProductById.size === 1
-            ? String(Array.from(stripeFallbackProductById.keys())[0] || '').trim()
+            ? String(
+                Array.from(stripeFallbackProductById.keys())[0] || ''
+              ).trim()
             : '';
 
         if (stripeFallbackProductById.size > 0) {
@@ -838,7 +839,8 @@ export default function CheckoutPage() {
                 productStripeIdByRefKey.get(key) ||
                   it.product_stripe_id ||
                   stripeFallbackProductIdByRefKey.get(key) ||
-                  (((rawItems || []).length === 1 && singleFallbackPid) || '') ||
+                  ((rawItems || []).length === 1 && singleFallbackPid) ||
+                  '' ||
                   ''
               ).trim();
               if (!pid || !pid.startsWith('prod_')) continue;
@@ -878,7 +880,8 @@ export default function CheckoutPage() {
             productStripeIdByRefKey.get(refKey) ||
               it.product_stripe_id ||
               stripeFallbackProductIdByRefKey.get(refKey) ||
-              (((rawItems || []).length === 1 && singleFallbackPid) || '') ||
+              ((rawItems || []).length === 1 && singleFallbackPid) ||
+              '' ||
               ''
           ).trim();
           const hasStripe = pid.startsWith('prod_');
@@ -989,12 +992,11 @@ export default function CheckoutPage() {
 
       const storeSlug = String(store?.slug || '').trim();
       const items: CartItem[] = groupForStore.items || [];
-      const itemsForCheckout =
-        !paymentId
-          ? (items || []).filter(
-              it => !String((it as any)?.payment_id || '').trim()
-            )
-          : items;
+      const itemsForCheckout = !paymentId
+        ? (items || []).filter(
+            it => !String((it as any)?.payment_id || '').trim()
+          )
+        : items;
       const {
         weightByRefKey,
         productStripeIdByRefKey,
@@ -1802,7 +1804,8 @@ export default function CheckoutPage() {
             const boughtQty = Math.max(1, Math.round(Number(it.quantity || 1)));
             const selectedQtyRaw = returnQtyByRefKey[key];
             const selectedQty =
-              Number.isFinite(Number(selectedQtyRaw)) && Number(selectedQtyRaw) > 0
+              Number.isFinite(Number(selectedQtyRaw)) &&
+              Number(selectedQtyRaw) > 0
                 ? Math.min(boughtQty, Math.round(Number(selectedQtyRaw)))
                 : boughtQty;
             return {
@@ -2028,10 +2031,9 @@ export default function CheckoutPage() {
             })()
           : null;
       if (effectiveDeliveryMethod === 'pickup_point' && !resolvedParcelPoint) {
-        const msg =
-          isReturnShipmentUrl
-            ? 'Veuillez sélectionner un point relais avant de procéder au retour.'
-            : 'Veuillez sélectionner un point relais avant de procéder au paiement.';
+        const msg = isReturnShipmentUrl
+          ? 'Veuillez sélectionner un point relais avant de procéder au retour.'
+          : 'Veuillez sélectionner un point relais avant de procéder au paiement.';
         setPaymentError(msg);
         showToast(msg, 'error');
         return;
@@ -2073,7 +2075,10 @@ export default function CheckoutPage() {
       const expectedPhone = getExpectedPhonePrefixForCountry(
         countryForPhoneValidation
       );
-      if (expectedPhone && (!isReturnShipmentUrl || (customerInfo.phone || '').trim())) {
+      if (
+        expectedPhone &&
+        (!isReturnShipmentUrl || (customerInfo.phone || '').trim())
+      ) {
         const ok = validatePhone(customerInfo.phone, expectedPhone.country);
         if (!ok) {
           const msg = `Numéro de téléphone invalide (${expectedPhone.label}).`;
@@ -2706,19 +2711,35 @@ export default function CheckoutPage() {
         <Modal
           isOpen={isOpenShipmentMode && openShipmentBlockModalOpen}
           onClose={() => {}}
-          title='Modification de commande en cours'
+          title='Commande déjà en cours de modification'
         >
           <div className='space-y-4'>
             <div className='text-sm text-gray-700'>
-              Veuillez compléter ou annuler la modification de votre commande :{' '}
-              <span className='font-semibold'>
-                {openShipmentBlockShipmentId ||
-                  (openShipmentBlockShipmentRowId != null
-                    ? String(openShipmentBlockShipmentRowId)
-                    : '—')}
-              </span>
+              Vous modifiez actuellement une autre commande. Si vous continuez,
+              les modifications en cours seront annulées. Souhaitez-vous
+              poursuivre avec cette nouvelle commande ?
             </div>
             <div className='flex items-center justify-end gap-2'>
+              <button
+                type='button'
+                onClick={async () => {
+                  const pid = String(openShipmentBlockPaymentId || '').trim();
+                  if (!pid) return;
+                  setOpenShipmentBlockModalOpen(false);
+                  setOpenShipmentAttemptPaymentId('');
+                  setShipmentCartRebuilt(false);
+                  setOpenShipmentInitHandled(false);
+                  setOpenShipmentEditingShipmentId(openShipmentBlockShipmentId);
+                  setOpenShipmentEditingShipmentRowId(
+                    openShipmentBlockShipmentRowId
+                  );
+                  setOpenShipmentParams(pid);
+                }}
+                disabled={openShipmentActionLoading}
+                className='px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+              >
+                Annuler
+              </button>
               <button
                 type='button'
                 onClick={async () => {
@@ -2776,29 +2797,9 @@ export default function CheckoutPage() {
                   }
                 }}
                 disabled={openShipmentActionLoading}
-                className='px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-              >
-                Annuler les modifications
-              </button>
-              <button
-                type='button'
-                onClick={async () => {
-                  const pid = String(openShipmentBlockPaymentId || '').trim();
-                  if (!pid) return;
-                  setOpenShipmentBlockModalOpen(false);
-                  setOpenShipmentAttemptPaymentId('');
-                  setShipmentCartRebuilt(false);
-                  setOpenShipmentInitHandled(false);
-                  setOpenShipmentEditingShipmentId(openShipmentBlockShipmentId);
-                  setOpenShipmentEditingShipmentRowId(
-                    openShipmentBlockShipmentRowId
-                  );
-                  setOpenShipmentParams(pid);
-                }}
-                disabled={openShipmentActionLoading}
                 className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
               >
-                Poursuivre les modifications
+                Continuer
               </button>
             </div>
           </div>
@@ -3106,7 +3107,9 @@ export default function CheckoutPage() {
                                               }}
                                               onKeyDown={e => {
                                                 if (e.key !== 'Enter') return;
-                                                (e.currentTarget as any)?.blur?.();
+                                                (
+                                                  e.currentTarget as any
+                                                )?.blur?.();
                                               }}
                                               onBlur={() => {
                                                 const raw = String(
@@ -3161,7 +3164,9 @@ export default function CheckoutPage() {
                                               }}
                                               className='h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60'
                                               aria-label='Augmenter la quantité à retourner'
-                                              disabled={currentReturnQty >= currentQty}
+                                              disabled={
+                                                currentReturnQty >= currentQty
+                                              }
                                             >
                                               +
                                             </button>
@@ -3208,7 +3213,9 @@ export default function CheckoutPage() {
                                               }}
                                               onKeyDown={e => {
                                                 if (e.key !== 'Enter') return;
-                                                (e.currentTarget as any)?.blur?.();
+                                                (
+                                                  e.currentTarget as any
+                                                )?.blur?.();
                                               }}
                                               onBlur={() => {
                                                 const raw = String(
@@ -3747,7 +3754,10 @@ export default function CheckoutPage() {
 
                   const canProceed = isReturnShipmentUrl
                     ? hasItems
-                    : hasItems && deliveryIsValid && parcelPointOk && addressElementOk;
+                    : hasItems &&
+                      deliveryIsValid &&
+                      parcelPointOk &&
+                      addressElementOk;
 
                   const btnColor = canProceed ? '#0074D4' : '#6B7280';
                   return (
