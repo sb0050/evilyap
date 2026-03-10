@@ -2049,6 +2049,160 @@ class EmailService {
     }
   }
 
+  async sendCustomerReturnRequested(data: {
+    customerEmail: string;
+    customerName?: string;
+    storeName: string;
+    shipmentId?: string;
+    paymentId?: string;
+    items: Array<{
+      product_reference: string;
+      description?: string | null;
+      quantity: number;
+    }>;
+  }): Promise<boolean> {
+    try {
+      const to = String(data.customerEmail || "").trim();
+      if (!to) return false;
+
+      const safe = (raw: any) =>
+        String(raw ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+
+      const storeName = String(data.storeName || "").trim();
+      const customerName = String(data.customerName || "").trim();
+      const shipmentId = String(data.shipmentId || "").trim();
+      const paymentId = String(data.paymentId || "").trim();
+
+      const itemsRowsHtml = (() => {
+        const items = Array.isArray(data.items) ? data.items : [];
+        const normalized = items
+          .map((it) => {
+            const ref = String((it as any)?.product_reference || "").trim();
+            const desc = String((it as any)?.description || "").trim();
+            const qRaw = Number((it as any)?.quantity || 1);
+            const qty =
+              Number.isFinite(qRaw) && qRaw > 0 ? Math.floor(qRaw) : 1;
+            return {
+              ref,
+              desc: desc || null,
+              qty,
+            };
+          })
+          .filter((it) => Boolean(it.ref));
+        if (normalized.length === 0) return "";
+        return normalized
+          .map((it) => {
+            return `
+              <tr>
+                <td style="padding:12px 0; border-bottom:1px solid #eee;">
+                  <div style="font-weight:700; color:#111;">${safe(
+                    it.ref,
+                  )}</div>
+                  ${
+                    it.desc
+                      ? `<div style="margin-top:4px; font-size:13px; color:#555;">${safe(
+                          it.desc,
+                        )}</div>`
+                      : ""
+                  }
+                </td>
+                <td align="right" style="padding:12px 0; border-bottom:1px solid #eee; color:#111; font-weight:600; white-space:nowrap;">
+                  ${it.qty}
+                </td>
+              </tr>
+            `;
+          })
+          .join("");
+      })();
+
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Demande de retour</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #f59e0b 0%, #f97316 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #f59e0b; }
+            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>Demande de retour</h1>
+              <p>${safe(storeName || "PayLive")}</p>
+            </div>
+            <div class="content">
+              <h2>Bonjour ${safe(customerName || "Client")},</h2>
+              <p>Votre demande de retour a bien été prise en compte.</p>
+              <p>Vous recevrez prochainement les instructions pour procéder au retour.</p>
+
+              <div class="details">
+                <p><strong>Boutique :</strong> ${safe(storeName || "—")}</p>
+                ${shipmentId ? `<p><strong>Commande :</strong> ${safe(shipmentId)}</p>` : ""}
+                ${paymentId ? `<p><strong>ID de transaction :</strong> ${safe(paymentId)}</p>` : ""}
+              </div>
+
+              ${
+                itemsRowsHtml
+                  ? `
+                    <div class="details">
+                      <p style="margin:0 0 10px 0;"><strong>Articles concernés :</strong></p>
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                        <thead>
+                          <tr>
+                            <th align="left" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Référence</th>
+                            <th align="right" style="padding:10px 0; border-bottom:2px solid #eee; color:#333; font-size:12px; text-transform:uppercase; letter-spacing:.3px;">Qté</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${itemsRowsHtml}
+                        </tbody>
+                      </table>
+                    </div>
+                  `
+                  : ""
+              }
+
+              <p><strong>L’équipe PayLive</strong></p>
+
+              <div class="footer">
+                <p>© ${new Date().getFullYear()} PayLive - Tous droits réservés</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const info = await this.transporter.sendMail({
+        from: `"PayLive - ${storeName}" <${process.env.SMTP_USER}>`,
+        to,
+        subject: `Demande de retour — ${storeName}`,
+        html: htmlContent,
+      });
+      console.log("✅ Email retour client envoyé:", {
+        to,
+        messageId: info.messageId,
+        accepted: info.accepted,
+        rejected: info.rejected,
+      });
+      return true;
+    } catch (error) {
+      console.error("❌ Erreur envoi email retour client:", error);
+      return false;
+    }
+  }
+
   async sendStoreOwnerOrderCancelled(data: {
     ownerEmail: string;
     storeName: string;

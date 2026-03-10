@@ -92,6 +92,7 @@ type Shipment = {
   customer_spent_amount?: number | null;
   stripe_fees?: number | null;
   created_at?: string | null;
+  delivery_date?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
   is_final_destination?: boolean | null;
@@ -126,6 +127,8 @@ type WalletTransaction = {
   product_reference?: string | null;
   articles?: string | null;
   promo_code?: string | null;
+  status?: string | null;
+  stripe_fees?: number | null;
   net_total: number;
 };
 
@@ -5621,12 +5624,20 @@ export default function DashboardPage() {
                       const createdMs = createdAt
                         ? new Date(createdAt).getTime()
                         : NaN;
+                      const status = String(s.status || '').toUpperCase();
                       if (hasStart) {
                         if (!Number.isFinite(createdMs)) return;
-                        if (createdMs < Number(payoutMs)) return;
+                        if (createdMs < Number(payoutMs)) {
+                          if (status !== 'RETURNED') return;
+                          const dRaw = String(
+                            (s as any)?.delivery_date || ''
+                          ).trim();
+                          const dMs = dRaw ? new Date(dRaw).getTime() : NaN;
+                          if (!Number.isFinite(dMs)) return;
+                          if (dMs < Number(payoutMs)) return;
+                        }
                       }
 
-                      const status = String(s.status || '').toUpperCase();
                       const isFinalDestination = Boolean(
                         (s as any)?.is_final_destination
                       );
@@ -5634,20 +5645,30 @@ export default function DashboardPage() {
                       const earnings = Number.isFinite(earningsRaw)
                         ? Math.max(0, Math.round(earningsRaw))
                         : 0;
-                      if (isFinalDestination && status !== 'CANCELLED')
+                      if (status === 'RETURNED') {
+                        if (createdMs < Number(payoutMs)) {
+                          storeEarningsCents -= earnings;
+                        }
+                      } else if (isFinalDestination && status !== 'CANCELLED') {
                         storeEarningsCents += earnings;
+                      }
 
                       const feesRaw = Number(s.stripe_fees || 0);
                       const fees = Number.isFinite(feesRaw)
                         ? Math.max(0, Math.round(feesRaw))
                         : 0;
-                      if (isFinalDestination || status === 'CANCELLED') {
+                      if (
+                        isFinalDestination ||
+                        status === 'CANCELLED' ||
+                        status === 'RETURNED'
+                      ) {
                         stripeFeesCents += fees;
                       }
                     });
 
+                    const platformBaseCents = Math.max(0, storeEarningsCents);
                     const payliveFeeCents = Math.round(
-                      storeEarningsCents * 0.015
+                      platformBaseCents * 0.015
                     );
                     const finalCents =
                       storeEarningsCents - stripeFeesCents - payliveFeeCents;
@@ -5797,6 +5818,9 @@ export default function DashboardPage() {
                             <th className='text-left py-3 px-4 font-semibold text-gray-700'>
                               Code Promo
                             </th>
+                            <th className='text-left py-3 px-4 font-semibold text-gray-700'>
+                              Statut
+                            </th>
                             <th className='text-right py-3 px-4 font-semibold text-gray-700'>
                               Net
                             </th>
@@ -5804,6 +5828,11 @@ export default function DashboardPage() {
                         </thead>
                         <tbody>
                           {visibleWalletTransactions.map(tx => {
+                            const status = String(tx?.status || '')
+                              .trim()
+                              .toUpperCase();
+                            const isReturned = status === 'RETURNED';
+                            const isCancelled = status === 'CANCELLED';
                             const stripeId = String(tx?.customer?.id || '');
                             const customer = stripeId
                               ? customersMap[stripeId] || null
@@ -5828,7 +5857,13 @@ export default function DashboardPage() {
                             return (
                               <tr
                                 key={tx.payment_id}
-                                className='border-b border-gray-100 hover:bg-gray-50'
+                                className={`border-b border-gray-100 hover:bg-gray-50 ${
+                                  isReturned
+                                    ? 'bg-orange-50 hover:bg-orange-50'
+                                    : isCancelled
+                                      ? 'bg-red-50 hover:bg-red-50'
+                                      : ''
+                                }`}
                               >
                                 <td className='py-3 px-4 text-gray-700 whitespace-nowrap'>
                                   <div>{formatDateEpoch(tx.created)}</div>
@@ -5866,10 +5901,31 @@ export default function DashboardPage() {
                                 <td className='py-3 px-4 text-gray-700 whitespace-nowrap'>
                                   {String(tx.promo_code || '').trim() || '—'}
                                 </td>
-                                <td className='py-3 px-4 text-right text-gray-900 font-semibold whitespace-nowrap'>
-                                  {formatValue(
-                                    Math.max(0, Number(tx.net_total || 0))
+                                <td className='py-3 px-4 text-gray-700 whitespace-nowrap'>
+                                  {isReturned ? (
+                                    <span className='inline-flex items-center rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-700'>
+                                      RETOURNÉE
+                                    </span>
+                                  ) : isCancelled ? (
+                                    <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
+                                      ANNULÉE
+                                    </span>
+                                  ) : (
+                                    <span className='inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700'>
+                                      PAYÉE
+                                    </span>
                                   )}
+                                </td>
+                                <td className='py-3 px-4 text-right text-gray-900 font-semibold whitespace-nowrap'>
+                                  <span
+                                    className={
+                                      Number(tx.net_total || 0) < 0
+                                        ? 'text-red-700'
+                                        : ''
+                                    }
+                                  >
+                                    {formatValue(Number(tx.net_total || 0))}
+                                  </span>
                                 </td>
                               </tr>
                             );
@@ -6809,9 +6865,11 @@ export default function DashboardPage() {
                       } ${
                         String(s.status || '').toUpperCase() === 'CANCELLED'
                           ? 'border-red-200 bg-red-50'
-                          : s.is_final_destination
-                            ? 'border-green-200 bg-green-50'
-                            : 'border-gray-200 bg-white'
+                          : String(s.status || '').toUpperCase() === 'RETURNED'
+                            ? 'border-orange-200 bg-orange-50'
+                            : s.is_final_destination
+                              ? 'border-green-200 bg-green-50'
+                              : 'border-gray-200 bg-white'
                       }`}
                     >
                       <div className='flex items-start justify-between'>
@@ -6922,6 +6980,11 @@ export default function DashboardPage() {
                           'CANCELLED' ? (
                             <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
                               Annulée
+                            </span>
+                          ) : String(s.status || '').toUpperCase() ===
+                            'RETURNED' ? (
+                            <span className='inline-flex items-center rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-700'>
+                              Retournée
                             </span>
                           ) : String(s.status || '').toUpperCase() ===
                             'DELIVERED' ? (
@@ -7070,9 +7133,12 @@ export default function DashboardPage() {
                           } ${
                             String(s.status || '').toUpperCase() === 'CANCELLED'
                               ? 'bg-red-50'
-                              : s.is_final_destination
-                                ? 'bg-green-50 hover:bg-green-100'
-                                : 'hover:bg-gray-50'
+                              : String(s.status || '').toUpperCase() ===
+                                  'RETURNED'
+                                ? 'bg-orange-50 hover:bg-orange-100'
+                                : s.is_final_destination
+                                  ? 'bg-green-50 hover:bg-green-100'
+                                  : 'hover:bg-gray-50'
                           }`}
                         >
                           <td className='py-4 px-4 text-gray-700'>
@@ -7190,15 +7256,23 @@ export default function DashboardPage() {
                                   'CANCELLED'
                                     ? 'text-red-700'
                                     : String(s.status || '').toUpperCase() ===
-                                        'DELIVERED'
-                                      ? 'text-green-700'
-                                      : ''
+                                        'RETURNED'
+                                      ? 'text-orange-700'
+                                      : String(s.status || '').toUpperCase() ===
+                                          'DELIVERED'
+                                        ? 'text-green-700'
+                                        : ''
                                 }`}
                               >
                                 {String(s.status || '').toUpperCase() ===
                                 'CANCELLED' ? (
                                   <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-red-700'>
                                     ANNULÉE
+                                  </span>
+                                ) : String(s.status || '').toUpperCase() ===
+                                  'RETURNED' ? (
+                                  <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-orange-700'>
+                                    RETOURNÉE
                                   </span>
                                 ) : String(s.status || '').toUpperCase() ===
                                   'DELIVERED' ? (

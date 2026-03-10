@@ -1135,18 +1135,22 @@ router.get("/shipping-orders/:id/return", async (req, res) => {
       context,
     });
 
-    // Si l'envoi d'email est validé, mettre à jour return_requested = TRUE
+    // Si l'envoi d'email est validé, mettre à jour le statut en base
     if (sent) {
       try {
+        const nowIso = new Date().toISOString();
         const { error: updErr } = await supabase
           .from("shipments")
-          .update({ return_requested: true })
+          .update({ status: "RETURNED", delivery_date: nowIso } as any)
           .eq("shipment_id", id);
         if (updErr) {
-          console.error("Supabase update return_requested failed:", updErr);
+          console.error(
+            "Supabase update shipment return status failed:",
+            updErr,
+          );
         }
       } catch (dbEx) {
-        console.error("DB update return_requested exception:", dbEx);
+        console.error("DB update return status exception:", dbEx);
       }
     }
 

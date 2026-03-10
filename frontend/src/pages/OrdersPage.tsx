@@ -53,7 +53,6 @@ type Shipment = {
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
-  return_requested?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
   store?: StoreInfo | null;
@@ -116,10 +115,6 @@ export default function OrdersPage() {
   const [switchShipmentModalOpen, setSwitchShipmentModalOpen] =
     useState<boolean>(false);
   const [switchShipmentTarget, setSwitchShipmentTarget] =
-    useState<Shipment | null>(null);
-  const [returnSwitchShipmentModalOpen, setReturnSwitchShipmentModalOpen] =
-    useState<boolean>(false);
-  const [returnSwitchShipmentTarget, setReturnSwitchShipmentTarget] =
     useState<Shipment | null>(null);
 
   // État pour la popup de contact propriétaire
@@ -447,6 +442,109 @@ export default function OrdersPage() {
       style: 'currency',
       currency: 'EUR',
     }).format(v);
+  };
+
+  const isDeliveryRegulationText = (raw: unknown) =>
+    /r[ée]gularisation\s+livraison/i.test(String(raw || '').trim());
+
+  const requestReturnForShipment = async (
+    s: Shipment,
+    options?: { silent?: boolean }
+  ) => {
+    const silent = options?.silent;
+    const st = String(s.status || '')
+      .trim()
+      .toUpperCase();
+    const dm = String(s.delivery_method || '')
+      .trim()
+      .toLowerCase();
+    if (st === 'CANCELLED') {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) showToast('Commande annulée', 'error');
+      return false;
+    }
+    if (st === 'RETURNED') {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) showToast('Commande déjà retournée', 'info');
+      return false;
+    }
+    if (dm === 'store_pickup') {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent)
+        showToast('Retour non disponible pour le retrait boutique', 'error');
+      return false;
+    }
+    if (s.is_final_destination !== true) {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent)
+        showToast('Cette commande n’est pas éligible au retour', 'error');
+      return false;
+    }
+    const storeId = Number(s.store_id || 0);
+    const paymentId = String(s.payment_id || '').trim();
+    if (!Number.isFinite(storeId) || storeId <= 0 || !paymentId) {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) showToast('Commande invalide', 'error');
+      return false;
+    }
+
+    const parsed = parseProductReferenceItems(s.product_reference);
+    const payloadItems = (parsed || [])
+      .filter(
+        it =>
+          !isDeliveryRegulationText(it.reference) &&
+          !isDeliveryRegulationText(it.description)
+      )
+      .map(it => ({
+        product_reference: String(it.reference || '').trim(),
+        description: String(it.description || '').trim() || null,
+        quantity: Math.max(1, Math.round(Number(it.quantity || 1))),
+      }))
+      .filter(it => Boolean(it.product_reference));
+
+    if (payloadItems.length === 0) {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) showToast('Aucun article à retourner', 'error');
+      return false;
+    }
+
+    try {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'loading' }));
+      if (!silent) showToast('Chargement...', 'info');
+      const token = await getToken();
+      const resp = await fetch(`${apiBase}/api/shipments/request-return`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+        body: JSON.stringify({
+          paymentId,
+          storeId,
+          items: payloadItems,
+        }),
+      });
+      const json = await resp.json().catch(() => null as any);
+      if (!resp.ok || !json?.success) {
+        throw new Error(json?.error || 'Erreur lors de la demande de retour');
+      }
+
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'success' }));
+      setShipments(prev =>
+        (prev || []).map(it =>
+          it.id === s.id ? { ...it, status: 'RETURNED' } : it
+        )
+      );
+      setSelectedOrderIds(new Set());
+      if (!silent) showToast('Retour confirmé', 'success');
+      await handleRefreshOrders();
+      return true;
+    } catch (e: any) {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      const msg = String(e?.message || 'Erreur').replace(/^Error:\s*/, '');
+      if (!silent) showToast(msg, 'error');
+      return false;
+    }
   };
 
   const formatDate = (d?: string | null) => {
@@ -790,25 +888,20 @@ export default function OrdersPage() {
   const canReturnSelectedOrder = (() => {
     if (selectedOrders.length !== 1) return false;
     const s = selectedOrders[0];
-    const storeSlug = String(s.store?.slug || '').trim();
+    const dm = String(s.delivery_method || '')
+      .trim()
+      .toLowerCase();
+    const status = String(s.status || '')
+      .trim()
+      .toUpperCase();
     const paymentId = String(s.payment_id || '').trim();
-    const isOpening = openingShipmentId != null && openingShipmentId !== s.id;
-    const storeId = Number(s.store_id || 0);
-    const hasOtherReturnForStore =
-      Number.isFinite(storeId) &&
-      storeId > 0 &&
-      (shipments || []).some(
-        other =>
-          Number(other?.store_id || 0) === storeId && other?.return_requested
-      );
     return (
-      Boolean(s.shipment_id) &&
-      !s.return_requested &&
       s.is_final_destination === true &&
-      Boolean(storeSlug) &&
+      dm !== 'store_pickup' &&
       Boolean(paymentId) &&
-      !isOpening &&
-      !hasOtherReturnForStore
+      status !== 'CANCELLED' &&
+      status !== 'RETURNED' &&
+      returnStatus[s.id] !== 'loading'
     );
   })();
   const selectedForContact = selectedOrders.filter(s => !!s.store_id);
@@ -972,51 +1065,6 @@ export default function OrdersPage() {
         storeSlug
       )}?open_shipment=true&payment_id=${encodeURIComponent(paymentId)}`;
       window.open(url, '_blank');
-      await handleRefreshOrders();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Erreur inconnue';
-      showToast(msg, 'error');
-    } finally {
-      setOpeningShipmentId(null);
-    }
-  };
-
-  const handleConfirmReturnSwitchShipment = async () => {
-    const s = returnSwitchShipmentTarget;
-    if (!s) return;
-    if (s.is_final_destination !== true) return;
-    const storeSlug = String(s.store?.slug || '').trim();
-    const paymentId = String(s.payment_id || '').trim();
-    if (!storeSlug || !paymentId) {
-      showToast("Impossible d'ouvrir la commande sélectionnée", 'error');
-      return;
-    }
-    try {
-      showToast('Chargement...', 'info');
-      setOpeningShipmentId(s.id);
-      const apiBase = API_BASE_URL;
-      const token = await getToken();
-      const resp = await fetch(`${apiBase}/api/shipments/open-shipment`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: token ? `Bearer ${token}` : '',
-        },
-        body: JSON.stringify({ shipmentId: s.id, force: true }),
-      });
-      const json = await resp.json().catch(() => null as any);
-      if (!resp.ok) {
-        const msg =
-          json?.error || "Impossible d'ouvrir la commande sélectionnée";
-        showToast(msg, 'error');
-        return;
-      }
-      setReturnSwitchShipmentModalOpen(false);
-      setReturnSwitchShipmentTarget(null);
-      const url = `/checkout/${encodeURIComponent(
-        storeSlug
-      )}?return_shipment=true&payment_id=${encodeURIComponent(paymentId)}`;
-      window.location.href = url;
       await handleRefreshOrders();
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Erreur inconnue';
@@ -1226,53 +1274,7 @@ export default function OrdersPage() {
       showToast('Cette commande n’est pas éligible au retour', 'error');
       return;
     }
-    const storeSlug = String(s.store?.slug || '').trim();
-    const paymentId = String(s.payment_id || '').trim();
-    if (!storeSlug || !paymentId) {
-      showToast("Impossible d'ouvrir la commande sélectionnée", 'error');
-      return;
-    }
-    try {
-      showToast('Chargement...', 'info');
-      setOpeningShipmentId(s.id);
-      const apiBase = API_BASE_URL;
-      const token = await getToken();
-      const doOpen = async (force: boolean) => {
-        const r = await fetch(`${apiBase}/api/shipments/open-shipment`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: token ? `Bearer ${token}` : '',
-          },
-          body: JSON.stringify({ shipmentId: s.id, force }),
-        });
-        const j = await r.json().catch(() => null as any);
-        return { resp: r, json: j };
-      };
-
-      const { resp, json } = await doOpen(false);
-      if (!resp.ok && resp.status === 409) {
-        setReturnSwitchShipmentTarget(s);
-        setReturnSwitchShipmentModalOpen(true);
-        return;
-      }
-      if (!resp.ok) {
-        const msg =
-          json?.error || "Impossible d'ouvrir la commande sélectionnée";
-        showToast(msg, 'error');
-        return;
-      }
-      const url = `/checkout/${encodeURIComponent(
-        storeSlug
-      )}?return_shipment=true&payment_id=${encodeURIComponent(paymentId)}`;
-      window.location.href = url;
-      await handleRefreshOrders();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Erreur inconnue';
-      showToast(msg, 'error');
-    } finally {
-      setOpeningShipmentId(null);
-    }
+    await requestReturnForShipment(s);
   };
 
   const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
@@ -1480,7 +1482,7 @@ export default function OrdersPage() {
           if (it.id !== s.id) return it;
           if (updated && typeof updated === 'object')
             return { ...it, ...updated };
-          return { ...it, is_final_destination: true };
+          return { ...it, is_final_destination: true, status: 'DELIVERED' };
         })
       );
       if (!silent) showToast('Retrait confirmé', 'success');
@@ -1565,45 +1567,6 @@ export default function OrdersPage() {
               className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
             >
               Continuer
-            </button>
-          </div>
-        </div>
-      </Modal>
-      <Modal
-        isOpen={returnSwitchShipmentModalOpen}
-        onClose={() => {
-          setReturnSwitchShipmentModalOpen(false);
-          setReturnSwitchShipmentTarget(null);
-        }}
-        title='Commande déjà en modification'
-      >
-        <div className='space-y-4'>
-          <div className='text-sm text-gray-700'>
-            Une autre commande est en cours de modification. Voulez-vous ouvrir
-            cette commande et annuler les modifications de l’autre ?
-          </div>
-          <div className='flex items-center justify-end gap-2'>
-            <button
-              type='button'
-              onClick={() => {
-                setReturnSwitchShipmentModalOpen(false);
-                setReturnSwitchShipmentTarget(null);
-              }}
-              className='px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-            >
-              Annuler
-            </button>
-            <button
-              type='button'
-              onClick={handleConfirmReturnSwitchShipment}
-              disabled={
-                !returnSwitchShipmentTarget ||
-                (openingShipmentId != null &&
-                  openingShipmentId !== returnSwitchShipmentTarget.id)
-              }
-              className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-            >
-              Ouvrir
             </button>
           </div>
         </div>
@@ -1896,9 +1859,11 @@ export default function OrdersPage() {
                     } ${
                       String(s.status || '').toUpperCase() === 'CANCELLED'
                         ? 'border-red-200 bg-red-50'
-                        : s.is_final_destination
-                          ? 'border-green-200 bg-green-50'
-                          : 'border-gray-200 bg-white'
+                        : String(s.status || '').toUpperCase() === 'RETURNED'
+                          ? 'border-orange-200 bg-orange-50'
+                          : s.is_final_destination
+                            ? 'border-green-200 bg-green-50'
+                            : 'border-gray-200 bg-white'
                     }`}
                   >
                     <div className='flex items-start justify-between'>
@@ -1974,6 +1939,11 @@ export default function OrdersPage() {
                         'CANCELLED' ? (
                           <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
                             Annulée
+                          </span>
+                        ) : String(s.status || '').toUpperCase() ===
+                          'RETURNED' ? (
+                          <span className='inline-flex items-center rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-700'>
+                            Retournée
                           </span>
                         ) : String(s.status || '').toUpperCase() ===
                           'DELIVERED' ? (
@@ -2118,9 +2088,11 @@ export default function OrdersPage() {
                       } ${
                         String(s.status || '').toUpperCase() === 'CANCELLED'
                           ? 'bg-red-50'
-                          : s.is_final_destination
-                            ? 'bg-green-50 hover:bg-green-100'
-                            : 'hover:bg-gray-50'
+                          : String(s.status || '').toUpperCase() === 'RETURNED'
+                            ? 'bg-orange-50 hover:bg-orange-100'
+                            : s.is_final_destination
+                              ? 'bg-green-50 hover:bg-green-100'
+                              : 'hover:bg-gray-50'
                       }`}
                     >
                       <td className='py-4 px-4 text-gray-700'>
@@ -2189,6 +2161,11 @@ export default function OrdersPage() {
                             'CANCELLED' ? (
                               <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-red-700'>
                                 ANNULÉE
+                              </span>
+                            ) : String(s.status || '').toUpperCase() ===
+                              'RETURNED' ? (
+                              <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-orange-700'>
+                                RETOURNÉE
                               </span>
                             ) : String(s.status || '').toUpperCase() ===
                               'DELIVERED' ? (
