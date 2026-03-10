@@ -1502,10 +1502,21 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                       );
                       netAmount = amountToCapture;
                       if (!openShipmentPaymentId) {
-                        customerSpentAmountCents = Math.max(
+                        const paid = Math.max(0, Math.round(netAmount || 0));
+                        const creditApplied = Math.max(
                           0,
-                          Math.round(netAmount || 0),
+                          Math.round(Number(effectiveCustomerCreditAppliedCents || 0)),
                         );
+                        const tempApplied = Math.max(
+                          0,
+                          Math.round(Number(effectiveTempAppliedCents || 0)),
+                        );
+                        if (paid > 0) {
+                          customerSpentAmountCents = Math.max(
+                            customerSpentAmountCents,
+                            paid + creditApplied + tempApplied,
+                          );
+                        }
                       }
                     } else if (fresh && fresh.status === "succeeded") {
                       console.log(
@@ -1523,7 +1534,19 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                         Number.isFinite(ar) &&
                         ar > 0
                       ) {
-                        customerSpentAmountCents = Math.max(0, Math.round(ar));
+                        const paid = Math.max(0, Math.round(ar));
+                        const creditApplied = Math.max(
+                          0,
+                          Math.round(Number(effectiveCustomerCreditAppliedCents || 0)),
+                        );
+                        const tempApplied = Math.max(
+                          0,
+                          Math.round(Number(effectiveTempAppliedCents || 0)),
+                        );
+                        customerSpentAmountCents = Math.max(
+                          customerSpentAmountCents,
+                          paid + creditApplied + tempApplied,
+                        );
                       }
                     } else {
                       console.warn(
@@ -1549,7 +1572,19 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                     (paymentIntent as any)?.amount_received || 0,
                   );
                   if (!openShipmentPaymentId && Number.isFinite(ar) && ar > 0) {
-                    customerSpentAmountCents = Math.max(0, Math.round(ar));
+                    const paid = Math.max(0, Math.round(ar));
+                    const creditApplied = Math.max(
+                      0,
+                      Math.round(Number(effectiveCustomerCreditAppliedCents || 0)),
+                    );
+                    const tempApplied = Math.max(
+                      0,
+                      Math.round(Number(effectiveTempAppliedCents || 0)),
+                    );
+                    customerSpentAmountCents = Math.max(
+                      customerSpentAmountCents,
+                      paid + creditApplied + tempApplied,
+                    );
                   }
                 }
 

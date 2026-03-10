@@ -1247,7 +1247,11 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
         const existingValue = Number(existing.value || 0);
         const incomingValue = Number(it.value || 0);
         const nextValue =
-          existingValue > 0 ? existingValue : incomingValue > 0 ? incomingValue : 0;
+          existingValue > 0
+            ? existingValue
+            : incomingValue > 0
+              ? incomingValue
+              : 0;
         const existingWeight = Number(existing.weight || 0);
         const incomingWeight = Number(it.weight || 0);
         const nextWeight =
@@ -1385,7 +1389,8 @@ router.get("/transaction-by-payment", async (req, res) => {
       shipmentQuery = shipmentQuery.eq("store_id", storeIdNum);
     }
 
-    const { data: shipment, error: shipErr } = await shipmentQuery.maybeSingle();
+    const { data: shipment, error: shipErr } =
+      await shipmentQuery.maybeSingle();
     if (shipErr) {
       return res.status(500).json({ error: shipErr.message });
     }
@@ -1416,9 +1421,9 @@ router.get("/transaction-by-payment", async (req, res) => {
     const { data: cartItems, error: cartErr } = await cartsQuery;
     if (cartErr) {
       if (isMissingColumnError(cartErr, "payment_id")) {
-        return res
-          .status(500)
-          .json({ error: "Impossible de filtrer: colonne payment_id manquante" });
+        return res.status(500).json({
+          error: "Impossible de filtrer: colonne payment_id manquante",
+        });
       }
       if (isMissingColumnError(cartErr, "weight")) {
         const { data: cartItems2, error: cartErr2 } = await supabase
@@ -1454,7 +1459,9 @@ router.get("/transaction-by-payment", async (req, res) => {
             ? String((pi as any).customer)
             : String(((pi as any)?.customer as any)?.id || "");
         if (piCustomerId && piCustomerId !== stripeCustomerId) {
-          return res.status(403).json({ error: "Accès interdit à cette commande" });
+          return res
+            .status(403)
+            .json({ error: "Accès interdit à cette commande" });
         }
         let session: any = null;
         let lineItems: any[] = [];
@@ -1495,7 +1502,9 @@ router.get("/transaction-by-payment", async (req, res) => {
       stripe: stripeData,
     });
   } catch (e: any) {
-    return res.status(500).json({ error: e?.message || "Internal server error" });
+    return res
+      .status(500)
+      .json({ error: e?.message || "Internal server error" });
   }
 });
 
@@ -1519,25 +1528,35 @@ router.post("/request-return", async (req, res) => {
     const storeIdNum = Number(storeId);
     const itemsArr: any[] = Array.isArray(items) ? items : [];
     const returnMethodRaw = String(return_method || "").trim();
-    const returnMethod: "home_delivery" | "pickup_point" | "store_pickup" | null =
+    const returnMethod:
+      | "home_delivery"
+      | "pickup_point"
+      | "store_pickup"
+      | null =
       returnMethodRaw === "home_delivery" ||
       returnMethodRaw === "pickup_point" ||
       returnMethodRaw === "store_pickup"
         ? (returnMethodRaw as "home_delivery" | "pickup_point" | "store_pickup")
         : null;
-    const returnDeliveryNetwork = String(return_delivery_network || "").trim() || null;
+    const returnDeliveryNetwork =
+      String(return_delivery_network || "").trim() || null;
     const returnStoreAddress =
       return_store_address && typeof return_store_address === "object"
         ? {
-            line1: String((return_store_address as any)?.line1 || "").trim() || null,
-            line2: String((return_store_address as any)?.line2 || "").trim() || null,
+            line1:
+              String((return_store_address as any)?.line1 || "").trim() || null,
+            line2:
+              String((return_store_address as any)?.line2 || "").trim() || null,
             postal_code:
               String((return_store_address as any)?.postal_code || "").trim() ||
               null,
-            city: String((return_store_address as any)?.city || "").trim() || null,
+            city:
+              String((return_store_address as any)?.city || "").trim() || null,
             country:
-              String((return_store_address as any)?.country || "").trim() || null,
-            state: String((return_store_address as any)?.state || "").trim() || null,
+              String((return_store_address as any)?.country || "").trim() ||
+              null,
+            state:
+              String((return_store_address as any)?.state || "").trim() || null,
           }
         : null;
     const returnParcelPoint = return_parcel_point ?? null;
@@ -1579,9 +1598,6 @@ router.post("/request-return", async (req, res) => {
           .filter((n) => Number.isFinite(n) && n > 0),
       ),
     );
-    if (cartItemIds.length !== normalizedItems.length) {
-      return res.status(400).json({ error: "cart_item_id requis" });
-    }
 
     const user = await clerkClient.users.getUser(auth.userId);
     const stripeCustomerId = String(
@@ -1591,27 +1607,6 @@ router.post("/request-return", async (req, res) => {
       return res
         .status(400)
         .json({ error: "stripe_id manquant dans les metadata du user" });
-    }
-
-    const { data: existingReturnRows, error: existingErr } = await supabase
-      .from("shipments")
-      .select("id,payment_id")
-      .eq("customer_stripe_id", stripeCustomerId)
-      .eq("store_id", storeIdNum)
-      .eq("return_requested", true)
-      .limit(1);
-    if (existingErr) {
-      return res.status(500).json({ error: existingErr.message });
-    }
-    const existingReturn = (existingReturnRows || [])[0] || null;
-    if (existingReturn) {
-      const existingPaymentId = String((existingReturn as any)?.payment_id || "").trim();
-      if (!existingPaymentId || existingPaymentId !== paymentIdStr) {
-        return res.status(409).json({
-          error: "Une demande de retour est déjà en cours pour cette boutique",
-        });
-      }
-      return res.status(409).json({ error: "Retour déjà demandé" });
     }
 
     const { data: shipment, error: shipErr } = await supabase
@@ -1628,61 +1623,122 @@ router.post("/request-return", async (req, res) => {
       return res.status(404).json({ error: "Commande introuvable" });
     }
 
-    const { data: cartRows, error: cartErr } = await supabase
-      .from("carts")
-      .select(
-        "id,store_id,customer_stripe_id,payment_id,product_reference,description,value,quantity",
-      )
-      .in("id", cartItemIds)
-      .eq("store_id", storeIdNum)
-      .eq("customer_stripe_id", stripeCustomerId)
-      .eq("payment_id", paymentIdStr);
-    if (cartErr) {
-      if (isMissingColumnError(cartErr, "payment_id")) {
-        return res
-          .status(500)
-          .json({ error: "Impossible de valider: colonne payment_id manquante" });
-      }
-      return res.status(500).json({ error: cartErr.message });
-    }
-    const cartById = new Map<number, any>();
-    for (const r of cartRows || []) {
-      const id = Number((r as any)?.id || 0);
-      if (Number.isFinite(id) && id > 0) cartById.set(id, r);
-    }
-    if (cartById.size !== cartItemIds.length) {
-      return res
-        .status(400)
-        .json({ error: "Certains articles sont introuvables" });
-    }
+    const httpError = (statusCode: number, message: string) => {
+      const e: any = new Error(message);
+      e.statusCode = statusCode;
+      throw e;
+    };
 
-    const validatedItems = normalizedItems.map((it) => {
-      const cartId = Number(it.cart_item_id || 0);
-      const row = cartById.get(cartId) || null;
-      if (!row) {
-        throw new Error("Certains articles sont introuvables");
+    const validatedItems = await (async () => {
+      const hasCartItems =
+        cartItemIds.length > 0 && cartItemIds.length === normalizedItems.length;
+      if (hasCartItems) {
+        const { data: cartRows, error: cartErr } = await supabase
+          .from("carts")
+          .select(
+            "id,store_id,customer_stripe_id,payment_id,product_reference,description,value,quantity",
+          )
+          .in("id", cartItemIds)
+          .eq("store_id", storeIdNum)
+          .eq("customer_stripe_id", stripeCustomerId)
+          .eq("payment_id", paymentIdStr);
+        if (cartErr) {
+          if (isMissingColumnError(cartErr, "payment_id")) {
+            httpError(
+              500,
+              "Impossible de valider: colonne payment_id manquante",
+            );
+          }
+          httpError(500, cartErr.message);
+        }
+        const cartById = new Map<number, any>();
+        for (const r of cartRows || []) {
+          const id = Number((r as any)?.id || 0);
+          if (Number.isFinite(id) && id > 0) cartById.set(id, r);
+        }
+        if (cartById.size !== cartItemIds.length) {
+          httpError(400, "Certains articles sont introuvables");
+        }
+
+        return normalizedItems.map((it) => {
+          const cartId = Number(it.cart_item_id || 0);
+          const row = cartById.get(cartId) || null;
+          if (!row) {
+            throw new Error("Certains articles sont introuvables");
+          }
+          const rowQty = Math.max(
+            1,
+            Math.round(Number((row as any)?.quantity || 1)),
+          );
+          const reqQty = Math.max(1, Math.round(Number(it.quantity || 1)));
+          if (reqQty > rowQty) {
+            throw new Error(
+              `Quantité invalide pour ${String(
+                (row as any)?.product_reference || "",
+              ).trim()}: max ${rowQty}`,
+            );
+          }
+          return {
+            cart_item_id: cartId,
+            product_reference: String(
+              (row as any)?.product_reference || "",
+            ).trim(),
+            description:
+              String((row as any)?.description || "").trim() ||
+              String(it.description || "").trim() ||
+              null,
+            quantity_requested: reqQty,
+            quantity_in_order: rowQty,
+            value: Number((row as any)?.value ?? it.value ?? 0) || 0,
+          };
+        });
       }
-      const rowQty = Math.max(1, Math.round(Number((row as any)?.quantity || 1)));
-      const reqQty = Math.max(1, Math.round(Number(it.quantity || 1)));
-      if (reqQty > rowQty) {
-        throw new Error(
-          `Quantité invalide pour ${String(
-            (row as any)?.product_reference || "",
-          ).trim()}: max ${rowQty}`,
-        );
+
+      const parsedFromShipment = parseProductReferenceItems(
+        String((shipment as any)?.product_reference || ""),
+      );
+      const byRef = new Map<
+        string,
+        { quantity_in_order: number; description?: string }
+      >();
+      for (const it of parsedFromShipment) {
+        const ref = String(it.reference || "").trim();
+        if (!ref) continue;
+        const qty = Math.max(1, Math.floor(Number(it.quantity || 1)));
+        byRef.set(ref, {
+          quantity_in_order: qty,
+          description: String(it.description || "").trim() || undefined,
+        });
       }
-      return {
-        cart_item_id: cartId,
-        product_reference: String((row as any)?.product_reference || "").trim(),
-        description:
-          String((row as any)?.description || "").trim() ||
-          String(it.description || "").trim() ||
-          null,
-        quantity_requested: reqQty,
-        quantity_in_order: rowQty,
-        value: Number((row as any)?.value ?? it.value ?? 0) || 0,
-      };
-    });
+      if (byRef.size === 0) {
+        httpError(400, "Commande invalide (articles)");
+      }
+
+      return normalizedItems.map((it) => {
+        const ref = String(it.product_reference || "").trim();
+        const reqQty = Math.max(1, Math.round(Number(it.quantity || 1)));
+        const found = byRef.get(ref) || null;
+        if (!found) {
+          throw new Error(`Article introuvable: ${ref}`);
+        }
+        if (reqQty > found.quantity_in_order) {
+          throw new Error(
+            `Quantité invalide pour ${ref}: max ${found.quantity_in_order}`,
+          );
+        }
+        return {
+          cart_item_id: null,
+          product_reference: ref,
+          description:
+            String(it.description || "").trim() ||
+            String(found.description || "").trim() ||
+            null,
+          quantity_requested: reqQty,
+          quantity_in_order: found.quantity_in_order,
+          value: Number.isFinite(Number(it.value)) ? Number(it.value) : 0,
+        };
+      });
+    })();
 
     let store: any = null;
     const { data: storeData, error: storeErr } = await supabase
@@ -1716,33 +1772,91 @@ router.post("/request-return", async (req, res) => {
       2,
     );
 
-    const sent = await emailService.sendAdminError({
+    const adminEmailSent = await emailService.sendAdminError({
       subject,
       message,
       context,
     });
 
-    if (sent) {
+    const customerEmail = String(
+      (user as any)?.primaryEmailAddress?.emailAddress ||
+        (Array.isArray((user as any)?.emailAddresses) &&
+        (user as any).emailAddresses.length > 0
+          ? (user as any).emailAddresses[0]?.emailAddress
+          : "") ||
+        "",
+    ).trim();
+    const customerName = String((user as any)?.fullName || "").trim();
+
+    let customerEmailSent = false;
+    if (customerEmail && store?.name) {
       try {
-        const { error: updErr } = await supabase
-          .from("shipments")
-          .update({ return_requested: true })
-          .eq("id", Number((shipment as any)?.id || 0))
-          .eq("store_id", storeIdNum)
-          .eq("customer_stripe_id", stripeCustomerId);
-        if (updErr) {
-          console.error("Supabase update return_requested failed:", updErr);
-        }
-      } catch (dbEx) {
-        console.error("DB update return_requested exception:", dbEx);
-      }
+        customerEmailSent = await emailService.sendCustomerReturnRequested({
+          customerEmail,
+          customerName: customerName || undefined,
+          storeName: String(store?.name || "").trim(),
+          shipmentId:
+            String((shipment as any)?.shipment_id || "").trim() || undefined,
+          paymentId: paymentIdStr || undefined,
+          items: validatedItems.map((it: any) => ({
+            product_reference: String(it?.product_reference || "").trim(),
+            description: it?.description ? String(it.description) : null,
+            quantity: Math.max(
+              1,
+              Math.round(Number(it?.quantity_requested || 1)),
+            ),
+          })),
+        });
+      } catch (_e) {}
     }
 
-    return res.json({ success: true, emailSent: sent });
+    try {
+      const shipmentIdNum = Number((shipment as any)?.id || 0);
+      const nowIso = new Date().toISOString();
+      const { error: updErr } = await supabase
+        .from("shipments")
+        .update({ status: "RETURNED", delivery_date: nowIso } as any)
+        .eq("id", shipmentIdNum)
+        .eq("store_id", storeIdNum)
+        .eq("customer_stripe_id", stripeCustomerId);
+      if (updErr) {
+        if (isMissingColumnError(updErr, "delivery_date")) {
+          const { error: fallbackErr } = await supabase
+            .from("shipments")
+            .update({ status: "RETURNED" } as any)
+            .eq("id", shipmentIdNum)
+            .eq("store_id", storeIdNum)
+            .eq("customer_stripe_id", stripeCustomerId);
+          if (fallbackErr) {
+            console.error(
+              "Supabase update shipment return status failed:",
+              fallbackErr,
+            );
+          }
+        } else {
+          console.error("Supabase update shipment return status failed:", updErr);
+        }
+      }
+    } catch (dbEx) {
+      console.error("DB update return status exception:", dbEx);
+    }
+
+    return res.json({
+      success: true,
+      adminEmailSent,
+      customerEmailSent,
+    });
   } catch (e) {
     if (e instanceof Error) {
       const msg = String(e.message || "").trim();
-      if (msg) return res.status(400).json({ error: msg });
+      if (msg) {
+        const statusCodeRaw = Number((e as any)?.statusCode ?? NaN);
+        const statusCode =
+          Number.isFinite(statusCodeRaw) && statusCodeRaw >= 400
+            ? statusCodeRaw
+            : 400;
+        return res.status(statusCode).json({ error: msg });
+      }
     }
     console.error("Error in /api/shipments/request-return:", e);
     return res.status(500).json({ error: "Internal server error" });
@@ -2437,7 +2551,9 @@ router.post("/:id/confirm-pickup", async (req, res) => {
 
     const { data: shipment, error: shipErr } = await supabase
       .from("shipments")
-      .select("id,customer_stripe_id,delivery_method,status,is_final_destination")
+      .select(
+        "id,customer_stripe_id,delivery_method,status,is_final_destination",
+      )
       .eq("id", id)
       .maybeSingle();
     if (shipErr) {
@@ -2468,18 +2584,22 @@ router.post("/:id/confirm-pickup", async (req, res) => {
       return res.status(400).json({ error: "Not a store_pickup shipment" });
     }
 
-    const st = String((shipment as any)?.status || "").trim().toUpperCase();
+    const st = String((shipment as any)?.status || "")
+      .trim()
+      .toUpperCase();
     if (st === "CANCELLED") {
       return res.status(400).json({ error: "Commande déjà annulée" });
     }
 
-    if ((shipment as any)?.is_final_destination === true) {
+    const alreadyFinal = (shipment as any)?.is_final_destination === true;
+    const alreadyDelivered = st === "DELIVERED";
+    if (alreadyFinal && alreadyDelivered) {
       return res.json({ shipment, success: true });
     }
 
     const { data: updated, error: updErr } = await supabase
       .from("shipments")
-      .update({ is_final_destination: true })
+      .update({ is_final_destination: true, status: "DELIVERED" })
       .eq("id", id)
       .select("id,is_final_destination,delivery_method,status")
       .maybeSingle();
