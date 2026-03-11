@@ -1043,11 +1043,23 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
 
     const lineItemByProductId = new Map<
       string,
-      { name: string; description: string; value: number; weight: number }
+      {
+        name: string;
+        description: string;
+        value: number;
+        weight: number;
+        quantity: number;
+      }
     >();
     const lineItemByNameLower = new Map<
       string,
-      { name: string; description: string; value: number; weight: number }
+      {
+        name: string;
+        description: string;
+        value: number;
+        weight: number;
+        quantity: number;
+      }
     >();
 
     if (stripe) {
@@ -1067,6 +1079,10 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
             ? lineItemsResp.data
             : [];
           for (const li of lineItems) {
+            const liQtyRaw = Number((li as any)?.quantity ?? NaN);
+            const liQty = Number.isFinite(liQtyRaw)
+              ? Math.max(1, Math.round(liQtyRaw))
+              : 1;
             const priceObj: any = li?.price || null;
             const unitAmount = Number(priceObj?.unit_amount || 0);
             const value = Number.isFinite(unitAmount)
@@ -1088,7 +1104,7 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
               ? Math.max(0, parsedMetaWeight)
               : (parseWeightKgFromDescription(description) ??
                 getFallbackWeightKgFromDescription(description));
-            const entry = { name, description, value, weight };
+            const entry = { name, description, value, weight, quantity: liQty };
             if (productId && productId.startsWith("prod_")) {
               lineItemByProductId.set(productId, entry);
             }
@@ -1108,8 +1124,15 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
       parsedRefs.every((p) => String(p || "").startsWith("prod_"));
 
     const stockRefByProductId = new Map<string, string>();
-    if (onlyStripeIds) {
-      const ids = Array.from(new Set(parsedRefs));
+    {
+      const ids = Array.from(
+        new Set(
+          [
+            ...parsedRefs.filter((p) => String(p || "").startsWith("prod_")),
+            ...Array.from(lineItemByProductId.keys()),
+          ].filter(Boolean),
+        ),
+      );
       if (ids.length > 0) {
         const { data: stockRows, error: stockErr } = await supabase
           .from("stock")
@@ -1131,12 +1154,21 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
       items = parsedFromShipment
         .map((p) => {
           const refRaw = String(p?.reference || "").trim();
-          const qty = Math.max(1, Number(p?.quantity || 1));
+          const shipmentQtyRaw = Number(p?.quantity ?? NaN);
           const shippedDesc = String(p?.description || "").trim();
 
           const li = refRaw.startsWith("prod_")
             ? lineItemByProductId.get(refRaw) || null
             : lineItemByNameLower.get(refRaw.toLowerCase()) || null;
+
+          const qty =
+            Number.isFinite(shipmentQtyRaw) && shipmentQtyRaw > 0
+              ? Math.max(
+                  1,
+                  Math.round(shipmentQtyRaw),
+                  Number(li?.quantity ?? 1),
+                )
+              : Math.max(1, Number(li?.quantity ?? 1));
 
           const resolvedRef = refRaw.startsWith("prod_")
             ? String(stockRefByProductId.get(refRaw) || refRaw).trim()
@@ -1177,16 +1209,67 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
         if (!pid) continue;
         if (isDeliveryRegulationItem(li.name, li.description)) continue;
         fallbackItems.push({
-          product_reference: pid,
+          product_reference: String(stockRefByProductId.get(pid) || pid).trim(),
           description: li.description,
           value: li.value,
-          quantity: 1,
+          quantity: Math.max(1, Number(li.quantity ?? 1)),
           weight: li.weight,
         });
       }
 
       items = fallbackItems;
     }
+
+    items = Array.from(
+      items.reduce((acc, it) => {
+        const ref = String(it?.product_reference || "").trim();
+        if (!ref) return acc;
+        const key = ref.toLowerCase();
+        const existing = acc.get(key) || null;
+        if (!existing) {
+          acc.set(key, {
+            product_reference: ref,
+            description: String(it.description || "").trim(),
+            value: Number(it.value || 0),
+            quantity: Math.max(1, Number(it.quantity || 1)),
+            weight: Number.isFinite(Number(it.weight))
+              ? Math.max(0, Number(it.weight))
+              : 0,
+          });
+          return acc;
+        }
+        const nextQty =
+          Math.max(1, Number(existing.quantity || 1)) +
+          Math.max(1, Number(it.quantity || 1));
+        const nextDesc =
+          String(existing.description || "").trim() ||
+          String(it.description || "").trim();
+        const existingValue = Number(existing.value || 0);
+        const incomingValue = Number(it.value || 0);
+        const nextValue =
+          existingValue > 0
+            ? existingValue
+            : incomingValue > 0
+              ? incomingValue
+              : 0;
+        const existingWeight = Number(existing.weight || 0);
+        const incomingWeight = Number(it.weight || 0);
+        const nextWeight =
+          existingWeight > 0
+            ? existingWeight
+            : incomingWeight > 0
+              ? incomingWeight
+              : 0;
+        acc.set(key, {
+          ...existing,
+          description: nextDesc,
+          value: nextValue,
+          quantity: nextQty,
+          weight: nextWeight,
+        });
+        return acc;
+      }, new Map<string, any>()),
+    ).map(([, v]) => v);
 
     {
       const delResp = await supabase
@@ -1263,6 +1346,519 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
     return res.json({ success: true, count: items.length });
   } catch (e) {
     console.error("Error rebuilding carts from payment:", e);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.get("/transaction-by-payment", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const paymentIdStr = String((req.query.paymentId as string) || "").trim();
+    const storeIdRaw = String((req.query.storeId as string) || "").trim();
+    const storeIdNum = storeIdRaw ? Number(storeIdRaw) : NaN;
+    if (!paymentIdStr) {
+      return res.status(400).json({ error: "paymentId requis" });
+    }
+    if (paymentIdStr && /[,()]/.test(paymentIdStr)) {
+      return res.status(400).json({ error: "paymentId invalide" });
+    }
+    if (storeIdRaw && (!Number.isFinite(storeIdNum) || storeIdNum <= 0)) {
+      return res.status(400).json({ error: "storeId invalide" });
+    }
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const stripeCustomerId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    if (!stripeCustomerId) {
+      return res
+        .status(400)
+        .json({ error: "stripe_id manquant dans les metadata du user" });
+    }
+
+    let shipmentQuery = supabase
+      .from("shipments")
+      .select("*")
+      .eq("payment_id", paymentIdStr)
+      .eq("customer_stripe_id", stripeCustomerId);
+    if (Number.isFinite(storeIdNum) && storeIdNum > 0) {
+      shipmentQuery = shipmentQuery.eq("store_id", storeIdNum);
+    }
+
+    const { data: shipment, error: shipErr } =
+      await shipmentQuery.maybeSingle();
+    if (shipErr) {
+      return res.status(500).json({ error: shipErr.message });
+    }
+    if (!shipment) {
+      return res.status(404).json({ error: "Commande introuvable" });
+    }
+
+    const storeId = Number((shipment as any)?.store_id || 0);
+    const { data: store, error: storeErr } = await supabase
+      .from("stores")
+      .select("id,name,slug,address")
+      .eq("id", storeId)
+      .maybeSingle();
+    if (storeErr) {
+      return res.status(500).json({ error: storeErr.message });
+    }
+
+    let cartsQuery = supabase
+      .from("carts")
+      .select(
+        "id,store_id,customer_stripe_id,payment_id,product_reference,description,value,quantity,created_at,recap_sent_at,weight",
+      )
+      .eq("customer_stripe_id", stripeCustomerId)
+      .eq("payment_id", paymentIdStr)
+      .eq("store_id", storeId)
+      .order("id", { ascending: false });
+
+    const { data: cartItems, error: cartErr } = await cartsQuery;
+    if (cartErr) {
+      if (isMissingColumnError(cartErr, "payment_id")) {
+        return res.status(500).json({
+          error: "Impossible de filtrer: colonne payment_id manquante",
+        });
+      }
+      if (isMissingColumnError(cartErr, "weight")) {
+        const { data: cartItems2, error: cartErr2 } = await supabase
+          .from("carts")
+          .select(
+            "id,store_id,customer_stripe_id,payment_id,product_reference,description,value,quantity,created_at,recap_sent_at",
+          )
+          .eq("customer_stripe_id", stripeCustomerId)
+          .eq("payment_id", paymentIdStr)
+          .eq("store_id", storeId)
+          .order("id", { ascending: false });
+        if (cartErr2) {
+          return res.status(500).json({ error: cartErr2.message });
+        }
+        return res.json({
+          shipment,
+          store: store || null,
+          cartItems: cartItems2 || [],
+          stripe: null,
+        });
+      }
+      return res.status(500).json({ error: cartErr.message });
+    }
+
+    let stripeData: any = null;
+    if (stripe) {
+      try {
+        const pi = await stripe.paymentIntents.retrieve(paymentIdStr, {
+          expand: ["customer"],
+        } as any);
+        const piCustomerId =
+          typeof (pi as any)?.customer === "string"
+            ? String((pi as any).customer)
+            : String(((pi as any)?.customer as any)?.id || "");
+        if (piCustomerId && piCustomerId !== stripeCustomerId) {
+          return res
+            .status(403)
+            .json({ error: "Accès interdit à cette commande" });
+        }
+        let session: any = null;
+        let lineItems: any[] = [];
+        try {
+          const sessions: any = await stripe.checkout.sessions.list({
+            payment_intent: paymentIdStr,
+            limit: 1,
+          });
+          const sessionId = String(sessions?.data?.[0]?.id || "").trim();
+          if (sessionId) {
+            session = await stripe.checkout.sessions.retrieve(sessionId, {
+              expand: ["payment_intent", "customer"],
+            } as any);
+            const liResp: any = await stripe.checkout.sessions.listLineItems(
+              sessionId,
+              { limit: 100, expand: ["data.price.product"] } as any,
+            );
+            lineItems = Array.isArray(liResp?.data) ? liResp.data : [];
+          }
+        } catch (_e) {
+          session = null;
+          lineItems = [];
+        }
+        stripeData = {
+          paymentIntent: pi,
+          session,
+          lineItems,
+        };
+      } catch (_e) {
+        stripeData = null;
+      }
+    }
+
+    return res.json({
+      shipment,
+      store: store || null,
+      cartItems: cartItems || [],
+      stripe: stripeData,
+    });
+  } catch (e: any) {
+    return res
+      .status(500)
+      .json({ error: e?.message || "Internal server error" });
+  }
+});
+
+router.post("/request-return", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const {
+      paymentId,
+      storeId,
+      items,
+      return_method,
+      return_store_address,
+      return_parcel_point,
+      return_delivery_network,
+    } = req.body || {};
+    const paymentIdStr = String(paymentId || "").trim();
+    const storeIdNum = Number(storeId);
+    const itemsArr: any[] = Array.isArray(items) ? items : [];
+    const returnMethodRaw = String(return_method || "").trim();
+    const returnMethod:
+      | "home_delivery"
+      | "pickup_point"
+      | "store_pickup"
+      | null =
+      returnMethodRaw === "home_delivery" ||
+      returnMethodRaw === "pickup_point" ||
+      returnMethodRaw === "store_pickup"
+        ? (returnMethodRaw as "home_delivery" | "pickup_point" | "store_pickup")
+        : null;
+    const returnDeliveryNetwork =
+      String(return_delivery_network || "").trim() || null;
+    const returnStoreAddress =
+      return_store_address && typeof return_store_address === "object"
+        ? {
+            line1:
+              String((return_store_address as any)?.line1 || "").trim() || null,
+            line2:
+              String((return_store_address as any)?.line2 || "").trim() || null,
+            postal_code:
+              String((return_store_address as any)?.postal_code || "").trim() ||
+              null,
+            city:
+              String((return_store_address as any)?.city || "").trim() || null,
+            country:
+              String((return_store_address as any)?.country || "").trim() ||
+              null,
+            state:
+              String((return_store_address as any)?.state || "").trim() || null,
+          }
+        : null;
+    const returnParcelPoint = return_parcel_point ?? null;
+
+    if (!paymentIdStr) {
+      return res.status(400).json({ error: "paymentId requis" });
+    }
+    if (!Number.isFinite(storeIdNum) || storeIdNum <= 0) {
+      return res.status(400).json({ error: "storeId requis" });
+    }
+    if (itemsArr.length === 0) {
+      return res.status(400).json({ error: "items requis" });
+    }
+
+    const normalizedItems = itemsArr
+      .map((it) => {
+        const ref = String(it?.product_reference || "").trim();
+        const description = String(it?.description || "").trim();
+        const quantity = Math.max(1, Math.round(Number(it?.quantity || 1)));
+        const value = Number(it?.value ?? 0);
+        const cartItemId = Number(it?.cart_item_id ?? it?.id ?? NaN);
+        return {
+          cart_item_id: Number.isFinite(cartItemId) ? cartItemId : null,
+          product_reference: ref,
+          description: description || null,
+          quantity,
+          value: Number.isFinite(value) ? value : 0,
+        };
+      })
+      .filter((it) => Boolean(it.product_reference));
+
+    if (normalizedItems.length === 0) {
+      return res.status(400).json({ error: "items invalides" });
+    }
+    const cartItemIds = Array.from(
+      new Set(
+        normalizedItems
+          .map((it) => Number(it.cart_item_id || 0))
+          .filter((n) => Number.isFinite(n) && n > 0),
+      ),
+    );
+
+    const user = await clerkClient.users.getUser(auth.userId);
+    const stripeCustomerId = String(
+      (user?.publicMetadata as any)?.stripe_id || "",
+    ).trim();
+    if (!stripeCustomerId) {
+      return res
+        .status(400)
+        .json({ error: "stripe_id manquant dans les metadata du user" });
+    }
+
+    const { data: shipment, error: shipErr } = await supabase
+      .from("shipments")
+      .select("*")
+      .eq("payment_id", paymentIdStr)
+      .eq("store_id", storeIdNum)
+      .eq("customer_stripe_id", stripeCustomerId)
+      .maybeSingle();
+    if (shipErr) {
+      return res.status(500).json({ error: shipErr.message });
+    }
+    if (!shipment) {
+      return res.status(404).json({ error: "Commande introuvable" });
+    }
+
+    const httpError = (statusCode: number, message: string) => {
+      const e: any = new Error(message);
+      e.statusCode = statusCode;
+      throw e;
+    };
+
+    const validatedItems = await (async () => {
+      const hasCartItems =
+        cartItemIds.length > 0 && cartItemIds.length === normalizedItems.length;
+      if (hasCartItems) {
+        const { data: cartRows, error: cartErr } = await supabase
+          .from("carts")
+          .select(
+            "id,store_id,customer_stripe_id,payment_id,product_reference,description,value,quantity",
+          )
+          .in("id", cartItemIds)
+          .eq("store_id", storeIdNum)
+          .eq("customer_stripe_id", stripeCustomerId)
+          .eq("payment_id", paymentIdStr);
+        if (cartErr) {
+          if (isMissingColumnError(cartErr, "payment_id")) {
+            httpError(
+              500,
+              "Impossible de valider: colonne payment_id manquante",
+            );
+          }
+          httpError(500, cartErr.message);
+        }
+        const cartById = new Map<number, any>();
+        for (const r of cartRows || []) {
+          const id = Number((r as any)?.id || 0);
+          if (Number.isFinite(id) && id > 0) cartById.set(id, r);
+        }
+        if (cartById.size !== cartItemIds.length) {
+          httpError(400, "Certains articles sont introuvables");
+        }
+
+        return normalizedItems.map((it) => {
+          const cartId = Number(it.cart_item_id || 0);
+          const row = cartById.get(cartId) || null;
+          if (!row) {
+            throw new Error("Certains articles sont introuvables");
+          }
+          const rowQty = Math.max(
+            1,
+            Math.round(Number((row as any)?.quantity || 1)),
+          );
+          const reqQty = Math.max(1, Math.round(Number(it.quantity || 1)));
+          if (reqQty > rowQty) {
+            throw new Error(
+              `Quantité invalide pour ${String(
+                (row as any)?.product_reference || "",
+              ).trim()}: max ${rowQty}`,
+            );
+          }
+          return {
+            cart_item_id: cartId,
+            product_reference: String(
+              (row as any)?.product_reference || "",
+            ).trim(),
+            description:
+              String((row as any)?.description || "").trim() ||
+              String(it.description || "").trim() ||
+              null,
+            quantity_requested: reqQty,
+            quantity_in_order: rowQty,
+            value: Number((row as any)?.value ?? it.value ?? 0) || 0,
+          };
+        });
+      }
+
+      const parsedFromShipment = parseProductReferenceItems(
+        String((shipment as any)?.product_reference || ""),
+      );
+      const byRef = new Map<
+        string,
+        { quantity_in_order: number; description?: string }
+      >();
+      for (const it of parsedFromShipment) {
+        const ref = String(it.reference || "").trim();
+        if (!ref) continue;
+        const qty = Math.max(1, Math.floor(Number(it.quantity || 1)));
+        byRef.set(ref, {
+          quantity_in_order: qty,
+          description: String(it.description || "").trim() || undefined,
+        });
+      }
+      if (byRef.size === 0) {
+        httpError(400, "Commande invalide (articles)");
+      }
+
+      return normalizedItems.map((it) => {
+        const ref = String(it.product_reference || "").trim();
+        const reqQty = Math.max(1, Math.round(Number(it.quantity || 1)));
+        const found = byRef.get(ref) || null;
+        if (!found) {
+          throw new Error(`Article introuvable: ${ref}`);
+        }
+        if (reqQty > found.quantity_in_order) {
+          throw new Error(
+            `Quantité invalide pour ${ref}: max ${found.quantity_in_order}`,
+          );
+        }
+        return {
+          cart_item_id: null,
+          product_reference: ref,
+          description:
+            String(it.description || "").trim() ||
+            String(found.description || "").trim() ||
+            null,
+          quantity_requested: reqQty,
+          quantity_in_order: found.quantity_in_order,
+          value: Number.isFinite(Number(it.value)) ? Number(it.value) : 0,
+        };
+      });
+    })();
+
+    let store: any = null;
+    const { data: storeData, error: storeErr } = await supabase
+      .from("stores")
+      .select("id,name,owner_email,slug")
+      .eq("id", storeIdNum)
+      .maybeSingle();
+    if (storeErr) {
+      return res.status(500).json({ error: storeErr.message });
+    }
+    store = storeData || null;
+
+    const subject = "Demande de retour client (articles sélectionnés)";
+    const message = `Demande de retour pour payment_id=${paymentIdStr}, shipment_id=${String(
+      (shipment as any)?.shipment_id || "",
+    ).trim()}.`;
+    const context = JSON.stringify(
+      {
+        paymentId: paymentIdStr,
+        store,
+        shipment,
+        items: validatedItems,
+        return: {
+          method: returnMethod,
+          delivery_network: returnDeliveryNetwork,
+          store_address: returnStoreAddress,
+          parcel_point: returnParcelPoint,
+        },
+      },
+      null,
+      2,
+    );
+
+    const adminEmailSent = await emailService.sendAdminError({
+      subject,
+      message,
+      context,
+    });
+
+    const customerEmail = String(
+      (user as any)?.primaryEmailAddress?.emailAddress ||
+        (Array.isArray((user as any)?.emailAddresses) &&
+        (user as any).emailAddresses.length > 0
+          ? (user as any).emailAddresses[0]?.emailAddress
+          : "") ||
+        "",
+    ).trim();
+    const customerName = String((user as any)?.fullName || "").trim();
+
+    let customerEmailSent = false;
+    if (customerEmail && store?.name) {
+      try {
+        customerEmailSent = await emailService.sendCustomerReturnRequested({
+          customerEmail,
+          customerName: customerName || undefined,
+          storeName: String(store?.name || "").trim(),
+          shipmentId:
+            String((shipment as any)?.shipment_id || "").trim() || undefined,
+          paymentId: paymentIdStr || undefined,
+          items: validatedItems.map((it: any) => ({
+            product_reference: String(it?.product_reference || "").trim(),
+            description: it?.description ? String(it.description) : null,
+            quantity: Math.max(
+              1,
+              Math.round(Number(it?.quantity_requested || 1)),
+            ),
+          })),
+        });
+      } catch (_e) {}
+    }
+
+    try {
+      const shipmentIdNum = Number((shipment as any)?.id || 0);
+      const nowIso = new Date().toISOString();
+      const { error: updErr } = await supabase
+        .from("shipments")
+        .update({ status: "RETURNED", delivery_date: nowIso } as any)
+        .eq("id", shipmentIdNum)
+        .eq("store_id", storeIdNum)
+        .eq("customer_stripe_id", stripeCustomerId);
+      if (updErr) {
+        if (isMissingColumnError(updErr, "delivery_date")) {
+          const { error: fallbackErr } = await supabase
+            .from("shipments")
+            .update({ status: "RETURNED" } as any)
+            .eq("id", shipmentIdNum)
+            .eq("store_id", storeIdNum)
+            .eq("customer_stripe_id", stripeCustomerId);
+          if (fallbackErr) {
+            console.error(
+              "Supabase update shipment return status failed:",
+              fallbackErr,
+            );
+          }
+        } else {
+          console.error("Supabase update shipment return status failed:", updErr);
+        }
+      }
+    } catch (dbEx) {
+      console.error("DB update return status exception:", dbEx);
+    }
+
+    return res.json({
+      success: true,
+      adminEmailSent,
+      customerEmailSent,
+    });
+  } catch (e) {
+    if (e instanceof Error) {
+      const msg = String(e.message || "").trim();
+      if (msg) {
+        const statusCodeRaw = Number((e as any)?.statusCode ?? NaN);
+        const statusCode =
+          Number.isFinite(statusCodeRaw) && statusCodeRaw >= 400
+            ? statusCodeRaw
+            : 400;
+        return res.status(statusCode).json({ error: msg });
+      }
+    }
+    console.error("Error in /api/shipments/request-return:", e);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -1955,7 +2551,9 @@ router.post("/:id/confirm-pickup", async (req, res) => {
 
     const { data: shipment, error: shipErr } = await supabase
       .from("shipments")
-      .select("id,customer_stripe_id,delivery_method,status,is_final_destination")
+      .select(
+        "id,customer_stripe_id,delivery_method,status,is_final_destination",
+      )
       .eq("id", id)
       .maybeSingle();
     if (shipErr) {
@@ -1986,18 +2584,22 @@ router.post("/:id/confirm-pickup", async (req, res) => {
       return res.status(400).json({ error: "Not a store_pickup shipment" });
     }
 
-    const st = String((shipment as any)?.status || "").trim().toUpperCase();
+    const st = String((shipment as any)?.status || "")
+      .trim()
+      .toUpperCase();
     if (st === "CANCELLED") {
       return res.status(400).json({ error: "Commande déjà annulée" });
     }
 
-    if ((shipment as any)?.is_final_destination === true) {
+    const alreadyFinal = (shipment as any)?.is_final_destination === true;
+    const alreadyDelivered = st === "DELIVERED";
+    if (alreadyFinal && alreadyDelivered) {
       return res.json({ shipment, success: true });
     }
 
     const { data: updated, error: updErr } = await supabase
       .from("shipments")
-      .update({ is_final_destination: true })
+      .update({ is_final_destination: true, status: "DELIVERED" })
       .eq("id", id)
       .select("id,is_final_destination,delivery_method,status")
       .maybeSingle();

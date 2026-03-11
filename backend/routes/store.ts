@@ -704,7 +704,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         )
         .eq("store_id", storeId)
         .eq("is_final_destination", true)
-        .or("status.is.null,status.neq.CANCELLED")
+        .or("status.is.null,and(status.neq.CANCELLED,status.neq.RETURNED)")
         .not("payment_id", "is", null)
         .order("created_at", { ascending: false })
         .range(from, from + pageSizeDb - 1);
@@ -745,7 +745,46 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       if (!data || data.length < pageSizeDb) break;
     }
 
-    const grossCents = payoutShipments.reduce((sum, r) => {
+    const paidShipments = payoutShipments.filter((r) => {
+      const st = String((r as any)?.status || "")
+        .trim()
+        .toUpperCase();
+      return st !== "RETURNED";
+    });
+
+    const returnedSincePayout: any[] = [];
+    if (payoutsSinceIso) {
+      for (let from = 0; ; from += pageSizeDb) {
+        let q = supabase
+          .from("shipments")
+          .select(
+            "id, payment_id, created_at, delivery_date, customer_stripe_id, shipment_id, product_reference, promo_code, store_earnings_amount, stripe_fees",
+          )
+          .eq("store_id", storeId)
+          .eq("status", "RETURNED")
+          .not("payment_id", "is", null)
+          .not("delivery_date", "is", null)
+          .gt("delivery_date", payoutsSinceIso)
+          .order("delivery_date", { ascending: false })
+          .range(from, from + pageSizeDb - 1);
+
+        const { data, error } = await q;
+        if (error) {
+          if ((error as any)?.code === "42703") {
+            break;
+          }
+          console.error(
+            "Erreur Supabase (list returned shipments for payout deduction):",
+            error,
+          );
+          return res.status(500).json({ error: error.message });
+        }
+        returnedSincePayout.push(...(data || []));
+        if (!data || data.length < pageSizeDb) break;
+      }
+    }
+
+    const grossCents = paidShipments.reduce((sum, r) => {
       const v = Number((r as any)?.store_earnings_amount || 0);
       return sum + (Number.isFinite(v) ? Math.round(v) : 0);
     }, 0);
@@ -754,7 +793,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       return res.status(400).json({ error: "Aucun gain disponible" });
     }
 
-    const stripeFeesCentsFromPaid = payoutShipments.reduce((sum, r) => {
+    const stripeFeesCentsFromPaid = paidShipments.reduce((sum, r) => {
       const v = Number((r as any)?.stripe_fees || 0);
       return sum + (Number.isFinite(v) ? Math.round(v) : 0);
     }, 0);
@@ -765,12 +804,33 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       },
       0,
     );
+    const returnCutoffMs = payoutsSinceIso
+      ? new Date(payoutsSinceIso).getTime()
+      : NaN;
+    const returnedEarningsCents = returnedSincePayout.reduce((sum, r) => {
+      const createdAt = String((r as any)?.created_at || "").trim();
+      const createdMs = createdAt ? new Date(createdAt).getTime() : NaN;
+      if (!Number.isFinite(createdMs) || !Number.isFinite(returnCutoffMs))
+        return sum;
+      if (createdMs >= returnCutoffMs) return sum;
+      const v = Number((r as any)?.store_earnings_amount || 0);
+      return sum + (Number.isFinite(v) ? Math.round(v) : 0);
+    }, 0);
+    const stripeFeesCentsFromReturned = returnedSincePayout.reduce((sum, r) => {
+      const v = Number((r as any)?.stripe_fees || 0);
+      return sum + (Number.isFinite(v) ? Math.round(v) : 0);
+    }, 0);
+    const storeEarningsCentsRaw = grossCents - returnedEarningsCents;
+    const adjustedGrossCents = Math.max(0, storeEarningsCentsRaw);
     const stripeFeesCents =
-      stripeFeesCentsFromPaid + stripeFeesCentsFromCancelled;
+      stripeFeesCentsFromPaid +
+      stripeFeesCentsFromCancelled +
+      stripeFeesCentsFromReturned;
 
-    const platformFeeCents = Math.round(grossCents * 0.015);
+    const platformFeeCents = Math.round(adjustedGrossCents * 0.015);
     const payliveFeeCents = stripeFeesCents + platformFeeCents;
-    const payoutCents = grossCents - payliveFeeCents;
+    const payoutCents =
+      storeEarningsCentsRaw - stripeFeesCents - platformFeeCents;
     if (!Number.isFinite(payoutCents) || payoutCents <= 0) {
       return res.status(400).json({ error: "Montant insuffisant après frais" });
     }
@@ -778,7 +838,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
     const country = ibanTrim.substring(0, 2).toUpperCase();
     const idempotencyBase = `payout_${storeId}_${
       lastPayoutTimestamp ? String(lastPayoutTimestamp) : "first"
-    }_${grossCents}`;
+    }_${adjustedGrossCents}`;
 
     let payout: any = null;
     let payoutError: any = null;
@@ -806,8 +866,24 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         { idempotencyKey: `${idempotencyBase}_external_account` } as any,
       );
 
+      const connectAccountId = "acct_1RlSb5FvgBVqiF7V"; // ID du compte du vendeur
+
       destinationId = String(externalAccount?.id || "").trim() || null;
       if (!destinationId) throw new Error("Destination bancaire invalide");
+
+      const externalAccounts = await stripe.accounts.listExternalAccounts(
+        connectAccountId,
+        { object: "bank_account", limit: 100 },
+      );
+
+      const validDestination = externalAccounts.data.some(
+        (acc) => acc.id === destinationId,
+      );
+      if (!validDestination) {
+        throw new Error(
+          `La destination ${destinationId} n'appartient pas au compte ${connectAccountId}`,
+        );
+      }
 
       payout = await stripe.payouts.create(
         {
@@ -819,16 +895,16 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
           metadata: {
             store_id: String(storeId),
             store_slug: String(decodedSlug),
-            gross_cents: String(grossCents),
+            gross_cents: String(adjustedGrossCents),
             fee_cents: String(payliveFeeCents),
             stripe_fees_cents: String(stripeFeesCents),
             platform_fee_cents: String(platformFeeCents),
           },
-        } as any,
+        },
         {
           idempotencyKey: `${idempotencyBase}_payout`,
-          stripeAccount: "acct_1SramGC1Oc6JE3hW",
-        } as any,
+          stripeAccount: connectAccountId,
+        },
       );
     } catch (e) {
       payoutError = e;
@@ -895,7 +971,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       return tokens.length > 0 ? tokens.join(", ") : null;
     };
 
-    const transactions: any[] = payoutShipments.map((r) => {
+    const paidTransactions: any[] = paidShipments.map((r) => {
       const createdAt = String((r as any)?.created_at || "").trim();
       const createdMs = createdAt ? new Date(createdAt).getTime() : NaN;
       const created = Number.isFinite(createdMs)
@@ -916,9 +992,63 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
         product_reference:
           String((r as any)?.product_reference || "").trim() || null,
         promo_code: formatPromoCodeForStore((r as any)?.promo_code),
+        status:
+          String((r as any)?.status || "")
+            .trim()
+            .toUpperCase() || null,
         net_total: netCents / 100,
       };
     });
+
+    const returnedTransactions: any[] = [];
+    if (payoutsSinceIso) {
+      const cutoffMs = new Date(payoutsSinceIso).getTime();
+      for (const r of returnedSincePayout) {
+        const createdAt = String((r as any)?.created_at || "").trim();
+        const createdMs = createdAt ? new Date(createdAt).getTime() : NaN;
+        if (!Number.isFinite(createdMs) || createdMs >= cutoffMs) continue;
+
+        const deliveryAt = String((r as any)?.delivery_date || "").trim();
+        const deliveryMs = deliveryAt ? new Date(deliveryAt).getTime() : NaN;
+        const created =
+          Number.isFinite(deliveryMs) && deliveryMs > 0
+            ? Math.floor(deliveryMs / 1000)
+            : 0;
+
+        const paymentId = String((r as any)?.payment_id || "").trim() || "—";
+        const customerId =
+          String((r as any)?.customer_stripe_id || "").trim() || null;
+        const netCentsRaw = Number((r as any)?.store_earnings_amount || 0);
+        const netCents = Number.isFinite(netCentsRaw)
+          ? Math.round(netCentsRaw)
+          : 0;
+        returnedTransactions.push({
+          payment_id: paymentId,
+          created,
+          currency: "eur",
+          customer: { id: customerId },
+          product_reference:
+            String((r as any)?.product_reference || "").trim() || null,
+          promo_code: formatPromoCodeForStore((r as any)?.promo_code),
+          status: "RETURNED",
+          net_total: -Math.abs(netCents) / 100,
+        });
+      }
+    }
+
+    const transactions: any[] = [
+      ...paidTransactions,
+      ...returnedTransactions,
+    ].sort(
+      (a, b) =>
+        Number((b as any)?.created || 0) - Number((a as any)?.created || 0),
+    );
+
+    const pdfTotalNetCents = transactions.reduce((sum, tx) => {
+      const v = Number((tx as any)?.net_total ?? 0);
+      return sum + (Number.isFinite(v) ? Math.round(v * 100) : 0);
+    }, 0);
+    const pdfFeeCents = pdfTotalNetCents - payoutCents;
 
     const extractStripeProductIds = (raw: any): string[] =>
       String(raw || "")
@@ -1333,7 +1463,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       doc
         .fillColor("#111827")
         .fontSize(10)
-        .text(moneyFmt.format(grossCents / 100), totalsValueX, y, {
+        .text(moneyFmt.format(pdfTotalNetCents / 100), totalsValueX, y, {
           width: totalsValueW,
           align: "right",
         });
@@ -1346,7 +1476,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       doc
         .fillColor("#374151")
         .fontSize(9)
-        .text(moneyFmt.format(payliveFeeCents / 100), totalsValueX, y, {
+        .text(moneyFmt.format(pdfFeeCents / 100), totalsValueX, y, {
           width: totalsValueW,
           align: "right",
         });
@@ -1540,7 +1670,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
           ),
           storeAddress:
             (updated as any)?.address || (store as any)?.address || null,
-          grossAmount: grossCents / 100,
+          grossAmount: adjustedGrossCents / 100,
           feeAmount: payliveFeeCents / 100,
           payoutAmount: payoutCents / 100,
           currency: "EUR",
@@ -1561,7 +1691,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       success: true,
       store: updated,
       payout: {
-        gross_cents: grossCents,
+        gross_cents: adjustedGrossCents,
         fee_cents: payliveFeeCents,
         payout_cents: payoutCents,
         currency: "eur",
@@ -1689,16 +1819,16 @@ router.get("/:storeSlug/transactions", async (req, res) => {
         ? new Date(startTimestamp * 1000).toISOString()
         : null;
 
-    const transactions: any[] = [];
-    let totalCount = 0;
-    let totalNet = 0;
+    const cutoffMs = startIso ? new Date(startIso).getTime() : NaN;
+    const baseSelect =
+      "payment_id, created_at, delivery_date, customer_stripe_id, product_reference, promo_code, store_earnings_amount, status, stripe_fees";
+
+    const mainRows: any[] = [];
     const pageSizeDb = 1000;
     for (let from = 0; ; from += pageSizeDb) {
       let q = supabase
         .from("shipments")
-        .select(
-          "payment_id, created_at, customer_stripe_id, product_reference, promo_code, store_earnings_amount",
-        )
+        .select(baseSelect)
         .eq("store_id", storeId)
         .eq("is_final_destination", true)
         .or("status.is.null,status.neq.CANCELLED")
@@ -1715,35 +1845,176 @@ router.get("/:storeSlug/transactions", async (req, res) => {
       }
 
       const rows = Array.isArray(data) ? data : [];
-      for (const r of rows) {
-        totalCount += 1;
-        const netCentsRaw = Number((r as any)?.store_earnings_amount || 0);
-        const netEur = Number.isFinite(netCentsRaw) ? netCentsRaw / 100 : 0;
-        totalNet += netEur;
+      mainRows.push(...rows);
+      if (rows.length < pageSizeDb) break;
+    }
 
-        if (limitAll || transactions.length < limit) {
-          const createdAt = String((r as any)?.created_at || "").trim();
-          const createdMs = createdAt ? new Date(createdAt).getTime() : NaN;
-          const created =
-            Number.isFinite(createdMs) && createdMs > 0
-              ? Math.floor(createdMs / 1000)
-              : 0;
-          transactions.push({
-            payment_id: String((r as any)?.payment_id || "").trim() || "—",
-            created,
-            currency: "eur",
-            customer: {
-              id: String((r as any)?.customer_stripe_id || "").trim() || null,
-            },
-            product_reference:
-              String((r as any)?.product_reference || "").trim() || null,
-            promo_code: formatPromoCodeForStore((r as any)?.promo_code),
-            net_total: netEur,
-          });
-        }
+    const cancelledRows: any[] = [];
+    for (let from = 0; ; from += pageSizeDb) {
+      let q = supabase
+        .from("shipments")
+        .select(baseSelect)
+        .eq("store_id", storeId)
+        .eq("status", "CANCELLED")
+        .not("payment_id", "is", null)
+        .order("created_at", { ascending: false })
+        .range(from, from + pageSizeDb - 1);
+
+      if (startIso) q = q.gte("created_at", startIso);
+
+      const { data, error } = await q;
+      if (error) {
+        console.error("Erreur Supabase (list cancelled shipments):", error);
+        return res.status(500).json({ error: error.message });
       }
 
+      const rows = Array.isArray(data) ? data : [];
+      cancelledRows.push(...rows);
       if (rows.length < pageSizeDb) break;
+    }
+
+    const returnedAdjustRows: any[] = [];
+    if (startIso) {
+      for (let from = 0; ; from += pageSizeDb) {
+        let q = supabase
+          .from("shipments")
+          .select(baseSelect)
+          .eq("store_id", storeId)
+          .eq("is_final_destination", true)
+          .eq("status", "RETURNED")
+          .not("payment_id", "is", null)
+          .not("delivery_date", "is", null)
+          .gte("delivery_date", startIso)
+          .lt("created_at", startIso)
+          .order("delivery_date", { ascending: false })
+          .range(from, from + pageSizeDb - 1);
+
+        const { data, error } = await q;
+        if (error) {
+          if ((error as any)?.code === "42703") break;
+          console.error(
+            "Erreur Supabase (list returned shipments adjustments):",
+            error,
+          );
+          return res.status(500).json({ error: error.message });
+        }
+
+        const rows = Array.isArray(data) ? data : [];
+        returnedAdjustRows.push(...rows);
+        if (rows.length < pageSizeDb) break;
+      }
+    }
+
+    const mergedRows: any[] = [
+      ...mainRows,
+      ...cancelledRows,
+      ...returnedAdjustRows,
+    ];
+    mergedRows.sort((a, b) => {
+      const aStatus = String((a as any)?.status || "")
+        .trim()
+        .toUpperCase();
+      const bStatus = String((b as any)?.status || "")
+        .trim()
+        .toUpperCase();
+
+      const aCreatedAt =
+        aStatus === "RETURNED" &&
+        startIso &&
+        Number.isFinite(cutoffMs) &&
+        (() => {
+          const raw = String((a as any)?.created_at || "").trim();
+          const ms = raw ? new Date(raw).getTime() : NaN;
+          return Number.isFinite(ms) && ms < cutoffMs;
+        })()
+          ? String((a as any)?.delivery_date || "").trim()
+          : String((a as any)?.created_at || "").trim();
+      const bCreatedAt =
+        bStatus === "RETURNED" &&
+        startIso &&
+        Number.isFinite(cutoffMs) &&
+        (() => {
+          const raw = String((b as any)?.created_at || "").trim();
+          const ms = raw ? new Date(raw).getTime() : NaN;
+          return Number.isFinite(ms) && ms < cutoffMs;
+        })()
+          ? String((b as any)?.delivery_date || "").trim()
+          : String((b as any)?.created_at || "").trim();
+
+      const aMs = aCreatedAt ? new Date(aCreatedAt).getTime() : NaN;
+      const bMs = bCreatedAt ? new Date(bCreatedAt).getTime() : NaN;
+      const ax = Number.isFinite(aMs) ? aMs : 0;
+      const bx = Number.isFinite(bMs) ? bMs : 0;
+      return bx - ax;
+    });
+
+    const transactions: any[] = [];
+    let totalCount = 0;
+    let totalNet = 0;
+    const seen = new Set<string>();
+    for (const r of mergedRows) {
+      const paymentId = String((r as any)?.payment_id || "").trim() || "—";
+      const dedupeKey = paymentId;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      const st = String((r as any)?.status || "")
+        .trim()
+        .toUpperCase();
+      const createdAtRaw = String((r as any)?.created_at || "").trim();
+      const createdAtMs = createdAtRaw ? new Date(createdAtRaw).getTime() : NaN;
+      const createdBeforeCutoff =
+        startIso &&
+        Number.isFinite(cutoffMs) &&
+        Number.isFinite(createdAtMs) &&
+        createdAtMs < cutoffMs;
+
+      const effectiveAtRaw =
+        st === "RETURNED" && createdBeforeCutoff
+          ? String((r as any)?.delivery_date || "").trim() || createdAtRaw
+          : createdAtRaw;
+      const effectiveMs = effectiveAtRaw
+        ? new Date(effectiveAtRaw).getTime()
+        : NaN;
+      const created =
+        Number.isFinite(effectiveMs) && effectiveMs > 0
+          ? Math.floor(effectiveMs / 1000)
+          : 0;
+
+      const netCentsRaw = Number((r as any)?.store_earnings_amount || 0);
+      const netEur = Number.isFinite(netCentsRaw) ? netCentsRaw / 100 : 0;
+      const netTotal =
+        st === "CANCELLED"
+          ? 0
+          : st === "RETURNED"
+            ? createdBeforeCutoff
+              ? -Math.abs(netEur)
+              : 0
+            : netEur;
+
+      totalCount += 1;
+      totalNet += netTotal;
+
+      if (limitAll || transactions.length < limit) {
+        const stripeFeesRaw = Number((r as any)?.stripe_fees ?? NaN);
+        const stripeFeesCents = Number.isFinite(stripeFeesRaw)
+          ? Math.round(stripeFeesRaw)
+          : null;
+        transactions.push({
+          payment_id: paymentId,
+          created,
+          currency: "eur",
+          customer: {
+            id: String((r as any)?.customer_stripe_id || "").trim() || null,
+          },
+          product_reference:
+            String((r as any)?.product_reference || "").trim() || null,
+          promo_code: formatPromoCodeForStore((r as any)?.promo_code),
+          status: st || null,
+          stripe_fees: stripeFeesCents,
+          net_total: netTotal,
+        });
+      }
     }
 
     const extractStripeProductIds = (raw: any): string[] =>

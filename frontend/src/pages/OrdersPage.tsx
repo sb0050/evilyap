@@ -53,7 +53,6 @@ type Shipment = {
   created_at?: string | null;
   status?: string | null;
   estimated_delivery_date?: string | null;
-  return_requested?: boolean | null;
   delivery_cost?: number | null;
   tracking_url?: string | null;
   store?: StoreInfo | null;
@@ -445,6 +444,109 @@ export default function OrdersPage() {
     }).format(v);
   };
 
+  const isDeliveryRegulationText = (raw: unknown) =>
+    /r[ée]gularisation\s+livraison/i.test(String(raw || '').trim());
+
+  const requestReturnForShipment = async (
+    s: Shipment,
+    options?: { silent?: boolean }
+  ) => {
+    const silent = options?.silent;
+    const st = String(s.status || '')
+      .trim()
+      .toUpperCase();
+    const dm = String(s.delivery_method || '')
+      .trim()
+      .toLowerCase();
+    if (st === 'CANCELLED') {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) showToast('Commande annulée', 'error');
+      return false;
+    }
+    if (st === 'RETURNED') {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) showToast('Commande déjà retournée', 'info');
+      return false;
+    }
+    if (dm === 'store_pickup') {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent)
+        showToast('Retour non disponible pour le retrait boutique', 'error');
+      return false;
+    }
+    if (s.is_final_destination !== true) {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent)
+        showToast('Cette commande n’est pas éligible au retour', 'error');
+      return false;
+    }
+    const storeId = Number(s.store_id || 0);
+    const paymentId = String(s.payment_id || '').trim();
+    if (!Number.isFinite(storeId) || storeId <= 0 || !paymentId) {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) showToast('Commande invalide', 'error');
+      return false;
+    }
+
+    const parsed = parseProductReferenceItems(s.product_reference);
+    const payloadItems = (parsed || [])
+      .filter(
+        it =>
+          !isDeliveryRegulationText(it.reference) &&
+          !isDeliveryRegulationText(it.description)
+      )
+      .map(it => ({
+        product_reference: String(it.reference || '').trim(),
+        description: String(it.description || '').trim() || null,
+        quantity: Math.max(1, Math.round(Number(it.quantity || 1))),
+      }))
+      .filter(it => Boolean(it.product_reference));
+
+    if (payloadItems.length === 0) {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      if (!silent) showToast('Aucun article à retourner', 'error');
+      return false;
+    }
+
+    try {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'loading' }));
+      if (!silent) showToast('Chargement...', 'info');
+      const token = await getToken();
+      const resp = await fetch(`${apiBase}/api/shipments/request-return`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+        body: JSON.stringify({
+          paymentId,
+          storeId,
+          items: payloadItems,
+        }),
+      });
+      const json = await resp.json().catch(() => null as any);
+      if (!resp.ok || !json?.success) {
+        throw new Error(json?.error || 'Erreur lors de la demande de retour');
+      }
+
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'success' }));
+      setShipments(prev =>
+        (prev || []).map(it =>
+          it.id === s.id ? { ...it, status: 'RETURNED' } : it
+        )
+      );
+      setSelectedOrderIds(new Set());
+      if (!silent) showToast('Retour confirmé', 'success');
+      await handleRefreshOrders();
+      return true;
+    } catch (e: any) {
+      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
+      const msg = String(e?.message || 'Erreur').replace(/^Error:\s*/, '');
+      if (!silent) showToast(msg, 'error');
+      return false;
+    }
+  };
+
   const formatDate = (d?: string | null) => {
     if (!d) return '—';
     try {
@@ -783,14 +885,25 @@ export default function OrdersPage() {
       String(s.status || '').toUpperCase() !== 'CANCELLED'
     );
   })();
-  const selectedForReturn = selectedOrders.filter(
-    s =>
-      s.shipment_id &&
-      !s.return_requested &&
-      !!s.is_final_destination &&
-      String(s.status || '').toUpperCase() !== 'CANCELLED' &&
+  const canReturnSelectedOrder = (() => {
+    if (selectedOrders.length !== 1) return false;
+    const s = selectedOrders[0];
+    const dm = String(s.delivery_method || '')
+      .trim()
+      .toLowerCase();
+    const status = String(s.status || '')
+      .trim()
+      .toUpperCase();
+    const paymentId = String(s.payment_id || '').trim();
+    return (
+      s.is_final_destination === true &&
+      dm !== 'store_pickup' &&
+      Boolean(paymentId) &&
+      status !== 'CANCELLED' &&
+      status !== 'RETURNED' &&
       returnStatus[s.id] !== 'loading'
-  );
+    );
+  })();
   const selectedForContact = selectedOrders.filter(s => !!s.store_id);
   const selectedForCancel = selectedOrders.filter(
     s =>
@@ -1148,88 +1261,20 @@ export default function OrdersPage() {
     }
   };
 
-  const handleReturn = async (s: Shipment, options?: { silent?: boolean }) => {
-    const silent = options?.silent;
-    if (!s.shipment_id) {
-      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
-      return false;
-    }
-    try {
-      setReturnStatus(prev => ({ ...prev, [s.id]: 'loading' }));
-      const token = await getToken();
-      const url = `${apiBase}/api/boxtal/shipping-orders/${encodeURIComponent(
-        s.shipment_id
-      )}/return`;
-      const resp = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: token ? `Bearer ${token}` : '',
-        },
-      });
-      const json = await resp.json().catch(() => ({}));
-      if (resp.ok && json?.success) {
-        setReturnStatus(prev => ({ ...prev, [s.id]: 'success' }));
-        // Marquer localement la demande de retour comme envoyée pour désactiver le bouton
-        setShipments(prev =>
-          (prev || []).map(it =>
-            it.id === s.id ? { ...it, return_requested: true } : it
-          )
-        );
-        if (!silent) {
-          showToast('Demande de retour envoyée avec succès', 'success');
-        }
-        return true;
-      } else {
-        setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
-        const msg =
-          json?.error ||
-          json?.message ||
-          "Erreur lors de l'envoi de la demande";
-        if (!silent) {
-          showToast(typeof msg === 'string' ? msg : "Erreur d'envoi", 'error');
-        }
-        return false;
-      }
-    } catch (e: any) {
-      setReturnStatus(prev => ({ ...prev, [s.id]: 'error' }));
-      const rawMsg = e?.message || "Erreur lors de l'envoi de la demande";
-      if (!silent) {
-        showToast(
-          typeof rawMsg === 'string' ? rawMsg : "Erreur d'envoi",
-          'error'
-        );
-      }
-      return false;
-    }
-  };
-
   const handleBatchReturn = async () => {
-    if (selectedForReturn.length === 0) {
-      showToast('Aucune commande sélectionnée pour le retour', 'error');
-      return;
-    }
-    const references: string[] = [];
-    for (const s of selectedForReturn) {
-      const ok = await handleReturn(s, { silent: true });
-      if (ok) {
-        const ref = String(s.product_reference || s.shipment_id || '').trim();
-        references.push(ref || String(s.shipment_id));
-      }
-    }
-    if (references.length === 0) {
+    if (selectedOrders.length !== 1) {
       showToast(
-        'Aucune commande traitée pour le retour. Vérifiez l’éligibilité des commandes sélectionnées.',
-        'info'
+        'Sélectionnez une seule commande pour demander le retour',
+        'error'
       );
       return;
     }
-    const msg =
-      references.length <= 3
-        ? `Retours demandés pour : ${references.join(', ')}`
-        : `Retours demandés pour ${references.length} références (${references
-            .slice(0, 3)
-            .join(', ')}...)`;
-    showToast(msg, 'success');
+    const s = selectedOrders[0];
+    if (!canReturnSelectedOrder) {
+      showToast('Cette commande n’est pas éligible au retour', 'error');
+      return;
+    }
+    await requestReturnForShipment(s);
   };
 
   const handleCancel = async (s: Shipment, options?: { silent?: boolean }) => {
@@ -1437,7 +1482,7 @@ export default function OrdersPage() {
           if (it.id !== s.id) return it;
           if (updated && typeof updated === 'object')
             return { ...it, ...updated };
-          return { ...it, is_final_destination: true };
+          return { ...it, is_final_destination: true, status: 'DELIVERED' };
         })
       );
       if (!silent) showToast('Retrait confirmé', 'success');
@@ -1752,15 +1797,15 @@ export default function OrdersPage() {
                 </button>
                 <button
                   onClick={handleBatchReturn}
-                  disabled={selectedForReturn.length === 0}
+                  disabled={!canReturnSelectedOrder}
                   className={`inline-flex items-center px-3 py-2 rounded-md text-sm font-medium border ${
-                    selectedForReturn.length === 0
+                    !canReturnSelectedOrder
                       ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
                       : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                   }`}
-                  title='Demander le retour'
+                  title='Retourner la commande'
                 >
-                  Demander le retour
+                  Retourner la commande
                 </button>
                 <button
                   onClick={handleBatchConfirmPickup}
@@ -1814,9 +1859,11 @@ export default function OrdersPage() {
                     } ${
                       String(s.status || '').toUpperCase() === 'CANCELLED'
                         ? 'border-red-200 bg-red-50'
-                        : s.is_final_destination
-                          ? 'border-green-200 bg-green-50'
-                          : 'border-gray-200 bg-white'
+                        : String(s.status || '').toUpperCase() === 'RETURNED'
+                          ? 'border-orange-200 bg-orange-50'
+                          : s.is_final_destination
+                            ? 'border-green-200 bg-green-50'
+                            : 'border-gray-200 bg-white'
                     }`}
                   >
                     <div className='flex items-start justify-between'>
@@ -1892,6 +1939,11 @@ export default function OrdersPage() {
                         'CANCELLED' ? (
                           <span className='inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700'>
                             Annulée
+                          </span>
+                        ) : String(s.status || '').toUpperCase() ===
+                          'RETURNED' ? (
+                          <span className='inline-flex items-center rounded-full bg-orange-100 px-2 py-0.5 text-xs font-semibold text-orange-700'>
+                            Retournée
                           </span>
                         ) : String(s.status || '').toUpperCase() ===
                           'DELIVERED' ? (
@@ -2036,9 +2088,11 @@ export default function OrdersPage() {
                       } ${
                         String(s.status || '').toUpperCase() === 'CANCELLED'
                           ? 'bg-red-50'
-                          : s.is_final_destination
-                            ? 'bg-green-50 hover:bg-green-100'
-                            : 'hover:bg-gray-50'
+                          : String(s.status || '').toUpperCase() === 'RETURNED'
+                            ? 'bg-orange-50 hover:bg-orange-100'
+                            : s.is_final_destination
+                              ? 'bg-green-50 hover:bg-green-100'
+                              : 'hover:bg-gray-50'
                       }`}
                     >
                       <td className='py-4 px-4 text-gray-700'>
@@ -2107,6 +2161,11 @@ export default function OrdersPage() {
                             'CANCELLED' ? (
                               <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-red-700'>
                                 ANNULÉE
+                              </span>
+                            ) : String(s.status || '').toUpperCase() ===
+                              'RETURNED' ? (
+                              <span className='inline-flex items-center rounded-full py-0.5 font-semibold text-orange-700'>
+                                RETOURNÉE
                               </span>
                             ) : String(s.status || '').toUpperCase() ===
                               'DELIVERED' ? (

@@ -1,11 +1,13 @@
 import express from "express";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
-import fs from "fs/promises";
-import path from "path";
 
 import slugify from "slugify";
 import { CATEGORY_BASE_WEIGHT } from "../CATEGORY_BASE_WEIGHT";
+import {
+  loadFallbackCotationBoxtal,
+  pickFallbackCotationBoxtal,
+} from "../services/boxtalCotationFallback";
 
 import { getAuth } from "@clerk/express";
 import { clerkClient } from "@clerk/express";
@@ -55,83 +57,6 @@ const getInternalBase = (): string => {
     return /^https?:\/\//i.test(vercelUrl) ? vercelUrl : `https://${vercelUrl}`;
   }
   return `http://localhost:${process.env.PORT || 5000}`;
-};
-
-type FallbackCotationBoxtalTable = Record<
-  string,
-  Record<string, Record<string, number>>
->;
-let fallbackCotationBoxtalCache: FallbackCotationBoxtalTable | null = null;
-
-const loadFallbackCotationBoxtal =
-  async (): Promise<FallbackCotationBoxtalTable | null> => {
-    if (fallbackCotationBoxtalCache) return fallbackCotationBoxtalCache;
-    const candidatePaths = [
-      path.resolve(process.cwd(), "FALLBACK_COTATION_BOXTAL.json"),
-      path.resolve(__dirname, "..", "FALLBACK_COTATION_BOXTAL.json"),
-      path.resolve(
-        __dirname,
-        "..",
-        "..",
-        "..",
-        "FALLBACK_COTATION_BOXTAL.json",
-      ),
-    ];
-    for (const p of candidatePaths) {
-      try {
-        const raw = await fs.readFile(p, "utf8");
-        const parsed = JSON.parse(raw) as FallbackCotationBoxtalTable;
-        if (parsed && typeof parsed === "object") {
-          fallbackCotationBoxtalCache = parsed;
-          return parsed;
-        }
-      } catch (_e) {}
-    }
-    return null;
-  };
-
-const pickFallbackCotationBoxtal = (
-  table: FallbackCotationBoxtalTable,
-  recipientCountryRaw: string,
-  deliveryNetworkRaw: string,
-  weightKg: number,
-): number | null => {
-  const recipientCountry = (() => {
-    const c = String(recipientCountryRaw || "")
-      .trim()
-      .toUpperCase();
-    return c || "FR";
-  })();
-  const deliveryNetwork = String(deliveryNetworkRaw || "").trim();
-  if (!deliveryNetwork) return null;
-  const byCountry = table?.[recipientCountry];
-  if (!byCountry || typeof byCountry !== "object") return null;
-
-  const byCarrier =
-    (byCountry as any)?.[deliveryNetwork] ||
-    (() => {
-      const target = deliveryNetwork.toUpperCase();
-      const matchKey = Object.keys(byCountry).find(
-        (k) =>
-          String(k || "")
-            .trim()
-            .toUpperCase() === target,
-      );
-      return matchKey ? (byCountry as any)?.[matchKey] : null;
-    })();
-  if (!byCarrier || typeof byCarrier !== "object") return null;
-
-  const weightKeys = Object.keys(byCarrier)
-    .map((k) => ({ raw: k, n: Number(String(k).replace(",", ".")) }))
-    .filter((x) => Number.isFinite(x.n) && x.n > 0)
-    .sort((a, b) => a.n - b.n);
-  if (weightKeys.length === 0) return null;
-
-  const w = Number.isFinite(weightKg) && weightKg > 0 ? weightKg : 0;
-  const picked =
-    weightKeys.find((x) => x.n >= w) || weightKeys[weightKeys.length - 1];
-  const price = Number((byCarrier as any)?.[picked.raw]);
-  return Number.isFinite(price) ? Math.max(0, price) : null;
 };
 
 const DEFAULT_WEIGHT = 0.5;
@@ -1161,6 +1086,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           }),
         );
 
+        let shouldUseFallback = false;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
             const cotResp = await fetch(`${apiBase}/api/boxtal/cotation`, {
@@ -1168,8 +1094,9 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(cotationBody),
             });
+            const cotJson: any = await cotResp.json().catch(() => null);
+            console.log("retour api cotation", cotJson);
             if (cotResp.ok) {
-              const cotJson: any = await cotResp.json();
               const priceRaw =
                 cotJson?.price?.["tax-inclusive"] ??
                 cotJson?.price?.taxInclusive ??
@@ -1181,6 +1108,9 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
                 computedDeliveryCost = Math.max(0, parsed);
                 break;
               }
+              shouldUseFallback = true;
+            } else {
+              shouldUseFallback = true;
             }
           } catch (_e) {}
 
@@ -1190,14 +1120,17 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
         }
 
         if (
-          computedDeliveryCost === null ||
-          !Number.isFinite(computedDeliveryCost)
+          shouldUseFallback &&
+          (computedDeliveryCost === null ||
+            !Number.isFinite(computedDeliveryCost)) &&
+          deliveryNetwork &&
+          Number.isFinite(weightKg) &&
+          weightKg > 0
         ) {
           const table = await loadFallbackCotationBoxtal();
           if (table) {
             const fallback = pickFallbackCotationBoxtal(
               table,
-              recipientCountry,
               deliveryNetwork,
               weightKg,
             );
@@ -1211,6 +1144,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       computedDeliveryCost = 0;
     }
 
+    console.log("computedDeliveryCost", computedDeliveryCost);
     if (
       deliveryMethod !== "store_pickup" &&
       (computedDeliveryCost === null || !Number.isFinite(computedDeliveryCost))
