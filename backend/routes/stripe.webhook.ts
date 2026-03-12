@@ -281,6 +281,9 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             (session.metadata as any)?.store_id || "",
           ).trim();
           const storeIdNum = Number(storeIdRaw);
+          const returnItemsCompact = String(
+            (session.metadata as any)?.return_items_compact || "",
+          ).trim();
           const itemsTotalRaw = String(
             (session.metadata as any)?.return_items_total_cents || "0",
           ).trim();
@@ -314,12 +317,190 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             });
 
             if (originalPaymentId && Number.isFinite(storeIdNum) && storeIdNum > 0) {
-              await supabase
+              // Cas 3 (retour multi-articles / multi-unités):
+              // qtyToReturn est envoyé par le frontend dans Stripe metadata (return_items_compact).
+              // Pour chaque article retourné:
+              // - stock.quantity += qtyToReturn
+              // - stock.bought   -= qtyToReturn
+              // Chaque article est traité indépendamment avec verrouillage optimiste.
+              const parseReturnItems = (raw: string) => {
+                const out: Array<{ reference: string; quantity: number }> = [];
+                const parts = String(raw || "")
+                  .split(";")
+                  .map((s) => String(s || "").trim())
+                  .filter(Boolean);
+                for (const p of parts) {
+                  const idx = p.lastIndexOf("=");
+                  if (idx <= 0) continue;
+                  const ref = String(p.slice(0, idx) || "").trim();
+                  const qtyRaw = Number(p.slice(idx + 1));
+                  const qty =
+                    Number.isFinite(qtyRaw) && qtyRaw > 0
+                      ? Math.max(1, Math.round(qtyRaw))
+                      : NaN;
+                  if (!ref || !Number.isFinite(qty)) continue;
+                  out.push({ reference: ref, quantity: qty });
+                }
+                return out;
+              };
+
+              const returnItems = parseReturnItems(returnItemsCompact)
+                .slice(0, 200)
+                .filter((it) => {
+                  const ref = String(it?.reference || "").trim();
+                  const qtyRaw = Number(it?.quantity ?? NaN);
+                  const qty = Number.isFinite(qtyRaw) ? Math.floor(qtyRaw) : NaN;
+                  return Boolean(ref) && Number.isFinite(qty) && qty > 0;
+                });
+              const { data: shipmentRow } = await supabase
                 .from("shipments")
-                .update({ return_requested: true })
+                .select("id,status")
                 .eq("payment_id", originalPaymentId)
                 .eq("store_id", storeIdNum)
-                .eq("customer_stripe_id", customer.id);
+                .eq("customer_stripe_id", customer.id)
+                .maybeSingle();
+
+              const existingStatus = String((shipmentRow as any)?.status || "")
+                .trim()
+                .toUpperCase();
+              if (shipmentRow && existingStatus !== "RETURNED" && returnItems.length > 0) {
+                // Scalabilité: lecture du stock en batch, puis mise à jour item par item.
+                const uniqueRefs = Array.from(
+                  new Set(
+                    returnItems
+                      .map((it) => String(it.reference || "").trim())
+                      .filter(Boolean),
+                  ),
+                );
+                const refIds = uniqueRefs.filter((r) => !r.startsWith("prod_"));
+                const stripeIds = uniqueRefs.filter((r) => r.startsWith("prod_"));
+
+                const stockByReference = new Map<string, any>();
+                const stockByStripeId = new Map<string, any>();
+
+                if (refIds.length > 0) {
+                  const { data: rows } = await supabase
+                    .from("stock")
+                    .select("id,product_reference,product_stripe_id,quantity,bought")
+                    .eq("store_id", storeIdNum)
+                    .in("product_reference", refIds as any);
+                  for (const r of Array.isArray(rows) ? rows : []) {
+                    const ref = String((r as any)?.product_reference || "").trim();
+                    if (ref) stockByReference.set(ref, r);
+                    const pid = String((r as any)?.product_stripe_id || "").trim();
+                    if (pid && pid.startsWith("prod_")) stockByStripeId.set(pid, r);
+                  }
+                }
+                if (stripeIds.length > 0) {
+                  const { data: rows } = await supabase
+                    .from("stock")
+                    .select("id,product_reference,product_stripe_id,quantity,bought")
+                    .eq("store_id", storeIdNum)
+                    .in("product_stripe_id", stripeIds as any);
+                  for (const r of Array.isArray(rows) ? rows : []) {
+                    const pid = String((r as any)?.product_stripe_id || "").trim();
+                    if (pid && pid.startsWith("prod_")) stockByStripeId.set(pid, r);
+                    const ref = String((r as any)?.product_reference || "").trim();
+                    if (ref) stockByReference.set(ref, r);
+                  }
+                }
+
+                const applyAdjustmentOnStockRow = async (params: {
+                  stockId: number;
+                  qty: number;
+                }) => {
+                  const maxAttempts = 5;
+                  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                    const { data: freshRow, error: freshErr } = await supabase
+                      .from("stock")
+                      .select("id,quantity,bought")
+                      .eq("id", params.stockId)
+                      .eq("store_id", storeIdNum)
+                      .maybeSingle();
+                    if (freshErr) throw new Error(freshErr.message);
+                    if (!freshRow) {
+                      throw new Error(`Stock introuvable (id=${params.stockId})`);
+                    }
+
+                    const bRaw = Number((freshRow as any)?.bought || 0);
+                    const currentBought =
+                      Number.isFinite(bRaw) && bRaw >= 0 ? Math.floor(bRaw) : 0;
+
+                    const rawQtyField = (freshRow as any)?.quantity;
+                    const hasQtyField =
+                      rawQtyField !== null && rawQtyField !== undefined;
+                    const parsedQty = hasQtyField ? Number(rawQtyField) : NaN;
+                    const available =
+                      hasQtyField && Number.isFinite(parsedQty) && parsedQty >= 0
+                        ? Math.floor(parsedQty)
+                        : 0;
+
+                    if (currentBought < params.qty) {
+                      // Validation métier: pas de retour au-delà du "bought" enregistré.
+                      throw new Error(
+                        `Retour invalide: qty=${params.qty} > bought=${currentBought}`,
+                      );
+                    }
+
+                    const nextBought = currentBought - params.qty;
+                    const nextQty = hasQtyField ? available + params.qty : null;
+                    const payload = hasQtyField
+                      ? ({ quantity: nextQty, bought: nextBought } as any)
+                      : ({ bought: nextBought } as any);
+
+                    // Verrouillage optimiste: on update seulement si les valeurs lues n'ont pas changé.
+                    let updateQuery: any = supabase
+                      .from("stock")
+                      .update(payload)
+                      .eq("id", params.stockId)
+                      .eq("store_id", storeIdNum)
+                      .eq("bought", currentBought);
+                    if (hasQtyField) updateQuery = updateQuery.eq("quantity", available);
+
+                    const { data: updatedRows, error: updErr } =
+                      await updateQuery.select("id");
+                    if (updErr) throw new Error(updErr.message);
+                    if (Array.isArray(updatedRows) && updatedRows.length > 0) return;
+                  }
+                  throw new Error(
+                    `Conflit de concurrence sur le stock (id=${params.stockId})`,
+                  );
+                };
+
+                for (const it of returnItems) {
+                  const reference = String(it.reference || "").trim();
+                  const qtyRaw = Number(it.quantity || 1);
+                  const qty =
+                    Number.isFinite(qtyRaw) && qtyRaw > 0 ? Math.floor(qtyRaw) : 1;
+                  const row = reference.startsWith("prod_")
+                    ? stockByStripeId.get(reference)
+                    : stockByReference.get(reference);
+                  const stockId = Number((row as any)?.id || 0);
+                  if (!row || !Number.isFinite(stockId) || stockId <= 0) continue;
+                  await applyAdjustmentOnStockRow({ stockId, qty });
+                }
+
+                await supabase
+                  .from("shipments")
+                  .update({ status: "RETURNED", return_requested: true } as any)
+                  .eq("payment_id", originalPaymentId)
+                  .eq("store_id", storeIdNum)
+                  .eq("customer_stripe_id", customer.id);
+              } else if (shipmentRow && existingStatus === "RETURNED") {
+                await supabase
+                  .from("shipments")
+                  .update({ return_requested: true } as any)
+                  .eq("payment_id", originalPaymentId)
+                  .eq("store_id", storeIdNum)
+                  .eq("customer_stripe_id", customer.id);
+              }
+
+              await supabase
+                .from("carts")
+                .delete()
+                .eq("customer_stripe_id", customer.id)
+                .eq("store_id", storeIdNum)
+                .eq("payment_id", originalPaymentId);
             }
           }
 

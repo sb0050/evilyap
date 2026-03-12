@@ -117,12 +117,6 @@ const PaymentReturnPage: React.FC = () => {
           }
           if (success || piStatus === 'succeeded') {
             setStatus('complete');
-            const flow = String((data as any)?.metadata?.flow || '').trim();
-            if (flow === 'return_shipment') {
-              setTimeout(() => {
-                navigate('/orders');
-              }, 1200);
-            }
             return;
           }
           if (failed) {

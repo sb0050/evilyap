@@ -423,6 +423,29 @@ export default function CheckoutPage() {
     });
   }, [isReturnShipmentUrl, cartItemsForStore]);
 
+  useEffect(() => {
+    if (!isReturnShipmentUrl) return;
+    if (!showPayment || !embeddedClientSecret) return;
+    const storeId = Number(store?.id ?? 0);
+    const paymentId = String(paymentIdParam || '').trim();
+    if (!Number.isFinite(storeId) || storeId <= 0 || !paymentId) return;
+    try {
+      const key = `return_selection:${String(storeId)}:${paymentId}`;
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? (JSON.parse(raw) as any) : null;
+      const items: any[] = Array.isArray(parsed?.items) ? parsed.items : [];
+      console.log(
+        'qtyToReturn (mode paiement)',
+        items.map(it => ({
+          product_reference: String(it?.product_reference || '').trim(),
+          qtyToReturn: Number(it?.quantity ?? NaN),
+        }))
+      );
+    } catch (_e) {
+      console.log('qtyToReturn (mode paiement)', 'Erreur parsing localStorage');
+    }
+  }, [isReturnShipmentUrl, showPayment, embeddedClientSecret, store?.id, paymentIdParam]);
+
   const refreshStripeProductDetailsForCart = async (
     items: CartItem[],
     productStripeIdByRefKey?: Map<string, string>
@@ -1330,7 +1353,7 @@ export default function CheckoutPage() {
     return { resp, json };
   };
 
-  const cancelOpenShipment = async (paymentId: string) => {
+  const cancelOpenShipment = async (paymentId: string, purpose?: string) => {
     const apiBase = API_BASE_URL;
     const token = await getToken();
     const resp = await fetch(`${apiBase}/api/shipments/cancel-open-shipment`, {
@@ -1339,7 +1362,7 @@ export default function CheckoutPage() {
         'Content-Type': 'application/json',
         Authorization: token ? `Bearer ${token}` : '',
       },
-      body: JSON.stringify({ paymentId, storeId: store?.id }),
+      body: JSON.stringify({ paymentId, storeId: store?.id, purpose }),
     });
     const json = await resp.json().catch(() => null as any);
     return { resp, json };
@@ -1646,6 +1669,7 @@ export default function CheckoutPage() {
     items: CartItem[],
     freshStockByRefKey?: Record<string, any>
   ) => {
+    if (isReturnShipmentUrl) return;
     const slug = String((store as any)?.slug || storeName || '').trim();
     if (!slug) return;
 
@@ -1821,6 +1845,24 @@ export default function CheckoutPage() {
         if (payloadItems.length === 0) {
           throw new Error("Aucun article n'a été sélectionné");
         }
+
+        console.log(
+          'qtyToReturn (par item)',
+          payloadItems.map(it => ({
+            product_reference: it.product_reference,
+            qtyToReturn: it.quantity,
+          }))
+        );
+
+        try {
+          const key = `return_selection:${String(store.id)}:${paymentId}`;
+          const selection = payloadItems.map(it => ({
+            product_reference: String(it.product_reference || '').trim(),
+            quantity: Math.max(1, Math.round(Number(it.quantity || 1))),
+            description: String((it as any)?.description || '').trim() || null,
+          }));
+          localStorage.setItem(key, JSON.stringify({ items: selection }));
+        } catch (_e) {}
 
         const token = await getToken();
         const resp = await fetch(
@@ -2519,7 +2561,10 @@ export default function CheckoutPage() {
   const isOpenShipmentMode = isOpenShipmentUrl;
   const currentPaymentId = paymentIdParam;
 
-  const cancelOpenShipmentAndVerify = async (preferredPaymentId?: string) => {
+  const cancelOpenShipmentAndVerify = async (
+    preferredPaymentId?: string,
+    purpose?: string
+  ) => {
     if (!store?.id) return false;
 
     let pidToCancel = String(preferredPaymentId || '').trim();
@@ -2534,7 +2579,7 @@ export default function CheckoutPage() {
 
     if (!pidToCancel) return false;
 
-    const { resp, json } = await cancelOpenShipment(pidToCancel);
+    const { resp, json } = await cancelOpenShipment(pidToCancel, purpose);
     if (!resp.ok) {
       const msg =
         json?.error || 'Erreur lors de l’annulation de la modification';
@@ -2553,7 +2598,10 @@ export default function CheckoutPage() {
       if (!stillOpenPid) return true;
 
       if (stillOpenPid !== pidToCancel) {
-        const { resp: r2, json: j2 } = await cancelOpenShipment(stillOpenPid);
+        const { resp: r2, json: j2 } = await cancelOpenShipment(
+          stillOpenPid,
+          purpose
+        );
         if (!r2.ok) {
           const msg =
             j2?.error || 'Erreur lors de l’annulation de la modification';
@@ -2588,7 +2636,7 @@ export default function CheckoutPage() {
     if (!paymentId) return;
     try {
       setReturnCancelLoading(true);
-      const ok = await cancelOpenShipmentAndVerify(paymentId);
+      const ok = await cancelOpenShipmentAndVerify(paymentId, 'return');
       if (!ok) return;
       clearReturnShipmentParams();
       setReturnTransactionShipmentRowId(null);
@@ -3581,32 +3629,36 @@ export default function CheckoutPage() {
                       <div className='mt-2'>
                         <strong>Articles:</strong>
                         <ul className='mt-1 space-y-1'>
-                          {(cartItemsForStore || []).map(it => (
-                            <li key={it.id} className='flex justify-between'>
-                              <span>
-                                {(() => {
-                                  const ref = String(
-                                    it.product_reference || ''
-                                  ).trim();
-                                  const desc = String(
-                                    (it as any).description || ''
-                                  ).trim();
-                                  const qty = Number(it.quantity || 1);
-                                  const qtyLabel = qty > 1 ? ` × ${qty}` : '';
-                                  return desc
+                          {(cartItemsForStore || []).map(it => {
+                            const ref = String(it.product_reference || '').trim();
+                            const desc = String((it as any).description || '').trim();
+                            const boughtQty = Math.max(
+                              1,
+                              Math.round(Number(it.quantity || 1))
+                            );
+                            const selectedQtyRaw = returnQtyByRefKey[getRefKey(ref)];
+                            const selectedQty =
+                              Number.isFinite(Number(selectedQtyRaw)) &&
+                              Number(selectedQtyRaw) > 0
+                                ? Math.min(
+                                    boughtQty,
+                                    Math.round(Number(selectedQtyRaw))
+                                  )
+                                : boughtQty;
+                            const qty = isReturnShipmentUrl ? selectedQty : boughtQty;
+                            const qtyLabel = qty > 1 ? ` × ${qty}` : '';
+                            const lineTotal = Number(it.value || 0) * qty;
+                            return (
+                              <li key={it.id} className='flex justify-between'>
+                                <span>
+                                  {desc
                                     ? `${ref} — ${desc}${qtyLabel}`
-                                    : `${ref}${qtyLabel}`;
-                                })()}
-                              </span>
-                              <span>
-                                {(
-                                  Number(it.value || 0) *
-                                  Number(it.quantity || 1)
-                                ).toFixed(2)}{' '}
-                                €
-                              </span>
-                            </li>
-                          ))}
+                                    : `${ref}${qtyLabel}`}
+                                </span>
+                                <span>{lineTotal.toFixed(2)} €</span>
+                              </li>
+                            );
+                          })}
                         </ul>
                       </div>
                     </div>

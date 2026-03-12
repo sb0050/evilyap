@@ -2043,6 +2043,7 @@ router.post(
       }
 
       let returnItemsTotalCents = 0;
+      const qtyToReturnByRefKey = new Map<string, { ref: string; qty: number }>();
       for (const it of normalizedItems) {
         const cartId = Number(it.cart_item_id || 0);
         const row = cartById.get(cartId) || null;
@@ -2060,6 +2061,16 @@ router.post(
           });
           return;
         }
+        const rowRef = toCleanString((row as any)?.product_reference);
+        if (rowRef) {
+          const key = rowRef.toLowerCase();
+          const existing = qtyToReturnByRefKey.get(key);
+          if (existing) {
+            existing.qty += reqQty;
+          } else {
+            qtyToReturnByRefKey.set(key, { ref: rowRef, qty: reqQty });
+          }
+        }
         const unitValueEurRaw = Number((row as any)?.value ?? it.value ?? 0);
         const unitValueEur = Number.isFinite(unitValueEurRaw)
           ? Math.max(0, unitValueEurRaw)
@@ -2067,6 +2078,13 @@ router.post(
         const unitValueCents = Math.round(unitValueEur * 100);
         returnItemsTotalCents += unitValueCents * reqQty;
       }
+
+      const returnItemsCompact = Array.from(qtyToReturnByRefKey.values())
+        .filter((it) => Boolean(it.ref) && Number.isFinite(it.qty) && it.qty > 0)
+        .map((it) => `${it.ref}=${Math.max(1, Math.round(Number(it.qty)))}`)
+        .join(";");
+      const returnItemsCompactSafe =
+        returnItemsCompact.length <= 450 ? returnItemsCompact : returnItemsCompact.slice(0, 450);
 
       const currencyLower = "eur";
       const storeSlug =
@@ -2094,6 +2112,7 @@ router.post(
           original_payment_id: paymentIdStr,
           return_items_total_cents: String(returnItemsTotalCents),
           estimated_delivery_cost_cents: String(estimatedCostCents),
+          return_items_compact: returnItemsCompactSafe,
         },
         return_url: `${
           process.env.CLIENT_URL

@@ -492,6 +492,24 @@ export default function OrdersPage() {
       return false;
     }
 
+    let selectedReturnQtyByRefKey: Record<string, number> = {};
+    try {
+      const key = `return_selection:${String(storeId)}:${String(paymentId)}`;
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? (JSON.parse(raw) as any) : null;
+      const items: any[] = Array.isArray(parsed?.items) ? parsed.items : [];
+      for (const it of items) {
+        const ref = String(it?.product_reference || '').trim();
+        const qty = Number(it?.quantity ?? NaN);
+        if (!ref) continue;
+        if (!Number.isFinite(qty) || qty <= 0) continue;
+        selectedReturnQtyByRefKey[String(ref).trim().toLowerCase()] = Math.max(
+          1,
+          Math.round(qty)
+        );
+      }
+    } catch (_e) {}
+
     const parsed = parseProductReferenceItems(s.product_reference);
     const payloadItems = (parsed || [])
       .filter(
@@ -502,7 +520,16 @@ export default function OrdersPage() {
       .map(it => ({
         product_reference: String(it.reference || '').trim(),
         description: String(it.description || '').trim() || null,
-        quantity: Math.max(1, Math.round(Number(it.quantity || 1))),
+        quantity: (() => {
+          const ref = String(it.reference || '').trim();
+          const boughtQty = Math.max(1, Math.round(Number(it.quantity || 1)));
+          const selected =
+            selectedReturnQtyByRefKey[String(ref).trim().toLowerCase()];
+          if (selected === undefined) return boughtQty;
+          if (!Number.isFinite(Number(selected)) || Number(selected) <= 0)
+            return boughtQty;
+          return Math.min(boughtQty, Math.round(Number(selected)));
+        })(),
       }))
       .filter(it => Boolean(it.product_reference));
 
@@ -540,6 +567,10 @@ export default function OrdersPage() {
         )
       );
       setSelectedOrderIds(new Set());
+      try {
+        const key = `return_selection:${String(storeId)}:${String(paymentId)}`;
+        localStorage.removeItem(key);
+      } catch (_e) {}
       if (!silent) showToast('Retour confirmé', 'success');
       await handleRefreshOrders();
       return true;
@@ -1099,7 +1130,7 @@ export default function OrdersPage() {
           'Content-Type': 'application/json',
           Authorization: token ? `Bearer ${token}` : '',
         },
-        body: JSON.stringify({ shipmentId: s.id, force: true }),
+        body: JSON.stringify({ shipmentId: s.id, force: true, purpose: 'return' }),
       });
       const json = await resp.json().catch(() => null as any);
       if (!resp.ok) {
@@ -1323,29 +1354,6 @@ export default function OrdersPage() {
       showToast('Cette commande n’est pas éligible au retour', 'error');
       return;
     }
-    const dm = String(s.delivery_method || '')
-      .trim()
-      .toLowerCase();
-    if (dm !== 'store_pickup') {
-      const dpRaw = (s as any)?.dropoff_point;
-      const dp =
-        dpRaw && typeof dpRaw === 'string'
-          ? (() => {
-              try {
-                return JSON.parse(dpRaw);
-              } catch {
-                return null;
-              }
-            })()
-          : dpRaw || null;
-      const country = String(dp?.country || '')
-        .trim()
-        .toUpperCase();
-      if (country === 'BE' || country === 'CH') {
-        await requestReturnForShipment(s);
-        return;
-      }
-    }
     const storeSlug = String(s.store?.slug || '').trim();
     const paymentId = String(s.payment_id || '').trim();
     if (!storeSlug || !paymentId) {
@@ -1364,7 +1372,7 @@ export default function OrdersPage() {
             'Content-Type': 'application/json',
             Authorization: token ? `Bearer ${token}` : '',
           },
-          body: JSON.stringify({ shipmentId: s.id, force }),
+          body: JSON.stringify({ shipmentId: s.id, force, purpose: 'return' }),
         });
         const j = await r.json().catch(() => null as any);
         return { resp: r, json: j };

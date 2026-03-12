@@ -194,10 +194,104 @@ async function applyStockAdjustmentForItems(options: {
   if (!Number.isFinite(storeId) || storeId <= 0) return;
   if (items.length === 0) return;
 
-  const stripeIds = items
+  // Cas 3 (retour partiel / multi-articles / multi-unités):
+  // - qtyToReturn = quantity (par item) venant du panier de retour
+  // - Pour chaque article retourné: quantity += qtyToReturn, bought -= qtyToReturn
+  // - Traitement indépendant par article avec verrouillage optimiste (scalable et sûr)
+  // IMPORTANT: Cette fonction est aussi utilisée en mode "unrestock" (annulation/rollback).
+  const validatedItems: ProductReferenceItem[] = [];
+  const maxItems = 200;
+  for (const it of items.slice(0, maxItems)) {
+    const reference = String(it?.reference || "").trim();
+    const qtyRaw = Number((it as any)?.quantity ?? 1);
+    const qty = Number.isFinite(qtyRaw) ? Math.floor(qtyRaw) : NaN;
+    if (!reference) continue;
+    if (!Number.isFinite(qty) || qty <= 0) continue;
+    validatedItems.push({
+      reference,
+      quantity: qty,
+      description: it?.description,
+    });
+  }
+  if (validatedItems.length === 0) return;
+
+  const applyAdjustmentOnStockRow = async (params: {
+    stockId: number;
+    qty: number;
+    mode: "restock" | "unrestock";
+  }) => {
+    const maxAttempts = 5;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const { data: freshRow, error: freshErr } = await supabase
+        .from("stock")
+        .select("id,quantity,bought")
+        .eq("id", params.stockId)
+        .eq("store_id", storeId)
+        .maybeSingle();
+      if (freshErr) throw new Error(freshErr.message);
+      if (!freshRow) {
+        throw new Error(`Stock introuvable (id=${params.stockId})`);
+      }
+
+      const bRaw = Number((freshRow as any)?.bought || 0);
+      const currentBought =
+        Number.isFinite(bRaw) && bRaw >= 0 ? Math.floor(bRaw) : 0;
+
+      const rawQtyField = (freshRow as any)?.quantity;
+      const hasQtyField = rawQtyField !== null && rawQtyField !== undefined;
+      const parsedQty = hasQtyField ? Number(rawQtyField) : NaN;
+      const available =
+        hasQtyField && Number.isFinite(parsedQty) && parsedQty >= 0
+          ? Math.floor(parsedQty)
+          : 0;
+
+      if (params.mode === "restock" && currentBought < params.qty) {
+        // Validation métier: on ne peut pas retourner plus que ce qui a été acheté (bought).
+        throw new Error(
+          `Retour invalide: qty=${params.qty} > bought=${currentBought}`,
+        );
+      }
+
+      const nextBought =
+        params.mode === "restock"
+          ? currentBought - params.qty
+          : currentBought + params.qty;
+      const nextQty =
+        params.mode === "restock"
+          ? available + params.qty
+          : Math.max(0, available - params.qty);
+
+      const payload = hasQtyField
+        ? ({ quantity: nextQty, bought: nextBought } as any)
+        : ({ bought: nextBought } as any);
+
+      // Verrouillage optimiste:
+      // On met à jour seulement si (bought, quantity) n'ont pas changé depuis la lecture.
+      // En cas de concurrence, on relit et on réessaie.
+      let updateQuery: any = supabase
+        .from("stock")
+        .update(payload)
+        .eq("id", params.stockId)
+        .eq("store_id", storeId)
+        .eq("bought", currentBought);
+      if (hasQtyField) updateQuery = updateQuery.eq("quantity", available);
+
+      const { data: updatedRows, error: updErr } =
+        await updateQuery.select("id");
+      if (updErr) throw new Error(updErr.message);
+      if (Array.isArray(updatedRows) && updatedRows.length > 0) return;
+    }
+    throw new Error(
+      `Conflit de concurrence sur le stock (id=${params.stockId})`,
+    );
+  };
+
+  // Scalabilité: on lit le stock en batch une seule fois (par storeId),
+  // puis on applique les mises à jour article par article.
+  const stripeIds = validatedItems
     .map((it) => String(it.reference || "").trim())
     .filter((r) => r.startsWith("prod_"));
-  const refs = items
+  const refs = validatedItems
     .map((it) => String(it.reference || "").trim())
     .filter((r) => r && !r.startsWith("prod_"));
 
@@ -231,7 +325,7 @@ async function applyStockAdjustmentForItems(options: {
     }
   }
 
-  for (const it of items) {
+  for (const it of validatedItems) {
     const reference = String(it.reference || "").trim();
     if (!reference) continue;
     const qtyRaw = Number(it.quantity || 1);
@@ -243,43 +337,11 @@ async function applyStockAdjustmentForItems(options: {
     const stockId = Number((row as any)?.id || 0);
     if (!row || !Number.isFinite(stockId) || stockId <= 0) continue;
 
-    const bRaw = Number((row as any)?.bought || 0);
-    const currentBought =
-      Number.isFinite(bRaw) && bRaw >= 0 ? Math.floor(bRaw) : 0;
-
-    const rawQtyField = (row as any)?.quantity;
-    const hasQtyField = rawQtyField !== null && rawQtyField !== undefined;
-    const parsedQty = hasQtyField ? Number(rawQtyField) : NaN;
-    const available =
-      hasQtyField && Number.isFinite(parsedQty) && parsedQty >= 0
-        ? Math.floor(parsedQty)
-        : 0;
-
-    const nextBought =
-      options.mode === "restock"
-        ? Math.max(0, currentBought - qty)
-        : Math.max(0, currentBought + qty);
-    const nextQty =
-      options.mode === "restock"
-        ? Math.max(0, available + qty)
-        : Math.max(0, available - qty);
-
-    if (!hasQtyField) {
-      const { error: updErr } = await supabase
-        .from("stock")
-        .update({ bought: nextBought } as any)
-        .eq("id", stockId)
-        .eq("store_id", storeId);
-      if (updErr) throw new Error(updErr.message);
-      continue;
-    }
-
-    const { error: updErr } = await supabase
-      .from("stock")
-      .update({ quantity: nextQty, bought: nextBought } as any)
-      .eq("id", stockId)
-      .eq("store_id", storeId);
-    if (updErr) throw new Error(updErr.message);
+    await applyAdjustmentOnStockRow({
+      stockId,
+      qty,
+      mode: options.mode,
+    });
   }
 }
 
@@ -318,12 +380,14 @@ router.post("/open-shipment", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const { shipmentId, force } = req.body || {};
+    const { shipmentId, force, purpose } = req.body || {};
     const shipmentIdNum = Number(shipmentId);
     if (!Number.isFinite(shipmentIdNum) || shipmentIdNum <= 0) {
       return res.status(400).json({ error: "shipmentId requis" });
     }
     const forceSwitch = Boolean(force);
+    const purposeStr = String(purpose || "").trim().toLowerCase();
+    const shouldAdjustStock = purposeStr !== "return" && purposeStr !== "return_shipment";
 
     const user = await clerkClient.users.getUser(auth.userId);
     const stripeCustomerId = String(
@@ -393,24 +457,26 @@ router.post("/open-shipment", async (req, res) => {
         if (openShipErr) {
           return res.status(500).json({ error: openShipErr.message });
         }
-        for (const s of Array.isArray(openShipments) ? openShipments : []) {
-          if ((s as any)?.is_open_shipment !== true) continue;
-          const items = parseProductReferenceItems(
-            String((s as any)?.product_reference || "").trim(),
-          );
-          if (items.length > 0) {
-            try {
-              await applyStockAdjustmentForItems({
-                storeId: storeIdNum,
-                items,
-                mode: "unrestock",
-              });
-            } catch (e: any) {
-              return res.status(500).json({
-                error:
-                  e?.message ||
-                  "Erreur lors de la restauration du stock (changement de commande)",
-              });
+        if (shouldAdjustStock) {
+          for (const s of Array.isArray(openShipments) ? openShipments : []) {
+            if ((s as any)?.is_open_shipment !== true) continue;
+            const items = parseProductReferenceItems(
+              String((s as any)?.product_reference || "").trim(),
+            );
+            if (items.length > 0) {
+              try {
+                await applyStockAdjustmentForItems({
+                  storeId: storeIdNum,
+                  items,
+                  mode: "unrestock",
+                });
+              } catch (e: any) {
+                return res.status(500).json({
+                  error:
+                    e?.message ||
+                    "Erreur lors de la restauration du stock (changement de commande)",
+                });
+              }
             }
           }
         }
@@ -460,7 +526,7 @@ router.post("/open-shipment", async (req, res) => {
       const items = parseProductReferenceItems(
         String((shipment as any)?.product_reference || "").trim(),
       );
-      if (items.length > 0) {
+      if (shouldAdjustStock && items.length > 0) {
         try {
           await applyStockAdjustmentForItems({
             storeId: storeIdNum,
@@ -497,7 +563,7 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const { paymentId, storeId, force } = req.body || {};
+    const { paymentId, storeId, force, purpose } = req.body || {};
     const paymentIdStr = String(paymentId || "").trim();
     const storeIdNum = Number(storeId);
     if (!paymentIdStr) {
@@ -507,6 +573,8 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       return res.status(400).json({ error: "storeId requis" });
     }
     const forceSwitch = Boolean(force);
+    const purposeStr = String(purpose || "").trim().toLowerCase();
+    const shouldAdjustStock = purposeStr !== "return" && purposeStr !== "return_shipment";
 
     const user = await clerkClient.users.getUser(auth.userId);
     const stripeCustomerId = String(
@@ -586,7 +654,7 @@ router.post("/open-shipment-by-payment", async (req, res) => {
           const items = parseProductReferenceItems(
             String((s as any)?.product_reference || "").trim(),
           );
-          if (items.length > 0) {
+          if (shouldAdjustStock && items.length > 0) {
             try {
               await applyStockAdjustmentForItems({
                 storeId: storeIdNum,
@@ -645,7 +713,7 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       const items = parseProductReferenceItems(
         String((shipment as any)?.product_reference || "").trim(),
       );
-      if (items.length > 0) {
+      if (shouldAdjustStock && items.length > 0) {
         try {
           await applyStockAdjustmentForItems({
             storeId: storeIdNum,
@@ -803,7 +871,7 @@ router.post("/cancel-open-shipment", async (req, res) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const { paymentId, storeId } = req.body || {};
+    const { paymentId, storeId, purpose } = req.body || {};
     const paymentIdStr = String(paymentId || "").trim();
     const storeIdNum = Number(storeId);
     if (!paymentIdStr) {
@@ -812,6 +880,8 @@ router.post("/cancel-open-shipment", async (req, res) => {
     if (!Number.isFinite(storeIdNum) || storeIdNum <= 0) {
       return res.status(400).json({ error: "storeId requis" });
     }
+    const purposeStr = String(purpose || "").trim().toLowerCase();
+    const shouldAdjustStock = purposeStr !== "return" && purposeStr !== "return_shipment";
 
     const user = await clerkClient.users.getUser(auth.userId);
     const stripeCustomerId = String(
@@ -882,23 +952,25 @@ router.post("/cancel-open-shipment", async (req, res) => {
         .json({ error: "Impossible de fermer la commande" });
     }
 
-    for (const s of openShipments) {
-      const items = parseProductReferenceItems(
-        String((s as any)?.product_reference || "").trim(),
-      );
-      if (items.length === 0) continue;
-      try {
-        await applyStockAdjustmentForItems({
-          storeId: storeIdNum,
-          items,
-          mode: "unrestock",
-        });
-      } catch (e: any) {
-        return res.status(500).json({
-          error:
-            e?.message ||
-            "Erreur lors de la restauration du stock (annulation modification)",
-        });
+    if (shouldAdjustStock) {
+      for (const s of openShipments) {
+        const items = parseProductReferenceItems(
+          String((s as any)?.product_reference || "").trim(),
+        );
+        if (items.length === 0) continue;
+        try {
+          await applyStockAdjustmentForItems({
+            storeId: storeIdNum,
+            items,
+            mode: "unrestock",
+          });
+        } catch (e: any) {
+          return res.status(500).json({
+            error:
+              e?.message ||
+              "Erreur lors de la restauration du stock (annulation modification)",
+          });
+        }
       }
     }
 
@@ -1622,6 +1694,12 @@ router.post("/request-return", async (req, res) => {
     if (!shipment) {
       return res.status(404).json({ error: "Commande introuvable" });
     }
+    const shipmentStatus = String((shipment as any)?.status || "")
+      .trim()
+      .toUpperCase();
+    if (shipmentStatus === "RETURNED") {
+      return res.status(400).json({ error: "Commande déjà retournée" });
+    }
 
     const httpError = (statusCode: number, message: string) => {
       const e: any = new Error(message);
@@ -1739,6 +1817,27 @@ router.post("/request-return", async (req, res) => {
         };
       });
     })();
+
+    const returnStockItems: ProductReferenceItem[] = validatedItems
+      .map((it: any) => {
+        const qtyToReturn = Math.max(
+          1,
+          Math.round(Number(it?.quantity_requested || it?.quantity || 1)),
+        );
+        return {
+          reference: String(it?.product_reference || "").trim(),
+          quantity: qtyToReturn,
+          description: it?.description ? String(it.description).trim() : undefined,
+        };
+      })
+      .filter((it) => Boolean(it.reference));
+    if (returnStockItems.length > 0) {
+      await applyStockAdjustmentForItems({
+        storeId: storeIdNum,
+        items: returnStockItems,
+        mode: "restock",
+      });
+    }
 
     let store: any = null;
     const { data: storeData, error: storeErr } = await supabase
