@@ -300,6 +300,10 @@ export default function CheckoutPage() {
     useState<number | null>(null);
   const [openShipmentBlockPaymentId, setOpenShipmentBlockPaymentId] =
     useState('');
+  const [
+    openShipmentBlockIsFinalDestination,
+    setOpenShipmentBlockIsFinalDestination,
+  ] = useState<boolean | null>(null);
   const [openShipmentAttemptPaymentId, setOpenShipmentAttemptPaymentId] =
     useState('');
   const [openShipmentEditingShipmentId, setOpenShipmentEditingShipmentId] =
@@ -315,6 +319,31 @@ export default function CheckoutPage() {
   const [createdCreditPromotionCodeId, setCreatedCreditPromotionCodeId] =
     useState('');
 
+  // Concurrence "retour" : on affiche un popup si un autre retour est déjà en cours
+  // (même comportement que la modification, mais en mode return_shipment).
+  const [returnOpenShipmentInitHandled, setReturnOpenShipmentInitHandled] =
+    useState(false);
+  const [returnOpenShipmentBlockModalOpen, setReturnOpenShipmentBlockModalOpen] =
+    useState(false);
+  const [returnOpenShipmentBlockShipmentId, setReturnOpenShipmentBlockShipmentId] =
+    useState('');
+  const [
+    returnOpenShipmentBlockShipmentRowId,
+    setReturnOpenShipmentBlockShipmentRowId,
+  ] = useState<number | null>(null);
+  const [returnOpenShipmentBlockPaymentId, setReturnOpenShipmentBlockPaymentId] =
+    useState('');
+  const [
+    returnOpenShipmentBlockIsFinalDestination,
+    setReturnOpenShipmentBlockIsFinalDestination,
+  ] = useState<boolean | null>(null);
+  const [
+    returnOpenShipmentAttemptPaymentId,
+    setReturnOpenShipmentAttemptPaymentId,
+  ] = useState('');
+  const [returnOpenShipmentActionLoading, setReturnOpenShipmentActionLoading] =
+    useState(false);
+
   const openShipmentParam =
     String(searchParams.get('open_shipment') || '') === 'true';
   const paymentIdParam = String(searchParams.get('payment_id') || '').trim();
@@ -328,6 +357,8 @@ export default function CheckoutPage() {
       if (openShipmentBlockModalOpen) setOpenShipmentBlockModalOpen(false);
       if (openShipmentBlockShipmentId) setOpenShipmentBlockShipmentId('');
       if (openShipmentBlockPaymentId) setOpenShipmentBlockPaymentId('');
+      if (openShipmentBlockIsFinalDestination !== null)
+        setOpenShipmentBlockIsFinalDestination(null);
       if (openShipmentAttemptPaymentId) setOpenShipmentAttemptPaymentId('');
       return;
     }
@@ -340,6 +371,7 @@ export default function CheckoutPage() {
       setOpenShipmentBlockModalOpen(false);
       setOpenShipmentBlockShipmentId('');
       setOpenShipmentBlockPaymentId('');
+      setOpenShipmentBlockIsFinalDestination(null);
       setOpenShipmentAttemptPaymentId('');
     }
   }, [
@@ -349,7 +381,47 @@ export default function CheckoutPage() {
     openShipmentBlockModalOpen,
     openShipmentBlockShipmentId,
     openShipmentBlockPaymentId,
+    openShipmentBlockIsFinalDestination,
     openShipmentAttemptPaymentId,
+  ]);
+
+  useEffect(() => {
+    // Nettoyage symétrique pour le mode retour.
+    if (!isReturnShipmentUrl) {
+      if (returnOpenShipmentBlockModalOpen) setReturnOpenShipmentBlockModalOpen(false);
+      if (returnOpenShipmentBlockShipmentId) setReturnOpenShipmentBlockShipmentId('');
+      if (returnOpenShipmentBlockPaymentId) setReturnOpenShipmentBlockPaymentId('');
+      if (returnOpenShipmentBlockIsFinalDestination !== null)
+        setReturnOpenShipmentBlockIsFinalDestination(null);
+      if (returnOpenShipmentAttemptPaymentId) setReturnOpenShipmentAttemptPaymentId('');
+      if (returnOpenShipmentInitHandled) setReturnOpenShipmentInitHandled(false);
+      return;
+    }
+
+    // Si l'utilisateur change de payment_id dans l'URL pendant que la popup est ouverte,
+    // on réinitialise l'état pour éviter un popup incohérent.
+    if (
+      returnOpenShipmentBlockModalOpen &&
+      returnOpenShipmentAttemptPaymentId &&
+      returnOpenShipmentAttemptPaymentId !== paymentIdParam
+    ) {
+      setReturnOpenShipmentBlockModalOpen(false);
+      setReturnOpenShipmentBlockShipmentId('');
+      setReturnOpenShipmentBlockShipmentRowId(null);
+      setReturnOpenShipmentBlockPaymentId('');
+      setReturnOpenShipmentBlockIsFinalDestination(null);
+      setReturnOpenShipmentAttemptPaymentId('');
+      setReturnOpenShipmentInitHandled(false);
+    }
+  }, [
+    isReturnShipmentUrl,
+    paymentIdParam,
+    returnOpenShipmentBlockModalOpen,
+    returnOpenShipmentBlockShipmentId,
+    returnOpenShipmentBlockPaymentId,
+    returnOpenShipmentBlockIsFinalDestination,
+    returnOpenShipmentAttemptPaymentId,
+    returnOpenShipmentInitHandled,
   ]);
 
   // useEffect de debug pour surveiller selectedParcelPoint
@@ -1193,7 +1265,24 @@ export default function CheckoutPage() {
     } catch {}
   };
 
-  const openShipmentByPayment = async (paymentId: string, force: boolean) => {
+  const setReturnShipmentParams = (paymentId: string) => {
+    // Permet de "basculer" vers le retour déjà en cours (autre onglet),
+    // en reproduisant la logique de bascule utilisée pour la modification.
+    try {
+      setReturnOpenShipmentInitHandled(false);
+      const next = new URLSearchParams(searchParams);
+      next.delete('open_shipment');
+      next.set('return_shipment', 'true');
+      next.set('payment_id', paymentId);
+      setSearchParams(next, { replace: true });
+    } catch {}
+  };
+
+  const openShipmentByPayment = async (
+    paymentId: string,
+    force: boolean,
+    purpose?: string
+  ) => {
     const apiBase = API_BASE_URL;
     const token = await getToken();
     const resp = await fetch(
@@ -1204,7 +1293,8 @@ export default function CheckoutPage() {
           'Content-Type': 'application/json',
           Authorization: token ? `Bearer ${token}` : '',
         },
-        body: JSON.stringify({ paymentId, storeId: store?.id, force }),
+        // purpose='return' évite tout ajustement de stock côté backend.
+        body: JSON.stringify({ paymentId, storeId: store?.id, force, purpose }),
       }
     );
     const json = await resp.json().catch(() => null as any);
@@ -1330,6 +1420,7 @@ export default function CheckoutPage() {
       setShipmentCartRebuilt(false);
       setOpenShipmentInitHandled(false);
       const next = new URLSearchParams(searchParams);
+      next.delete('return_shipment');
       next.set('open_shipment', 'true');
       next.set('payment_id', paymentId);
       setSearchParams(next, { replace: true });
@@ -1391,6 +1482,8 @@ export default function CheckoutPage() {
         const os = json?.openShipment || null;
         const openPaymentId = String(os?.payment_id || '').trim();
         const openShipmentId = String(os?.shipment_id || '').trim();
+        const openIsFinal =
+          Boolean((os as any)?.is_final_destination) === true;
         const openShipmentRowIdRaw = Number(os?.id ?? NaN);
         const openShipmentRowId =
           Number.isFinite(openShipmentRowIdRaw) && openShipmentRowIdRaw > 0
@@ -1410,6 +1503,7 @@ export default function CheckoutPage() {
           setOpenShipmentBlockPaymentId(openPaymentId);
           setOpenShipmentBlockShipmentId(openShipmentId);
           setOpenShipmentBlockShipmentRowId(openShipmentRowId);
+          setOpenShipmentBlockIsFinalDestination(openIsFinal);
           setOpenShipmentAttemptPaymentId(openShipment ? paymentId : '');
           setOpenShipmentBlockModalOpen(true);
         }
@@ -1420,6 +1514,48 @@ export default function CheckoutPage() {
       cancelled = true;
     };
   }, [store?.id, user, searchParams, getToken]);
+
+  useEffect(() => {
+    // Même règle que la modification, mais appliquée au flux return_shipment :
+    // en cas de refresh sur un onglet "retour", on doit détecter un autre retour déjà en cours
+    // et afficher la même popup de blocage.
+    if (!store?.id || !user) return;
+    if (!isReturnShipmentUrl || !paymentIdParam) return;
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const { resp, json } = await getActiveOpenShipment();
+        if (!resp.ok) return;
+        const os = json?.openShipment || null;
+        const openPaymentId = String(os?.payment_id || '').trim();
+        const openShipmentId = String(os?.shipment_id || '').trim();
+        const openIsFinal =
+          Boolean((os as any)?.is_final_destination) === true;
+        const openShipmentRowIdRaw = Number(os?.id ?? NaN);
+        const openShipmentRowId =
+          Number.isFinite(openShipmentRowIdRaw) && openShipmentRowIdRaw > 0
+            ? openShipmentRowIdRaw
+            : null;
+        if (!openPaymentId) return;
+
+        // Si le retour en cours correspond à ce payment_id, pas de blocage.
+        if (paymentIdParam === openPaymentId) return;
+
+        if (!cancelled) {
+          setReturnOpenShipmentBlockPaymentId(openPaymentId);
+          setReturnOpenShipmentBlockShipmentId(openShipmentId);
+          setReturnOpenShipmentBlockShipmentRowId(openShipmentRowId);
+          setReturnOpenShipmentBlockIsFinalDestination(openIsFinal);
+          setReturnOpenShipmentAttemptPaymentId(paymentIdParam);
+          setReturnOpenShipmentBlockModalOpen(true);
+        }
+      } catch (_e) {}
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [store?.id, user, isReturnShipmentUrl, paymentIdParam, getToken]);
 
   useEffect(() => {
     const openShipment =
@@ -1438,9 +1574,12 @@ export default function CheckoutPage() {
           const os = json?.openShipment || null;
           const openPaymentId = String(os?.payment_id || '').trim();
           const openShipmentId = String(os?.shipment_id || '').trim();
+          const openIsFinal =
+            Boolean((os as any)?.is_final_destination) === true;
           if (openPaymentId) {
             setOpenShipmentBlockPaymentId(openPaymentId);
             setOpenShipmentBlockShipmentId(openShipmentId);
+            setOpenShipmentBlockIsFinalDestination(openIsFinal);
             setOpenShipmentAttemptPaymentId(paymentId);
             setOpenShipmentBlockModalOpen(true);
           } else {
@@ -1450,9 +1589,12 @@ export default function CheckoutPage() {
                 const os2 = j2?.openShipment || null;
                 const op2 = String(os2?.payment_id || '').trim();
                 const sid2 = String(os2?.shipment_id || '').trim();
+                const isFinal2 =
+                  Boolean((os2 as any)?.is_final_destination) === true;
                 if (op2) {
                   setOpenShipmentBlockPaymentId(op2);
                   setOpenShipmentBlockShipmentId(sid2);
+                  setOpenShipmentBlockIsFinalDestination(isFinal2);
                   setOpenShipmentAttemptPaymentId(paymentId);
                   setOpenShipmentBlockModalOpen(true);
                 }
@@ -1500,6 +1642,93 @@ export default function CheckoutPage() {
     shipmentCartRebuilt,
     openShipmentInitHandled,
     openShipmentBlockModalOpen,
+  ]);
+
+  useEffect(() => {
+    const isReturnFlow =
+      String(searchParams.get('return_shipment') || '') === 'true';
+    const paymentId = String(searchParams.get('payment_id') || '').trim();
+    if (returnOpenShipmentInitHandled) return;
+    if (returnOpenShipmentBlockModalOpen) return;
+    if (!isReturnFlow || !paymentId || !store?.id || !user) return;
+
+    let cancelled = false;
+    const run = async () => {
+      try {
+        // On (re)valide côté backend l'exclusivité du "retour en cours".
+        const { resp, json } = await openShipmentByPayment(
+          paymentId,
+          false,
+          'return'
+        );
+        if (!resp.ok && resp.status === 409) {
+          if (cancelled) return;
+          const os = json?.openShipment || null;
+          const openPaymentId = String(os?.payment_id || '').trim();
+          const openShipmentId = String(os?.shipment_id || '').trim();
+          const openIsFinal =
+            Boolean((os as any)?.is_final_destination) === true;
+          const openShipmentRowIdRaw = Number(os?.id ?? NaN);
+          const openShipmentRowId =
+            Number.isFinite(openShipmentRowIdRaw) && openShipmentRowIdRaw > 0
+              ? openShipmentRowIdRaw
+              : null;
+          if (openPaymentId) {
+            setReturnOpenShipmentBlockPaymentId(openPaymentId);
+            setReturnOpenShipmentBlockShipmentId(openShipmentId);
+            setReturnOpenShipmentBlockShipmentRowId(openShipmentRowId);
+            setReturnOpenShipmentBlockIsFinalDestination(openIsFinal);
+            setReturnOpenShipmentAttemptPaymentId(paymentId);
+            setReturnOpenShipmentBlockModalOpen(true);
+          } else {
+            try {
+              const { resp: r2, json: j2 } = await getActiveOpenShipment();
+              if (r2.ok) {
+                const os2 = j2?.openShipment || null;
+                const op2 = String(os2?.payment_id || '').trim();
+                const sid2 = String(os2?.shipment_id || '').trim();
+                const row2Raw = Number(os2?.id ?? NaN);
+                const row2 =
+                  Number.isFinite(row2Raw) && row2Raw > 0 ? row2Raw : null;
+                const isFinal2 =
+                  Boolean((os2 as any)?.is_final_destination) === true;
+                if (op2) {
+                  setReturnOpenShipmentBlockPaymentId(op2);
+                  setReturnOpenShipmentBlockShipmentId(sid2);
+                  setReturnOpenShipmentBlockShipmentRowId(row2);
+                  setReturnOpenShipmentBlockIsFinalDestination(isFinal2);
+                  setReturnOpenShipmentAttemptPaymentId(paymentId);
+                  setReturnOpenShipmentBlockModalOpen(true);
+                }
+              }
+            } catch (_e) {}
+          }
+          return;
+        }
+        if (!resp.ok) {
+          const msg =
+            json?.error || 'Erreur lors de la préparation du retour';
+          if (!cancelled) showToast(msg, 'error');
+          return;
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Erreur inconnue';
+        if (!cancelled) showToast(msg, 'error');
+      } finally {
+        if (!cancelled) setReturnOpenShipmentInitHandled(true);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    searchParams,
+    store?.id,
+    user,
+    getToken,
+    returnOpenShipmentInitHandled,
+    returnOpenShipmentBlockModalOpen,
   ]);
 
   // États pour les accordéons
@@ -2845,6 +3074,101 @@ export default function CheckoutPage() {
                   }
                 }}
                 disabled={openShipmentActionLoading}
+                className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+              >
+                Continuer
+              </button>
+            </div>
+          </div>
+        </Modal>
+        <Modal
+          isOpen={isReturnShipmentUrl && returnOpenShipmentBlockModalOpen}
+          onClose={() => {}}
+          title={
+            returnOpenShipmentBlockIsFinalDestination
+              ? 'Retour déjà en cours'
+              : 'Commande déjà en cours de modification'
+          }
+        >
+          <div className='space-y-4'>
+            <div className='text-sm text-gray-700'>
+              {returnOpenShipmentBlockIsFinalDestination ? (
+                <>
+                  Un retour est déjà en cours sur une autre commande. Si vous
+                  continuez, le retour en cours sera annulé. Souhaitez-vous
+                  poursuivre avec cette nouvelle commande ?
+                </>
+              ) : (
+                <>
+                  Vous modifiez actuellement une autre commande. Si vous
+                  continuez, les modifications en cours seront annulées.
+                  Souhaitez-vous poursuivre avec cette nouvelle commande ?
+                </>
+              )}
+            </div>
+            <div className='flex items-center justify-end gap-2'>
+              <button
+                type='button'
+                onClick={async () => {
+                  const pid = String(returnOpenShipmentBlockPaymentId || '').trim();
+                  if (!pid) return;
+                  setReturnOpenShipmentBlockModalOpen(false);
+                  setReturnOpenShipmentAttemptPaymentId('');
+                  setReturnOpenShipmentBlockShipmentId('');
+                  setReturnOpenShipmentBlockShipmentRowId(null);
+                  setReturnOpenShipmentBlockPaymentId('');
+                  setReturnOpenShipmentBlockIsFinalDestination(null);
+                  if (returnOpenShipmentBlockIsFinalDestination) {
+                    setReturnShipmentParams(pid);
+                    return;
+                  }
+                  clearReturnShipmentParams();
+                  setOpenShipmentParams(pid);
+                }}
+                disabled={returnOpenShipmentActionLoading}
+                className='px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+              >
+                Annuler
+              </button>
+              <button
+                type='button'
+                onClick={async () => {
+                  const openPid = String(returnOpenShipmentBlockPaymentId || '').trim();
+                  const attemptedPid = String(
+                    returnOpenShipmentAttemptPaymentId || paymentIdParam || ''
+                  ).trim();
+                  if (!openPid || !attemptedPid || !store?.id) return;
+                  try {
+                    setReturnOpenShipmentActionLoading(true);
+                    // On libère le retour en cours, puis on (ré)ouvre ce payment_id en retour.
+                    const ok = await cancelOpenShipmentAndVerify(
+                      openPid,
+                      returnOpenShipmentBlockIsFinalDestination ? 'return' : undefined
+                    );
+                    if (!ok) return;
+                    setReturnOpenShipmentBlockModalOpen(false);
+                    setReturnOpenShipmentBlockShipmentId('');
+                    setReturnOpenShipmentBlockShipmentRowId(null);
+                    setReturnOpenShipmentBlockPaymentId('');
+                    setReturnOpenShipmentBlockIsFinalDestination(null);
+                    setReturnOpenShipmentAttemptPaymentId('');
+                    setReturnOpenShipmentInitHandled(false);
+                    const { resp, json } = await openShipmentByPayment(
+                      attemptedPid,
+                      false,
+                      'return'
+                    );
+                    if (!resp.ok) {
+                      const msg =
+                        json?.error || 'Erreur lors de la préparation du retour';
+                      showToast(msg, 'error');
+                      return;
+                    }
+                  } finally {
+                    setReturnOpenShipmentActionLoading(false);
+                  }
+                }}
+                disabled={returnOpenShipmentActionLoading}
                 className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
               >
                 Continuer

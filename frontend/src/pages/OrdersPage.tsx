@@ -1354,6 +1354,29 @@ export default function OrdersPage() {
       showToast('Cette commande n’est pas éligible au retour', 'error');
       return;
     }
+    const dm = String(s.delivery_method || '')
+      .trim()
+      .toLowerCase();
+    if (dm !== 'store_pickup') {
+      const dpRaw = (s as any)?.dropoff_point;
+      const dp =
+        dpRaw && typeof dpRaw === 'string'
+          ? (() => {
+              try {
+                return JSON.parse(dpRaw);
+              } catch {
+                return null;
+              }
+            })()
+          : dpRaw || null;
+      const country = String(dp?.country || '')
+        .trim()
+        .toUpperCase();
+      if (country === 'BE' || country === 'CH') {
+        await requestReturnForShipment(s);
+        return;
+      }
+    }
     const storeSlug = String(s.store?.slug || '').trim();
     const paymentId = String(s.payment_id || '').trim();
     if (!storeSlug || !paymentId) {
@@ -1703,12 +1726,13 @@ export default function OrdersPage() {
           setReturnSwitchShipmentModalOpen(false);
           setReturnSwitchShipmentTarget(null);
         }}
-        title='Commande déjà en modification'
+        // Popup de concurrence "retour" (même logique que la modification, mais pour le retour)
+        title='Retour déjà en cours'
       >
         <div className='space-y-4'>
           <div className='text-sm text-gray-700'>
-            Une autre commande est en cours de modification. Voulez-vous ouvrir
-            cette commande et annuler les modifications de l’autre ?
+            Un retour est déjà en cours sur une autre commande. Voulez-vous
+            ouvrir cette commande et annuler le retour en cours ?
           </div>
           <div className='flex items-center justify-end gap-2'>
             <button

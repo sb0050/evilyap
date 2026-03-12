@@ -387,7 +387,8 @@ router.post("/open-shipment", async (req, res) => {
     }
     const forceSwitch = Boolean(force);
     const purposeStr = String(purpose || "").trim().toLowerCase();
-    const shouldAdjustStock = purposeStr !== "return" && purposeStr !== "return_shipment";
+    const isReturnPurpose =
+      purposeStr === "return" || purposeStr === "return_shipment";
 
     const user = await clerkClient.users.getUser(auth.userId);
     const stripeCustomerId = String(
@@ -402,7 +403,7 @@ router.post("/open-shipment", async (req, res) => {
     const { data: shipment, error: shipErr } = await supabase
       .from("shipments")
       .select(
-        "id,store_id,customer_stripe_id,is_open_shipment,status,product_reference,payment_id",
+        "id,store_id,customer_stripe_id,is_open_shipment,status,product_reference,payment_id,is_final_destination",
       )
       .eq("id", shipmentIdNum)
       .maybeSingle();
@@ -422,10 +423,14 @@ router.post("/open-shipment", async (req, res) => {
       return res.status(400).json({ error: "Commande déjà annulée" });
     }
 
+    const isTargetFinalDestination =
+      Boolean((shipment as any)?.is_final_destination) === true;
+    const shouldAdjustStockForTarget = !isTargetFinalDestination && !isReturnPurpose;
+
     const storeIdNum = Number((shipment as any)?.store_id || 0);
     const { data: otherOpen, error: otherErr } = await supabase
       .from("shipments")
-      .select("id,shipment_id,payment_id")
+      .select("id,shipment_id,payment_id,is_final_destination")
       .eq("customer_stripe_id", stripeCustomerId)
       .eq("store_id", storeIdNum)
       .eq("is_open_shipment", true)
@@ -449,7 +454,7 @@ router.post("/open-shipment", async (req, res) => {
       if (openIds.length > 0) {
         const { data: openShipments, error: openShipErr } = await supabase
           .from("shipments")
-          .select("id,product_reference,is_open_shipment")
+          .select("id,product_reference,is_open_shipment,is_final_destination")
           .in("id", openIds as any)
           .eq("store_id", storeIdNum)
           .eq("customer_stripe_id", stripeCustomerId)
@@ -457,27 +462,26 @@ router.post("/open-shipment", async (req, res) => {
         if (openShipErr) {
           return res.status(500).json({ error: openShipErr.message });
         }
-        if (shouldAdjustStock) {
-          for (const s of Array.isArray(openShipments) ? openShipments : []) {
-            if ((s as any)?.is_open_shipment !== true) continue;
-            const items = parseProductReferenceItems(
-              String((s as any)?.product_reference || "").trim(),
-            );
-            if (items.length > 0) {
-              try {
-                await applyStockAdjustmentForItems({
-                  storeId: storeIdNum,
-                  items,
-                  mode: "unrestock",
-                });
-              } catch (e: any) {
-                return res.status(500).json({
-                  error:
-                    e?.message ||
-                    "Erreur lors de la restauration du stock (changement de commande)",
-                });
-              }
-            }
+        for (const s of Array.isArray(openShipments) ? openShipments : []) {
+          if ((s as any)?.is_open_shipment !== true) continue;
+          const isFinal = Boolean((s as any)?.is_final_destination) === true;
+          if (isFinal) continue;
+          const items = parseProductReferenceItems(
+            String((s as any)?.product_reference || "").trim(),
+          );
+          if (items.length === 0) continue;
+          try {
+            await applyStockAdjustmentForItems({
+              storeId: storeIdNum,
+              items,
+              mode: "unrestock",
+            });
+          } catch (e: any) {
+            return res.status(500).json({
+              error:
+                e?.message ||
+                "Erreur lors de la restauration du stock (changement de commande)",
+            });
           }
         }
       }
@@ -526,7 +530,7 @@ router.post("/open-shipment", async (req, res) => {
       const items = parseProductReferenceItems(
         String((shipment as any)?.product_reference || "").trim(),
       );
-      if (shouldAdjustStock && items.length > 0) {
+      if (shouldAdjustStockForTarget && items.length > 0) {
         try {
           await applyStockAdjustmentForItems({
             storeId: storeIdNum,
@@ -589,7 +593,7 @@ router.post("/open-shipment-by-payment", async (req, res) => {
     const { data: shipment, error: shipmentErr } = await supabase
       .from("shipments")
       .select(
-        "id,shipment_id,store_id,customer_stripe_id,payment_id,customer_spent_amount,status,is_open_shipment,product_reference",
+        "id,shipment_id,store_id,customer_stripe_id,payment_id,customer_spent_amount,status,is_open_shipment,product_reference,is_final_destination",
       )
       .eq("payment_id", paymentIdStr)
       .eq("store_id", storeIdNum)
@@ -616,9 +620,13 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       return res.status(404).json({ error: "Commande introuvable" });
     }
 
+    const isTargetFinalDestination =
+      Boolean((shipment as any)?.is_final_destination) === true;
+    const shouldAdjustStockForTarget = shouldAdjustStock && !isTargetFinalDestination;
+
     const { data: otherOpen, error: otherErr } = await supabase
       .from("shipments")
-      .select("id,shipment_id,payment_id")
+      .select("id,shipment_id,payment_id,is_final_destination")
       .eq("customer_stripe_id", stripeCustomerId)
       .eq("store_id", storeIdNum)
       .eq("is_open_shipment", true)
@@ -641,7 +649,7 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       if (openIds.length > 0) {
         const { data: openShipments, error: openShipErr } = await supabase
           .from("shipments")
-          .select("id,product_reference,is_open_shipment")
+          .select("id,product_reference,is_open_shipment,is_final_destination")
           .in("id", openIds as any)
           .eq("store_id", storeIdNum)
           .eq("customer_stripe_id", stripeCustomerId)
@@ -651,10 +659,12 @@ router.post("/open-shipment-by-payment", async (req, res) => {
         }
         for (const s of Array.isArray(openShipments) ? openShipments : []) {
           if ((s as any)?.is_open_shipment !== true) continue;
+          const isFinal = Boolean((s as any)?.is_final_destination) === true;
+          if (isFinal) continue;
           const items = parseProductReferenceItems(
             String((s as any)?.product_reference || "").trim(),
           );
-          if (shouldAdjustStock && items.length > 0) {
+          if (items.length > 0) {
             try {
               await applyStockAdjustmentForItems({
                 storeId: storeIdNum,
@@ -713,7 +723,7 @@ router.post("/open-shipment-by-payment", async (req, res) => {
       const items = parseProductReferenceItems(
         String((shipment as any)?.product_reference || "").trim(),
       );
-      if (shouldAdjustStock && items.length > 0) {
+      if (shouldAdjustStockForTarget && items.length > 0) {
         try {
           await applyStockAdjustmentForItems({
             storeId: storeIdNum,
@@ -839,7 +849,7 @@ router.get("/active-open-shipment", async (req, res) => {
 
     const { data, error } = await supabase
       .from("shipments")
-      .select("id,shipment_id,payment_id")
+      .select("id,shipment_id,payment_id,is_final_destination")
       .eq("customer_stripe_id", stripeCustomerId)
       .eq("store_id", storeIdNum)
       .eq("is_open_shipment", true)
@@ -856,6 +866,7 @@ router.get("/active-open-shipment", async (req, res) => {
         id: Number(row?.id || 0) || null,
         shipment_id: String(row?.shipment_id || "").trim() || null,
         payment_id: String(row?.payment_id || "").trim() || null,
+        is_final_destination: Boolean((row as any)?.is_final_destination) === true,
       },
     });
   } catch (e) {
@@ -881,7 +892,8 @@ router.post("/cancel-open-shipment", async (req, res) => {
       return res.status(400).json({ error: "storeId requis" });
     }
     const purposeStr = String(purpose || "").trim().toLowerCase();
-    const shouldAdjustStock = purposeStr !== "return" && purposeStr !== "return_shipment";
+    const shouldAdjustStock =
+      purposeStr !== "return" && purposeStr !== "return_shipment";
 
     const user = await clerkClient.users.getUser(auth.userId);
     const stripeCustomerId = String(
@@ -915,7 +927,7 @@ router.post("/cancel-open-shipment", async (req, res) => {
     const { data: openShipmentRows, error: openErr } = await supabase
       .from("shipments")
       .select(
-        "id,shipment_id,payment_id,customer_stripe_id,is_open_shipment,product_reference",
+        "id,shipment_id,payment_id,customer_stripe_id,is_open_shipment,product_reference,is_final_destination",
       )
       .eq("customer_stripe_id", stripeCustomerId)
       .eq("store_id", storeIdNum)
@@ -952,25 +964,26 @@ router.post("/cancel-open-shipment", async (req, res) => {
         .json({ error: "Impossible de fermer la commande" });
     }
 
-    if (shouldAdjustStock) {
-      for (const s of openShipments) {
-        const items = parseProductReferenceItems(
-          String((s as any)?.product_reference || "").trim(),
-        );
-        if (items.length === 0) continue;
-        try {
-          await applyStockAdjustmentForItems({
-            storeId: storeIdNum,
-            items,
-            mode: "unrestock",
-          });
-        } catch (e: any) {
-          return res.status(500).json({
-            error:
-              e?.message ||
-              "Erreur lors de la restauration du stock (annulation modification)",
-          });
-        }
+    for (const s of openShipments) {
+      if (!shouldAdjustStock) continue;
+      const isFinal = Boolean((s as any)?.is_final_destination) === true;
+      if (isFinal) continue;
+      const items = parseProductReferenceItems(
+        String((s as any)?.product_reference || "").trim(),
+      );
+      if (items.length === 0) continue;
+      try {
+        await applyStockAdjustmentForItems({
+          storeId: storeIdNum,
+          items,
+          mode: "unrestock",
+        });
+      } catch (e: any) {
+        return res.status(500).json({
+          error:
+            e?.message ||
+            "Erreur lors de la restauration du stock (annulation modification)",
+        });
       }
     }
 
