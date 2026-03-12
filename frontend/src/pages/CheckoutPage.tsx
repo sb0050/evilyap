@@ -2729,19 +2729,35 @@ export default function CheckoutPage() {
         <Modal
           isOpen={isOpenShipmentMode && openShipmentBlockModalOpen}
           onClose={() => {}}
-          title='Modification de commande en cours'
+          title='Commande déjà en cours de modification'
         >
           <div className='space-y-4'>
             <div className='text-sm text-gray-700'>
-              Veuillez compléter ou annuler la modification de votre commande :{' '}
-              <span className='font-semibold'>
-                {openShipmentBlockShipmentId ||
-                  (openShipmentBlockShipmentRowId != null
-                    ? String(openShipmentBlockShipmentRowId)
-                    : '—')}
-              </span>
+              Vous modifiez actuellement une autre commande. Si vous continuez,
+              les modifications en cours seront annulées. Souhaitez-vous
+              poursuivre avec cette nouvelle commande ?
             </div>
             <div className='flex items-center justify-end gap-2'>
+              <button
+                type='button'
+                onClick={async () => {
+                  const pid = String(openShipmentBlockPaymentId || '').trim();
+                  if (!pid) return;
+                  setOpenShipmentBlockModalOpen(false);
+                  setOpenShipmentAttemptPaymentId('');
+                  setShipmentCartRebuilt(false);
+                  setOpenShipmentInitHandled(false);
+                  setOpenShipmentEditingShipmentId(openShipmentBlockShipmentId);
+                  setOpenShipmentEditingShipmentRowId(
+                    openShipmentBlockShipmentRowId
+                  );
+                  setOpenShipmentParams(pid);
+                }}
+                disabled={openShipmentActionLoading}
+                className='px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
+              >
+                Annuler
+              </button>
               <button
                 type='button'
                 onClick={async () => {
@@ -2799,29 +2815,9 @@ export default function CheckoutPage() {
                   }
                 }}
                 disabled={openShipmentActionLoading}
-                className='px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-              >
-                Annuler les modifications
-              </button>
-              <button
-                type='button'
-                onClick={async () => {
-                  const pid = String(openShipmentBlockPaymentId || '').trim();
-                  if (!pid) return;
-                  setOpenShipmentBlockModalOpen(false);
-                  setOpenShipmentAttemptPaymentId('');
-                  setShipmentCartRebuilt(false);
-                  setOpenShipmentInitHandled(false);
-                  setOpenShipmentEditingShipmentId(openShipmentBlockShipmentId);
-                  setOpenShipmentEditingShipmentRowId(
-                    openShipmentBlockShipmentRowId
-                  );
-                  setOpenShipmentParams(pid);
-                }}
-                disabled={openShipmentActionLoading}
                 className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
               >
-                Poursuivre les modifications
+                Continuer
               </button>
             </div>
           </div>
