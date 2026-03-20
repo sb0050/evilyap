@@ -227,6 +227,8 @@ export default function CheckoutPage() {
     reference: '',
     description: '',
   });
+  const [promoCodeId, setPromoCodeId] = useState<string>('');
+  const [promoCodeError, setPromoCodeError] = useState<string | null>(null);
   const [address, setAddress] = useState<Address>();
   const [selectedParcelPoint, setSelectedParcelPoint] =
     useState<ParcelPointData | null>(null);
@@ -747,8 +749,7 @@ export default function CheckoutPage() {
           const expectedPid = String(paymentId || '').trim();
           const filteredByPid = expectedPid
             ? raw.filter(
-                (it: any) =>
-                  String(it?.payment_id || '').trim() === expectedPid
+                (it: any) => String(it?.payment_id || '').trim() === expectedPid
               )
             : raw;
           return Array.isArray(filteredByPid) ? filteredByPid : [];
@@ -825,7 +826,9 @@ export default function CheckoutPage() {
 
         const singleFallbackPid =
           stripeFallbackProductById.size === 1
-            ? String(Array.from(stripeFallbackProductById.keys())[0] || '').trim()
+            ? String(
+                Array.from(stripeFallbackProductById.keys())[0] || ''
+              ).trim()
             : '';
 
         if (stripeFallbackProductById.size > 0) {
@@ -839,7 +842,8 @@ export default function CheckoutPage() {
                 productStripeIdByRefKey.get(key) ||
                   it.product_stripe_id ||
                   stripeFallbackProductIdByRefKey.get(key) ||
-                  (((rawItems || []).length === 1 && singleFallbackPid) || '') ||
+                  ((rawItems || []).length === 1 && singleFallbackPid) ||
+                  '' ||
                   ''
               ).trim();
               if (!pid || !pid.startsWith('prod_')) continue;
@@ -879,7 +883,8 @@ export default function CheckoutPage() {
             productStripeIdByRefKey.get(refKey) ||
               it.product_stripe_id ||
               stripeFallbackProductIdByRefKey.get(refKey) ||
-              (((rawItems || []).length === 1 && singleFallbackPid) || '') ||
+              ((rawItems || []).length === 1 && singleFallbackPid) ||
+              '' ||
               ''
           ).trim();
           const hasStripe = pid.startsWith('prod_');
@@ -990,12 +995,11 @@ export default function CheckoutPage() {
 
       const storeSlug = String(store?.slug || '').trim();
       const items: CartItem[] = groupForStore.items || [];
-      const itemsForCheckout =
-        !paymentId
-          ? (items || []).filter(
-              it => !String((it as any)?.payment_id || '').trim()
-            )
-          : items;
+      const itemsForCheckout = !paymentId
+        ? (items || []).filter(
+            it => !String((it as any)?.payment_id || '').trim()
+          )
+        : items;
       const {
         weightByRefKey,
         productStripeIdByRefKey,
@@ -1728,6 +1732,13 @@ export default function CheckoutPage() {
     const parsed = Number.parseInt(String(raw || '0'), 10);
     return Number.isFinite(parsed) ? parsed : 0;
   })();
+  const openShipmentModeForPromo =
+    String(searchParams.get('open_shipment') || '') === 'true' &&
+    Boolean(String(searchParams.get('payment_id') || '').trim());
+  const canEnterPromoCode =
+    !openShipmentModeForPromo &&
+    customerDetailsLoaded &&
+    creditBalanceCents <= 0;
 
   const handleProceedToPayment = async () => {
     if (
@@ -1834,7 +1845,9 @@ export default function CheckoutPage() {
         if (inputStr !== undefined) {
           if (String(inputStr) === '') return { qty: 0, invalid: true };
           const parsedRaw = Number(String(inputStr));
-          const parsed = Number.isFinite(parsedRaw) ? Math.floor(parsedRaw) : NaN;
+          const parsed = Number.isFinite(parsedRaw)
+            ? Math.floor(parsedRaw)
+            : NaN;
           if (!Number.isFinite(parsed) || parsed < 0 || parsed > boughtQty) {
             return { qty: 0, invalid: true };
           }
@@ -1890,12 +1903,16 @@ export default function CheckoutPage() {
 
         effectiveCartItems = selected;
         effectiveCartTotal = selected.reduce(
-          (sum, it) => sum + Number(it.value || 0) * Math.max(0, Number(it.quantity || 0)),
+          (sum, it) =>
+            sum + Number(it.value || 0) * Math.max(0, Number(it.quantity || 0)),
           0
         );
         effectiveCartItemIds = selected.map(it => it.id);
       } else {
-        await validateCartQuantitiesInStock(latestCartItems, latestStockByRefKey);
+        await validateCartQuantitiesInStock(
+          latestCartItems,
+          latestStockByRefKey
+        );
       }
 
       if (isReturnShipmentUrl && !showDelivery) {
@@ -1968,10 +1985,9 @@ export default function CheckoutPage() {
             })()
           : null;
       if (effectiveDeliveryMethod === 'pickup_point' && !resolvedParcelPoint) {
-        const msg =
-          isReturnShipmentUrl
-            ? 'Veuillez sélectionner un point relais avant de procéder au retour.'
-            : 'Veuillez sélectionner un point relais avant de procéder au paiement.';
+        const msg = isReturnShipmentUrl
+          ? 'Veuillez sélectionner un point relais avant de procéder au retour.'
+          : 'Veuillez sélectionner un point relais avant de procéder au paiement.';
         setPaymentError(msg);
         showToast(msg, 'error');
         return;
@@ -2013,7 +2029,10 @@ export default function CheckoutPage() {
       const expectedPhone = getExpectedPhonePrefixForCountry(
         countryForPhoneValidation
       );
-      if (expectedPhone && (!isReturnShipmentUrl || (customerInfo.phone || '').trim())) {
+      if (
+        expectedPhone &&
+        (!isReturnShipmentUrl || (customerInfo.phone || '').trim())
+      ) {
         const ok = validatePhone(customerInfo.phone, expectedPhone.country);
         if (!ok) {
           const msg = `Numéro de téléphone invalide (${expectedPhone.label}).`;
@@ -2052,7 +2071,8 @@ export default function CheckoutPage() {
           effectiveDeliveryMethod === 'home_delivery' &&
           !String(returnDeliveryNetwork || '').trim()
         ) {
-          const msg = 'Veuillez sélectionner un réseau de livraison à domicile.';
+          const msg =
+            'Veuillez sélectionner un réseau de livraison à domicile.';
           setPaymentError(msg);
           showToast(msg, 'error');
           return;
@@ -2080,9 +2100,13 @@ export default function CheckoutPage() {
             items: itemsForReturn,
             return_method: effectiveDeliveryMethod,
             return_store_address:
-              effectiveDeliveryMethod === 'store_pickup' ? storePickupAddress : null,
+              effectiveDeliveryMethod === 'store_pickup'
+                ? storePickupAddress
+                : null,
             return_parcel_point:
-              effectiveDeliveryMethod === 'pickup_point' ? resolvedParcelPoint : null,
+              effectiveDeliveryMethod === 'pickup_point'
+                ? resolvedParcelPoint
+                : null,
             return_delivery_network: returnDeliveryNetwork || null,
           }),
         });
@@ -2109,6 +2133,49 @@ export default function CheckoutPage() {
       const openShipmentMode =
         String(searchParams.get('open_shipment') || '') === 'true' &&
         Boolean(String(searchParams.get('payment_id') || '').trim());
+      const enteredPromoCodeIdRaw = String(promoCodeId || '').trim();
+      const enteredPromoCodeId = openShipmentMode ? '' : enteredPromoCodeIdRaw;
+      if (enteredPromoCodeId) {
+        if (!customerDetailsLoaded) {
+          const msg = 'Chargement des informations client…';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+        if (!canEnterPromoCode) {
+          const msg =
+            'Vous ne pouvez pas utiliser de code promo avec un solde positif.';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+        if (promoCodeError) {
+          const msg = promoCodeError;
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+        const normalizedPromo = enteredPromoCodeId.toUpperCase();
+        if (normalizedPromo.startsWith('CREDIT-')) {
+          const msg = 'Ce préfixe est réservé.';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+        const isPayliveCode = normalizedPromo.startsWith('PAYLIVE-');
+        const isValidChars = /^[A-Z0-9_-]+$/.test(normalizedPromo);
+        if (!isPayliveCode && !isValidChars) {
+          const msg = 'Code promo invalide.';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+      }
 
       if (openShipmentMode && createdCreditCouponId) {
         const { resp } = await deleteCreditCoupon(createdCreditCouponId);
@@ -2169,7 +2236,9 @@ export default function CheckoutPage() {
               (md.deliveryNetwork as any) ||
               ((md.metadata || {})?.delivery_network as any) ||
               '',
-        promotionCodeId: '',
+        promotionCodeId: enteredPromoCodeId
+          ? enteredPromoCodeId.toUpperCase()
+          : '',
       };
 
       const response = await fetch(
@@ -3125,7 +3194,9 @@ export default function CheckoutPage() {
                                               }}
                                               onKeyDown={e => {
                                                 if (e.key !== 'Enter') return;
-                                                (e.currentTarget as any)?.blur?.();
+                                                (
+                                                  e.currentTarget as any
+                                                )?.blur?.();
                                               }}
                                               onBlur={() => {
                                                 const raw = String(
@@ -3180,7 +3251,9 @@ export default function CheckoutPage() {
                                               }}
                                               className='h-8 w-8 inline-flex items-center justify-center rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60'
                                               aria-label='Augmenter la quantité à retourner'
-                                              disabled={currentReturnQty >= currentQty}
+                                              disabled={
+                                                currentReturnQty >= currentQty
+                                              }
                                             >
                                               +
                                             </button>
@@ -3227,7 +3300,9 @@ export default function CheckoutPage() {
                                               }}
                                               onKeyDown={e => {
                                                 if (e.key !== 'Enter') return;
-                                                (e.currentTarget as any)?.blur?.();
+                                                (
+                                                  e.currentTarget as any
+                                                )?.blur?.();
                                               }}
                                               onBlur={() => {
                                                 const raw = String(
@@ -3380,6 +3455,40 @@ export default function CheckoutPage() {
                             €
                           </span>
                         </div>
+                        {canEnterPromoCode ? (
+                          <div className='mt-3'>
+                            <input
+                              id='cart-promo-code'
+                              value={promoCodeId}
+                              onChange={e => {
+                                const next = String(
+                                  e.target.value || ''
+                                ).toUpperCase();
+                                setPromoCodeId(next);
+                                if (!next) {
+                                  setPromoCodeError(null);
+                                  return;
+                                }
+                                if (next.startsWith('CREDIT-')) {
+                                  setPromoCodeError('Ce préfixe est réservé.');
+                                  return;
+                                }
+                                if (next.startsWith('PAYLIVE-')) {
+                                  setPromoCodeError(null);
+                                  return;
+                                }
+                                setPromoCodeError(null);
+                              }}
+                              placeholder='Entrer un seul code promo (optionnel)'
+                              className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                            />
+                            {promoCodeError && (
+                              <p className='text-xs text-red-600 mt-1'>
+                                {promoCodeError}
+                              </p>
+                            )}
+                          </div>
+                        ) : null}
                       </>
                     ) : null}
                   </div>
@@ -3744,7 +3853,8 @@ export default function CheckoutPage() {
                     const direct = (customerData as any)?.address;
                     if (direct) return direct as any;
                     const shipAddr = (customerData as any)?.shipping?.address;
-                    if (!shipAddr || typeof shipAddr !== 'object') return undefined;
+                    if (!shipAddr || typeof shipAddr !== 'object')
+                      return undefined;
                     const line1 = String(
                       shipAddr?.line1 || shipAddr?.street || ''
                     ).trim();
@@ -3907,7 +4017,9 @@ export default function CheckoutPage() {
                               homeAddr?.city
                           );
                           const hasNetwork = Boolean(
-                            String((formData as any)?.shippingOfferCode || '').trim()
+                            String(
+                              (formData as any)?.shippingOfferCode || ''
+                            ).trim()
                           );
                           return hasAddr && hasNetwork;
                         }

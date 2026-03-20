@@ -28,10 +28,4 @@ export default [
       "no-undef": "off",
     },
   },
-  {
-    files: ["src/**/*.tsx"],
-    rules: {
-      "no-undef": "error",
-    },
-  },
 ];
