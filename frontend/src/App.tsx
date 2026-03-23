@@ -102,7 +102,29 @@ function App() {
             />
             <Route
               path='/store/:storeName'
-              element={<StorePage />}
+              element={
+                <>
+                  <SignedIn>
+                    <StorePage />
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path='/s/:storeName'
+              element={
+                <>
+                  <SignedIn>
+                    <StorePage />
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
+              }
             />
             <Route
               path='/onboarding'
