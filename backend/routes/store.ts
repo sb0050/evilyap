@@ -484,6 +484,10 @@ router.post("/need-a-demo", async (req, res) => {
     const primaryEmail = String(
       (user as any)?.primaryEmailAddress?.emailAddress || "",
     ).trim();
+    const source = String((req.body as any)?.source || "needademo").trim();
+    const trigger = String((req.body as any)?.trigger || "manual").trim();
+    const phone = String((req.body as any)?.phone || "").trim() || null;
+    const phoneRaw = String((req.body as any)?.phoneRaw || "").trim() || null;
 
     const payload = {
       clerkUserId: String((user as any)?.id || auth.userId),
@@ -496,12 +500,18 @@ router.post("/need-a-demo", async (req, res) => {
         .filter(Boolean),
       createdAt: (user as any)?.createdAt || null,
       lastSignInAt: (user as any)?.lastSignInAt || null,
+      source: source || null,
+      trigger: trigger || null,
+      phone,
+      phoneRaw,
     };
 
     try {
       await emailService.sendAdminError({
         subject: "Demande de démo (NeedADemo)",
-        message: `Le user souhaite une démo. clerk_id=${String(auth.userId)}`,
+        message: `Le user souhaite une démo. clerk_id=${String(
+          auth.userId,
+        )} trigger=${trigger || "manual"} phone=${phone || phoneRaw || "—"}`,
         context: JSON.stringify(payload, null, 2),
       });
     } catch {}
