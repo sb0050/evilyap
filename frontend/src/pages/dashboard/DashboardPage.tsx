@@ -1408,13 +1408,6 @@ export default function DashboardPage() {
   };
 
   const handleBatchShippingDocuments = async () => {
-    if (hasBlockedDocSelection) {
-      showToast(
-        "Bordereau indisponible : autorisé seulement si status = null ou (status = 'PENDING' et document_created = true).",
-        'error'
-      );
-      return;
-    }
     const targets = selectedForDoc;
     if (targets.length === 0) {
       showToast('Aucune vente sélectionnée pour le bordereau', 'error');
@@ -1440,6 +1433,12 @@ export default function DashboardPage() {
             .slice(0, 3)
             .join(', ')}...)`;
     showToast(msg, 'success');
+    if (hasBlockedDocSelection) {
+      showToast(
+        'Certaines ventes sélectionnées ont été ignorées (statut non éligible).',
+        'info'
+      );
+    }
   };
 
   const handleBatchCancel = async () => {
@@ -1482,12 +1481,16 @@ export default function DashboardPage() {
         ? `Commandes annulées : ${parts.join(', ')}`
         : `Commandes annulées : ${parts.slice(0, 3).join(', ')}...`;
     showToast(msg, 'success');
+    if (hasBlockedCancelSelection) {
+      showToast(
+        'Certaines ventes sélectionnées ont été ignorées (statut non éligible).',
+        'info'
+      );
+    }
   };
 
   const handleBatchInvoice = async () => {
-    const targets = selectedSales.filter(
-      s => String(s.status || '').toUpperCase() !== 'CANCELLED'
-    );
+    const targets = selectedForInvoice;
     if (targets.length === 0) {
       showToast('Aucune vente sélectionnée pour la facture', 'error');
       return;
@@ -1513,6 +1516,12 @@ export default function DashboardPage() {
             .slice(0, 3)
             .join(', ')}...)`;
     showToast(msg, 'success');
+    if (hasBlockedInvoiceSelection) {
+      showToast(
+        'Certaines ventes sélectionnées ont été ignorées (statut non éligible).',
+        'info'
+      );
+    }
   };
 
   const handleReloadSales = async () => {
@@ -2733,10 +2742,24 @@ export default function DashboardPage() {
   const selectedForInvoice = selectedSales.filter(
     s => String(s.status || '').toUpperCase() !== 'CANCELLED'
   );
+  const hasBlockedInvoiceSelection =
+    selectedSales.length > 0 &&
+    selectedForInvoice.length < selectedSales.length;
   const isStorePickupSale = (s: any) =>
     String(s?.delivery_method || '')
       .trim()
       .toLowerCase() === 'store_pickup';
+  const isDocumentCreatedSale = (s: any) => {
+    const raw = (s as any)?.document_created;
+    if (raw === true) return true;
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n === 1;
+    return (
+      String(raw || '')
+        .trim()
+        .toLowerCase() === 'true'
+    );
+  };
   const selectedForDoc = selectedSales.filter(s => {
     if (isStorePickupSale(s)) return false;
     const stRaw = s.status;
@@ -2746,7 +2769,7 @@ export default function DashboardPage() {
         : String(stRaw || '')
             .trim()
             .toUpperCase();
-    return st === null || (st === 'PENDING' && s.document_created === true);
+    return st === null || (st === 'PENDING' && isDocumentCreatedSale(s));
   });
   const hasBlockedDocSelection = selectedSales.some(s => {
     if (isStorePickupSale(s)) return false;
@@ -2757,10 +2780,9 @@ export default function DashboardPage() {
         : String(stRaw || '')
             .trim()
             .toUpperCase();
-    return !(st === null || (st === 'PENDING' && s.document_created === true));
+    return !(st === null || (st === 'PENDING' && isDocumentCreatedSale(s)));
   });
-  const shippingDocDisabled =
-    selectedForDoc.length === 0 || hasBlockedDocSelection;
+  const shippingDocDisabled = selectedForDoc.length === 0;
   const selectedForCancel = selectedSales.filter(
     s =>
       !s.is_final_destination &&
@@ -2771,6 +2793,8 @@ export default function DashboardPage() {
         return st === '' || st === 'PENDING';
       })()
   );
+  const hasBlockedCancelSelection =
+    selectedSales.length > 0 && selectedForCancel.length < selectedSales.length;
   const visibleSaleIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
     visibleSaleIds.length > 0 &&

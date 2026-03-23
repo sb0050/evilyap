@@ -227,6 +227,8 @@ export default function CheckoutPage() {
     reference: '',
     description: '',
   });
+  const [promoCodeId, setPromoCodeId] = useState<string>('');
+  const [promoCodeError, setPromoCodeError] = useState<string | null>(null);
   const [address, setAddress] = useState<Address>();
   const [selectedParcelPoint, setSelectedParcelPoint] =
     useState<ParcelPointData | null>(null);
@@ -1982,6 +1984,13 @@ export default function CheckoutPage() {
     const parsed = Number.parseInt(String(raw || '0'), 10);
     return Number.isFinite(parsed) ? parsed : 0;
   })();
+  const openShipmentModeForPromo =
+    String(searchParams.get('open_shipment') || '') === 'true' &&
+    Boolean(String(searchParams.get('payment_id') || '').trim());
+  const canEnterPromoCode =
+    !openShipmentModeForPromo &&
+    customerDetailsLoaded &&
+    creditBalanceCents <= 0;
 
   const handleProceedToPayment = async () => {
     if (
@@ -2362,6 +2371,49 @@ export default function CheckoutPage() {
       const openShipmentMode =
         String(searchParams.get('open_shipment') || '') === 'true' &&
         Boolean(String(searchParams.get('payment_id') || '').trim());
+      const enteredPromoCodeIdRaw = String(promoCodeId || '').trim();
+      const enteredPromoCodeId = openShipmentMode ? '' : enteredPromoCodeIdRaw;
+      if (enteredPromoCodeId) {
+        if (!customerDetailsLoaded) {
+          const msg = 'Chargement des informations client…';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+        if (!canEnterPromoCode) {
+          const msg =
+            'Vous ne pouvez pas utiliser de code promo avec un solde positif.';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+        if (promoCodeError) {
+          const msg = promoCodeError;
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+        const normalizedPromo = enteredPromoCodeId.toUpperCase();
+        if (normalizedPromo.startsWith('CREDIT-')) {
+          const msg = 'Ce préfixe est réservé.';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+        const isPayliveCode = normalizedPromo.startsWith('PAYLIVE-');
+        const isValidChars = /^[A-Z0-9_-]+$/.test(normalizedPromo);
+        if (!isPayliveCode && !isValidChars) {
+          const msg = 'Code promo invalide.';
+          setPaymentError(msg);
+          showToast(msg, 'error');
+          setIsProcessingPayment(false);
+          return;
+        }
+      }
 
       if (openShipmentMode && createdCreditCouponId) {
         const { resp } = await deleteCreditCoupon(createdCreditCouponId);
@@ -2422,7 +2474,9 @@ export default function CheckoutPage() {
               (md.deliveryNetwork as any) ||
               ((md.metadata || {})?.delivery_network as any) ||
               '',
-        promotionCodeId: '',
+        promotionCodeId: enteredPromoCodeId
+          ? enteredPromoCodeId.toUpperCase()
+          : '',
       };
 
       const response = await fetch(
@@ -3081,101 +3135,6 @@ export default function CheckoutPage() {
             </div>
           </div>
         </Modal>
-        <Modal
-          isOpen={isReturnShipmentUrl && returnOpenShipmentBlockModalOpen}
-          onClose={() => {}}
-          title={
-            returnOpenShipmentBlockIsFinalDestination
-              ? 'Retour déjà en cours'
-              : 'Commande déjà en cours de modification'
-          }
-        >
-          <div className='space-y-4'>
-            <div className='text-sm text-gray-700'>
-              {returnOpenShipmentBlockIsFinalDestination ? (
-                <>
-                  Un retour est déjà en cours sur une autre commande. Si vous
-                  continuez, le retour en cours sera annulé. Souhaitez-vous
-                  poursuivre avec cette nouvelle commande ?
-                </>
-              ) : (
-                <>
-                  Vous modifiez actuellement une autre commande. Si vous
-                  continuez, les modifications en cours seront annulées.
-                  Souhaitez-vous poursuivre avec cette nouvelle commande ?
-                </>
-              )}
-            </div>
-            <div className='flex items-center justify-end gap-2'>
-              <button
-                type='button'
-                onClick={async () => {
-                  const pid = String(returnOpenShipmentBlockPaymentId || '').trim();
-                  if (!pid) return;
-                  setReturnOpenShipmentBlockModalOpen(false);
-                  setReturnOpenShipmentAttemptPaymentId('');
-                  setReturnOpenShipmentBlockShipmentId('');
-                  setReturnOpenShipmentBlockShipmentRowId(null);
-                  setReturnOpenShipmentBlockPaymentId('');
-                  setReturnOpenShipmentBlockIsFinalDestination(null);
-                  if (returnOpenShipmentBlockIsFinalDestination) {
-                    setReturnShipmentParams(pid);
-                    return;
-                  }
-                  clearReturnShipmentParams();
-                  setOpenShipmentParams(pid);
-                }}
-                disabled={returnOpenShipmentActionLoading}
-                className='px-3 py-2 rounded-md text-sm font-medium border bg-white text-gray-700 border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-              >
-                Annuler
-              </button>
-              <button
-                type='button'
-                onClick={async () => {
-                  const openPid = String(returnOpenShipmentBlockPaymentId || '').trim();
-                  const attemptedPid = String(
-                    returnOpenShipmentAttemptPaymentId || paymentIdParam || ''
-                  ).trim();
-                  if (!openPid || !attemptedPid || !store?.id) return;
-                  try {
-                    setReturnOpenShipmentActionLoading(true);
-                    // On libère le retour en cours, puis on (ré)ouvre ce payment_id en retour.
-                    const ok = await cancelOpenShipmentAndVerify(
-                      openPid,
-                      returnOpenShipmentBlockIsFinalDestination ? 'return' : undefined
-                    );
-                    if (!ok) return;
-                    setReturnOpenShipmentBlockModalOpen(false);
-                    setReturnOpenShipmentBlockShipmentId('');
-                    setReturnOpenShipmentBlockShipmentRowId(null);
-                    setReturnOpenShipmentBlockPaymentId('');
-                    setReturnOpenShipmentBlockIsFinalDestination(null);
-                    setReturnOpenShipmentAttemptPaymentId('');
-                    setReturnOpenShipmentInitHandled(false);
-                    const { resp, json } = await openShipmentByPayment(
-                      attemptedPid,
-                      false,
-                      'return'
-                    );
-                    if (!resp.ok) {
-                      const msg =
-                        json?.error || 'Erreur lors de la préparation du retour';
-                      showToast(msg, 'error');
-                      return;
-                    }
-                  } finally {
-                    setReturnOpenShipmentActionLoading(false);
-                  }
-                }}
-                disabled={returnOpenShipmentActionLoading}
-                className='px-3 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
-              >
-                Continuer
-              </button>
-            </div>
-          </div>
-        </Modal>
         <div className='max-w-4xl mx-auto px-4 sm:px-6 lg:px-8'>
           {/* En-tête de la boutique */}
           <div className='bg-white rounded-lg shadow-sm p-6 mb-6'>
@@ -3740,6 +3699,40 @@ export default function CheckoutPage() {
                             €
                           </span>
                         </div>
+                        {canEnterPromoCode ? (
+                          <div className='mt-3'>
+                            <input
+                              id='cart-promo-code'
+                              value={promoCodeId}
+                              onChange={e => {
+                                const next = String(
+                                  e.target.value || ''
+                                ).toUpperCase();
+                                setPromoCodeId(next);
+                                if (!next) {
+                                  setPromoCodeError(null);
+                                  return;
+                                }
+                                if (next.startsWith('CREDIT-')) {
+                                  setPromoCodeError('Ce préfixe est réservé.');
+                                  return;
+                                }
+                                if (next.startsWith('PAYLIVE-')) {
+                                  setPromoCodeError(null);
+                                  return;
+                                }
+                                setPromoCodeError(null);
+                              }}
+                              placeholder='Entrer un seul code promo (optionnel)'
+                              className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                            />
+                            {promoCodeError && (
+                              <p className='text-xs text-red-600 mt-1'>
+                                {promoCodeError}
+                              </p>
+                            )}
+                          </div>
+                        ) : null}
                       </>
                     ) : null}
                   </div>
