@@ -704,11 +704,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
     const decodedSlug = decodeURIComponent(storeSlug);
     console.log("[confirm-payout] resolved slug", { decodedSlug });
 
-    const { iban, bic, payoutNetCents } = req.body as {
-      iban?: string;
-      bic?: string;
-      payoutNetCents?: number | string;
-    };
+    const { iban, bic } = req.body as { iban?: string; bic?: string };
     const ibanTrim = String(iban || "").trim();
     const bicTrim = String(bic || "").trim();
     if (!ibanTrim || !bicTrim) {
@@ -965,20 +961,13 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       stripeFeesCentsFromCancelled +
       stripeFeesCentsFromReturned;
 
-    const payoutNetCentsRaw = Number(payoutNetCents);
-    const payoutCents = Number.isFinite(payoutNetCentsRaw)
-      ? Math.round(payoutNetCentsRaw)
-      : NaN;
+    const platformFeeCents = Math.round(adjustedGrossCents * 0.015);
+    const payliveFeeCents = stripeFeesCents + platformFeeCents;
+    const payoutCents =
+      storeEarningsCentsRaw - stripeFeesCents - platformFeeCents;
     if (!Number.isFinite(payoutCents) || payoutCents <= 0) {
-      return res.status(400).json({ error: "Montant net invalide" });
+      return res.status(400).json({ error: "Montant insuffisant après frais" });
     }
-    if (payoutCents > storeEarningsCentsRaw) {
-      return res
-        .status(400)
-        .json({ error: "Montant net supérieur au total net disponible" });
-    }
-    const payliveFeeCents = Math.max(0, storeEarningsCentsRaw - payoutCents);
-    const platformFeeCents = Math.max(0, payliveFeeCents - stripeFeesCents);
 
     const country = ibanTrim.substring(0, 2).toUpperCase();
     const idempotencyBase = `payout_${storeId}_${
@@ -1193,7 +1182,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       const v = Number((tx as any)?.net_total ?? 0);
       return sum + (Number.isFinite(v) ? Math.round(v * 100) : 0);
     }, 0);
-    const pdfFeeCents = Math.max(0, pdfTotalNetCents - payoutCents);
+    const pdfFeeCents = pdfTotalNetCents - payoutCents;
 
     const extractStripeProductIds = (raw: any): string[] =>
       String(raw || "")

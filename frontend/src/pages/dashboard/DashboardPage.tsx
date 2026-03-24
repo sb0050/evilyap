@@ -3752,59 +3752,6 @@ export default function DashboardPage() {
     });
   };
 
-  const computeWalletNetPayoutCents = () => {
-    const payoutRaw = String(store?.payout_created_at || '').trim();
-    const payoutMs = payoutRaw ? new Date(payoutRaw).getTime() : NaN;
-    const hasStart = Number.isFinite(payoutMs) && Number(payoutMs) > 0;
-
-    let storeEarningsCents = 0;
-    let stripeFeesCents = 0;
-    (shipments || []).forEach(s => {
-      const createdAt = String(s.created_at || '').trim();
-      const createdMs = createdAt ? new Date(createdAt).getTime() : NaN;
-      const status = String(s.status || '').toUpperCase();
-      if (hasStart) {
-        if (!Number.isFinite(createdMs)) return;
-        if (createdMs < Number(payoutMs)) {
-          if (status !== 'RETURNED') return;
-          const dRaw = String((s as any)?.delivery_date || '').trim();
-          const dMs = dRaw ? new Date(dRaw).getTime() : NaN;
-          if (!Number.isFinite(dMs)) return;
-          if (dMs < Number(payoutMs)) return;
-        }
-      }
-
-      const isFinalDestination = Boolean((s as any)?.is_final_destination);
-      const earningsRaw = Number(s.store_earnings_amount || 0);
-      const earnings = Number.isFinite(earningsRaw)
-        ? Math.max(0, Math.round(earningsRaw))
-        : 0;
-      if (status === 'RETURNED') {
-        if (createdMs < Number(payoutMs)) {
-          storeEarningsCents -= earnings;
-        }
-      } else if (isFinalDestination && status !== 'CANCELLED') {
-        storeEarningsCents += earnings;
-      }
-
-      const feesRaw = Number(s.stripe_fees || 0);
-      const fees = Number.isFinite(feesRaw)
-        ? Math.max(0, Math.round(feesRaw))
-        : 0;
-      if (
-        isFinalDestination ||
-        status === 'CANCELLED' ||
-        status === 'RETURNED'
-      ) {
-        stripeFeesCents += fees;
-      }
-    });
-
-    const platformBaseCents = Math.max(0, storeEarningsCents);
-    const payliveFeeCents = Math.round(platformBaseCents * 0.015);
-    return storeEarningsCents - stripeFeesCents - payliveFeeCents;
-  };
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && showWinnerModal) {
@@ -3839,11 +3786,7 @@ export default function DashboardPage() {
         return;
       }
 
-      const payload: any = {
-        iban: ibanToUse,
-        bic: bicToUse,
-        payoutNetCents: computeWalletNetPayoutCents(),
-      };
+      const payload: any = { iban: ibanToUse, bic: bicToUse };
       const token = await getToken();
       const resp = await apiPost(
         `/api/stores/${encodeURIComponent(store!.slug)}/confirm-payout`,
@@ -5685,7 +5628,73 @@ export default function DashboardPage() {
               </p>
               <div className='flex items-baseline space-x-2 mb-4'>
                 <span className='text-2xl font-bold text-gray-900'>
-                  {(computeWalletNetPayoutCents() / 100).toFixed(2)}
+                  {(() => {
+                    const payoutRaw = String(
+                      store?.payout_created_at || ''
+                    ).trim();
+                    const payoutMs = payoutRaw
+                      ? new Date(payoutRaw).getTime()
+                      : NaN;
+                    const hasStart =
+                      Number.isFinite(payoutMs) && Number(payoutMs) > 0;
+
+                    let storeEarningsCents = 0;
+                    let stripeFeesCents = 0;
+                    (shipments || []).forEach(s => {
+                      const createdAt = String(s.created_at || '').trim();
+                      const createdMs = createdAt
+                        ? new Date(createdAt).getTime()
+                        : NaN;
+                      const status = String(s.status || '').toUpperCase();
+                      if (hasStart) {
+                        if (!Number.isFinite(createdMs)) return;
+                        if (createdMs < Number(payoutMs)) {
+                          if (status !== 'RETURNED') return;
+                          const dRaw = String(
+                            (s as any)?.delivery_date || ''
+                          ).trim();
+                          const dMs = dRaw ? new Date(dRaw).getTime() : NaN;
+                          if (!Number.isFinite(dMs)) return;
+                          if (dMs < Number(payoutMs)) return;
+                        }
+                      }
+
+                      const isFinalDestination = Boolean(
+                        (s as any)?.is_final_destination
+                      );
+                      const earningsRaw = Number(s.store_earnings_amount || 0);
+                      const earnings = Number.isFinite(earningsRaw)
+                        ? Math.max(0, Math.round(earningsRaw))
+                        : 0;
+                      if (status === 'RETURNED') {
+                        if (createdMs < Number(payoutMs)) {
+                          storeEarningsCents -= earnings;
+                        }
+                      } else if (isFinalDestination && status !== 'CANCELLED') {
+                        storeEarningsCents += earnings;
+                      }
+
+                      const feesRaw = Number(s.stripe_fees || 0);
+                      const fees = Number.isFinite(feesRaw)
+                        ? Math.max(0, Math.round(feesRaw))
+                        : 0;
+                      if (
+                        isFinalDestination ||
+                        status === 'CANCELLED' ||
+                        status === 'RETURNED'
+                      ) {
+                        stripeFeesCents += fees;
+                      }
+                    });
+
+                    const platformBaseCents = Math.max(0, storeEarningsCents);
+                    const payliveFeeCents = Math.round(
+                      platformBaseCents * 0.015
+                    );
+                    const finalCents =
+                      storeEarningsCents - stripeFeesCents - payliveFeeCents;
+                    return (finalCents / 100).toFixed(2);
+                  })()}
                 </span>
                 <span className='text-gray-700'>€ total net</span>
               </div>
