@@ -145,10 +145,11 @@ export default function Header() {
   useEffect(() => {
     const loadOwnerStoreInfo = async () => {
       try {
-        if (!stripeCustomerId) return;
+        const clerkId = String(user?.id || '').trim();
+        if (!clerkId) return;
         const resp = await fetch(
-          `${apiBase}/api/stores/check-owner-by-stripe/${encodeURIComponent(
-            stripeCustomerId
+          `${apiBase}/api/stores/check-owner-by-clerk/${encodeURIComponent(
+            clerkId
           )}`
         );
         const json = (await resp.json().catch(() => null)) as OwnerStoreInfo;
@@ -159,7 +160,7 @@ export default function Header() {
       }
     };
     loadOwnerStoreInfo();
-  }, [stripeCustomerId]);
+  }, [user?.id]);
 
   const formatEur = (value: number) =>
     new Intl.NumberFormat('fr-FR', {
@@ -278,13 +279,16 @@ export default function Header() {
   const hideCartPopover =
     String(location.pathname || '').startsWith('/checkout') ||
     String(location.pathname || '').startsWith('/dashboard');
+  const normalizedPath =
+    String(location.pathname || '').replace(/\/+$/, '') || '/';
+  const isDashboardRootPath = normalizedPath === '/dashboard';
 
   // Suppression de la déduction d’accès au dashboard basée sur des slugs
 
   // Garde centralisée: existence de boutique pour checkout/store, et propriété pour dashboard
   useLayoutEffect(() => {
     const checkDashboardGuard = async () => {
-      const path = location.pathname || '';
+      const path = (location.pathname || '').replace(/\/+$/, '') || '/';
       const segments = path.split('/').filter(Boolean);
       const isLanding = path === '/' || path === '';
       const isExemptRoute =
@@ -347,29 +351,23 @@ export default function Header() {
       // Vérification spécifique du dashboard sans slug: s'assurer que l'utilisateur a une boutique
       if (path === '/dashboard') {
         try {
-          let json: OwnerStoreInfo | null = null;
-          if (stripeCustomerId) {
-            const resp = await fetch(
-              `${apiBase}/api/stores/check-owner-by-stripe/${encodeURIComponent(
-                stripeCustomerId
-              )}`
-            );
-            json = (await resp.json().catch(() => null)) as OwnerStoreInfo;
-            if (!resp.ok) {
-              throw new Error((json as any) || 'Erreur');
-            }
-          } else {
-            const email = user?.primaryEmailAddress?.emailAddress;
-            if (!email) {
-              return;
-            }
-            const resp = await fetch(
-              `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
-            );
-            json = (await resp.json().catch(() => null)) as OwnerStoreInfo;
-            if (!resp.ok) {
-              throw new Error((json as any) || 'Erreur');
-            }
+          const clerkId = String(user?.id || '').trim();
+          if (!clerkId) {
+            setDashboardGuardError({
+              title: 'Accès refusé',
+              message: 'Utilisateur non identifié.',
+            });
+            setGuardStatus('error');
+            return;
+          }
+          const resp = await fetch(
+            `${apiBase}/api/stores/check-owner-by-clerk/${encodeURIComponent(
+              clerkId
+            )}`
+          );
+          const json = (await resp.json().catch(() => null)) as OwnerStoreInfo;
+          if (!resp.ok) {
+            throw new Error((json as any) || 'Erreur');
           }
           setOwnerStoreInfo(json && typeof json === 'object' ? json : null);
           if (!json?.exists || !json?.slug) {
@@ -420,29 +418,18 @@ export default function Header() {
       );
 
       try {
-        let json: any = null;
-        if (stripeCustomerId) {
-          const resp = await fetch(
-            `${apiBase}/api/stores/check-owner-by-stripe/${encodeURIComponent(
-              stripeCustomerId
-            )}`
-          );
-          json = await resp.json().catch(() => null);
-          if (!resp.ok) {
-            throw new Error(json?.error || 'Vérification propriétaire échouée');
-          }
-        } else {
-          const email = user?.primaryEmailAddress?.emailAddress;
-          if (!email) {
-            return;
-          }
-          const resp = await fetch(
-            `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
-          );
-          json = await resp.json().catch(() => null);
-          if (!resp.ok) {
-            throw new Error(json?.error || 'Vérification propriétaire échouée');
-          }
+        const clerkId = String(user?.id || '').trim();
+        if (!clerkId) {
+          return;
+        }
+        const resp = await fetch(
+          `${apiBase}/api/stores/check-owner-by-clerk/${encodeURIComponent(
+            clerkId
+          )}`
+        );
+        const json = await resp.json().catch(() => null);
+        if (!resp.ok) {
+          throw new Error(json?.error || 'Vérification propriétaire échouée');
         }
         if (json?.exists && json?.slug) {
           // Déjà propriétaire
@@ -471,11 +458,7 @@ export default function Header() {
       }
     };
     checkOnboardingGuard();
-  }, [
-    user?.primaryEmailAddress?.emailAddress,
-    stripeCustomerId,
-    location.pathname,
-  ]);
+  }, [user?.id, location.pathname]);
 
   // Redirections centralisées selon le statut des gardes et les slugs connus
   useEffect(() => {
@@ -774,7 +757,7 @@ export default function Header() {
                   <p className='text-gray-600'>
                     {dashboardGuardError?.message}
                   </p>
-                  {location.pathname === '/dashboard' && (
+                  {isDashboardRootPath && (
                     <div className='mt-4'>
                       <button
                         onClick={() =>

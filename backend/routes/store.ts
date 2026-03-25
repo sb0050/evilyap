@@ -4,6 +4,7 @@ import Stripe from "stripe";
 import PDFDocument from "pdfkit";
 import fs from "node:fs";
 import path from "node:path";
+import nodemailer from "nodemailer";
 
 import { isValidIBAN, isValidBIC } from "ibantools";
 import slugify from "slugify";
@@ -27,6 +28,26 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+const createProspectTransporter = () => {
+  const host = process.env.SMTP_HOST || "";
+  const port = parseInt(process.env.SMTP_PORT || "587", 10);
+  const secure = (process.env.SMTP_SECURE || "false").toLowerCase() === "true";
+  const user = process.env.SMTP_USER || "";
+  const pass = process.env.SMTP_PASS || "";
+  if (!host) {
+    throw new Error("SMTP_HOST manquant");
+  }
+  if (!user || !pass) {
+    throw new Error("SMTP credentials missing");
+  }
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass },
+  });
+};
 
 const getCloudBase = () => {
   const raw = String(process.env.CLOUDFRONT_URL || "").trim();
@@ -179,6 +200,43 @@ router.get("/check-owner-by-stripe/:stripeId", async (req, res) => {
       return res
         .status(500)
         .json({ error: "Erreur lors de la vérification du stripeId" });
+    }
+
+    return res.json({
+      exists: true,
+      storeName: data.name,
+      ownerEmail: data.owner_email,
+      slug: (data as any)?.slug,
+    });
+  } catch (error) {
+    console.error("Erreur serveur:", error);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+// GET /api/stores/check-owner-by-clerk/:clerkId - Vérifier si un clerk_id existe comme propriétaire
+router.get("/check-owner-by-clerk/:clerkId", async (req, res) => {
+  try {
+    const clerkId = String(req.params?.clerkId || "").trim();
+
+    if (!clerkId) {
+      return res.status(400).json({ error: "clerkId requis" });
+    }
+
+    const { data, error } = await supabase
+      .from("stores")
+      .select("name, owner_email, slug")
+      .eq("clerk_id", clerkId)
+      .single();
+
+    if (error) {
+      if (error.code === "PGRST116") {
+        return res.json({ exists: false });
+      }
+      console.error("Erreur Supabase:", error);
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la vérification du clerkId" });
     }
 
     return res.json({
@@ -484,6 +542,16 @@ router.post("/need-a-demo", async (req, res) => {
     const primaryEmail = String(
       (user as any)?.primaryEmailAddress?.emailAddress || "",
     ).trim();
+    const source = String((req.body as any)?.source || "needademo").trim();
+    const trigger = String((req.body as any)?.trigger || "manual").trim();
+    const contactMethod = String(
+      (req.body as any)?.contactMethod || "phone",
+    ).trim();
+    const phone = String((req.body as any)?.phone || "").trim() || null;
+    const phoneRaw = String((req.body as any)?.phoneRaw || "").trim() || null;
+    const contactEmail =
+      String((req.body as any)?.contactEmail || "").trim() || null;
+    const customerEmail = contactEmail || primaryEmail || null;
 
     const payload = {
       clerkUserId: String((user as any)?.id || auth.userId),
@@ -496,15 +564,118 @@ router.post("/need-a-demo", async (req, res) => {
         .filter(Boolean),
       createdAt: (user as any)?.createdAt || null,
       lastSignInAt: (user as any)?.lastSignInAt || null,
+      source: source || null,
+      trigger: trigger || null,
+      contactMethod: contactMethod || null,
+      contactEmail,
+      phone,
+      phoneRaw,
     };
 
     try {
       await emailService.sendAdminError({
         subject: "Demande de démo (NeedADemo)",
-        message: `Le user souhaite une démo. clerk_id=${String(auth.userId)}`,
+        message: `Le user souhaite une démo. clerk_id=${String(
+          auth.userId,
+        )} trigger=${trigger || "manual"} method=${
+          contactMethod || "phone"
+        } phone=${phone || phoneRaw || "—"} email=${customerEmail || "—"}`,
         context: JSON.stringify(payload, null, 2),
       });
     } catch {}
+
+    if (customerEmail) {
+      try {
+        const transporter = createProspectTransporter();
+        const local = String(customerEmail.split("@")[0] || "").trim();
+        const cleaned = local
+          .replace(/[._\-+]+/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        const firstNameGuess = cleaned
+          ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+          : "";
+        const greeting = firstNameGuess
+          ? `Bonjour ${firstNameGuess},`
+          : "Bonjour,";
+        const logoPath = path.resolve(process.cwd(), "public", "black.png");
+        const hasLogo = fs.existsSync(logoPath);
+        const subject = "On organise une démo ? 🚀";
+        const html = `<!DOCTYPE html>
+        <html lang="fr">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <title>On organise une démo ?</title>
+        </head>
+        <body style="margin:0;padding:0;background:#f7f7fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,'Noto Sans',sans-serif;color:#0f172a;">
+          <div style="max-width:680px;margin:0 auto;background:#ffffff;border-radius:12px;box-shadow:0 10px 30px rgba(2,6,23,0.08);overflow:hidden;">
+            <div style="background:linear-gradient(90deg,#7c3aed,#2563eb);padding:24px;text-align:center;">
+              ${
+                hasLogo
+                  ? `<img src="cid:paylive-logo" alt="PayLive" style="height:44px;vertical-align:middle;" />`
+                  : `<div style="font-size:24px;font-weight:800;color:#ffffff;letter-spacing:0.5px;">PayLive.cc</div>`
+              }
+              <div style="margin-top:8px;font-size:14px;color:#e5e7eb;">On organise une démo ? 🚀</div>
+            </div>
+
+            <div style="padding:28px 28px 8px 28px;">
+              <div style="font-size:18px;line-height:1.5;">
+                <span style="font-weight:700;">${greeting}</span>
+              </div>
+              <p style="margin:14px 0 0 0;font-size:16px;line-height:1.6;">
+                Merci pour votre inscription !
+              </p>
+              <p style="margin:14px 0 0 0;font-size:16px;line-height:1.6;">
+                Pour aller plus loin, je vous propose une démo rapide (30 min) pour vous montrer
+                <span style="font-weight:700;color:#7c3aed;"> PayLive</span> en action — directement sur vos cas d’usage.
+              </p>
+
+              <div style="margin-top:18px;padding:16px;border:1px solid #e5e7eb;border-radius:10px;background:#fafafa;">
+                <div style="font-weight:700;color:#0f172a;margin-bottom:10px;">Deux petites choses pour qu’on cale ça :</div>
+                <ul style="margin:0;padding-left:18px;color:#334155;line-height:1.8;">
+                  <li>Quelles sont vos disponibilités cette semaine ou la semaine prochaine ?</li>
+                  <li>Quel est votre numéro de téléphone pour qu’on reste en contact facilement ?</li>
+                </ul>
+              </div>
+              <p style="margin:18px 0 0 0;font-size:16px;line-height:1.6;">
+                Hâte de vous faire découvrir la solution !
+              </p>
+
+              <div style="margin-top:24px;border-top:1px solid #e5e7eb;padding-top:14px;font-size:14px;color:#475569;">
+                À très vite,<br />
+                <span style="font-weight:700;">L’équipe <a href="https://www.paylive.cc" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline;">PayLive.cc</a></span>
+              </div>
+            </div>
+            <div style="padding:16px;text-align:center;color:#94a3b8;font-size:12px;">
+              © ${new Date().getFullYear()} PayLive.cc — Tous droits réservés
+            </div>
+          </div>
+        </body>
+        </html>`;
+        const text = `${greeting}\n\nRavi d’avoir pu échanger avec vous !\n\nPour aller plus loin, je vous propose une démo rapide (30 min) pour vous montrer PayLive en action — directement sur vos cas d’usage.\n\nDeux petites choses pour qu’on cale ça :\n• Quelles sont vos disponibilités cette semaine ou la semaine prochaine ?\n• Quel est votre numéro de téléphone pour qu’on reste en contact facilement ?\n\nHâte de vous faire découvrir la solution !\n\nÀ très vite,\nL’équipe PayLive.cc`;
+        const fromEmail = process.env.SMTP_USER || "noreply@paylive.cc";
+        const attachments: any[] = [];
+        if (hasLogo) {
+          attachments.push({
+            filename: "paylive.png",
+            content: fs.readFileSync(logoPath),
+            cid: "paylive-logo",
+            contentType: "image/png",
+          });
+        }
+        await transporter.sendMail({
+          from: `Paylive.cc <${fromEmail}>`,
+          to: customerEmail,
+          subject,
+          text,
+          html,
+          attachments: attachments.length > 0 ? attachments : undefined,
+        });
+      } catch (mailErr) {
+        console.error("[need-a-demo] email client échoué:", mailErr);
+      }
+    }
 
     return res.json({ success: true });
   } catch (e) {
@@ -570,7 +741,11 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
     const decodedSlug = decodeURIComponent(storeSlug);
     console.log("[confirm-payout] resolved slug", { decodedSlug });
 
-    const { iban, bic } = req.body as { iban?: string; bic?: string };
+    const { iban, bic, payoutNetCents } = req.body as {
+      iban?: string;
+      bic?: string;
+      payoutNetCents?: number | string;
+    };
     const ibanTrim = String(iban || "").trim();
     const bicTrim = String(bic || "").trim();
     if (!ibanTrim || !bicTrim) {
@@ -827,13 +1002,20 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       stripeFeesCentsFromCancelled +
       stripeFeesCentsFromReturned;
 
-    const platformFeeCents = Math.round(adjustedGrossCents * 0.015);
-    const payliveFeeCents = stripeFeesCents + platformFeeCents;
-    const payoutCents =
-      storeEarningsCentsRaw - stripeFeesCents - platformFeeCents;
+    const payoutNetCentsRaw = Number(payoutNetCents);
+    const payoutCents = Number.isFinite(payoutNetCentsRaw)
+      ? Math.round(payoutNetCentsRaw)
+      : NaN;
     if (!Number.isFinite(payoutCents) || payoutCents <= 0) {
-      return res.status(400).json({ error: "Montant insuffisant après frais" });
+      return res.status(400).json({ error: "Montant net invalide" });
     }
+    if (payoutCents > storeEarningsCentsRaw) {
+      return res
+        .status(400)
+        .json({ error: "Montant net supérieur au total net disponible" });
+    }
+    const payliveFeeCents = Math.max(0, storeEarningsCentsRaw - payoutCents);
+    const platformFeeCents = Math.max(0, payliveFeeCents - stripeFeesCents);
 
     const country = ibanTrim.substring(0, 2).toUpperCase();
     const idempotencyBase = `payout_${storeId}_${
@@ -1048,7 +1230,7 @@ router.post("/:storeSlug/confirm-payout", async (req, res) => {
       const v = Number((tx as any)?.net_total ?? 0);
       return sum + (Number.isFinite(v) ? Math.round(v * 100) : 0);
     }, 0);
-    const pdfFeeCents = pdfTotalNetCents - payoutCents;
+    const pdfFeeCents = Math.max(0, pdfTotalNetCents - payoutCents);
 
     const extractStripeProductIds = (raw: any): string[] =>
       String(raw || "")

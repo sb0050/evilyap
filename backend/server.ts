@@ -29,8 +29,7 @@ app.use((req: any, res: any, next: NextFunction) => {
   if (
     origin === "https://paylive.cc" ||
     origin?.endsWith(".vercel.app") ||
-    origin === "http://localhost:3000" ||
-    origin === "http://localhost:3001"
+    origin === "http://localhost:3000"
   ) {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }

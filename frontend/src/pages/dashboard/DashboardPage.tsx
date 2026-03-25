@@ -58,6 +58,11 @@ const isDeliveryRegulationText = (text: unknown) => {
   return /\b(?:regulation|regularisation)\s+livraison\b/i.test(normalized);
 };
 
+const isVisibleCartItem = (it: any) =>
+  (it as any)?.payment_id == null &&
+  !isDeliveryRegulationText((it as any)?.product_reference) &&
+  !isDeliveryRegulationText((it as any)?.description);
+
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
 
@@ -1408,13 +1413,6 @@ export default function DashboardPage() {
   };
 
   const handleBatchShippingDocuments = async () => {
-    if (hasBlockedDocSelection) {
-      showToast(
-        "Bordereau indisponible : autorisé seulement si status = null ou (status = 'PENDING' et document_created = true).",
-        'error'
-      );
-      return;
-    }
     const targets = selectedForDoc;
     if (targets.length === 0) {
       showToast('Aucune vente sélectionnée pour le bordereau', 'error');
@@ -1440,6 +1438,12 @@ export default function DashboardPage() {
             .slice(0, 3)
             .join(', ')}...)`;
     showToast(msg, 'success');
+    if (hasBlockedDocSelection) {
+      showToast(
+        'Certaines ventes sélectionnées ont été ignorées (statut non éligible).',
+        'info'
+      );
+    }
   };
 
   const handleBatchCancel = async () => {
@@ -1482,12 +1486,16 @@ export default function DashboardPage() {
         ? `Commandes annulées : ${parts.join(', ')}`
         : `Commandes annulées : ${parts.slice(0, 3).join(', ')}...`;
     showToast(msg, 'success');
+    if (hasBlockedCancelSelection) {
+      showToast(
+        'Certaines ventes sélectionnées ont été ignorées (statut non éligible).',
+        'info'
+      );
+    }
   };
 
   const handleBatchInvoice = async () => {
-    const targets = selectedSales.filter(
-      s => String(s.status || '').toUpperCase() !== 'CANCELLED'
-    );
+    const targets = selectedForInvoice;
     if (targets.length === 0) {
       showToast('Aucune vente sélectionnée pour la facture', 'error');
       return;
@@ -1513,6 +1521,12 @@ export default function DashboardPage() {
             .slice(0, 3)
             .join(', ')}...)`;
     showToast(msg, 'success');
+    if (hasBlockedInvoiceSelection) {
+      showToast(
+        'Certaines ventes sélectionnées ont été ignorées (statut non éligible).',
+        'info'
+      );
+    }
   };
 
   const handleReloadSales = async () => {
@@ -2733,34 +2747,44 @@ export default function DashboardPage() {
   const selectedForInvoice = selectedSales.filter(
     s => String(s.status || '').toUpperCase() !== 'CANCELLED'
   );
+  const hasBlockedInvoiceSelection =
+    selectedSales.length > 0 &&
+    selectedForInvoice.length < selectedSales.length;
   const isStorePickupSale = (s: any) =>
     String(s?.delivery_method || '')
       .trim()
       .toLowerCase() === 'store_pickup';
-  const selectedForDoc = selectedSales.filter(s => {
+  const isDocumentCreatedSale = (s: any) => {
+    const raw = (s as any)?.document_created;
+    if (raw === true) return true;
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n === 1;
+    return (
+      String(raw || '')
+        .trim()
+        .toLowerCase() === 'true'
+    );
+  };
+  const isBordereauEligibleSale = (s: any) => {
     if (isStorePickupSale(s)) return false;
-    const stRaw = s.status;
+    const stRaw = s?.status;
     const st =
       stRaw == null
         ? null
         : String(stRaw || '')
             .trim()
             .toUpperCase();
-    return st === null || (st === 'PENDING' && s.document_created === true);
+    if (st === null || st === '') return true;
+    if (st === 'CANCELLED' || st === 'RETURNED') return false;
+    return isDocumentCreatedSale(s);
+  };
+  const selectedForDoc = selectedSales.filter(s => {
+    return isBordereauEligibleSale(s);
   });
   const hasBlockedDocSelection = selectedSales.some(s => {
-    if (isStorePickupSale(s)) return false;
-    const stRaw = s.status;
-    const st =
-      stRaw == null
-        ? null
-        : String(stRaw || '')
-            .trim()
-            .toUpperCase();
-    return !(st === null || (st === 'PENDING' && s.document_created === true));
+    return !isBordereauEligibleSale(s);
   });
-  const shippingDocDisabled =
-    selectedForDoc.length === 0 || hasBlockedDocSelection;
+  const shippingDocDisabled = selectedForDoc.length === 0;
   const selectedForCancel = selectedSales.filter(
     s =>
       !s.is_final_destination &&
@@ -2771,6 +2795,8 @@ export default function DashboardPage() {
         return st === '' || st === 'PENDING';
       })()
   );
+  const hasBlockedCancelSelection =
+    selectedSales.length > 0 && selectedForCancel.length < selectedSales.length;
   const visibleSaleIds = visibleShipments.map(s => s.id);
   const allVisibleSelected =
     visibleSaleIds.length > 0 &&
@@ -3731,6 +3757,59 @@ export default function DashboardPage() {
     });
   };
 
+  const computeWalletNetPayoutCents = () => {
+    const payoutRaw = String(store?.payout_created_at || '').trim();
+    const payoutMs = payoutRaw ? new Date(payoutRaw).getTime() : NaN;
+    const hasStart = Number.isFinite(payoutMs) && Number(payoutMs) > 0;
+
+    let storeEarningsCents = 0;
+    let stripeFeesCents = 0;
+    (shipments || []).forEach(s => {
+      const createdAt = String(s.created_at || '').trim();
+      const createdMs = createdAt ? new Date(createdAt).getTime() : NaN;
+      const status = String(s.status || '').toUpperCase();
+      if (hasStart) {
+        if (!Number.isFinite(createdMs)) return;
+        if (createdMs < Number(payoutMs)) {
+          if (status !== 'RETURNED') return;
+          const dRaw = String((s as any)?.delivery_date || '').trim();
+          const dMs = dRaw ? new Date(dRaw).getTime() : NaN;
+          if (!Number.isFinite(dMs)) return;
+          if (dMs < Number(payoutMs)) return;
+        }
+      }
+
+      const isFinalDestination = Boolean((s as any)?.is_final_destination);
+      const earningsRaw = Number(s.store_earnings_amount || 0);
+      const earnings = Number.isFinite(earningsRaw)
+        ? Math.max(0, Math.round(earningsRaw))
+        : 0;
+      if (status === 'RETURNED') {
+        if (createdMs < Number(payoutMs)) {
+          storeEarningsCents -= earnings;
+        }
+      } else if (isFinalDestination && status !== 'CANCELLED') {
+        storeEarningsCents += earnings;
+      }
+
+      const feesRaw = Number(s.stripe_fees || 0);
+      const fees = Number.isFinite(feesRaw)
+        ? Math.max(0, Math.round(feesRaw))
+        : 0;
+      if (
+        isFinalDestination ||
+        status === 'CANCELLED' ||
+        status === 'RETURNED'
+      ) {
+        stripeFeesCents += fees;
+      }
+    });
+
+    const platformBaseCents = Math.max(0, storeEarningsCents);
+    const payliveFeeCents = Math.round(platformBaseCents * 0.015);
+    return storeEarningsCents - stripeFeesCents - payliveFeeCents;
+  };
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && showWinnerModal) {
@@ -3765,7 +3844,11 @@ export default function DashboardPage() {
         return;
       }
 
-      const payload: any = { iban: ibanToUse, bic: bicToUse };
+      const payload: any = {
+        iban: ibanToUse,
+        bic: bicToUse,
+        payoutNetCents: computeWalletNetPayoutCents(),
+      };
       const token = await getToken();
       const resp = await apiPost(
         `/api/stores/${encodeURIComponent(store!.slug)}/confirm-payout`,
@@ -5100,11 +5183,13 @@ export default function DashboardPage() {
 
               {(() => {
                 const groupsMap: Record<string, any[]> = {};
-                (storeCarts || []).forEach((c: any) => {
-                  const key = String(c.customer_stripe_id || '');
-                  if (!groupsMap[key]) groupsMap[key] = [];
-                  groupsMap[key].push(c);
-                });
+                (storeCarts || [])
+                  .filter(isVisibleCartItem)
+                  .forEach((c: any) => {
+                    const key = String(c.customer_stripe_id || '');
+                    if (!groupsMap[key]) groupsMap[key] = [];
+                    groupsMap[key].push(c);
+                  });
                 const groups = Object.entries(groupsMap).map(
                   ([stripeId, items]) => {
                     const user = clerkUsersByStripeId[stripeId] || null;
@@ -5367,24 +5452,7 @@ export default function DashboardPage() {
                                     const gid = g.stripeId;
                                     const size = cartGroupPageSize[gid] ?? 10;
                                     const page = cartGroupPage[gid] ?? 1;
-                                    const filtered = (g.items || []).filter(
-                                      (c: any) => {
-                                        const cartReference = String(
-                                          c?.product_reference || ''
-                                        ).trim();
-                                        const cartDescription = String(
-                                          c?.description || ''
-                                        ).trim();
-                                        return (
-                                          !isDeliveryRegulationText(
-                                            cartReference
-                                          ) &&
-                                          !isDeliveryRegulationText(
-                                            cartDescription
-                                          )
-                                        );
-                                      }
-                                    );
+                                    const filtered = g.items || [];
                                     const totalPages = Math.max(
                                       1,
                                       Math.ceil(filtered.length / size)
@@ -5486,22 +5554,7 @@ export default function DashboardPage() {
                                 const gid = g.stripeId;
                                 const size = cartGroupPageSize[gid] ?? 10;
                                 const page = cartGroupPage[gid] ?? 1;
-                                const filtered = (g.items || []).filter(
-                                  (c: any) => {
-                                    const cartReference = String(
-                                      c?.product_reference || ''
-                                    ).trim();
-                                    const cartDescription = String(
-                                      c?.description || ''
-                                    ).trim();
-                                    return (
-                                      !isDeliveryRegulationText(
-                                        cartReference
-                                      ) &&
-                                      !isDeliveryRegulationText(cartDescription)
-                                    );
-                                  }
-                                );
+                                const filtered = g.items || [];
                                 const totalPages = Math.max(
                                   1,
                                   Math.ceil(filtered.length / size)
@@ -5607,73 +5660,7 @@ export default function DashboardPage() {
               </p>
               <div className='flex items-baseline space-x-2 mb-4'>
                 <span className='text-2xl font-bold text-gray-900'>
-                  {(() => {
-                    const payoutRaw = String(
-                      store?.payout_created_at || ''
-                    ).trim();
-                    const payoutMs = payoutRaw
-                      ? new Date(payoutRaw).getTime()
-                      : NaN;
-                    const hasStart =
-                      Number.isFinite(payoutMs) && Number(payoutMs) > 0;
-
-                    let storeEarningsCents = 0;
-                    let stripeFeesCents = 0;
-                    (shipments || []).forEach(s => {
-                      const createdAt = String(s.created_at || '').trim();
-                      const createdMs = createdAt
-                        ? new Date(createdAt).getTime()
-                        : NaN;
-                      const status = String(s.status || '').toUpperCase();
-                      if (hasStart) {
-                        if (!Number.isFinite(createdMs)) return;
-                        if (createdMs < Number(payoutMs)) {
-                          if (status !== 'RETURNED') return;
-                          const dRaw = String(
-                            (s as any)?.delivery_date || ''
-                          ).trim();
-                          const dMs = dRaw ? new Date(dRaw).getTime() : NaN;
-                          if (!Number.isFinite(dMs)) return;
-                          if (dMs < Number(payoutMs)) return;
-                        }
-                      }
-
-                      const isFinalDestination = Boolean(
-                        (s as any)?.is_final_destination
-                      );
-                      const earningsRaw = Number(s.store_earnings_amount || 0);
-                      const earnings = Number.isFinite(earningsRaw)
-                        ? Math.max(0, Math.round(earningsRaw))
-                        : 0;
-                      if (status === 'RETURNED') {
-                        if (createdMs < Number(payoutMs)) {
-                          storeEarningsCents -= earnings;
-                        }
-                      } else if (isFinalDestination && status !== 'CANCELLED') {
-                        storeEarningsCents += earnings;
-                      }
-
-                      const feesRaw = Number(s.stripe_fees || 0);
-                      const fees = Number.isFinite(feesRaw)
-                        ? Math.max(0, Math.round(feesRaw))
-                        : 0;
-                      if (
-                        isFinalDestination ||
-                        status === 'CANCELLED' ||
-                        status === 'RETURNED'
-                      ) {
-                        stripeFeesCents += fees;
-                      }
-                    });
-
-                    const platformBaseCents = Math.max(0, storeEarningsCents);
-                    const payliveFeeCents = Math.round(
-                      platformBaseCents * 0.015
-                    );
-                    const finalCents =
-                      storeEarningsCents - stripeFeesCents - payliveFeeCents;
-                    return (finalCents / 100).toFixed(2);
-                  })()}
+                  {(computeWalletNetPayoutCents() / 100).toFixed(2)}
                 </span>
                 <span className='text-gray-700'>€ total net</span>
               </div>

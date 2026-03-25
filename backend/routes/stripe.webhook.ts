@@ -1449,7 +1449,9 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                         const paid = Math.max(0, Math.round(netAmount || 0));
                         const creditApplied = Math.max(
                           0,
-                          Math.round(Number(effectiveCustomerCreditAppliedCents || 0)),
+                          Math.round(
+                            Number(effectiveCustomerCreditAppliedCents || 0),
+                          ),
                         );
                         const tempApplied = Math.max(
                           0,
@@ -1481,7 +1483,9 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                         const paid = Math.max(0, Math.round(ar));
                         const creditApplied = Math.max(
                           0,
-                          Math.round(Number(effectiveCustomerCreditAppliedCents || 0)),
+                          Math.round(
+                            Number(effectiveCustomerCreditAppliedCents || 0),
+                          ),
                         );
                         const tempApplied = Math.max(
                           0,
@@ -1519,7 +1523,9 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
                     const paid = Math.max(0, Math.round(ar));
                     const creditApplied = Math.max(
                       0,
-                      Math.round(Number(effectiveCustomerCreditAppliedCents || 0)),
+                      Math.round(
+                        Number(effectiveCustomerCreditAppliedCents || 0),
+                      ),
                     );
                     const tempApplied = Math.max(
                       0,

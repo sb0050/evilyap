@@ -593,9 +593,11 @@ router.get("/store/:slug", async (req, res) => {
       return res.status(404).json({ error: "Boutique introuvable" });
     }
     const storeId = (storeRow as any)?.id;
-    const cartsSelectWithWeight =
-      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, recap_sent_at, weight";
-    const cartsSelectWithoutWeight =
+    const cartsSelectWithWeightAndPaymentId =
+      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, recap_sent_at, weight, payment_id";
+    const cartsSelectWithPaymentId =
+      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, recap_sent_at, payment_id";
+    const cartsSelectWithoutWeightAndPaymentId =
       "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, recap_sent_at";
 
     let carts: any[] | null = null;
@@ -603,7 +605,7 @@ router.get("/store/:slug", async (req, res) => {
     {
       const resp = await supabase
         .from("carts")
-        .select(cartsSelectWithWeight)
+        .select(cartsSelectWithWeightAndPaymentId)
         .eq("store_id", storeId)
         .order("id", { ascending: false });
       carts = resp.data as any;
@@ -612,11 +614,20 @@ router.get("/store/:slug", async (req, res) => {
     if (error && isMissingColumnError(error, "weight")) {
       const resp2 = await supabase
         .from("carts")
-        .select(cartsSelectWithoutWeight)
+        .select(cartsSelectWithPaymentId)
         .eq("store_id", storeId)
         .order("id", { ascending: false });
       carts = resp2.data as any;
       error = resp2.error;
+    }
+    if (error && isMissingColumnError(error, "payment_id")) {
+      const resp3 = await supabase
+        .from("carts")
+        .select(cartsSelectWithoutWeightAndPaymentId)
+        .eq("store_id", storeId)
+        .order("id", { ascending: false });
+      carts = resp3.data as any;
+      error = resp3.error;
     }
     if (error) {
       return res.status(500).json({ error: error.message });
