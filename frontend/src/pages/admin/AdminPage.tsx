@@ -12,6 +12,10 @@ import { apiPost } from '../../utils/api';
 export default function AdminPage() {
   const { user } = useUser();
   const { getToken } = useAuth();
+  const role = String(user?.publicMetadata?.role || '')
+    .trim()
+    .toLowerCase();
+  const isAdmin = role === 'admin';
 
   const [activeTab, setActiveTab] = useState<'prospection' | 'demo'>(
     'prospection'
@@ -31,6 +35,10 @@ export default function AdminPage() {
 
   const sendProspect = async () => {
     setProspectResult(null);
+    if (!isAdmin) {
+      setProspectResult({ error: 'Accès refusé' });
+      return;
+    }
     const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(prospectEmail);
     if (!valid) {
       setProspectResult({ error: 'Email invalide' });
@@ -60,6 +68,10 @@ export default function AdminPage() {
 
   const sendDemo = async () => {
     setDemoResult(null);
+    if (!isAdmin) {
+      setDemoResult({ error: 'Accès refusé' });
+      return;
+    }
     const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(demoEmail);
     if (!valid) {
       setDemoResult({ error: 'Email invalide' });
@@ -98,6 +110,16 @@ export default function AdminPage() {
         <div className='fixed top-4 right-4 z-50'>
           <UserButton />
         </div>
+        {!isAdmin ? (
+          <div className='max-w-2xl mx-auto px-4 py-10'>
+            <div className='bg-white rounded-lg shadow p-6'>
+              <h1 className='text-2xl font-bold text-gray-900'>Accès refusé</h1>
+              <p className='text-gray-600 mt-2'>
+                Cette page est réservée aux administrateurs.
+              </p>
+            </div>
+          </div>
+        ) : (
         <div className='max-w-2xl mx-auto px-4 py-10'>
           <div className='mb-6'>
             <h1 className='text-2xl font-bold text-gray-900'>Admin</h1>
@@ -212,6 +234,7 @@ export default function AdminPage() {
             )}
           </div>
         </div>
+        )}
       </SignedIn>
       <SignedOut>
         <RedirectToSignIn />

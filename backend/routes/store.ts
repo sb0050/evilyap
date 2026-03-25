@@ -214,6 +214,43 @@ router.get("/check-owner-by-stripe/:stripeId", async (req, res) => {
   }
 });
 
+// GET /api/stores/check-owner-by-clerk/:clerkId - Vérifier si un clerk_id existe comme propriétaire
+router.get("/check-owner-by-clerk/:clerkId", async (req, res) => {
+  try {
+    const clerkId = String(req.params?.clerkId || "").trim();
+
+    if (!clerkId) {
+      return res.status(400).json({ error: "clerkId requis" });
+    }
+
+    const { data, error } = await supabase
+      .from("stores")
+      .select("name, owner_email, slug")
+      .eq("clerk_id", clerkId)
+      .single();
+
+    if (error) {
+      if (error.code === "PGRST116") {
+        return res.json({ exists: false });
+      }
+      console.error("Erreur Supabase:", error);
+      return res
+        .status(500)
+        .json({ error: "Erreur lors de la vérification du clerkId" });
+    }
+
+    return res.json({
+      exists: true,
+      storeName: data.name,
+      ownerEmail: data.owner_email,
+      slug: (data as any)?.slug,
+    });
+  } catch (error) {
+    console.error("Erreur serveur:", error);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
 // POST /api/stores - Créer une nouvelle boutique
 router.post("/", async (req, res) => {
   try {

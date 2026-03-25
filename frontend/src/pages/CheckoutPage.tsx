@@ -4357,6 +4357,8 @@ function CheckoutForm({
         setSelectedStockItem(s);
         setStockSuggestionsOpen(false);
         setFormData((prev: any) => ({ ...prev, reference: '' }));
+        setAmount(0);
+        setAmountInput('');
         return;
       }
 
@@ -4450,6 +4452,8 @@ function CheckoutForm({
       setSelectedStockItem(s);
       setStockSuggestionsOpen(false);
       setFormData((prev: any) => ({ ...prev, reference: '' }));
+      setAmount(0);
+      setAmountInput('');
     } catch (e: any) {
       const msg = e?.message || "Erreur lors de l'ajout au panier";
       setPaymentError(msg);

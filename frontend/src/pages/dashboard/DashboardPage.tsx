@@ -58,6 +58,11 @@ const isDeliveryRegulationText = (text: unknown) => {
   return /\b(?:regulation|regularisation)\s+livraison\b/i.test(normalized);
 };
 
+const isVisibleCartItem = (it: any) =>
+  (it as any)?.payment_id == null &&
+  !isDeliveryRegulationText((it as any)?.product_reference) &&
+  !isDeliveryRegulationText((it as any)?.description);
+
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
 // Slugification supprimée côté frontend; on utilise le backend
 
@@ -5178,11 +5183,13 @@ export default function DashboardPage() {
 
               {(() => {
                 const groupsMap: Record<string, any[]> = {};
-                (storeCarts || []).forEach((c: any) => {
-                  const key = String(c.customer_stripe_id || '');
-                  if (!groupsMap[key]) groupsMap[key] = [];
-                  groupsMap[key].push(c);
-                });
+                (storeCarts || [])
+                  .filter(isVisibleCartItem)
+                  .forEach((c: any) => {
+                    const key = String(c.customer_stripe_id || '');
+                    if (!groupsMap[key]) groupsMap[key] = [];
+                    groupsMap[key].push(c);
+                  });
                 const groups = Object.entries(groupsMap).map(
                   ([stripeId, items]) => {
                     const user = clerkUsersByStripeId[stripeId] || null;
@@ -5445,24 +5452,7 @@ export default function DashboardPage() {
                                     const gid = g.stripeId;
                                     const size = cartGroupPageSize[gid] ?? 10;
                                     const page = cartGroupPage[gid] ?? 1;
-                                    const filtered = (g.items || []).filter(
-                                      (c: any) => {
-                                        const cartReference = String(
-                                          c?.product_reference || ''
-                                        ).trim();
-                                        const cartDescription = String(
-                                          c?.description || ''
-                                        ).trim();
-                                        return (
-                                          !isDeliveryRegulationText(
-                                            cartReference
-                                          ) &&
-                                          !isDeliveryRegulationText(
-                                            cartDescription
-                                          )
-                                        );
-                                      }
-                                    );
+                                    const filtered = g.items || [];
                                     const totalPages = Math.max(
                                       1,
                                       Math.ceil(filtered.length / size)
@@ -5564,22 +5554,7 @@ export default function DashboardPage() {
                                 const gid = g.stripeId;
                                 const size = cartGroupPageSize[gid] ?? 10;
                                 const page = cartGroupPage[gid] ?? 1;
-                                const filtered = (g.items || []).filter(
-                                  (c: any) => {
-                                    const cartReference = String(
-                                      c?.product_reference || ''
-                                    ).trim();
-                                    const cartDescription = String(
-                                      c?.description || ''
-                                    ).trim();
-                                    return (
-                                      !isDeliveryRegulationText(
-                                        cartReference
-                                      ) &&
-                                      !isDeliveryRegulationText(cartDescription)
-                                    );
-                                  }
-                                );
+                                const filtered = g.items || [];
                                 const totalPages = Math.max(
                                   1,
                                   Math.ceil(filtered.length / size)

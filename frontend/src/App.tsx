@@ -4,6 +4,7 @@ import {
   SignedOut,
   RedirectToSignIn,
   RedirectToSignUp,
+  useUser,
 } from '@clerk/clerk-react';
 import {
   BrowserRouter as Router,
@@ -29,6 +30,20 @@ import { useEffect } from 'react';
 import DashboardPage from './pages/dashboard/DashboardPage';
 import StorePage from './pages/StorePage';
 import NeedADemoPage from './pages/NeedADemoPage';
+
+const AdminRouteGuard: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
+  const { user, isLoaded } = useUser();
+  if (!isLoaded) return null;
+  const role = String(user?.publicMetadata?.role || '')
+    .trim()
+    .toLowerCase();
+  if (role !== 'admin') {
+    return <Navigate to='/' replace />;
+  }
+  return <>{children}</>;
+};
 
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -184,7 +199,9 @@ function App() {
               element={
                 <>
                   <SignedIn>
-                    <AdminPage />
+                    <AdminRouteGuard>
+                      <AdminPage />
+                    </AdminRouteGuard>
                   </SignedIn>
                   <SignedOut>
                     <RedirectToSignUp />

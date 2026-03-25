@@ -2,9 +2,34 @@ import express from "express";
 import nodemailer from "nodemailer";
 import fs from "fs";
 import path from "path";
-import { getAuth } from "@clerk/express";
+import { clerkClient, getAuth } from "@clerk/express";
 
 const router = express.Router();
+
+const requireAdmin = async (
+  req: express.Request,
+  res: express.Response,
+): Promise<{ userId: string } | null> => {
+  const auth = getAuth(req);
+  if (!auth?.isAuthenticated || !auth.userId) {
+    res.status(401).json({ error: "Unauthorized" });
+    return null;
+  }
+  try {
+    const user = await clerkClient.users.getUser(auth.userId);
+    const role = String((user as any)?.publicMetadata?.role || "")
+      .trim()
+      .toLowerCase();
+    if (role !== "admin") {
+      res.status(403).json({ error: "Forbidden" });
+      return null;
+    }
+    return { userId: String(auth.userId) };
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || "Erreur interne" });
+    return null;
+  }
+};
 
 const createProspectTransporter = () => {
   const host = process.env.SMTP_HOST || "";
@@ -28,10 +53,8 @@ const createProspectTransporter = () => {
 
 router.post("/prospect", async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated || !auth.userId) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
 
     const { email } = req.body || {};
     const to = (email || "").trim();
@@ -140,10 +163,8 @@ router.post("/prospect", async (req, res) => {
 
 router.post("/demo", async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated || !auth.userId) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
 
     const { email, slug } = req.body || {};
     const to = (email || "").trim();

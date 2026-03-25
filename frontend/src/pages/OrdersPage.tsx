@@ -196,7 +196,16 @@ export default function OrdersPage() {
             style={{ top: pos.top, left: pos.left, position: 'fixed' }}
             className='mt-0 w-80 rounded-md border border-gray-200 bg-white shadow-lg p-3 z-50'
           >
-            <div className='flex items-start gap-2'>
+            <button
+              type='button'
+              onClick={() => {
+                const slug = String(s.store?.slug || '').trim();
+                if (!slug) return;
+                const href = `${window.location.origin}/s/${encodeURIComponent(slug)}`;
+                window.location.href = href;
+              }}
+              className='w-full text-left flex items-start gap-2 rounded hover:bg-gray-50 p-1 -m-1'
+            >
               {(() => {
                 const cloudBase = (
                   import.meta.env.VITE_CLOUDFRONT_URL ||
@@ -223,7 +232,7 @@ export default function OrdersPage() {
                   {s.store?.description || ''}
                 </div>
               </div>
-            </div>
+            </button>
             <div className='mt-3 space-y-2 text-sm'>
               <div>
                 <div className='text-gray-500'>Adresse</div>
