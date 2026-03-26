@@ -268,7 +268,7 @@ router.post("/rdv-demo", async (req, res) => {
     </body>
     </html>`;
 
-    const text = `${greeting}\n\nRavi d’avoir pu échanger avec vous !\n\nPour aller plus loin, je vous propose une démo rapide (10 min) pour vous montrer PayLive en action — directement sur vos cas d’usage.\n\nDeux petites choses pour qu’on cale ça :\n• Quelles sont vos disponibilités cette semaine ou la semaine prochaine ?\n• Quel est votre numéro de téléphone pour qu’on reste en contact facilement ?\n\nHâte de vous faire découvrir la solution !\n\nÀ très vite,\nL’équipe PayLive.cc`;
+    const text = `${greeting}\n\nPour aller plus loin, je vous propose une démo rapide (10 min) pour vous montrer PayLive en action — directement sur vos cas d’usage.\n\nDeux petites choses pour qu’on cale ça :\n• Quelles sont vos disponibilités cette semaine ou la semaine prochaine ?\n• Quel est votre numéro de téléphone pour qu’on reste en contact facilement ?\n\nHâte de vous faire découvrir la solution !\n\nÀ très vite,\nL’équipe PayLive.cc`;
 
     const fromEmail = process.env.SMTP_USER || "noreply@paylive.cc";
     const attachments: any[] = [];
@@ -319,13 +319,7 @@ router.post("/demo", async (req, res) => {
     const transporter = createProspectTransporter();
     const subject = `${firstName}, suite à notre échange, retrouvez ci-dessous le tutoriel et le lien vers votre boutique.`;
     const greeting = `Bonjour ${firstName},`;
-    const demoLinkRaw = String(process.env.DEMO_SELLER_LINK || "").trim();
-    if (!demoLinkRaw) {
-      return res.status(500).json({ error: "DEMO_SELLER_LINK manquant" });
-    }
-    const demoLink = /^https?:\/\//i.test(demoLinkRaw)
-      ? demoLinkRaw
-      : `https://${demoLinkRaw}`;
+    const demoLink = "https://paylive.cc/demo-vendeur";
     const storeLink = `https://paylive.cc/s/${slugSafe}`;
     const checkoutLink = `https://paylive.cc/c/${slugSafe}`;
     const logoPath = path.resolve(process.cwd(), "public", "black.png");
@@ -354,10 +348,7 @@ router.post("/demo", async (req, res) => {
             <span style="font-weight:700;">${greeting}</span>
           </div>
           <p style="margin:14px 0 0 0;font-size:16px;line-height:1.6;">
-            Ravi d’avoir pu échanger avec vous !
-          </p>
-          <p style="margin:14px 0 0 0;font-size:16px;line-height:1.6;">
-            Comme promis, voici le lien vers notre tutoriel
+            Comme convenu, voici le lien vers notre tutoriel
           </p>
           <p style="margin:18px 0 0 0;font-size:17px;line-height:1.6;font-weight:700;">
             👉 <a href="${demoLink}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline;">Cliquez ici pour accéder au tutoriel</a>
@@ -390,7 +381,7 @@ router.post("/demo", async (req, res) => {
     </body>
     </html>`;
 
-    const text = `${greeting}\n\nRavi d’avoir pu échanger avec vous !\n\nComme promis, voici le lien vers notre tutoriel\n\n👉 Cliquez ici pour accéder au tutoriel : ${demoLink}\n\nJ'ai également créé votre boutique personnalisée avec l'ensemble de vos articles, vous pouvez y accéder ici :\n\n🛍️ Lien vers votre boutique : ${storeLink}\n\nEt voici le lien à partager directement à vos clientes lors de vos prochains lives afin qu'elles puissent constituer leurs paniers et procéder au paiement :\n\n📲 Lien à partager en live : ${checkoutLink}\n\nN’hésitez pas à me contacter si vous avez des questions !\n\nÀ très vite,\nL’équipe PayLive.cc`;
+    const text = `${greeting}\n\nComme convenu, voici le lien vers notre tutoriel\n\n👉 Cliquez ici pour accéder au tutoriel : ${demoLink}\n\nJ'ai également créé votre boutique personnalisée avec l'ensemble de vos articles, vous pouvez y accéder ici :\n\n🛍️ Lien vers votre boutique : ${storeLink}\n\nEt voici le lien à partager directement à vos clientes lors de vos prochains lives afin qu'elles puissent constituer leurs paniers et procéder au paiement :\n\n📲 Lien à partager en live : ${checkoutLink}\n\nN’hésitez pas à me contacter si vous avez des questions !\n\nÀ très vite,\nL’équipe PayLive.cc`;
 
     const fromEmail = process.env.SMTP_USER || "noreply@paylive.cc";
     const attachments: any[] = [];

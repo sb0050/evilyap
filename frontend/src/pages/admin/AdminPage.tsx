@@ -339,8 +339,6 @@ Je serais ravie de vous montrer concrètement comment ça fonctionne, en 10 minu
                     <pre className='mt-2 whitespace-pre-wrap text-sm text-gray-700 font-sans'>
                       {`Bonjour ${String(rdvName || '').trim() || '[Prénom]'},
 
-Ravi d’avoir pu échanger avec vous !
-
 Pour aller plus loin, je vous propose une démo rapide (10 min) pour vous montrer PayLive en action — directement sur vos cas d’usage.
 
 Deux petites choses pour qu’on cale ça :
@@ -416,8 +414,6 @@ Hâte de vous faire découvrir la solution !
                     </div>
                     <pre className='mt-2 whitespace-pre-wrap text-sm text-gray-700 font-sans'>
                       {`Bonjour ${String(demoName || '').trim() || '[Prénom]'},
-
-Ravi d’avoir pu échanger avec vous !
 
 Comme promis, voici le lien vers notre tutoriel
 👉 Cliquez ici pour accéder au tutoriel

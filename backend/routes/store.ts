@@ -653,7 +653,7 @@ router.post("/need-a-demo", async (req, res) => {
           </div>
         </body>
         </html>`;
-        const text = `${greeting}\n\nRavi d’avoir pu échanger avec vous !\n\nPour aller plus loin, je vous propose une démo rapide (30 min) pour vous montrer PayLive en action — directement sur vos cas d’usage.\n\nDeux petites choses pour qu’on cale ça :\n• Quelles sont vos disponibilités cette semaine ou la semaine prochaine ?\n• Quel est votre numéro de téléphone pour qu’on reste en contact facilement ?\n\nHâte de vous faire découvrir la solution !\n\nÀ très vite,\nL’équipe PayLive.cc`;
+        const text = `${greeting}\n\nPour aller plus loin, je vous propose une démo rapide (30 min) pour vous montrer PayLive en action — directement sur vos cas d’usage.\n\nDeux petites choses pour qu’on cale ça :\n• Quelles sont vos disponibilités cette semaine ou la semaine prochaine ?\n• Quel est votre numéro de téléphone pour qu’on reste en contact facilement ?\n\nHâte de vous faire découvrir la solution !\n\nÀ très vite,\nL’équipe PayLive.cc`;
         const fromEmail = process.env.SMTP_USER || "noreply@paylive.cc";
         const attachments: any[] = [];
         if (hasLogo) {

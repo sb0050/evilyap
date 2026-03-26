@@ -45,6 +45,13 @@ const AdminRouteGuard: React.FC<{ children: React.ReactNode }> = ({
   return <>{children}</>;
 };
 
+const ExternalRedirectPage: React.FC<{ to: string }> = ({ to }) => {
+  useEffect(() => {
+    window.location.replace(to);
+  }, [to]);
+  return null;
+};
+
 function App() {
   const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
   const LocationTracker: React.FC = () => {
@@ -82,6 +89,24 @@ function App() {
           <SpeedInsights />
           <Routes>
             <Route path='/' element={<LandingPage />} />
+            <Route
+              path='/demo-vendeur'
+              element={
+                <ExternalRedirectPage to='https://app.storylane.io/share/mdfkvdls5bg4' />
+              }
+            />
+            <Route
+              path='/demo-client'
+              element={
+                <ExternalRedirectPage to='https://app.storylane.io/share/imptycbxswra' />
+              }
+            />
+            <Route
+              path='/demo-client-mobile'
+              element={
+                <ExternalRedirectPage to='https://app.storylane.io/share/arwuuwthb6nk' />
+              }
+            />
             {/* Pages publiques: PDF */}
             <Route path='/privacy_policy' element={<PrivacyPolicy />} />
             <Route
