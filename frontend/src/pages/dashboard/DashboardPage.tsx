@@ -1,6 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
+import {
+  ArcElement,
+  BarElement,
+  CategoryScale,
+  Chart as ChartJS,
+  Legend,
+  LinearScale,
+  PointElement,
+  Tooltip,
+} from 'chart.js';
+import { Bar, Doughnut } from 'react-chartjs-2';
 import Header from '../../components/Header';
 import Spinner from '../../components/Spinner';
 import {
@@ -23,6 +34,7 @@ import {
   Coins,
   Dice5,
   Check,
+  BarChart3,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -156,12 +168,32 @@ type StockApiItem = {
   prices: any[];
 };
 
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  BarElement,
+  ArcElement,
+  Tooltip,
+  Legend
+);
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { getToken } = useAuth();
   const { user } = useUser();
   const [store, setStore] = useState<Store | null>(null);
   const [shipments, setShipments] = useState<Shipment[]>([]);
+  const [statsShipments, setStatsShipments] = useState<Shipment[]>([]);
+  const [statsOpenCartsCount, setStatsOpenCartsCount] = useState<number | null>(
+    null
+  );
+  const [statsLoading, setStatsLoading] = useState<boolean>(false);
+  const [statsReloading, setStatsReloading] = useState<boolean>(false);
+  const [statsAttemptedSlug, setStatsAttemptedSlug] = useState<string | null>(
+    null
+  );
+  const [statsError, setStatsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [resolvedSlug, setResolvedSlug] = useState<string | null>(null);
@@ -199,6 +231,7 @@ export default function DashboardPage() {
   // Navigation des sections du dashboard
   const [section, setSection] = useState<
     | 'infos'
+    | 'stats'
     | 'wallet'
     | 'stock'
     | 'sales'
@@ -1529,6 +1562,85 @@ export default function DashboardPage() {
     }
   };
 
+  const fetchStatsShipments = async (options?: {
+    silent?: boolean;
+    background?: boolean;
+  }) => {
+    const slug = store?.slug;
+    if (!slug) return;
+    const background = Boolean(options?.background);
+    const silent = Boolean(options?.silent);
+    try {
+      setStatsError(null);
+      if (background) setStatsReloading(true);
+      else setStatsLoading(true);
+      const token = await getToken();
+      const statsUrl = new URL(
+        `${apiBase}/api/shipments/store/${encodeURIComponent(slug)}`
+      );
+      statsUrl.searchParams.set('_ts', String(Date.now()));
+      const shipResp = await fetch(
+        statsUrl.toString(),
+        {
+          cache: 'no-store',
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
+      );
+      const shipJson = await shipResp.json().catch(() => ({}));
+      if (!shipResp.ok) {
+        const msg = shipJson?.error || 'Erreur chargement statistiques';
+        throw new Error(typeof msg === 'string' ? msg : 'Erreur chargement statistiques');
+      }
+      if (!Array.isArray(shipJson?.shipments)) {
+        throw new Error('Réponse statistiques invalide');
+      }
+      setStatsShipments(shipJson.shipments);
+      setShipments(shipJson.shipments);
+      try {
+        const cartsUrl = new URL(
+          `${apiBase}/api/carts/store/${encodeURIComponent(slug)}`
+        );
+        cartsUrl.searchParams.set('_ts', String(Date.now()));
+        const cartsResp = await fetch(cartsUrl.toString(), {
+          cache: 'no-store',
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        });
+        const cartsJson = await cartsResp.json().catch(() => ({}));
+        if (cartsResp.ok && Array.isArray(cartsJson?.carts)) {
+          const openCartGroups = new Set<string>();
+          (cartsJson.carts as any[]).forEach((c: any) => {
+            const stripeId = String(c?.customer_stripe_id || '').trim();
+            if (!stripeId) return;
+            const paymentId = String(c?.payment_id || '').trim();
+            if (paymentId) return;
+            openCartGroups.add(stripeId);
+          });
+          setStatsOpenCartsCount(openCartGroups.size);
+        } else {
+          setStatsOpenCartsCount(null);
+        }
+      } catch {
+        setStatsOpenCartsCount(null);
+      }
+      setStatsAttemptedSlug(slug);
+      if (background) showToast('Statistiques rechargées', 'success');
+    } catch (e: any) {
+      const rawMsg = e?.message || 'Erreur chargement statistiques';
+      setStatsError(rawMsg);
+      if (!silent) {
+        showToast(rawMsg, 'error');
+      }
+      setStatsAttemptedSlug(slug);
+    } finally {
+      if (background) setStatsReloading(false);
+      else setStatsLoading(false);
+    }
+  };
+
   const handleReloadSales = async () => {
     try {
       const slug = store?.slug;
@@ -1554,7 +1666,6 @@ export default function DashboardPage() {
         Array.isArray(shipJson?.shipments) ? shipJson.shipments : []
       );
       showToast('Ventes et Clients rechargés', 'success');
-      // Réinitialiser la pagination si la page dépasse le total
       setPage(1);
     } catch (e: any) {
       const rawMsg = e?.message || 'Erreur inconnue';
@@ -2138,6 +2249,21 @@ export default function DashboardPage() {
     if (stockLoadedSlug === slug) return;
     fetchStockProducts({ silent: true }).catch(() => {});
   }, [section, store?.slug, stockLoading, stockLoadedSlug]);
+
+  useEffect(() => {
+    const slug = store?.slug;
+    if (section !== 'stats') return;
+    if (!slug) return;
+    if (statsLoading || statsReloading) return;
+    if (statsAttemptedSlug === slug) return;
+    fetchStatsShipments({ silent: false }).catch(() => {});
+  }, [
+    section,
+    store?.slug,
+    statsLoading,
+    statsReloading,
+    statsAttemptedSlug,
+  ]);
 
   const walletTableTotalPages = Math.max(
     1,
@@ -2834,7 +2960,7 @@ export default function DashboardPage() {
       });
       return next;
     });
-  }, [shipments]);
+  }, [statsShipments]);
 
   useEffect(() => {
     const filteredLength = (shipments || []).filter(s => {
@@ -2878,7 +3004,12 @@ export default function DashboardPage() {
 
   // Chargement des clients Stripe basés sur les customer_stripe_id des shipments
   useEffect(() => {
-    if (section !== 'clients' && section !== 'sales' && section !== 'wallet')
+    if (
+      section !== 'clients' &&
+      section !== 'sales' &&
+      section !== 'wallet' &&
+      section !== 'stats'
+    )
       return;
     const ids = (() => {
       if (section === 'wallet') {
@@ -2887,6 +3018,13 @@ export default function DashboardPage() {
             (walletTransactions || [])
               .map(t => (t as any)?.customer?.id)
               .filter(Boolean)
+          )
+        ) as string[];
+      }
+      if (section === 'stats') {
+        return Array.from(
+          new Set(
+            (statsShipments || []).map(s => s.customer_stripe_id).filter(Boolean)
           )
         ) as string[];
       }
@@ -2930,7 +3068,7 @@ export default function DashboardPage() {
         });
       })
       .finally(() => setCustomersLoading(false));
-  }, [section, shipments, walletTransactions]);
+  }, [section, shipments, statsShipments, walletTransactions]);
 
   // Charger les réseaux sociaux (comptes externes) Clerk pour les clients Stripe qui exposent clerkUserId
   useEffect(() => {
@@ -3928,6 +4066,342 @@ export default function DashboardPage() {
     }
   };
 
+  const getShipmentCountryCode = (s: Shipment) => {
+    const candidates = [
+      (s as any)?.dropoff_point?.country,
+      (s as any)?.pickup_point?.country,
+      (s as any)?.boxtal_shipping_json?.content?.recipient?.address?.country,
+      (s as any)?.boxtal_shipping_json?.content?.shipper?.address?.country,
+    ];
+    const raw = candidates.find(v => String(v || '').trim()) || '';
+    const code = String(raw).trim().toUpperCase();
+    return code || 'INCONNU';
+  };
+
+  const getCountryLabel = (code?: string | null) => {
+    const c = String(code || '').trim().toUpperCase();
+    const map: Record<string, string> = {
+      FR: 'France',
+      BE: 'Belgique',
+      CH: 'Suisse',
+      LU: 'Luxembourg',
+      DE: 'Allemagne',
+      ES: 'Espagne',
+      IT: 'Italie',
+      NL: 'Pays-Bas',
+      PT: 'Portugal',
+      GB: 'Royaume-Uni',
+      UK: 'Royaume-Uni',
+    };
+    return map[c] || c || 'Inconnu';
+  };
+
+  const shipmentStats = useMemo(() => {
+    const rows = Array.isArray(statsShipments) ? statsShipments : [];
+    const statusCounts: Record<string, number> = {};
+    const dailyCounts: Record<string, number> = {};
+    const networkCounts: Record<string, number> = {};
+    const countryCounts: Record<string, number> = {};
+    const customerOrderCountById: Record<string, number> = {};
+    let deliveredCount = 0;
+    let cancelledCount = 0;
+    let returnedCount = 0;
+    let pendingCount = 0;
+    let pickupCount = 0;
+    let homeCount = 0;
+    let storePickupCount = 0;
+    let totalSpentCents = 0;
+    let totalEarningsCents = 0;
+    let totalDeliveryCostEur = 0;
+
+    rows.forEach(s => {
+      const status = String(s.status || 'UNKNOWN')
+        .trim()
+        .toUpperCase();
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+
+      if (status === 'DELIVERED') deliveredCount += 1;
+      if (status === 'CANCELLED') cancelledCount += 1;
+      if (status === 'RETURNED') returnedCount += 1;
+      if (status === 'PENDING') pendingCount += 1;
+
+      const method = String(s.delivery_method || '')
+        .trim()
+        .toLowerCase();
+      if (method === 'pickup_point') {
+        pickupCount += 1;
+      } else if (method === 'home_delivery') {
+        homeCount += 1;
+      } else if (method === 'store_pickup') {
+        storePickupCount += 1;
+      }
+
+      const network = String(s.delivery_network || 'INCONNU')
+        .trim()
+        .toUpperCase();
+      networkCounts[network] = (networkCounts[network] || 0) + 1;
+
+      const country = getShipmentCountryCode(s);
+      countryCounts[country] = (countryCounts[country] || 0) + 1;
+
+      const spent = Number(s.customer_spent_amount || 0);
+      if (Number.isFinite(spent)) totalSpentCents += spent;
+
+      const customerId = String(s.customer_stripe_id || '').trim();
+      if (customerId) {
+        customerOrderCountById[customerId] =
+          (customerOrderCountById[customerId] || 0) + 1;
+      }
+
+      const earnings = Number(s.store_earnings_amount || 0);
+      if (Number.isFinite(earnings)) totalEarningsCents += earnings;
+
+      const deliveryCost = Number(s.delivery_cost || 0);
+      if (Number.isFinite(deliveryCost)) totalDeliveryCostEur += deliveryCost;
+
+
+      const created = s.created_at ? new Date(s.created_at) : null;
+      const validDate = created && Number.isFinite(created.getTime());
+      if (validDate) {
+        const key = created.toISOString().slice(0, 10);
+        dailyCounts[key] = (dailyCounts[key] || 0) + 1;
+
+
+      }
+    });
+
+    const totalCount = rows.length;
+    const deliveredRate = totalCount
+      ? Math.round((deliveredCount / totalCount) * 100)
+      : 0;
+    const cancelledOrReturnedCount = cancelledCount + returnedCount;
+    const cancelledRate = totalCount
+      ? Math.round((cancelledCount / totalCount) * 100)
+      : 0;
+    const returnedRate = totalCount
+      ? Math.round((returnedCount / totalCount) * 100)
+      : 0;
+    const cancelledOrReturnedRate = totalCount
+      ? Math.round((cancelledOrReturnedCount / totalCount) * 100)
+      : 0;
+    const topStatuses = Object.entries(statusCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+    const last7Days = Array.from({ length: 7 }).map((_, idx) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (6 - idx));
+      const iso = d.toISOString().slice(0, 10);
+      return {
+        iso,
+        label: d.toLocaleDateString('fr-FR', {
+          day: '2-digit',
+          month: '2-digit',
+        }),
+        count: dailyCounts[iso] || 0,
+      };
+    });
+    const last30Days = Array.from({ length: 30 }).map((_, idx) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (29 - idx));
+      const iso = d.toISOString().slice(0, 10);
+      return {
+        iso,
+        label: d.toLocaleDateString('fr-FR', {
+          day: '2-digit',
+          month: '2-digit',
+        }),
+        count: dailyCounts[iso] || 0,
+      };
+    });
+    const shipments7DaysCount = last7Days.reduce((sum, d) => sum + d.count, 0);
+    const shipments30DaysCount = last30Days.reduce((sum, d) => sum + d.count, 0);
+    const topNetworks = Object.entries(networkCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+    const topCountries = Object.entries(countryCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8);
+    const topCustomers = Object.entries(customerOrderCountById)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8);
+
+    return {
+      totalCount,
+      deliveredCount,
+      cancelledCount,
+      returnedCount,
+      pendingCount,
+      cancelledOrReturnedCount,
+      shipments7DaysCount,
+      shipments30DaysCount,
+      pickupCount,
+      homeCount,
+      storePickupCount,
+      totalSpentEur: totalSpentCents / 100,
+      totalEarningsEur: totalEarningsCents / 100,
+      totalDeliveryCostEur,
+      deliveredRate,
+      cancelledRate,
+      returnedRate,
+      cancelledOrReturnedRate,
+      topStatuses,
+      last7Days,
+      last30Days,
+      topNetworks,
+      topCountries,
+      topCustomers,
+    };
+  }, [statsShipments]);
+
+  const statsVolume30ChartData = useMemo(
+    () => ({
+      labels: shipmentStats.last30Days.map(d => d.label),
+      datasets: [
+        {
+          label: 'Expéditions',
+          data: shipmentStats.last30Days.map(d => d.count),
+          backgroundColor: 'rgba(79, 70, 229, 0.75)',
+          borderColor: '#4f46e5',
+          borderWidth: 1,
+          borderRadius: 4,
+        },
+      ],
+    }),
+    [shipmentStats.last30Days]
+  );
+
+  const statsStatusChartData = useMemo(() => {
+    const others = Math.max(
+      0,
+      shipmentStats.totalCount -
+        shipmentStats.deliveredCount -
+        shipmentStats.cancelledCount -
+        shipmentStats.returnedCount -
+        shipmentStats.pendingCount
+    );
+    return {
+      labels: ['Livrées', 'Annulées', 'Retournées', 'En Attente', 'Autres'],
+      datasets: [
+        {
+          data: [
+            shipmentStats.deliveredCount,
+            shipmentStats.cancelledCount,
+            shipmentStats.returnedCount,
+            shipmentStats.pendingCount,
+            others,
+          ],
+          backgroundColor: ['#10b981', '#ef4444', '#f59e0b', '#f97316', '#6366f1'],
+          borderWidth: 0,
+        },
+      ],
+    };
+  }, [
+    shipmentStats.totalCount,
+    shipmentStats.deliveredCount,
+    shipmentStats.cancelledCount,
+    shipmentStats.returnedCount,
+    shipmentStats.pendingCount,
+  ]);
+
+  const statsMethodChartData = useMemo(
+    () => ({
+      labels: ['Point Relais', 'Home', 'Boutique'],
+      datasets: [
+        {
+          data: [
+            shipmentStats.pickupCount,
+            shipmentStats.homeCount,
+            shipmentStats.storePickupCount,
+          ],
+          backgroundColor: ['#2563eb', '#8b5cf6', '#f59e0b'],
+          borderWidth: 0,
+        },
+      ],
+    }),
+    [
+      shipmentStats.pickupCount,
+      shipmentStats.homeCount,
+      shipmentStats.storePickupCount,
+    ]
+  );
+
+  const statsNetworksChartData = useMemo(
+    () => ({
+      labels: shipmentStats.topNetworks.map(([name]) =>
+        getNetworkDescription(name)
+      ),
+      datasets: [
+        {
+          label: 'Expéditions',
+          data: shipmentStats.topNetworks.map(([, count]) => count),
+          backgroundColor: ['#4f46e5', '#7c3aed', '#2563eb', '#06b6d4', '#14b8a6'],
+          borderRadius: 6,
+          maxBarThickness: 40,
+        },
+      ],
+    }),
+    [shipmentStats.topNetworks]
+  );
+
+  const statsCountriesChartData = useMemo(() => {
+    const defaults = ['FR', 'BE', 'CH'];
+    const map = new Map(
+      shipmentStats.topCountries.map(([country, count]) => [
+        String(country || '').trim().toUpperCase(),
+        Number(count || 0),
+      ])
+    );
+
+    const base = defaults.map(code => [code, map.get(code) || 0] as const);
+    const extras = shipmentStats.topCountries
+      .map(([country, count]) => [
+        String(country || '').trim().toUpperCase(),
+        Number(count || 0),
+      ] as const)
+      .filter(([code, count]) => !defaults.includes(code) && count > 0)
+      .slice(0, 5);
+
+    const ordered = [...base, ...extras];
+
+    return {
+      labels: ordered.map(([country]) => getCountryLabel(country)),
+      datasets: [
+        {
+          label: 'Commandes',
+          data: ordered.map(([, count]) => count),
+          backgroundColor: '#16a34a',
+          borderRadius: 6,
+        },
+      ],
+    };
+  }, [shipmentStats.topCountries]);
+
+  const statsTopCustomersChartData = useMemo(
+    () => ({
+      labels: shipmentStats.topCustomers.map(([id], idx) => {
+        const customer = customersMap[id] || null;
+        const fullName = `${customer?.name || customer?.full_name || customer?.fullName || ''}`.trim();
+        const first = `${customer?.first_name || customer?.firstName || ''}`.trim();
+        const last = `${customer?.last_name || customer?.lastName || ''}`.trim();
+        const combined = `${first} ${last}`.trim();
+        const email = `${customer?.email || customer?.email_address || ''}`.trim();
+        return fullName || combined || email || `Client ${idx + 1}`;
+      }),
+      datasets: [
+        {
+          label: 'Commandes',
+          data: shipmentStats.topCustomers.map(([, count]) => Number(count || 0)),
+          backgroundColor: '#0ea5e9',
+          borderRadius: 6,
+          maxBarThickness: 40,
+          barPercentage: 0.55,
+          categoryPercentage: 0.7,
+        },
+      ],
+    }),
+    [shipmentStats.topCustomers, customersMap]
+  );
+
   if (loading) {
     return (
       <div className='min-h-screen bg-gray-50'>
@@ -4113,6 +4587,17 @@ export default function DashboardPage() {
               <RiDiscountPercentFill className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
 
               <span className='truncate'>Code Promo</span>
+            </button>
+            <button
+              onClick={() => setSection('stats')}
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+                section === 'stats'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <BarChart3 className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <span className='truncate'>Statistiques</span>
             </button>
             <button
               onClick={() => setSection('support')}
@@ -4752,6 +5237,403 @@ export default function DashboardPage() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {section === 'stats' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center justify-between mb-4'>
+                <div className='flex items-center'>
+                  <BarChart3 className='w-5 h-5 text-indigo-600 mr-2' />
+                  <h2 className='text-lg font-semibold text-gray-900'>
+                    Statistiques
+                  </h2>
+                </div>
+                <button
+                  onClick={() => fetchStatsShipments({ background: true })}
+                  disabled={statsLoading || statsReloading}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-xs sm:text-sm border ${statsLoading || statsReloading ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 mr-2 ${statsReloading ? 'animate-spin' : ''}`}
+                  />
+                  Rafraîchir
+                </button>
+              </div>
+              <p className='text-sm text-gray-600 mb-6'>
+                Données chargées au clic sur cet onglet puis rechargées via le bouton.
+              </p>
+              {statsLoading && (
+                <div className='mb-6 rounded-md border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm text-indigo-700'>
+                  Chargement des statistiques...
+                </div>
+              )}
+              {!statsLoading && statsError && (
+                <div className='mb-6 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700'>
+                  {statsError}
+                </div>
+              )}
+
+              <div className='grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-6'>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>Expéditions sur 7 jours</p>
+                  <p className='text-2xl font-semibold text-gray-900 mt-1'>
+                    {shipmentStats.shipments7DaysCount.toLocaleString('fr-FR')}
+                  </p>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>Expéditions sur 30 jours</p>
+                  <p className='text-2xl font-semibold text-gray-900 mt-1'>
+                    {shipmentStats.shipments30DaysCount.toLocaleString('fr-FR')}
+                  </p>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>Paniers en cours</p>
+                  <p className='text-2xl font-semibold text-gray-900 mt-1'>
+                    {typeof statsOpenCartsCount === 'number'
+                      ? statsOpenCartsCount.toLocaleString('fr-FR')
+                      : '—'}
+                  </p>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>Livrées</p>
+                  <p className='text-2xl font-semibold text-gray-900 mt-1'>
+                    {shipmentStats.deliveredCount.toLocaleString('fr-FR')}
+                  </p>
+                  <p className='text-xs text-emerald-700 mt-1'>
+                    {shipmentStats.deliveredRate}% du total
+                  </p>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>Annulées</p>
+                  <p className='text-2xl font-semibold text-gray-900 mt-1'>
+                    {shipmentStats.cancelledCount.toLocaleString('fr-FR')}
+                  </p>
+                  <p className='text-xs text-rose-700 mt-1'>
+                    {shipmentStats.cancelledRate}% du total
+                  </p>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>Retournées</p>
+                  <p className='text-2xl font-semibold text-gray-900 mt-1'>
+                    {shipmentStats.returnedCount.toLocaleString('fr-FR')}
+                  </p>
+                  <p className='text-xs text-amber-700 mt-1'>
+                    {shipmentStats.returnedRate}% du total
+                  </p>
+                </div>
+              </div>
+
+              <div className='grid grid-cols-1 lg:grid-cols-2 gap-4'>
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Chiffres business
+                  </h3>
+                  <div className='space-y-2'>
+                    <div className='flex items-center justify-between text-sm'>
+                      <span className='text-gray-600'>Montant payé clients</span>
+                      <span className='font-medium text-gray-900'>
+                        {formatValue(shipmentStats.totalSpentEur)}
+                      </span>
+                    </div>
+                    <div className='flex items-center justify-between text-sm'>
+                      <span className='text-gray-600'>Gains boutique</span>
+                      <span className='font-medium text-gray-900'>
+                        {formatValue(shipmentStats.totalEarningsEur)}
+                      </span>
+                    </div>
+                    <div className='flex items-center justify-between text-sm'>
+                      <span className='text-gray-600'>Frais de livraison</span>
+                      <span className='font-medium text-gray-900'>
+                        {formatValue(shipmentStats.totalDeliveryCostEur)}
+                      </span>
+                    </div>
+
+                    <div className='flex items-center justify-between text-sm'>
+                      <span className='text-gray-600'>Taux de livraison</span>
+                      <span className='font-medium text-gray-900'>
+                        {shipmentStats.deliveredRate}%
+                      </span>
+                    </div>
+
+
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Top statuts
+                  </h3>
+                  <div className='space-y-2'>
+                    {shipmentStats.topStatuses.length === 0 ? (
+                      <p className='text-sm text-gray-500'>Aucune donnée</p>
+                    ) : (
+                      shipmentStats.topStatuses.map(([status, count]) => {
+                        const width = shipmentStats.totalCount
+                          ? Math.max(
+                              6,
+                              Math.round((count / shipmentStats.totalCount) * 100)
+                            )
+                          : 0;
+                        return (
+                          <div key={status}>
+                            <div className='flex items-center justify-between text-xs text-gray-600 mb-1'>
+                              <span className='uppercase'>
+                                {status.replace(/_/g, ' ')}
+                              </span>
+                              <span>{count.toLocaleString('fr-FR')}</span>
+                            </div>
+                            <div className='h-2 w-full rounded-full bg-gray-100 overflow-hidden'>
+                              <div
+                                className='h-2 rounded-full bg-indigo-500'
+                                style={{ width: `${width}%` }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className='grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4'>
+                <div className='rounded-lg border border-gray-200 p-4 xl:col-span-2'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Volume des expéditions sur 30 jours
+                  </h3>
+                  <div className='h-64'>
+                    <Bar
+                      data={statsVolume30ChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                          x: {
+                            ticks: {
+                              autoSkip: false,
+                              maxRotation: 0,
+                              minRotation: 0,
+                              callback: (_value, index) => {
+                                const label = String(
+                                  statsVolume30ChartData.labels[index] || ''
+                                );
+                                const isMobile =
+                                  typeof window !== 'undefined' &&
+                                  window.innerWidth < 640;
+                                if (isMobile && index % 3 !== 0) return '';
+                                return label;
+                              },
+                            },
+                          },
+                          y: {
+                            beginAtZero: true,
+                            ticks: { precision: 0 },
+                          },
+                        },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Performance des statuts
+                  </h3>
+                  <div className='h-64'>
+                    <Doughnut
+                      data={statsStatusChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Répartition méthode de livraison
+                  </h3>
+                  <div className='h-64'>
+                    <Doughnut
+                      data={statsMethodChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4 xl:col-span-2'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Top Network de livraison
+                  </h3>
+                  <div className='h-64'>
+                    <Bar
+                      data={statsNetworksChartData}
+                      options={{
+                        indexAxis: 'x' as const,
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                          x: {
+                            ticks: {
+                              autoSkip: false,
+                              maxRotation: 0,
+                              minRotation: 0,
+                              callback: (_value, index) => {
+                                const label = String(
+                                  statsNetworksChartData.labels[index] || ''
+                                );
+                                const words = label.split(' ');
+                                const lines: string[] = [];
+                                let current = '';
+                                words.forEach(word => {
+                                  const next = current
+                                    ? `${current} ${word}`
+                                    : word;
+                                  if (next.length > 16 && current) {
+                                    lines.push(current);
+                                    current = word;
+                                  } else {
+                                    current = next;
+                                  }
+                                });
+                                if (current) lines.push(current);
+                                return lines;
+                              },
+                            },
+                          },
+                          y: {
+                            beginAtZero: true,
+                            suggestedMax: 5,
+                            ticks: {
+                              stepSize: 1,
+                              precision: 0,
+                              callback: value => `${value}`,
+                            },
+                          },
+                        },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4 xl:col-span-2'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Top pays acheteurs
+                  </h3>
+                  <div className='h-64'>
+                    <Bar
+                      data={statsCountriesChartData}
+                      options={{
+                        indexAxis: 'x' as const,
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                          x: {
+                            ticks: {
+                              autoSkip: false,
+                              maxRotation: 0,
+                              minRotation: 0,
+                              callback: (_value, index) => {
+                                const label = String(
+                                  statsCountriesChartData.labels[index] || ''
+                                );
+                                const words = label.split(' ');
+                                const lines: string[] = [];
+                                let current = '';
+                                words.forEach(word => {
+                                  const next = current ? `${current} ${word}` : word;
+                                  if (next.length > 16 && current) {
+                                    lines.push(current);
+                                    current = word;
+                                  } else {
+                                    current = next;
+                                  }
+                                });
+                                if (current) lines.push(current);
+                                return lines;
+                              },
+                            },
+                          },
+                          y: {
+                            beginAtZero: true,
+                            suggestedMax: 5,
+                            ticks: {
+                              stepSize: 1,
+                              precision: 0,
+                              callback: value => `${value}`,
+                            },
+                          },
+                        },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4 xl:col-span-2'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Top clients par commandes
+                  </h3>
+                  <div className='h-64'>
+                    <Bar
+                      data={statsTopCustomersChartData}
+                      options={{
+                        indexAxis: 'x' as const,
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                          x: {
+                            ticks: {
+                              autoSkip: false,
+                              maxRotation: 0,
+                              minRotation: 0,
+                              callback: (_value, index) => {
+                                const label = String(
+                                  statsTopCustomersChartData.labels[index] || ''
+                                );
+                                const words = label.split(' ');
+                                const lines: string[] = [];
+                                let current = '';
+                                words.forEach(word => {
+                                  const next = current ? `${current} ${word}` : word;
+                                  if (next.length > 14 && current) {
+                                    lines.push(current);
+                                    current = word;
+                                  } else {
+                                    current = next;
+                                  }
+                                });
+                                if (current) lines.push(current);
+                                return lines;
+                              },
+                            },
+                          },
+                          y: {
+                            beginAtZero: true,
+                            suggestedMax: 5,
+                            ticks: {
+                              stepSize: 1,
+                              precision: 0,
+                            },
+                          },
+                        },
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+
             </div>
           )}
 
