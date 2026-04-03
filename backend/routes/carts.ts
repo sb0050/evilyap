@@ -2,7 +2,7 @@ import express from "express";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import { emailService } from "../services/emailService";
-import { getAuth } from "@clerk/express";
+import { clerkClient, getAuth } from "@clerk/express";
 
 const router = express.Router();
 
@@ -47,6 +47,56 @@ function parseWeightKgFromDescription(description: string): number | null {
 
 function getFallbackWeightKgFromDescription(description: string): number {
   return parseWeightKgFromDescription(description) ?? 0.5;
+}
+
+function normalizeEmail(value: unknown): string {
+  return String(value || "").trim().toLowerCase();
+}
+
+function extractTikTokUsernameFromDescription(description: unknown): string | null {
+  const raw = String(description || "");
+  const match = raw.match(/commande\s+tiktok\s+@([a-z0-9._-]+)/i);
+  return match?.[1] ? String(match[1]).trim().toLowerCase() : null;
+}
+
+/**
+ * Déduit l'email principal d'un user Clerk de manière tolérante.
+ * Pourquoi: selon le contexte d'auth, `primaryEmailAddress` peut être absent
+ * et l'email peut exister uniquement dans `emailAddresses`.
+ */
+function getNormalizedClerkPrimaryEmail(clerkUser: any): string {
+  return normalizeEmail(
+    (clerkUser as any)?.primaryEmailAddress?.emailAddress ||
+      (Array.isArray((clerkUser as any)?.emailAddresses) &&
+      (clerkUser as any).emailAddresses.length > 0
+        ? (clerkUser as any).emailAddresses[0]?.emailAddress
+        : ""),
+  );
+}
+
+/**
+ * Résout le customer Stripe d'un utilisateur Clerk sans effet de bord.
+ * Pourquoi: pour un contrôle d'accès, on ne doit jamais créer de customer
+ * Stripe automatiquement, seulement vérifier l'identité existante.
+ */
+async function resolveExistingStripeIdForClerkUser(
+  clerkUser: any,
+  userEmail: string,
+): Promise<string> {
+  const metadataStripeId = String(
+    (clerkUser as any)?.publicMetadata?.stripe_id || "",
+  ).trim();
+  if (metadataStripeId) return metadataStripeId;
+  if (!userEmail) return "";
+  try {
+    const listed = await stripe.customers.list({ email: userEmail, limit: 1 });
+    if (Array.isArray(listed.data) && listed.data.length > 0) {
+      return String(listed.data[0]?.id || "").trim();
+    }
+  } catch {
+    // Best effort: l'appel peut échouer en environnement local.
+  }
+  return "";
 }
 
 async function deleteCartInternal(id: number) {
@@ -505,6 +555,394 @@ router.get("/summary", async (req, res) => {
   }
 });
 
+/**
+ * GET /api/carts/summary-live?storeSlug=<slug>&email=<email>
+ * Récupère le panier live par email (avant liaison customer_stripe_id).
+ */
+router.get("/summary-live", async (req, res) => {
+  try {
+    const storeSlug = String(req.query.storeSlug || "").trim();
+    const email = normalizeEmail(req.query.email);
+    if (!storeSlug) {
+      return res.status(400).json({ error: "storeSlug requis" });
+    }
+    if (!email) {
+      return res.status(400).json({ error: "email requis" });
+    }
+
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id,name,slug")
+      .eq("slug", storeSlug)
+      .maybeSingle();
+    if (storeErr) {
+      return res.status(500).json({ error: storeErr.message || "Erreur store" });
+    }
+    if (!storeRow?.id) {
+      return res.status(404).json({ error: "Boutique introuvable" });
+    }
+
+    const selectWithWeight =
+      "id,store_id,product_reference,value,quantity,created_at,description,recap_sent_at,weight,payment_id";
+    const selectWithoutWeight =
+      "id,store_id,product_reference,value,quantity,created_at,description,recap_sent_at,payment_id";
+    const selectWithoutPayment =
+      "id,store_id,product_reference,value,quantity,created_at,description,recap_sent_at";
+
+    let rows: any[] | null = null;
+    let error: any = null;
+    {
+      const resp = await supabase
+        .from("carts")
+        .select(selectWithWeight)
+        .eq("store_id", Number(storeRow.id))
+        .eq("customer_email", email)
+        .order("id", { ascending: false });
+      rows = resp.data as any;
+      error = resp.error;
+    }
+    if (error && isMissingColumnError(error, "weight")) {
+      const resp2 = await supabase
+        .from("carts")
+        .select(selectWithoutWeight)
+        .eq("store_id", Number(storeRow.id))
+        .eq("customer_email", email)
+        .order("id", { ascending: false });
+      rows = resp2.data as any;
+      error = resp2.error;
+    }
+    if (error && isMissingColumnError(error, "payment_id")) {
+      const resp3 = await supabase
+        .from("carts")
+        .select(selectWithoutPayment)
+        .eq("store_id", Number(storeRow.id))
+        .eq("customer_email", email)
+        .order("id", { ascending: false });
+      rows = resp3.data as any;
+      error = resp3.error;
+    }
+    if (error) {
+      return res.status(500).json({ error: error.message || "Erreur lecture panier live" });
+    }
+
+    const items = Array.isArray(rows) ? rows : [];
+    let suggestedWeight = 0;
+    for (const it of items) {
+      const qty = Math.max(1, Number((it as any)?.quantity ?? 1));
+      const itemWeightRaw = (it as any)?.weight;
+      const itemWeight =
+        typeof itemWeightRaw === "number" &&
+        Number.isFinite(itemWeightRaw) &&
+        itemWeightRaw > 0
+          ? itemWeightRaw
+          : parseWeightKgFromDescription(String((it as any)?.description || ""));
+      if (itemWeight != null) {
+        suggestedWeight += itemWeight * qty;
+      }
+    }
+    if (!Number.isFinite(suggestedWeight) || suggestedWeight <= 0) {
+      suggestedWeight = 0.5;
+    }
+    const total = items.reduce(
+      (sum, it) => sum + Number((it as any)?.value || 0) * Math.max(1, Number((it as any)?.quantity || 1)),
+      0,
+    );
+
+    return res.json({
+      itemsByStore: [
+        {
+          store: {
+            id: Number(storeRow.id),
+            name: String((storeRow as any)?.name || ""),
+            slug: String((storeRow as any)?.slug || storeSlug),
+          },
+          total,
+          suggestedWeight,
+          items,
+        },
+      ],
+      grandTotal: total,
+    });
+  } catch (e) {
+    console.error("Error fetching live summary:", e);
+    return res.status(500).json({ error: "Erreur interne du serveur" });
+  }
+});
+
+/**
+ * GET /api/carts/live-recipient-access?liveEmail=<email>|liveStripeId=<id>
+ * Vérifie que l'utilisateur Clerk connecté correspond bien au destinataire
+ * du lien checkout live. Cette validation est côté serveur pour éviter tout
+ * contournement front-end.
+ */
+router.get("/live-recipient-access", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const liveEmail = normalizeEmail(req.query.liveEmail);
+    const liveStripeId = String(req.query.liveStripeId || "").trim();
+    if ((!liveEmail && !liveStripeId) || (liveEmail && liveStripeId)) {
+      return res
+        .status(400)
+        .json({ error: "Fournir exactement un parametre: liveEmail ou liveStripeId" });
+    }
+
+    const clerkUser = await clerkClient.users.getUser(auth.userId);
+    const userEmail = getNormalizedClerkPrimaryEmail(clerkUser);
+    if (!userEmail) {
+      return res.status(400).json({ error: "Email utilisateur Clerk introuvable" });
+    }
+
+    if (liveEmail) {
+      const allowed = userEmail === liveEmail;
+      return res.json({
+        allowed,
+        userEmail,
+        target: liveEmail,
+        reason: allowed ? null : "email_mismatch",
+      });
+    }
+
+    const userStripeId = await resolveExistingStripeIdForClerkUser(
+      clerkUser,
+      userEmail,
+    );
+    if (userStripeId && userStripeId === liveStripeId) {
+      return res.json({
+        allowed: true,
+        userEmail,
+        target: liveStripeId,
+        reason: null,
+      });
+    }
+
+    try {
+      const customer = await stripe.customers.retrieve(liveStripeId);
+      const customerEmail = normalizeEmail((customer as any)?.email || "");
+      if (customerEmail && customerEmail === userEmail) {
+        return res.json({
+          allowed: true,
+          userEmail,
+          target: liveStripeId,
+          reason: null,
+        });
+      }
+    } catch {
+      // Best effort: on conserve un refus explicite si la vérification Stripe échoue.
+    }
+
+    return res.json({
+      allowed: false,
+      userEmail,
+      target: liveStripeId,
+      reason: "stripe_mismatch",
+    });
+  } catch (e: any) {
+    console.error("Error checking live recipient access:", e);
+    return res.status(500).json({ error: String(e?.message || "Erreur interne du serveur") });
+  }
+});
+
+/**
+ * POST /api/carts/link-live-cart
+ * Lie les lignes `carts` du panier live (par email) à l'utilisateur Clerk connecté.
+ */
+router.post("/link-live-cart", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const storeSlug = String(req.body?.storeSlug || "").trim();
+    if (!storeSlug) {
+      return res.status(400).json({ error: "storeSlug requis" });
+    }
+
+    const clerkUser = await clerkClient.users.getUser(auth.userId);
+    const userEmail = getNormalizedClerkPrimaryEmail(clerkUser);
+    if (!userEmail) {
+      return res.status(400).json({ error: "Email utilisateur Clerk introuvable" });
+    }
+
+    const { data: storeRow, error: storeErr } = await supabase
+      .from("stores")
+      .select("id,slug")
+      .eq("slug", storeSlug)
+      .maybeSingle();
+    if (storeErr) {
+      return res.status(500).json({ error: storeErr.message || "Erreur store" });
+    }
+    if (!storeRow?.id) {
+      return res.status(404).json({ error: "Boutique introuvable" });
+    }
+
+    let stripeId = String((clerkUser as any)?.publicMetadata?.stripe_id || "").trim();
+    if (!stripeId) {
+      const listed = await stripe.customers.list({ email: userEmail, limit: 1 });
+      if (Array.isArray(listed.data) && listed.data.length > 0) {
+        stripeId = String(listed.data[0]?.id || "").trim();
+      }
+      if (!stripeId) {
+        const fullName = [String((clerkUser as any)?.firstName || "").trim(), String((clerkUser as any)?.lastName || "").trim()]
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+        const created = await stripe.customers.create({
+          name: fullName || userEmail,
+          email: userEmail,
+          metadata: { clerk_id: String(auth.userId) },
+        });
+        stripeId = String(created?.id || "").trim();
+      }
+      if (!stripeId) {
+        return res.status(500).json({ error: "Impossible de créer/résoudre customer Stripe" });
+      }
+    }
+
+    let tiktokUsername: string | null = null;
+    const cartRowsResp = await supabase
+      .from("carts")
+      .select("id,customer_tiktok_username,customer_stripe_id,description")
+      .eq("store_id", Number(storeRow.id))
+      .eq("customer_email", userEmail)
+      .is("payment_id", null)
+      .order("id", { ascending: false })
+      .limit(200);
+    if (
+      cartRowsResp.error &&
+      !isMissingColumnError(cartRowsResp.error, "customer_tiktok_username")
+    ) {
+      return res.status(500).json({ error: cartRowsResp.error.message || "Erreur lecture panier" });
+    }
+    const rows = Array.isArray(cartRowsResp.data) ? cartRowsResp.data : [];
+    if (rows.length === 0) {
+      // Cas user déjà connecté Clerk:
+      // si aucune ligne n'est trouvée par email, on tente de retrouver un username
+      // TikTok depuis les lignes déjà liées au customer Stripe du user.
+      const fallbackRowsResp = await supabase
+        .from("carts")
+        .select("customer_tiktok_username,description")
+        .eq("store_id", Number(storeRow.id))
+        .eq("customer_stripe_id", stripeId)
+        .is("payment_id", null)
+        .order("id", { ascending: false })
+        .limit(50);
+      if (
+        fallbackRowsResp.error &&
+        !isMissingColumnError(fallbackRowsResp.error, "customer_tiktok_username")
+      ) {
+        return res.status(500).json({
+          error: fallbackRowsResp.error.message || "Erreur lecture panier (fallback stripe)",
+        });
+      }
+
+      let fallbackTikTokUsername: string | null = null;
+      const fallbackRows = Array.isArray(fallbackRowsResp.data)
+        ? fallbackRowsResp.data
+        : [];
+      for (const row of fallbackRows) {
+        const byColumn = String((row as any)?.customer_tiktok_username || "")
+          .trim()
+          .toLowerCase();
+        const byDescription = extractTikTokUsernameFromDescription(
+          (row as any)?.description,
+        );
+        const candidate = byColumn || byDescription || "";
+        if (candidate) {
+          fallbackTikTokUsername = candidate;
+          break;
+        }
+      }
+
+      const nextPublicMetadata: Record<string, unknown> = {
+        stripe_id: stripeId,
+        tiktok_username:
+          fallbackTikTokUsername ||
+          String((clerkUser as any)?.publicMetadata?.tiktok_username || "")
+            .trim()
+            .toLowerCase(),
+      };
+      await clerkClient.users.updateUserMetadata(auth.userId, {
+        publicMetadata: nextPublicMetadata,
+      } as any);
+
+      return res.json({
+        success: true,
+        stripeId,
+        email: userEmail,
+        tiktokUsername: fallbackTikTokUsername,
+        linkedStoreId: Number(storeRow.id),
+        linkedCount: 0,
+        matchedEmail: false,
+      });
+    }
+    for (const row of rows) {
+      const byColumn = String((row as any)?.customer_tiktok_username || "")
+        .trim()
+        .toLowerCase();
+      const byDescription = extractTikTokUsernameFromDescription((row as any)?.description);
+      const candidate = byColumn || byDescription || "";
+      if (candidate) {
+        tiktokUsername = candidate;
+        break;
+      }
+    }
+
+    const idsToLink = rows
+      .map((row: any) => Number(row?.id || 0))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    const idsToLinkWithoutCurrentStripe = rows
+      .filter(
+        (row: any) =>
+          String((row as any)?.customer_stripe_id || "").trim() !== stripeId,
+      )
+      .map((row: any) => Number(row?.id || 0))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    if (idsToLinkWithoutCurrentStripe.length > 0) {
+      const upd = await supabase
+        .from("carts")
+        .update({ customer_stripe_id: stripeId })
+        .in("id", idsToLinkWithoutCurrentStripe);
+      if (upd.error) {
+        return res.status(500).json({ error: upd.error.message || "Erreur liaison panier" });
+      }
+    }
+
+    const nextPublicMetadata: Record<string, unknown> = {
+      stripe_id: stripeId,
+    };
+    // Le username TikTok est persisté côté Clerk pour éviter de le redemander
+    // à l'utilisateur à chaque nouveau passage checkout live.
+    nextPublicMetadata.tiktok_username =
+      tiktokUsername ||
+      String((clerkUser as any)?.publicMetadata?.tiktok_username || "")
+        .trim()
+        .toLowerCase();
+
+    await clerkClient.users.updateUserMetadata(auth.userId, {
+      publicMetadata: nextPublicMetadata,
+    } as any);
+
+    return res.json({
+      success: true,
+      stripeId,
+      email: userEmail,
+      tiktokUsername,
+      linkedStoreId: Number(storeRow.id),
+      linkedCount: idsToLinkWithoutCurrentStripe.length,
+      matchedEmail: true,
+      inspectedCount: idsToLink.length,
+    });
+  } catch (e: any) {
+    console.error("Error linking live cart:", e);
+    return res.status(500).json({ error: String(e?.message || "Erreur interne du serveur") });
+  }
+});
+
 // DELETE /api/carts - Remove item by id only
 router.delete("/", async (req, res) => {
   try {
@@ -593,30 +1031,57 @@ router.get("/store/:slug", async (req, res) => {
       return res.status(404).json({ error: "Boutique introuvable" });
     }
     const storeId = (storeRow as any)?.id;
-    const cartsSelectWithWeight =
-      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, recap_sent_at, weight";
-    const cartsSelectWithoutWeight =
-      "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, recap_sent_at";
-
     let carts: any[] | null = null;
     let error: any = null;
-    {
+    let includeWeight = true;
+    let includeCustomerEmail = true;
+    let includeTikTokUsername = true;
+    const buildSelect = () => {
+      const cols = [
+        "id",
+        "store_id",
+        "customer_stripe_id",
+        "product_reference",
+        "value",
+        "quantity",
+        "created_at",
+        "description",
+        "recap_sent_at",
+      ];
+      if (includeCustomerEmail) cols.push("customer_email");
+      if (includeTikTokUsername) cols.push("customer_tiktok_username");
+      if (includeWeight) cols.push("weight");
+      return cols.join(", ");
+    };
+    for (let attempt = 0; attempt < 8; attempt++) {
       const resp = await supabase
         .from("carts")
-        .select(cartsSelectWithWeight)
+        .select(buildSelect())
         .eq("store_id", storeId)
         .order("id", { ascending: false });
       carts = resp.data as any;
       error = resp.error;
-    }
-    if (error && isMissingColumnError(error, "weight")) {
-      const resp2 = await supabase
-        .from("carts")
-        .select(cartsSelectWithoutWeight)
-        .eq("store_id", storeId)
-        .order("id", { ascending: false });
-      carts = resp2.data as any;
-      error = resp2.error;
+      if (!error) break;
+      let changed = false;
+      if (includeWeight && isMissingColumnError(error, "weight")) {
+        includeWeight = false;
+        changed = true;
+      }
+      if (
+        includeCustomerEmail &&
+        isMissingColumnError(error, "customer_email")
+      ) {
+        includeCustomerEmail = false;
+        changed = true;
+      }
+      if (
+        includeTikTokUsername &&
+        isMissingColumnError(error, "customer_tiktok_username")
+      ) {
+        includeTikTokUsername = false;
+        changed = true;
+      }
+      if (!changed) break;
     }
     if (error) {
       return res.status(500).json({ error: error.message });
@@ -634,8 +1099,18 @@ router.post("/recap", async (req, res) => {
     if (!auth?.isAuthenticated) {
       return res.status(401).json({ error: "Unauthorized" });
     }
-    const { stripeIds, storeSlug } = req.body || {};
-    if (!Array.isArray(stripeIds) || stripeIds.length === 0) {
+    const { stripeIds, storeSlug, selectedCartIds } = req.body || {};
+    const recipientKeys = Array.isArray(stripeIds) ? stripeIds : [];
+    const selectedIds = Array.isArray(selectedCartIds)
+      ? Array.from(
+          new Set(
+            selectedCartIds
+              .map((id: unknown) => Number(id))
+              .filter((id: number) => Number.isFinite(id) && id > 0),
+          ),
+        )
+      : [];
+    if (recipientKeys.length === 0) {
       return res.status(400).json({ error: "Aucun panier sélectionné" });
     }
     if (!storeSlug || typeof storeSlug !== "string") {
@@ -657,14 +1132,207 @@ router.post("/recap", async (req, res) => {
     const cloud = (process.env.CLOUDFRONT_URL || "").replace(/\/+$/, "");
     const storeLogo = cloud ? `${cloud}/images/${storeId}` : "";
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
-    const checkoutLink = `${frontendUrl}/checkout/${encodeURIComponent(
+    const checkoutBaseUrl = `${frontendUrl}/checkout/${encodeURIComponent(
       storeSlug,
     )}`;
+    /**
+     * Construit un lien de checkout spécifique au destinataire.
+     * Pourquoi: éviter d'envoyer exactement la même URL à deux clients différents,
+     * et conserver un identifiant de contexte (email/stripe) dans le lien.
+     */
+    const buildCheckoutLink = (input: {
+      recipientType: "email" | "stripe";
+      recipientValue: string;
+      selectedIdsForRecipient: number[];
+    }): string => {
+      const params = new URLSearchParams();
+      if (input.recipientType === "email") {
+        params.set("live_email", normalizeEmail(input.recipientValue));
+      } else {
+        params.set("live_stripe_id", String(input.recipientValue || "").trim());
+      }
+      if (Array.isArray(input.selectedIdsForRecipient) && input.selectedIdsForRecipient.length > 0) {
+        params.set(
+          "cart_ids",
+          input.selectedIdsForRecipient
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id) && id > 0)
+            .join(","),
+        );
+      }
+      const qs = params.toString();
+      return qs ? `${checkoutBaseUrl}?${qs}` : checkoutBaseUrl;
+    };
     const sentStripeIds: string[] = [];
     const failedStripeIds: string[] = [];
-    for (const sid of stripeIds) {
-      const stripeId = String(sid || "");
-      if (!stripeId) continue;
+    const sentRecipientKeys: string[] = [];
+    const failedRecipientKeys: string[] = [];
+    // Précharge les lignes explicitement sélectionnées (si présentes) pour
+    // garantir qu'un récap ne peut jamais inclure des articles d'un autre client.
+    const selectedRowsById = new Map<number, any>();
+    if (selectedIds.length > 0) {
+      const selectedRowsResp = await supabase
+        .from("carts")
+        .select(
+          "id,store_id,customer_email,customer_stripe_id,customer_tiktok_username,product_reference,value,description,quantity,payment_id",
+        )
+        .eq("store_id", storeId)
+        .in("id", selectedIds as any);
+      if (selectedRowsResp.error) {
+        return res.status(500).json({
+          error: selectedRowsResp.error.message || "Erreur lecture paniers sélectionnés",
+        });
+      }
+      for (const row of Array.isArray(selectedRowsResp.data) ? selectedRowsResp.data : []) {
+        const id = Number((row as any)?.id || 0);
+        if (Number.isFinite(id) && id > 0) {
+          selectedRowsById.set(id, row);
+        }
+      }
+    }
+    for (const sid of recipientKeys) {
+      const recipientKey = String(sid || "").trim();
+      if (!recipientKey) continue;
+
+      if (recipientKey.toLowerCase().startsWith("email:")) {
+        const customerEmail = normalizeEmail(recipientKey.slice("email:".length));
+        if (!customerEmail) {
+          failedRecipientKeys.push(recipientKey);
+          continue;
+        }
+
+        // Cas prioritaire: reconstruction stricte depuis les IDs sélectionnés.
+        let carts: Array<{
+          id: unknown;
+          product_reference: unknown;
+          value: unknown;
+          description: unknown;
+          quantity: unknown;
+          customer_tiktok_username?: unknown;
+        }> = [];
+        if (selectedIds.length > 0) {
+          carts = selectedIds
+            .map((id) => selectedRowsById.get(Number(id)))
+            .filter((row) => !!row)
+            .filter(
+              (row: any) =>
+                normalizeEmail((row as any)?.customer_email) === customerEmail &&
+                !String((row as any)?.payment_id || "").trim(),
+            )
+            .map((row: any) => ({
+              id: (row as any)?.id,
+              product_reference: (row as any)?.product_reference,
+              value: (row as any)?.value,
+              description: (row as any)?.description,
+              quantity: (row as any)?.quantity,
+              customer_tiktok_username: (row as any)?.customer_tiktok_username,
+            }));
+        } else {
+          const cartsResp = await supabase
+            .from("carts")
+            .select(
+              "id, product_reference, value, description, quantity, customer_tiktok_username",
+            )
+            .eq("customer_email", customerEmail)
+            .eq("store_id", storeId)
+            .is("payment_id", null);
+          if (
+            cartsResp.error &&
+            !isMissingColumnError(cartsResp.error, "customer_tiktok_username")
+          ) {
+            failedRecipientKeys.push(recipientKey);
+            continue;
+          }
+          carts = Array.isArray(cartsResp.data) ? (cartsResp.data as any[]) : [];
+          if (
+            cartsResp.error &&
+            isMissingColumnError(cartsResp.error, "customer_tiktok_username")
+          ) {
+            const cartsRespFallback = await supabase
+              .from("carts")
+              .select("id, product_reference, value, description, quantity")
+              .eq("customer_email", customerEmail)
+              .eq("store_id", storeId)
+              .is("payment_id", null);
+            if (cartsRespFallback.error) {
+              failedRecipientKeys.push(recipientKey);
+              continue;
+            }
+            carts = Array.isArray(cartsRespFallback.data)
+              ? (cartsRespFallback.data as any[])
+              : [];
+          }
+        }
+
+        const items = (carts || []).map((c: any) => ({
+          product_reference: String(c.product_reference || ""),
+          value: Number(c.value || 0),
+          description: typeof c.description === "string" ? c.description : "",
+          quantity:
+            typeof c.quantity === "number" &&
+            Number.isFinite(c.quantity) &&
+            c.quantity > 0
+              ? c.quantity
+              : 1,
+        }));
+        if (items.length === 0) {
+          failedRecipientKeys.push(recipientKey);
+          continue;
+        }
+
+        let customerName = "Client";
+        const byUsernameColumn = String((carts[0] as any)?.customer_tiktok_username || "")
+          .trim()
+          .replace(/^@+/, "");
+        const byDescription = extractTikTokUsernameFromDescription((carts[0] as any)?.description);
+        if (byUsernameColumn) {
+          customerName = `@${byUsernameColumn}`;
+        } else if (byDescription) {
+          customerName = `@${byDescription}`;
+        }
+
+        const selectedIdsForRecipient = (carts || [])
+          .map((c: any) => Number(c?.id || 0))
+          .filter((id: number) => Number.isFinite(id) && id > 0);
+        const checkoutLink = buildCheckoutLink({
+          recipientType: "email",
+          recipientValue: customerEmail,
+          selectedIdsForRecipient,
+        });
+
+        const ok = await emailService.sendCartRecap({
+          customerEmail,
+          customerName,
+          storeName,
+          storeLogo,
+          carts: items,
+          checkoutLink,
+        });
+        if (ok) {
+          const nowIso = new Date().toISOString();
+          const idsToUpdate = (carts || [])
+            .map((c: any) => Number(c?.id || 0))
+            .filter((id: number) => Number.isFinite(id) && id > 0);
+          if (idsToUpdate.length === 0) {
+            failedRecipientKeys.push(recipientKey);
+            continue;
+          }
+          const updResp = await supabase
+            .from("carts")
+            .update({ recap_sent_at: nowIso })
+            .in("id", idsToUpdate as any);
+          if (updResp.error) {
+            failedRecipientKeys.push(recipientKey);
+          } else {
+            sentRecipientKeys.push(recipientKey);
+          }
+        } else {
+          failedRecipientKeys.push(recipientKey);
+        }
+        continue;
+      }
+
+      const stripeId = recipientKey;
       let customerEmail = "";
       let customerName = "Client";
       try {
@@ -675,12 +1343,29 @@ router.post("/recap", async (req, res) => {
       if (!customerEmail) continue;
       let carts: any[] | null = null;
       let error: any = null;
-      {
+      if (selectedIds.length > 0) {
+        carts = selectedIds
+          .map((id) => selectedRowsById.get(Number(id)))
+          .filter((row) => !!row)
+          .filter(
+            (row: any) =>
+              String((row as any)?.customer_stripe_id || "").trim() === stripeId &&
+              !String((row as any)?.payment_id || "").trim(),
+          )
+          .map((row: any) => ({
+            id: (row as any)?.id,
+            product_reference: (row as any)?.product_reference,
+            value: (row as any)?.value,
+            description: (row as any)?.description,
+            quantity: (row as any)?.quantity,
+          }));
+      } else {
         const resp = await supabase
           .from("carts")
           .select("id, product_reference, value, description, quantity")
           .eq("customer_stripe_id", stripeId)
-          .eq("store_id", storeId);
+          .eq("store_id", storeId)
+          .is("payment_id", null);
         carts = resp.data as any;
         error = resp.error;
       }
@@ -697,6 +1382,14 @@ router.post("/recap", async (req, res) => {
             : 1,
       }));
       if (items.length === 0) continue;
+      const selectedIdsForRecipient = (carts || [])
+        .map((c: any) => Number(c?.id || 0))
+        .filter((id: number) => Number.isFinite(id) && id > 0);
+      const checkoutLink = buildCheckoutLink({
+        recipientType: "stripe",
+        recipientValue: stripeId,
+        selectedIdsForRecipient,
+      });
       const ok = await emailService.sendCartRecap({
         customerEmail,
         customerName,
@@ -707,21 +1400,37 @@ router.post("/recap", async (req, res) => {
       });
       if (ok) {
         const nowIso = new Date().toISOString();
+        const idsToUpdate = (carts || [])
+          .map((c: any) => Number(c?.id || 0))
+          .filter((id: number) => Number.isFinite(id) && id > 0);
+        if (idsToUpdate.length === 0) {
+          failedStripeIds.push(stripeId);
+          failedRecipientKeys.push(recipientKey);
+          continue;
+        }
         const updResp = await supabase
           .from("carts")
           .update({ recap_sent_at: nowIso })
-          .eq("customer_stripe_id", stripeId)
-          .eq("store_id", storeId);
+          .in("id", idsToUpdate as any);
         if (updResp.error) {
           failedStripeIds.push(stripeId);
+          failedRecipientKeys.push(recipientKey);
         } else {
           sentStripeIds.push(stripeId);
+          sentRecipientKeys.push(recipientKey);
         }
       } else {
         failedStripeIds.push(stripeId);
+        failedRecipientKeys.push(recipientKey);
       }
     }
-    return res.json({ success: true, sentStripeIds, failedStripeIds });
+    return res.json({
+      success: true,
+      sentStripeIds,
+      failedStripeIds,
+      sentRecipientKeys,
+      failedRecipientKeys,
+    });
   } catch (e) {
     console.error("Error sending recap:", e);
     return res

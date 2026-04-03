@@ -15,7 +15,7 @@ import {
   EmbeddedCheckoutProvider,
   EmbeddedCheckout,
 } from '@stripe/react-stripe-js';
-import { useAuth, useUser } from '@clerk/clerk-react';
+import { useAuth, useClerk, useUser } from '@clerk/clerk-react';
 import {
   ShoppingBag,
   MapPin,
@@ -212,8 +212,20 @@ type CartItem = {
 export default function CheckoutPage() {
   const { storeName } = useParams<{ storeName: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
+  const liveEmailParam = String(searchParams.get('live_email') || '')
+    .trim()
+    .toLowerCase();
+  const liveStripeIdParam = String(searchParams.get('live_stripe_id') || '').trim();
+  const liveCartIdsParam = String(searchParams.get('cart_ids') || '').trim();
+  const liveCartIdsSet = new Set(
+    liveCartIdsParam
+      .split(',')
+      .map(v => Number(String(v || '').trim()))
+      .filter(v => Number.isFinite(v) && v > 0)
+  );
   const { user } = useUser();
   const { getToken } = useAuth();
+  const { signOut } = useClerk();
   const [store, setStore] = useState<Store | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -269,6 +281,7 @@ export default function CheckoutPage() {
   > | null>(null);
   const postPaymentStockCheckInFlightRef = useRef(false);
   const returnFlowRebuildAttemptRef = useRef(new Set<string>());
+  const liveAuthGuardTriggeredRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -378,6 +391,80 @@ export default function CheckoutPage() {
       setTimeout(() => setToast(null), 300);
     }, 4000);
   };
+
+  useEffect(() => {
+    const enforceLiveRecipientAuth = async () => {
+      try {
+        if (!liveEmailParam && !liveStripeIdParam) return;
+        if (liveAuthGuardTriggeredRef.current) return;
+        const token = await getToken();
+        const params = new URLSearchParams();
+        if (liveEmailParam) params.set('liveEmail', liveEmailParam);
+        if (liveStripeIdParam) params.set('liveStripeId', liveStripeIdParam);
+        const resp = await fetch(
+          `${API_BASE_URL}/api/carts/live-recipient-access?${params.toString()}`,
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+            cache: 'no-store',
+          }
+        );
+        if (!resp.ok) return;
+        const json = await resp.json().catch(() => null as any);
+        if (json?.allowed) return;
+        liveAuthGuardTriggeredRef.current = true;
+        const recipientLabel = liveEmailParam || 'ce destinataire';
+        showToast(
+          `Ce lien est reserve a ${recipientLabel}. Connectez-vous avec le bon compte.`,
+          'info'
+        );
+        await signOut({ redirectUrl: window.location.href });
+      } catch {
+        // best effort: ne pas bloquer l'affichage si la deconnexion echoue.
+      }
+    };
+    enforceLiveRecipientAuth();
+  }, [liveEmailParam, liveStripeIdParam, user?.id, getToken, signOut]);
+
+  useEffect(() => {
+    const linkLiveCartToSignedInUser = async () => {
+      try {
+        // Important: si le checkout vient d'un lien récap client ciblé
+        // (`live_email`/`live_stripe_id`), on ne relie pas le panier au user connecté,
+        // sinon on risque de basculer sur un mauvais contexte client.
+        if (liveEmailParam || liveStripeIdParam) return;
+        const slug = String(store?.slug || '').trim();
+        const userEmail = String(user?.primaryEmailAddress?.emailAddress || '').trim();
+        if (!slug || !userEmail) return;
+        const token = await getToken();
+        const resp = await fetch(`${API_BASE_URL}/api/carts/link-live-cart`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+          body: JSON.stringify({ storeSlug: slug }),
+        });
+        if (!resp.ok) return;
+        const json = await resp.json().catch(() => null as any);
+        const sid = String(json?.stripeId || '').trim();
+        if (sid) {
+          setStripeCustomerId(prev => (String(prev || '').trim() ? prev : sid));
+        }
+      } catch {
+        // best effort: ne pas bloquer le checkout si la liaison live échoue.
+      }
+    };
+    linkLiveCartToSignedInUser();
+  }, [
+    store?.slug,
+    user?.id,
+    user?.primaryEmailAddress?.emailAddress,
+    getToken,
+    liveEmailParam,
+    liveStripeIdParam,
+  ]);
 
   const getRefKey = (ref: string) =>
     String(ref || '')
@@ -606,8 +693,7 @@ export default function CheckoutPage() {
     const apiBase = API_BASE_URL;
     try {
       setReloadingCart(true);
-      const userEmail = user?.primaryEmailAddress?.emailAddress;
-      if (!userEmail || !store?.id) {
+      if (!store?.id) {
         return {
           items: [] as CartItem[],
           total: 0,
@@ -619,6 +705,98 @@ export default function CheckoutPage() {
       const isReturnFlow =
         String(searchParams.get('return_shipment') || '') === 'true' &&
         Boolean(paymentId);
+      const hasLiveContext =
+        !isReturnFlow && Boolean(liveEmailParam || liveStripeIdParam);
+
+      if (hasLiveContext) {
+        const storeSlug = String(store?.slug || '').trim();
+        if (!storeSlug) {
+          setCartItemsForStore([]);
+          setCartTotalForStore(0);
+          return {
+            items: [] as CartItem[],
+            total: 0,
+            missingRefs: [] as string[],
+          };
+        }
+
+        let rawItems: CartItem[] = [];
+        if (liveEmailParam) {
+          const resp = await fetch(
+            `${apiBase}/api/carts/summary-live?storeSlug=${encodeURIComponent(
+              storeSlug
+            )}&email=${encodeURIComponent(liveEmailParam)}`,
+            { cache: 'no-store' }
+          );
+          if (!resp.ok) {
+            setCartItemsForStore([]);
+            setCartTotalForStore(0);
+            return {
+              items: [] as CartItem[],
+              total: 0,
+              missingRefs: [] as string[],
+            };
+          }
+          const json = await resp.json().catch(() => null as any);
+          const groups = Array.isArray(json?.itemsByStore) ? json.itemsByStore : [];
+          const groupForStore = groups.find(
+            (g: any) => g?.store?.id && store?.id && g.store.id === store.id
+          );
+          rawItems = Array.isArray(groupForStore?.items) ? groupForStore.items : [];
+        } else if (liveStripeIdParam) {
+          const resp = await fetch(
+            `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(
+              liveStripeIdParam
+            )}`,
+            { cache: 'no-store' }
+          );
+          if (!resp.ok) {
+            setCartItemsForStore([]);
+            setCartTotalForStore(0);
+            return {
+              items: [] as CartItem[],
+              total: 0,
+              missingRefs: [] as string[],
+            };
+          }
+          const json = await resp.json().catch(() => null as any);
+          const groups = Array.isArray(json?.itemsByStore) ? json.itemsByStore : [];
+          const groupForStore = groups.find(
+            (g: any) => g?.store?.id && store?.id && g.store.id === store.id
+          );
+          rawItems = Array.isArray(groupForStore?.items) ? groupForStore.items : [];
+        }
+
+        rawItems = (rawItems || []).filter(
+          it => !String((it as any)?.payment_id || '').trim()
+        );
+        if (liveCartIdsSet.size > 0) {
+          rawItems = rawItems.filter(it =>
+            liveCartIdsSet.has(Number((it as any)?.id || 0))
+          );
+        }
+
+        const total = rawItems.reduce(
+          (sum, it) => sum + Number(it.value || 0) * Number(it.quantity || 1),
+          0
+        );
+        setCartItemsForStore(rawItems);
+        setCartTotalForStore(total);
+        return {
+          items: rawItems,
+          total,
+          missingRefs: [] as string[],
+        };
+      }
+
+      const userEmail = user?.primaryEmailAddress?.emailAddress;
+      if (!userEmail) {
+        return {
+          items: [] as CartItem[],
+          total: 0,
+          missingRefs: [] as string[],
+        };
+      }
 
       if (!isReturnFlow) {
         if (returnTransactionShipmentRowId != null) {

@@ -16,6 +16,7 @@ import supportRoutes from "./routes/support";
 import clerkRoutes from "./routes/clerk";
 import inseeBceRoutes from "./routes/insee-bce";
 import adminRoutes from "./routes/admin";
+import liveRoutes from "./routes/live";
 import { stripeWebhookHandler } from "./routes/stripe.webhook";
 import { boxtalWebhookHandler } from "./routes/boxtal.webhook";
 import { clerkWebhookHandler } from "./routes/clerk.webhook";
@@ -124,6 +125,7 @@ app.use("/api/clerk", clerkRoutes);
 app.use("/api/insee-bce", inseeBceRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/raffle", raffleRoutes);
+app.use("/api/live", liveRoutes);
 
 // Route de test
 app.get("/api/health", (req: Request, res: Response) => {

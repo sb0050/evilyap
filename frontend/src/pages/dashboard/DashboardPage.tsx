@@ -48,6 +48,7 @@ import { FR, BE } from 'country-flag-icons/react/3x2';
 import { AddressElement } from '@stripe/react-stripe-js';
 import { Address } from '@stripe/stripe-js';
 import StripeWrapper from '../../components/StripeWrapper';
+import LiveDashboardSection from '../../components/LiveDashboardSection';
 
 const isDeliveryRegulationText = (text: unknown) => {
   const normalized = String(text || '')
@@ -56,6 +57,41 @@ const isDeliveryRegulationText = (text: unknown) => {
     .toLowerCase()
     .trim();
   return /\b(?:regulation|regularisation)\s+livraison\b/i.test(normalized);
+};
+
+/**
+ * Construit une clé de groupe stable pour le panier:
+ * - priorité au customer Stripe (cas standard),
+ * - fallback email (cas live avant liaison Clerk/Stripe),
+ * - fallback username TikTok (cas live avant collecte email),
+ * - fallback id technique pour éviter de fusionner des paniers orphelins.
+ */
+const getCartRecipientKey = (cart: any): string => {
+  const stripeId = String(cart?.customer_stripe_id || '').trim();
+  if (stripeId) return stripeId;
+  const email = String(cart?.customer_email || '')
+    .trim()
+    .toLowerCase();
+  if (email) return `email:${email}`;
+  const tiktokUsername = String(cart?.customer_tiktok_username || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, '');
+  if (tiktokUsername) return `tiktok:${tiktokUsername}`;
+  const id = Number(cart?.id || 0);
+  return id > 0 ? `unknown:${id}` : 'unknown:0';
+};
+
+const getEmailFromRecipientKey = (recipientKey: string): string => {
+  const key = String(recipientKey || '').trim();
+  if (!key.toLowerCase().startsWith('email:')) return '';
+  return key.slice('email:'.length).trim().toLowerCase();
+};
+
+const getTikTokUsernameFromRecipientKey = (recipientKey: string): string => {
+  const key = String(recipientKey || '').trim();
+  if (!key.toLowerCase().startsWith('tiktok:')) return '';
+  return key.slice('tiktok:'.length).trim().toLowerCase();
 };
 
 // Vérifications d’accès centralisées dans Header; suppression de Protect ici
@@ -201,6 +237,7 @@ export default function DashboardPage() {
     | 'promo'
     | 'support'
     | 'carts'
+    | 'live'
   >('infos');
   // Support: message de contact
   const [supportMessage, setSupportMessage] = useState<string>('');
@@ -379,7 +416,7 @@ export default function DashboardPage() {
     setSelectedCartGroupIds(prev => {
       const next = new Set<string>();
       const ids = new Set(
-        (storeCarts || []).map(c => String(c.customer_stripe_id || ''))
+        (storeCarts || []).map(c => getCartRecipientKey(c))
       );
       prev.forEach(id => {
         if (ids.has(id)) next.add(id);
@@ -390,7 +427,7 @@ export default function DashboardPage() {
   useEffect(() => {
     const groupsMap: Record<string, any[]> = {};
     (storeCarts || []).forEach((c: any) => {
-      const key = String(c.customer_stripe_id || '');
+      const key = getCartRecipientKey(c);
       if (!groupsMap[key]) groupsMap[key] = [];
       groupsMap[key].push(c);
     });
@@ -440,16 +477,48 @@ export default function DashboardPage() {
       if (selectedCartGroupIds.size === 0) return;
       setSendingRecap(true);
       const token = await getToken();
+      const selectedCartIds = Array.from(
+        new Set(
+          (storeCarts || [])
+            .filter((c: any) =>
+              selectedCartGroupIds.has(getCartRecipientKey(c))
+            )
+            .map((c: any) => Number(c?.id || 0))
+            .filter((id: number) => Number.isFinite(id) && id > 0)
+        )
+      );
       const payload = {
         stripeIds: Array.from(selectedCartGroupIds),
         storeSlug: store?.slug,
+        selectedCartIds,
       };
       const resp = await apiPost('/api/carts/recap', payload, {
         headers: { Authorization: token ? `Bearer ${token}` : '' },
       });
-      await resp.json().catch(() => ({}));
+      const json = await resp.json().catch(() => ({}));
       await handleReloadCarts();
-      showToast('Récapitulatif envoyé', 'success');
+      const sentCount = Array.isArray(json?.sentRecipientKeys)
+        ? json.sentRecipientKeys.length
+        : Array.isArray(json?.sentStripeIds)
+          ? json.sentStripeIds.length
+          : 0;
+      const failedCount = Array.isArray(json?.failedRecipientKeys)
+        ? json.failedRecipientKeys.length
+        : Array.isArray(json?.failedStripeIds)
+          ? json.failedStripeIds.length
+          : 0;
+      if (sentCount > 0 && failedCount === 0) {
+        showToast('Récapitulatif envoyé', 'success');
+      } else if (sentCount > 0 && failedCount > 0) {
+        showToast(
+          `Récap partiel: ${sentCount} envoyé(s), ${failedCount} en échec`,
+          'info'
+        );
+      } else {
+        showToast("Aucun récapitulatif n'a pu être envoyé", 'error');
+      }
+      // Evite les renvois involontaires sur une ancienne sélection.
+      setSelectedCartGroupIds(new Set());
     } catch (e: any) {
       const raw = e?.message || 'Erreur lors de l’envoi du récapitulatif';
       const trimmed = (raw || '').replace(/^Error:\s*/, '');
@@ -4056,6 +4125,17 @@ export default function DashboardPage() {
               <span className='truncate'>Code Promo</span>
             </button>
             <button
+              onClick={() => setSection('live')}
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+                section === 'live'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <FaTiktok className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <span className='truncate'>Live</span>
+            </button>
+            <button
               onClick={() => setSection('support')}
               className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
                 section === 'support'
@@ -5125,7 +5205,7 @@ export default function DashboardPage() {
               {(() => {
                 const groupsMap: Record<string, any[]> = {};
                 (storeCarts || []).forEach((c: any) => {
-                  const key = String(c.customer_stripe_id || '');
+                  const key = getCartRecipientKey(c);
                   if (!groupsMap[key]) groupsMap[key] = [];
                   groupsMap[key].push(c);
                 });
@@ -5152,9 +5232,17 @@ export default function DashboardPage() {
                         .includes(term)
                     );
                   }
+                  const fallbackEmail = getEmailFromRecipientKey(g.stripeId);
+                  const fallbackTikTok = getTikTokUsernameFromRecipientKey(
+                    g.stripeId
+                  );
                   const name = String(g.user?.fullName || '').toLowerCase();
-                  const email = String(g.user?.email || '').toLowerCase();
-                  return name.includes(term) || email.includes(term);
+                  const email = String(g.user?.email || fallbackEmail).toLowerCase();
+                  return (
+                    name.includes(term) ||
+                    email.includes(term) ||
+                    fallbackTikTok.includes(term)
+                  );
                 });
                 const totalGroups = filtered.length;
                 const totalPages = Math.max(
@@ -5333,7 +5421,13 @@ export default function DashboardPage() {
                                   <div className='flex items-center gap-2 text-gray-900 font-semibold text-sm'>
                                     <span>
                                       {g.user?.fullName ||
-                                        g.stripeId ||
+                                        getEmailFromRecipientKey(g.stripeId) ||
+                                        (getTikTokUsernameFromRecipientKey(
+                                          g.stripeId
+                                        )
+                                          ? `@${getTikTokUsernameFromRecipientKey(g.stripeId)}`
+                                          : '') ||
+                                        g.stripeId.replace(/^unknown:/i, 'Client #') ||
                                         'Client'}
                                     </span>
                                     {recapSentByGroup[g.stripeId] && (
@@ -5351,7 +5445,14 @@ export default function DashboardPage() {
                                     )}
                                   </div>
                                   <div className='text-xs text-gray-600'>
-                                    {g.user?.email || ''}
+                                    {g.user?.email ||
+                                      getEmailFromRecipientKey(g.stripeId) ||
+                                      (getTikTokUsernameFromRecipientKey(
+                                        g.stripeId
+                                      )
+                                        ? `@${getTikTokUsernameFromRecipientKey(g.stripeId)}`
+                                        : '') ||
+                                      ''}
                                   </div>
                                 </div>
                               </div>
@@ -9052,6 +9153,16 @@ export default function DashboardPage() {
                 </table>
               </div>
             </div>
+          )}
+
+          {section === 'live' && (
+            <LiveDashboardSection
+              storeSlug={store?.slug || null}
+              onToast={(
+                message: string,
+                type: 'success' | 'error' | 'info' = 'info'
+              ) => showToast(message, type)}
+            />
           )}
 
           {section === 'support' && (
