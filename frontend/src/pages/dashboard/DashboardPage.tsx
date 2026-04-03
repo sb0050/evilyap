@@ -4096,13 +4096,31 @@ export default function DashboardPage() {
     return map[c] || c || 'Inconnu';
   };
 
+  const getCustomerDisplayName = (
+    customer: any,
+    fallback: string = 'Client'
+  ) => {
+    const fullName = `${customer?.name || customer?.full_name || customer?.fullName || ''}`.trim();
+    const first = `${customer?.first_name || customer?.firstName || ''}`.trim();
+    const last = `${customer?.last_name || customer?.lastName || ''}`.trim();
+    const combined = `${first} ${last}`.trim();
+    const email = `${customer?.email || customer?.email_address || ''}`.trim();
+    return fullName || combined || email || fallback;
+  };
+
   const shipmentStats = useMemo(() => {
     const rows = Array.isArray(statsShipments) ? statsShipments : [];
     const statusCounts: Record<string, number> = {};
     const dailyCounts: Record<string, number> = {};
-    const networkCounts: Record<string, number> = {};
+    const networkCounts: Record<string, number> = {
+      'Mondial Relay': 0,
+      'Colis Privé': 0,
+      Colissimo: 0,
+      Chronopost: 0,
+      'Relais Colis': 0,
+    };
     const countryCounts: Record<string, number> = {};
-    const customerOrderCountById: Record<string, number> = {};
+    const customerEarningsById: Record<string, number> = {};
     let deliveredCount = 0;
     let cancelledCount = 0;
     let returnedCount = 0;
@@ -4136,10 +4154,29 @@ export default function DashboardPage() {
         storePickupCount += 1;
       }
 
-      const network = String(s.delivery_network || 'INCONNU')
+      const networkCode = String(s.delivery_network || '')
         .trim()
         .toUpperCase();
-      networkCounts[network] = (networkCounts[network] || 0) + 1;
+      if (
+        networkCode === 'MONR-DOMICILEFRANCE' ||
+        networkCode === 'MONR-CPOURTOI'
+      ) {
+        networkCounts['Mondial Relay'] += 1;
+      } else if (
+        networkCode === 'COPR-COPRRELAISDOMICILENAT' ||
+        networkCode === 'COPR-COPRRELAISRELAISNAT'
+      ) {
+        networkCounts['Colis Privé'] += 1;
+      } else if (networkCode === 'POFR-COLISSIMOACCESS') {
+        networkCounts.Colissimo += 1;
+      } else if (
+        networkCode === 'CHRP-CHRONO2SHOPDIRECT' ||
+        networkCode === 'CHRP-CHRONO18'
+      ) {
+        networkCounts.Chronopost += 1;
+      } else if (networkCode === 'SOGP-RELAISCOLIS') {
+        networkCounts['Relais Colis'] += 1;
+      }
 
       const country = getShipmentCountryCode(s);
       countryCounts[country] = (countryCounts[country] || 0) + 1;
@@ -4147,14 +4184,15 @@ export default function DashboardPage() {
       const spent = Number(s.customer_spent_amount || 0);
       if (Number.isFinite(spent)) totalSpentCents += spent;
 
-      const customerId = String(s.customer_stripe_id || '').trim();
-      if (customerId) {
-        customerOrderCountById[customerId] =
-          (customerOrderCountById[customerId] || 0) + 1;
-      }
-
       const earnings = Number(s.store_earnings_amount || 0);
-      if (Number.isFinite(earnings)) totalEarningsCents += earnings;
+      if (Number.isFinite(earnings)) {
+        totalEarningsCents += earnings;
+        const customerId = String(s.customer_stripe_id || '').trim();
+        if (customerId) {
+          customerEarningsById[customerId] =
+            (customerEarningsById[customerId] || 0) + earnings;
+        }
+      }
 
       const deliveryCost = Number(s.delivery_cost || 0);
       if (Number.isFinite(deliveryCost)) totalDeliveryCostEur += deliveryCost;
@@ -4216,14 +4254,129 @@ export default function DashboardPage() {
     const shipments7DaysCount = last7Days.reduce((sum, d) => sum + d.count, 0);
     const shipments30DaysCount = last30Days.reduce((sum, d) => sum + d.count, 0);
     const topNetworks = Object.entries(networkCounts)
+      .filter(([, count]) => count > 0)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5);
     const topCountries = Object.entries(countryCounts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 8);
-    const topCustomers = Object.entries(customerOrderCountById)
+    const topCustomers = Object.entries(customerEarningsById)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 8);
+    const last30IsoSet = new Set(last30Days.map(d => d.iso));
+    let delivered30Count = 0;
+    let cancelled30Count = 0;
+    let returned30Count = 0;
+    let pickup30Count = 0;
+    let home30Count = 0;
+    let storePickup30Count = 0;
+    let totalEarnings30Cents = 0;
+    const customerOrderCount30ById: Record<string, number> = {};
+    const countryCounts30: Record<string, number> = {};
+    const networkTop5Counts30: Record<string, number> = {
+      mondialRelay: 0,
+      relaisColis: 0,
+      colisPrive: 0,
+      colissimo: 0,
+      chronopost: 0,
+    };
+
+    rows.forEach(s => {
+      const created = s.created_at ? new Date(s.created_at) : null;
+      const validDate = created && Number.isFinite(created.getTime());
+      if (!validDate) return;
+      const key = created.toISOString().slice(0, 10);
+      if (!last30IsoSet.has(key)) return;
+
+      const status = String(s.status || 'UNKNOWN')
+        .trim()
+        .toUpperCase();
+      if (status === 'DELIVERED') delivered30Count += 1;
+      if (status === 'CANCELLED') cancelled30Count += 1;
+      if (status === 'RETURNED') returned30Count += 1;
+
+      const method = String(s.delivery_method || '')
+        .trim()
+        .toLowerCase();
+      if (method === 'pickup_point') pickup30Count += 1;
+      else if (method === 'home_delivery') home30Count += 1;
+      else if (method === 'store_pickup') storePickup30Count += 1;
+
+      const earnings = Number(s.store_earnings_amount || 0);
+      if (Number.isFinite(earnings)) totalEarnings30Cents += earnings;
+
+      const customerId = String(s.customer_stripe_id || '').trim();
+      if (customerId) {
+        customerOrderCount30ById[customerId] =
+          (customerOrderCount30ById[customerId] || 0) + 1;
+      }
+
+      const country = getShipmentCountryCode(s);
+      countryCounts30[country] = (countryCounts30[country] || 0) + 1;
+
+      const networkCode = String(s.delivery_network || '')
+        .trim()
+        .toUpperCase();
+      if (networkCode === 'MONR-DOMICILEFRANCE' || networkCode === 'MONR-CPOURTOI')
+        networkTop5Counts30.mondialRelay += 1;
+      else if (
+        networkCode === 'COPR-COPRRELAISDOMICILENAT' ||
+        networkCode === 'COPR-COPRRELAISRELAISNAT'
+      )
+        networkTop5Counts30.colisPrive += 1;
+      else if (networkCode === 'POFR-COLISSIMOACCESS')
+        networkTop5Counts30.colissimo += 1;
+      else if (
+        networkCode === 'CHRP-CHRONO2SHOPDIRECT' ||
+        networkCode === 'CHRP-CHRONO18'
+      )
+        networkTop5Counts30.chronopost += 1;
+      else if (networkCode === 'SOGP-RELAISCOLIS')
+        networkTop5Counts30.relaisColis += 1;
+    });
+
+    const total30Count = shipments30DaysCount;
+    const pct = (value: number) =>
+      total30Count > 0 ? Math.round((value / total30Count) * 100) : 0;
+    const others30Count = Math.max(
+      0,
+      total30Count - delivered30Count - cancelled30Count - returned30Count
+    );
+    const networkTop5Rows30 = [
+      {
+        key: 'mondialRelay',
+        label: 'Mondial Relay',
+        count: networkTop5Counts30.mondialRelay,
+      },
+      {
+        key: 'relaisColis',
+        label: 'Relais Colis',
+        count: networkTop5Counts30.relaisColis,
+      },
+      {
+        key: 'colisPrive',
+        label: 'Colis Privé',
+        count: networkTop5Counts30.colisPrive,
+      },
+      {
+        key: 'colissimo',
+        label: 'Colissimo',
+        count: networkTop5Counts30.colissimo,
+      },
+      {
+        key: 'chronopost',
+        label: 'Chronopost',
+        count: networkTop5Counts30.chronopost,
+      },
+    ]
+      .map(item => ({ ...item, rate: pct(item.count) }))
+      .filter(item => item.count > 0);
+    const topCustomer30Entry = Object.entries(customerOrderCount30ById).sort(
+      (a, b) => b[1] - a[1]
+    )[0] || [null, 0];
+    const topCountry30Entry = Object.entries(countryCounts30).sort(
+      (a, b) => b[1] - a[1]
+    )[0] || [null, 0];
 
     return {
       totalCount,
@@ -4250,25 +4403,65 @@ export default function DashboardPage() {
       topNetworks,
       topCountries,
       topCustomers,
+      totalEarnings30Eur: totalEarnings30Cents / 100,
+      total30Count,
+      delivered30Count,
+      cancelled30Count,
+      returned30Count,
+      delivered30Rate: pct(delivered30Count),
+      cancelled30Rate: pct(cancelled30Count),
+      returned30Rate: pct(returned30Count),
+      others30Count,
+      others30Rate: pct(others30Count),
+      pickup30Count,
+      home30Count,
+      storePickup30Count,
+      pickup30Rate: pct(pickup30Count),
+      home30Rate: pct(home30Count),
+      storePickup30Rate: pct(storePickup30Count),
+      networkTop5Rows30,
+      topCustomer30Id: topCustomer30Entry[0],
+      topCustomer30Count: Number(topCustomer30Entry[1] || 0),
+      topCountry30Code: topCountry30Entry[0],
+      topCountry30Count: Number(topCountry30Entry[1] || 0),
+      topCountry30Rate: pct(Number(topCountry30Entry[1] || 0)),
     };
   }, [statsShipments]);
 
-  const statsVolume30ChartData = useMemo(
-    () => ({
-      labels: shipmentStats.last30Days.map(d => d.label),
+  const statsVolume30ChartData = useMemo(() => {
+    const byMonth = new Map<string, number>();
+    (statsShipments || []).forEach(s => {
+      const created = s.created_at ? new Date(s.created_at) : null;
+      if (!created || !Number.isFinite(created.getTime())) return;
+      const year = created.getFullYear();
+      const month = created.getMonth() + 1;
+      const key = `${year}-${String(month).padStart(2, '0')}`;
+      byMonth.set(key, (byMonth.get(key) || 0) + 1);
+    });
+
+    const ordered = Array.from(byMonth.entries()).sort((a, b) =>
+      a[0].localeCompare(b[0])
+    );
+    const last12Months = ordered.slice(-12);
+
+    return {
+      labels: last12Months.map(([key]) => {
+        const [year, month] = key.split('-');
+        return `${month}/${year}`;
+      }),
       datasets: [
         {
-          label: 'Expéditions',
-          data: shipmentStats.last30Days.map(d => d.count),
-          backgroundColor: 'rgba(79, 70, 229, 0.75)',
+          label: 'Expéditions totales',
+          data: last12Months.map(([, count]) => count),
+          backgroundColor: 'rgba(49, 40, 231, 0.75)',
           borderColor: '#4f46e5',
           borderWidth: 1,
           borderRadius: 4,
+          maxBarThickness: 40,
         },
       ],
-    }),
-    [shipmentStats.last30Days]
-  );
+    };
+  }, [statsShipments]);
 
   const statsStatusChartData = useMemo(() => {
     const others = Math.max(
@@ -4290,7 +4483,7 @@ export default function DashboardPage() {
             shipmentStats.pendingCount,
             others,
           ],
-          backgroundColor: ['#10b981', '#ef4444', '#f59e0b', '#f97316', '#6366f1'],
+          backgroundColor: ['#16a34a', '#dc2626', '#d97706', '#0284c7', '#7c3aed'],
           borderWidth: 0,
         },
       ],
@@ -4305,7 +4498,7 @@ export default function DashboardPage() {
 
   const statsMethodChartData = useMemo(
     () => ({
-      labels: ['Point Relais', 'Home', 'Boutique'],
+      labels: ['Point Relais', 'À domicile', 'Retrait en boutique'],
       datasets: [
         {
           data: [
@@ -4327,16 +4520,13 @@ export default function DashboardPage() {
 
   const statsNetworksChartData = useMemo(
     () => ({
-      labels: shipmentStats.topNetworks.map(([name]) =>
-        getNetworkDescription(name)
-      ),
+      labels: shipmentStats.topNetworks.map(([name]) => name),
       datasets: [
         {
           label: 'Expéditions',
           data: shipmentStats.topNetworks.map(([, count]) => count),
-          backgroundColor: ['#4f46e5', '#7c3aed', '#2563eb', '#06b6d4', '#14b8a6'],
-          borderRadius: 6,
-          maxBarThickness: 40,
+          backgroundColor: ['#2563eb', '#a855f7', '#f97316', '#06b6d4', '#22c55e'],
+          borderWidth: 0,
         },
       ],
     }),
@@ -4369,8 +4559,8 @@ export default function DashboardPage() {
         {
           label: 'Commandes',
           data: ordered.map(([, count]) => count),
-          backgroundColor: '#16a34a',
-          borderRadius: 6,
+          backgroundColor: ['#3b82f6', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6'],
+          borderWidth: 0,
         },
       ],
     };
@@ -4389,8 +4579,10 @@ export default function DashboardPage() {
       }),
       datasets: [
         {
-          label: 'Commandes',
-          data: shipmentStats.topCustomers.map(([, count]) => Number(count || 0)),
+          label: 'Gains (€)',
+          data: shipmentStats.topCustomers.map(([, cents]) =>
+            Number(cents || 0) / 100
+          ),
           backgroundColor: '#0ea5e9',
           borderRadius: 6,
           maxBarThickness: 40,
@@ -4401,6 +4593,56 @@ export default function DashboardPage() {
     }),
     [shipmentStats.topCustomers, customersMap]
   );
+
+  const statsTopCustomersOrderCountById = useMemo(() => {
+    const ids = new Set(
+      shipmentStats.topCustomers.map(([id]) => String(id || '').trim())
+    );
+    const counts = new Map<string, number>();
+    (statsShipments || []).forEach(s => {
+      const customerId = String(s.customer_stripe_id || '').trim();
+      if (!customerId || !ids.has(customerId)) return;
+      counts.set(customerId, (counts.get(customerId) || 0) + 1);
+    });
+    return counts;
+  }, [statsShipments, shipmentStats.topCustomers]);
+
+  const statsMonthlyEarningsChartData = useMemo(() => {
+    const byMonth = new Map<string, number>();
+    (statsShipments || []).forEach(s => {
+      const created = s.created_at ? new Date(s.created_at) : null;
+      if (!created || !Number.isFinite(created.getTime())) return;
+      const earnings = Number(s.store_earnings_amount || 0);
+      if (!Number.isFinite(earnings)) return;
+      const year = created.getFullYear();
+      const month = created.getMonth() + 1;
+      const key = `${year}-${String(month).padStart(2, '0')}`;
+      byMonth.set(key, (byMonth.get(key) || 0) + earnings);
+    });
+
+    const ordered = Array.from(byMonth.entries()).sort((a, b) =>
+      a[0].localeCompare(b[0])
+    );
+    const last12Months = ordered.slice(-12);
+
+    return {
+      labels: last12Months.map(([key]) => {
+        const [year, month] = key.split('-');
+        return `${month}/${year}`;
+      }),
+      datasets: [
+        {
+          label: 'Gains (€)',
+          data: last12Months.map(([, cents]) => Number(cents || 0) / 100),
+          backgroundColor: 'rgba(8, 151, 103, 0.75)',
+          borderColor: '#10b981',
+          borderWidth: 1,
+          borderRadius: 6,
+          maxBarThickness: 40,
+        },
+      ],
+    };
+  }, [statsShipments]);
 
   if (loading) {
     return (
@@ -5242,17 +5484,15 @@ export default function DashboardPage() {
 
           {section === 'stats' && (
             <div className='bg-white rounded-lg shadow p-6'>
-              <div className='flex items-center justify-between mb-4'>
-                <div className='flex items-center'>
-                  <BarChart3 className='w-5 h-5 text-indigo-600 mr-2' />
-                  <h2 className='text-lg font-semibold text-gray-900'>
-                    Statistiques
-                  </h2>
-                </div>
+              <div className='flex items-center mb-4'>
+                <BarChart3 className='w-5 h-5 text-indigo-600 mr-2' />
+                <h2 className='text-lg font-semibold text-gray-900 mr-3'>
+                  Statistiques
+                </h2>
                 <button
                   onClick={() => fetchStatsShipments({ background: true })}
                   disabled={statsLoading || statsReloading}
-                  className={`inline-flex items-center px-3 py-2 rounded-md text-xs sm:text-sm border ${statsLoading || statsReloading ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-xs sm:text-sm border ${statsLoading || statsReloading ? 'bg-indigo-100 text-indigo-300 border-indigo-200 cursor-not-allowed' : 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700'}`}
                 >
                   <RefreshCw
                     className={`w-4 h-4 mr-2 ${statsReloading ? 'animate-spin' : ''}`}
@@ -5261,7 +5501,7 @@ export default function DashboardPage() {
                 </button>
               </div>
               <p className='text-sm text-gray-600 mb-6'>
-                Données chargées au clic sur cet onglet puis rechargées via le bouton.
+                Retrouvez ici l'ensemble de vos statistiques de vente.
               </p>
               {statsLoading && (
                 <div className='mb-6 rounded-md border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm text-indigo-700'>
@@ -5276,9 +5516,9 @@ export default function DashboardPage() {
 
               <div className='grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-6'>
                 <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
-                  <p className='text-xs text-gray-500'>Expéditions sur 7 jours</p>
+                  <p className='text-xs text-gray-500'>Gains sur 30 jours</p>
                   <p className='text-2xl font-semibold text-gray-900 mt-1'>
-                    {shipmentStats.shipments7DaysCount.toLocaleString('fr-FR')}
+                    {formatValue(shipmentStats.totalEarnings30Eur)}
                   </p>
                 </div>
                 <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
@@ -5296,103 +5536,115 @@ export default function DashboardPage() {
                   </p>
                 </div>
                 <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
-                  <p className='text-xs text-gray-500'>Livrées</p>
-                  <p className='text-2xl font-semibold text-gray-900 mt-1'>
-                    {shipmentStats.deliveredCount.toLocaleString('fr-FR')}
+                  <p className='text-xs text-gray-500'>
+                    Statuts livraisons sur 30 jours
                   </p>
-                  <p className='text-xs text-emerald-700 mt-1'>
-                    {shipmentStats.deliveredRate}% du total
+                  <div className='mt-2 space-y-1 text-sm'>
+                    <p className='text-emerald-700'>
+                      Livrées: {shipmentStats.delivered30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.delivered30Rate}%)
+                    </p>
+                    <p className='text-rose-700'>
+                      Annulées: {shipmentStats.cancelled30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.cancelled30Rate}%)
+                    </p>
+                    <p className='text-amber-700'>
+                      Retournées: {shipmentStats.returned30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.returned30Rate}%)
+                    </p>
+                    <p className='text-indigo-700'>
+                      Autres: {shipmentStats.others30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.others30Rate}%)
+                    </p>
+                  </div>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>
+                    Méthodes de livraison sur 30 jours
+                  </p>
+                  <div className='mt-2 space-y-1 text-sm text-gray-800'>
+                    <p>
+                      Point relais: {shipmentStats.pickup30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.pickup30Rate}%)
+                    </p>
+                    <p>
+                      À domicile: {shipmentStats.home30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.home30Rate}%)
+                    </p>
+                    <p>
+                      Retrait boutique:{' '}
+                      {shipmentStats.storePickup30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.storePickup30Rate}%)
+                    </p>
+                  </div>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>
+                    Meilleurs réseaux sur 30 jours
+                  </p>
+                  <div className='mt-2 space-y-1 text-sm text-gray-800'>
+                    {shipmentStats.networkTop5Rows30.length === 0 ? (
+                      <p className='text-gray-500'>Aucune donnée</p>
+                    ) : (
+                      shipmentStats.networkTop5Rows30.map((item: any) => (
+                        <p key={item.key}>
+                          {item.label}: {item.count.toLocaleString('fr-FR')} ({item.rate}
+                          %)
+                        </p>
+                      ))
+                    )}
+                  </div>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>Meilleur client sur 30 jours</p>
+                  <p className='text-base font-semibold text-gray-900 mt-2 truncate'>
+                    {shipmentStats.topCustomer30Id
+                      ? getCustomerDisplayName(
+                          customersMap[String(shipmentStats.topCustomer30Id)] || null,
+                          'Client'
+                        )
+                      : '—'}
+                  </p>
+                  <p className='text-xs text-gray-600 mt-1'>
+                    {shipmentStats.topCustomer30Count.toLocaleString('fr-FR')} commande
+                    {shipmentStats.topCustomer30Count > 1 ? 's' : ''}
                   </p>
                 </div>
                 <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
-                  <p className='text-xs text-gray-500'>Annulées</p>
-                  <p className='text-2xl font-semibold text-gray-900 mt-1'>
-                    {shipmentStats.cancelledCount.toLocaleString('fr-FR')}
+                  <p className='text-xs text-gray-500'>Meilleur pays sur 30 jours</p>
+                  <p className='text-base font-semibold text-gray-900 mt-2'>
+                    {shipmentStats.topCountry30Code
+                      ? getCountryLabel(String(shipmentStats.topCountry30Code))
+                      : '—'}
                   </p>
-                  <p className='text-xs text-rose-700 mt-1'>
-                    {shipmentStats.cancelledRate}% du total
-                  </p>
-                </div>
-                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
-                  <p className='text-xs text-gray-500'>Retournées</p>
-                  <p className='text-2xl font-semibold text-gray-900 mt-1'>
-                    {shipmentStats.returnedCount.toLocaleString('fr-FR')}
-                  </p>
-                  <p className='text-xs text-amber-700 mt-1'>
-                    {shipmentStats.returnedRate}% du total
+                  <p className='text-xs text-gray-600 mt-1'>
+                    {shipmentStats.topCountry30Count.toLocaleString('fr-FR')} commande
+                    {shipmentStats.topCountry30Count > 1 ? 's' : ''} (
+                    {shipmentStats.topCountry30Rate}%)
                   </p>
                 </div>
               </div>
 
-              <div className='grid grid-cols-1 lg:grid-cols-2 gap-4'>
+              <div className='grid grid-cols-1 gap-4'>
                 <div className='rounded-lg border border-gray-200 p-4'>
                   <h3 className='text-sm font-semibold text-gray-900 mb-3'>
-                    Chiffres business
+                    Évolution  des gains
                   </h3>
-                  <div className='space-y-2'>
-                    <div className='flex items-center justify-between text-sm'>
-                      <span className='text-gray-600'>Montant payé clients</span>
-                      <span className='font-medium text-gray-900'>
-                        {formatValue(shipmentStats.totalSpentEur)}
-                      </span>
-                    </div>
-                    <div className='flex items-center justify-between text-sm'>
-                      <span className='text-gray-600'>Gains boutique</span>
-                      <span className='font-medium text-gray-900'>
-                        {formatValue(shipmentStats.totalEarningsEur)}
-                      </span>
-                    </div>
-                    <div className='flex items-center justify-between text-sm'>
-                      <span className='text-gray-600'>Frais de livraison</span>
-                      <span className='font-medium text-gray-900'>
-                        {formatValue(shipmentStats.totalDeliveryCostEur)}
-                      </span>
-                    </div>
-
-                    <div className='flex items-center justify-between text-sm'>
-                      <span className='text-gray-600'>Taux de livraison</span>
-                      <span className='font-medium text-gray-900'>
-                        {shipmentStats.deliveredRate}%
-                      </span>
-                    </div>
-
-
-                  </div>
-                </div>
-
-                <div className='rounded-lg border border-gray-200 p-4'>
-                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
-                    Top statuts
-                  </h3>
-                  <div className='space-y-2'>
-                    {shipmentStats.topStatuses.length === 0 ? (
-                      <p className='text-sm text-gray-500'>Aucune donnée</p>
-                    ) : (
-                      shipmentStats.topStatuses.map(([status, count]) => {
-                        const width = shipmentStats.totalCount
-                          ? Math.max(
-                              6,
-                              Math.round((count / shipmentStats.totalCount) * 100)
-                            )
-                          : 0;
-                        return (
-                          <div key={status}>
-                            <div className='flex items-center justify-between text-xs text-gray-600 mb-1'>
-                              <span className='uppercase'>
-                                {status.replace(/_/g, ' ')}
-                              </span>
-                              <span>{count.toLocaleString('fr-FR')}</span>
-                            </div>
-                            <div className='h-2 w-full rounded-full bg-gray-100 overflow-hidden'>
-                              <div
-                                className='h-2 rounded-full bg-indigo-500'
-                                style={{ width: `${width}%` }}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
+                  <div className='h-72'>
+                    <Bar
+                      data={statsMonthlyEarningsChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                          y: {
+                            beginAtZero: true,
+                            ticks: { precision: 0 },
+                          },
+                        },
+                      }}
+                    />
                   </div>
                 </div>
               </div>
@@ -5400,7 +5652,7 @@ export default function DashboardPage() {
               <div className='grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4'>
                 <div className='rounded-lg border border-gray-200 p-4 xl:col-span-2'>
                   <h3 className='text-sm font-semibold text-gray-900 mb-3'>
-                    Volume des expéditions sur 30 jours
+                    Volume des expéditions total
                   </h3>
                   <div className='h-64'>
                     <Bar
@@ -5437,151 +5689,9 @@ export default function DashboardPage() {
                   </div>
                 </div>
 
-                <div className='rounded-lg border border-gray-200 p-4'>
-                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
-                    Performance des statuts
-                  </h3>
-                  <div className='h-64'>
-                    <Doughnut
-                      data={statsStatusChartData}
-                      options={{
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { legend: { position: 'bottom' } },
-                      }}
-                    />
-                  </div>
-                </div>
-
-                <div className='rounded-lg border border-gray-200 p-4'>
-                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
-                    Répartition méthode de livraison
-                  </h3>
-                  <div className='h-64'>
-                    <Doughnut
-                      data={statsMethodChartData}
-                      options={{
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { legend: { position: 'bottom' } },
-                      }}
-                    />
-                  </div>
-                </div>
-
                 <div className='rounded-lg border border-gray-200 p-4 xl:col-span-2'>
                   <h3 className='text-sm font-semibold text-gray-900 mb-3'>
-                    Top Network de livraison
-                  </h3>
-                  <div className='h-64'>
-                    <Bar
-                      data={statsNetworksChartData}
-                      options={{
-                        indexAxis: 'x' as const,
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
-                        scales: {
-                          x: {
-                            ticks: {
-                              autoSkip: false,
-                              maxRotation: 0,
-                              minRotation: 0,
-                              callback: (_value, index) => {
-                                const label = String(
-                                  statsNetworksChartData.labels[index] || ''
-                                );
-                                const words = label.split(' ');
-                                const lines: string[] = [];
-                                let current = '';
-                                words.forEach(word => {
-                                  const next = current
-                                    ? `${current} ${word}`
-                                    : word;
-                                  if (next.length > 16 && current) {
-                                    lines.push(current);
-                                    current = word;
-                                  } else {
-                                    current = next;
-                                  }
-                                });
-                                if (current) lines.push(current);
-                                return lines;
-                              },
-                            },
-                          },
-                          y: {
-                            beginAtZero: true,
-                            suggestedMax: 5,
-                            ticks: {
-                              stepSize: 1,
-                              precision: 0,
-                              callback: value => `${value}`,
-                            },
-                          },
-                        },
-                      }}
-                    />
-                  </div>
-                </div>
-
-                <div className='rounded-lg border border-gray-200 p-4 xl:col-span-2'>
-                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
-                    Top pays acheteurs
-                  </h3>
-                  <div className='h-64'>
-                    <Bar
-                      data={statsCountriesChartData}
-                      options={{
-                        indexAxis: 'x' as const,
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
-                        scales: {
-                          x: {
-                            ticks: {
-                              autoSkip: false,
-                              maxRotation: 0,
-                              minRotation: 0,
-                              callback: (_value, index) => {
-                                const label = String(
-                                  statsCountriesChartData.labels[index] || ''
-                                );
-                                const words = label.split(' ');
-                                const lines: string[] = [];
-                                let current = '';
-                                words.forEach(word => {
-                                  const next = current ? `${current} ${word}` : word;
-                                  if (next.length > 16 && current) {
-                                    lines.push(current);
-                                    current = word;
-                                  } else {
-                                    current = next;
-                                  }
-                                });
-                                if (current) lines.push(current);
-                                return lines;
-                              },
-                            },
-                          },
-                          y: {
-                            beginAtZero: true,
-                            suggestedMax: 5,
-                            ticks: {
-                              stepSize: 1,
-                              precision: 0,
-                              callback: value => `${value}`,
-                            },
-                          },
-                        },
-                      }}
-                    />
-                  </div>
-                </div>
-
-                <div className='rounded-lg border border-gray-200 p-4 xl:col-span-2'>
-                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
-                    Top clients par commandes
+                    Dépense par client
                   </h3>
                   <div className='h-64'>
                     <Bar
@@ -5590,7 +5700,32 @@ export default function DashboardPage() {
                         indexAxis: 'x' as const,
                         responsive: true,
                         maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
+                        plugins: {
+                          legend: { display: false },
+                          tooltip: {
+                            displayColors: false,
+                            callbacks: {
+                              label: context => {
+                                const amount = Number(context.raw || 0);
+                                const amountLabel = new Intl.NumberFormat('fr-FR', {
+                                  style: 'currency',
+                                  currency: 'EUR',
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                }).format(amount);
+                                return `Montant: ${amountLabel}`;
+                              },
+                              afterLabel: context => {
+                                const customerId = String(
+                                  shipmentStats.topCustomers[context.dataIndex]?.[0] || ''
+                                );
+                                const orders =
+                                  statsTopCustomersOrderCountById.get(customerId) || 0;
+                                return `Nombre de commandes: ${orders}`;
+                              },
+                            },
+                          },
+                        },
                         scales: {
                           x: {
                             ticks: {
@@ -5620,10 +5755,11 @@ export default function DashboardPage() {
                           },
                           y: {
                             beginAtZero: true,
-                            suggestedMax: 5,
+                            suggestedMax: 300,
                             ticks: {
-                              stepSize: 1,
+                              stepSize: 100,
                               precision: 0,
+                              callback: value => `${value}`,
                             },
                           },
                         },
@@ -5631,6 +5767,71 @@ export default function DashboardPage() {
                     />
                   </div>
                 </div>
+
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Performance des statuts de livraison
+                  </h3>
+                  <div className='h-64'>
+                    <Doughnut
+                      data={statsStatusChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Répartition des méthodes de livraison
+                  </h3>
+                  <div className='h-64'>
+                    <Doughnut
+                      data={statsMethodChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Expédition par réseau de livraison
+                  </h3>
+                  <div className='h-64'>
+                    <Doughnut
+                      data={statsNetworksChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Commandes par pays d'achat
+                  </h3>
+                  <div className='h-64'>
+                    <Doughnut
+                      data={statsCountriesChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } },
+                      }}
+                    />
+                  </div>
+                </div>
+
               </div>
 
 

@@ -26,10 +26,8 @@
     "client:start": "cd frontend && npm run start"
   },
   "dependencies": {
-    "chart.js": "^4.5.1",
     "concurrently": "^8.2.2",
     "cross-env": "^7.0.3",
-    "react-chartjs-2": "^5.3.1",
     "rimraf": "^5.0.5"
   },
   "engines": {
