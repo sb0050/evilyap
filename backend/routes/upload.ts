@@ -70,7 +70,7 @@ async function invalidateCloudFrontCache(filePaths: any) {
 }
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 if (!supabaseUrl || !supabaseKey) {
   console.error("Supabase environment variables are missing");
 }
@@ -89,7 +89,9 @@ const uploadStockProductImage = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const ok = ["image/jpeg", "image/png", "image/webp"].includes(file.mimetype);
+    const ok = ["image/jpeg", "image/png", "image/webp"].includes(
+      file.mimetype,
+    );
     if (ok) cb(null, true);
     else cb(new Error("Type de fichier non supporté"));
   },

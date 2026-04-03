@@ -201,6 +201,9 @@ export default function StorePage() {
   const [redirectToSignUp, setRedirectToSignUp] = useState(false);
   const [addingItemId, setAddingItemId] = useState<number | null>(null);
   const [quantities, setQuantities] = useState<Record<number, number>>({});
+  const [expandedItemDescriptions, setExpandedItemDescriptions] = useState<
+    Record<number, boolean>
+  >({});
   const [itemsPerPage, setItemsPerPage] = useState<number>(12);
   const [page, setPage] = useState<number>(1);
   const [filterField, setFilterField] = useState<
@@ -210,6 +213,8 @@ export default function StorePage() {
   const [sortBy, setSortBy] = useState<
     'best_sellers' | 'recent' | 'price_asc' | 'price_desc'
   >('recent');
+  const [isStoreDescriptionExpanded, setIsStoreDescriptionExpanded] =
+    useState(false);
 
   const apiBase = useMemo(
     () => import.meta.env.VITE_API_URL || 'http://localhost:5000',
@@ -443,6 +448,16 @@ export default function StorePage() {
     'https://d1tmgyvizond6e.cloudfront.net'
   ).replace(/\/+$/, '');
   const storeLogo = store?.id ? `${cloudBase}/images/${store.id}` : undefined;
+  const storeDescription = String(store?.description || '').trim();
+  const isLongStoreDescription = storeDescription.length > 180;
+  const displayedStoreDescription =
+    isLongStoreDescription && !isStoreDescriptionExpanded
+      ? `${storeDescription.slice(0, 180).trimEnd()}…`
+      : storeDescription;
+
+  useEffect(() => {
+    setIsStoreDescriptionExpanded(false);
+  }, [storeDescription]);
 
   if (redirectToSignUp) {
     return <RedirectToSignUp />;
@@ -712,12 +727,25 @@ export default function StorePage() {
                         {store?.description || store?.is_verified ? (
                           <div className='mt-1'>
                             {store?.description ? (
-                              <p
-                                className='text-gray-600'
-                                title={store.description}
-                              >
-                                {store.description}
-                              </p>
+                              <>
+                                <p
+                                  className='text-gray-600'
+                                  title={store.description}
+                                >
+                                  {displayedStoreDescription}
+                                </p>
+                                <button
+                                  type='button'
+                                  onClick={() =>
+                                    setIsStoreDescriptionExpanded(prev => !prev)
+                                  }
+                                  className='mt-1 text-sm text-indigo-600 hover:text-indigo-700 font-medium'
+                                >
+                                  {isStoreDescriptionExpanded
+                                    ? 'Voir moins'
+                                    : 'Voir plus'}
+                                </button>
+                              </>
                             ) : null}
                             {store?.is_verified ? (
                               <div
@@ -856,6 +884,8 @@ export default function StorePage() {
                               const desc = String(
                                 it.product?.description || ''
                               ).trim();
+                              const isDescExpanded =
+                                expandedItemDescriptions[it.stock.id] === true;
                               const selectedQty = quantities[it.stock.id] ?? 1;
                               const canAdd = addingItemId !== it.stock.id;
                               const isPopular =
@@ -897,9 +927,29 @@ export default function StorePage() {
                                       </div>
                                     </div>
 
-                                    <div className='text-xs text-gray-700 mt-2 line-clamp-2'>
+                                    <div
+                                      className={`text-xs text-gray-700 mt-2 ${
+                                        isDescExpanded ? '' : 'line-clamp-2'
+                                      }`}
+                                    >
                                       {desc ? desc : 'Aucune description.'}
                                     </div>
+                                    {desc ? (
+                                      <button
+                                        type='button'
+                                        onClick={() =>
+                                          setExpandedItemDescriptions(prev => ({
+                                            ...prev,
+                                            [it.stock.id]: !isDescExpanded,
+                                          }))
+                                        }
+                                        className='mt-1 text-xs text-indigo-600 hover:text-indigo-700 font-medium'
+                                      >
+                                        {isDescExpanded
+                                          ? 'Voir moins'
+                                          : 'Voir plus'}
+                                      </button>
+                                    ) : null}
 
                                     <div className='mt-3 flex items-center justify-between gap-2'>
                                       <div className='text-xs text-gray-700'>

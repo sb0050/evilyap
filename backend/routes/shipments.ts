@@ -8,8 +8,7 @@ import { emailService } from "../services/emailService";
 const router = express.Router();
 
 const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseKey =
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "";
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 if (!supabaseUrl || !supabaseKey) {
   console.error("Supabase credentials are not set in environment variables");
@@ -1834,7 +1833,10 @@ router.post("/request-return", async (req, res) => {
             );
           }
         } else {
-          console.error("Supabase update shipment return status failed:", updErr);
+          console.error(
+            "Supabase update shipment return status failed:",
+            updErr,
+          );
         }
       }
     } catch (dbEx) {

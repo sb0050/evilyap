@@ -14,7 +14,7 @@ const upload = multer({
 });
 
 const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_ANON_KEY!;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 if (!supabaseUrl || !supabaseKey) {
   console.error("Supabase credentials are not set in environment variables");
@@ -206,7 +206,9 @@ router.post(
         String((shipment as any)?.customer_stripe_id || "").trim() !==
         stripeCustomerId
       ) {
-        return res.status(403).json({ error: "Accès interdit à cette commande" });
+        return res
+          .status(403)
+          .json({ error: "Accès interdit à cette commande" });
       }
       if (!shipment.store_id) {
         return res

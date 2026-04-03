@@ -262,6 +262,8 @@ export default function DashboardPage() {
   const [stockImageUrlInput, setStockImageUrlInput] = useState<string>('');
   const [stockImageUrls, setStockImageUrls] = useState<string[]>([]);
   const [stockCreating, setStockCreating] = useState<boolean>(false);
+  const [stockReferenceGenerating, setStockReferenceGenerating] =
+    useState<boolean>(false);
   const [editingStockId, setEditingStockId] = useState<number | null>(null);
   const [stockItems, setStockItems] = useState<StockApiItem[]>([]);
   const [stockLoading, setStockLoading] = useState<boolean>(false);
@@ -486,6 +488,18 @@ export default function DashboardPage() {
   const [promoCodes, setPromoCodes] = useState<any[]>([]);
   const [promoListLoading, setPromoListLoading] = useState<boolean>(false);
   const [promoSearchTerm, setPromoSearchTerm] = useState<string>('');
+  const [promoClientInput, setPromoClientInput] = useState<string>('');
+  const [promoClientResults, setPromoClientResults] = useState<any[]>([]);
+  const [promoClientsLoading, setPromoClientsLoading] =
+    useState<boolean>(false);
+  const [promoSelectedClients, setPromoSelectedClients] = useState<
+    Array<{
+      id: string;
+      fullName: string;
+      email?: string | null;
+      stripeId?: string | null;
+    }>
+  >([]);
   const [promoTogglingIds, setPromoTogglingIds] = useState<
     Record<string, boolean>
   >({});
@@ -580,6 +594,25 @@ export default function DashboardPage() {
       return 'Ce nom de code existe déjà';
     }
     return msg || 'Erreur inconnue';
+  };
+
+  const getPromoAllowedCustomerIds = (p: any): string[] => {
+    const parseList = (raw: unknown) =>
+      String(raw || '')
+        .split(/;;|,/)
+        .map(s => String(s || '').trim())
+        .filter(Boolean);
+    const metadata = p?.metadata || {};
+    const fromMeta = parseList(metadata?.allowed_customer_stripe_ids).filter(
+      v => v.startsWith('cus_')
+    );
+    const fromDirect = String(p?.customer || '').trim();
+    return Array.from(
+      new Set([
+        ...fromMeta,
+        ...(fromDirect && fromDirect.startsWith('cus_') ? [fromDirect] : []),
+      ])
+    );
   };
 
   const handleSetPromotionCodeActive = async (id: string, active: boolean) => {
@@ -686,6 +719,16 @@ export default function DashboardPage() {
         active: !!promoActive,
         storeSlug: store?.slug,
       };
+      const selectedCustomerStripeIds = Array.from(
+        new Set(
+          promoSelectedClients
+            .map(c => String(c?.stripeId || '').trim())
+            .filter(v => v.startsWith('cus_'))
+        )
+      );
+      if (selectedCustomerStripeIds.length > 0) {
+        body.allowed_customer_stripe_ids = selectedCustomerStripeIds;
+      }
       if (typeof minimum_amount === 'number') {
         body.minimum_amount = minimum_amount;
       }
@@ -707,6 +750,9 @@ export default function DashboardPage() {
       await fetchPromotionCodes();
       // Reset partiel
       setPromoCodeName('');
+      setPromoClientInput('');
+      setPromoClientResults([]);
+      setPromoSelectedClients([]);
       setPromoMinAmountEuro('');
       setPromoExpiresDate('');
       setPromoActive(true);
@@ -720,6 +766,38 @@ export default function DashboardPage() {
 
   // Pas de reload automatique à l’ouverture de l’onglet 'promo'
   // Le rechargement est désormais manuel via le bouton
+  useEffect(() => {
+    if (section !== 'promo') return;
+    const q = String(promoClientInput || '').trim();
+    if (!q) {
+      setPromoClientResults([]);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        setPromoClientsLoading(true);
+        const token = await getToken();
+        const resp = await apiGet(
+          `/api/clerk/users?search=${encodeURIComponent(q)}`,
+          {
+            headers: { Authorization: token ? `Bearer ${token}` : '' },
+          }
+        );
+        const json = await resp.json().catch(() => ({}));
+        if (cancelled) return;
+        setPromoClientResults(Array.isArray(json?.users) ? json.users : []);
+      } catch {
+        if (!cancelled) setPromoClientResults([]);
+      } finally {
+        if (!cancelled) setPromoClientsLoading(false);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [section, promoClientInput]);
 
   // États d’expansion pour les cartes mobiles
   const [expandedSalesCardIds, setExpandedSalesCardIds] = useState<
@@ -1720,6 +1798,45 @@ export default function DashboardPage() {
       return r === qKey;
     });
     return (exact as StockApiItem) || null;
+  };
+
+  const handleGenerateStockReference = async () => {
+    const slug = String(store?.slug || '').trim();
+    if (!slug) {
+      showToast('Boutique introuvable', 'error');
+      return;
+    }
+
+    const existingRefs = new Set(
+      (stockItems || [])
+        .map(it => String(it?.stock?.product_reference || '').trim())
+        .filter(Boolean)
+    );
+    const randomDigits = (length: number) =>
+      Array.from({ length }, () => Math.floor(Math.random() * 10)).join('');
+
+    try {
+      setStockReferenceGenerating(true);
+      for (let i = 0; i < 20; i += 1) {
+        const candidate = randomDigits(10);
+        if (!candidate || existingRefs.has(candidate)) {
+          continue;
+        }
+        const existing = await fetchStockSearchExactMatch(slug, candidate);
+        if (!existing) {
+          setStockReference(candidate);
+          return;
+        }
+      }
+      showToast(
+        "Impossible de générer une référence unique pour l'instant",
+        'error'
+      );
+    } catch {
+      showToast('Erreur génération de la référence', 'error');
+    } finally {
+      setStockReferenceGenerating(false);
+    }
   };
 
   const handleCreateStockProduct = async (e: React.FormEvent) => {
@@ -5989,13 +6106,23 @@ export default function DashboardPage() {
                         <label className='block text-xs font-medium text-gray-700 mb-1'>
                           Référence
                         </label>
-                        <input
-                          type='text'
-                          value={stockReference}
-                          onChange={e => setStockReference(e.target.value)}
-                          className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
-                          required
-                        />
+                        <div className='flex items-center gap-2'>
+                          <input
+                            type='text'
+                            value={stockReference}
+                            onChange={e => setStockReference(e.target.value)}
+                            className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                            required
+                          />
+                          <button
+                            type='button'
+                            onClick={handleGenerateStockReference}
+                            disabled={stockReferenceGenerating || stockCreating}
+                            className='inline-flex items-center px-3 py-2 rounded-md text-sm border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60'
+                          >
+                            {stockReferenceGenerating ? '…' : 'Générer'}
+                          </button>
+                        </div>
                       </div>
                       <div>
                         <label className='block text-xs font-medium text-gray-700 mb-1'>
@@ -8625,6 +8752,86 @@ export default function DashboardPage() {
 
                 <div>
                   <label className='block text-sm font-medium text-gray-700 mb-1'>
+                    Clients (optionnel)
+                  </label>
+                  {promoSelectedClients.length > 0 ? (
+                    <div className='mb-2 flex flex-wrap gap-2'>
+                      {promoSelectedClients.map(c => (
+                        <span
+                          key={c.id}
+                          className='inline-flex items-center gap-1 rounded-full bg-indigo-50 text-indigo-700 px-2 py-1 text-xs'
+                        >
+                          {c.fullName || c.email || c.id}
+                          <button
+                            type='button'
+                            className='text-indigo-700 hover:text-indigo-900'
+                            onClick={() =>
+                              setPromoSelectedClients(prev =>
+                                prev.filter(it => it.id !== c.id)
+                              )
+                            }
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <input
+                    type='text'
+                    value={promoClientInput}
+                    onChange={e => setPromoClientInput(e.target.value)}
+                    placeholder='Rechercher un client'
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm'
+                  />
+                  {(promoClientsLoading || promoClientResults.length > 0) && (
+                    <div className='mt-1 border border-gray-200 rounded-md bg-white max-h-40 overflow-auto'>
+                      {promoClientsLoading ? (
+                        <div className='px-3 py-2 text-sm text-gray-500'>
+                          Chargement...
+                        </div>
+                      ) : (
+                        promoClientResults
+                          .filter(
+                            (u: any) =>
+                              !promoSelectedClients.some(
+                                sel => sel.id === String(u?.id || '')
+                              )
+                          )
+                          .slice(0, 8)
+                          .map((u: any) => (
+                            <button
+                              key={String(u?.id || '')}
+                              type='button'
+                              className='w-full text-left px-3 py-2 text-sm hover:bg-gray-50'
+                              onClick={() => {
+                                const id = String(u?.id || '').trim();
+                                if (!id) return;
+                                const next = {
+                                  id,
+                                  fullName: String(u?.fullName || '').trim(),
+                                  email: u?.email || null,
+                                  stripeId: u?.stripeId || null,
+                                };
+                                setPromoSelectedClients(prev => [
+                                  ...prev,
+                                  next,
+                                ]);
+                                setPromoClientInput('');
+                                setPromoClientResults([]);
+                              }}
+                            >
+                              {String(u?.fullName || '').trim() || 'Sans nom'}
+                              {u?.email ? ` (${u.email})` : ''}
+                            </button>
+                          ))
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className='block text-sm font-medium text-gray-700 mb-1'>
                     Montant minimum d’achat (€)
                   </label>
                   <input
@@ -8688,7 +8895,9 @@ export default function DashboardPage() {
               <div className='flex items-center gap-3 mb-6'>
                 <button
                   onClick={handleCreatePromotionCode}
-                  disabled={promoCreating}
+                  disabled={
+                    promoCreating || !String(promoCodeName || '').trim()
+                  }
                   className='inline-flex items-center px-3 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-600'
                 >
                   {promoCreating && (
@@ -8821,6 +9030,31 @@ export default function DashboardPage() {
                             {p.max_redemptions ? ` / ${p.max_redemptions}` : ''}
                           </div>
                           <div>
+                            <span className='font-medium'>Clients:</span>{' '}
+                            {(() => {
+                              const ids = getPromoAllowedCustomerIds(p);
+                              if (ids.length === 0) return 'Tous';
+                              const labels = ids.map((id: string) => {
+                                const customer = customersMap[id] || null;
+                                const clerkId =
+                                  customer?.clerkUserId || customer?.clerk_id;
+                                const social = clerkId
+                                  ? socialsMap[clerkId] || null
+                                  : null;
+                                const name = (
+                                  customer?.name ||
+                                  [social?.firstName, social?.lastName]
+                                    .filter(Boolean)
+                                    .join(' ') ||
+                                  customer?.email ||
+                                  id
+                                ).trim();
+                                return name || id;
+                              });
+                              return labels.join(', ');
+                            })()}
+                          </div>
+                          <div>
                             <span className='font-medium'>Restrictions:</span>{' '}
                             {(() => {
                               const r = p.restrictions || {};
@@ -8866,6 +9100,9 @@ export default function DashboardPage() {
                         Restrictions
                       </th>
                       <th className='px-4 py-2 text-left font-medium text-gray-700'>
+                        Clients
+                      </th>
+                      <th className='px-4 py-2 text-left font-medium text-gray-700'>
                         Statut
                       </th>
                     </tr>
@@ -8874,7 +9111,7 @@ export default function DashboardPage() {
                     {promoListLoading ? (
                       <tr>
                         <td
-                          colSpan={7}
+                          colSpan={8}
                           className='px-4 py-6 text-center text-gray-600'
                         >
                           Chargement...
@@ -8883,7 +9120,7 @@ export default function DashboardPage() {
                     ) : promoCodes.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={7}
+                          colSpan={8}
                           className='px-4 py-6 text-center text-gray-600'
                         >
                           Aucun code promo
@@ -8902,7 +9139,7 @@ export default function DashboardPage() {
                           promoTogglingIds[p.id] ? (
                             <tr key={p.id}>
                               <td
-                                colSpan={7}
+                                colSpan={8}
                                 className='px-4 py-6 text-center text-gray-600'
                               >
                                 Chargement...
@@ -8975,6 +9212,37 @@ export default function DashboardPage() {
                                     parts.push(`Min: ${eur} €`);
                                   }
                                   return parts.length ? parts.join(' • ') : '—';
+                                })()}
+                              </td>
+                              <td className='px-4 py-3 text-gray-700 max-w-[15rem]'>
+                                {(() => {
+                                  const ids = getPromoAllowedCustomerIds(p);
+                                  if (ids.length === 0) return 'Tous';
+                                  const labels = ids.map((id: string) => {
+                                    const customer = customersMap[id] || null;
+                                    const clerkId =
+                                      customer?.clerkUserId || customer?.clerk_id;
+                                    const social = clerkId
+                                      ? socialsMap[clerkId] || null
+                                      : null;
+                                    const name = (
+                                      customer?.name ||
+                                      [social?.firstName, social?.lastName]
+                                        .filter(Boolean)
+                                        .join(' ') ||
+                                      customer?.email ||
+                                      id
+                                    ).trim();
+                                    return name || id;
+                                  });
+                                  return (
+                                    <span
+                                      className='truncate block'
+                                      title={labels.join(', ')}
+                                    >
+                                      {labels.join(', ')}
+                                    </span>
+                                  );
                                 })()}
                               </td>
                               <td className='px-4 py-3 text-gray-700'>

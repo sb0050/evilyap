@@ -416,17 +416,19 @@ Hâte de vous faire découvrir la solution !
                       {`Bonjour ${String(demoName || '').trim() || '[Prénom]'},
 
 Comme promis, voici le lien vers notre tutoriel
-👉 Cliquez ici pour accéder au tutoriel
+👉 Cliquez ici pour accéder au tutoriel: paylive.cc/demo-vendeur
 
 J'ai également créé votre boutique personnalisée avec l'ensemble de vos articles, vous pouvez y accéder ici :
-🛍️ Lien vers votre boutique: https://paylive.cc/s/${String(demoSlug || '').trim() || '[slug]'}
+🛍️ Lien vers votre boutique: paylive.cc/s/${String(demoSlug || '').trim() || '[slug]'}
 
 Et voici le lien à partager directement à vos clientes lors de vos prochains lives afin qu'elles puissent constituer leurs paniers et procéder au paiement :
-📲 Lien à partager en live: https://paylive.cc/c/${String(demoSlug || '').trim() || '[slug]'}
+📲 Lien à partager en live: paylive.cc/c/${String(demoSlug || '').trim() || '[slug]'}
 
 N’hésitez pas à me contacter si vous avez des questions !
 
-À très vite,`}
+À très vite,
+PayLive.cc
+`}
                     </pre>
                   </div>
                   <button

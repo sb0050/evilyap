@@ -25,6 +25,7 @@ import { frFR } from '@clerk/localizations';
 
 import PrivacyPolicy from './pages/public/PrivacyPolicy';
 import TermsAndConditions from './pages/public/TermsAndConditions';
+import DemoPublicPage from './pages/public/DemoPublicPage';
 import AdminPage from './pages/admin/AdminPage';
 import { useEffect } from 'react';
 import DashboardPage from './pages/dashboard/DashboardPage';
@@ -43,13 +44,6 @@ const AdminRouteGuard: React.FC<{ children: React.ReactNode }> = ({
     return <Navigate to='/' replace />;
   }
   return <>{children}</>;
-};
-
-const ExternalRedirectPage: React.FC<{ to: string }> = ({ to }) => {
-  useEffect(() => {
-    window.location.replace(to);
-  }, [to]);
-  return null;
 };
 
 function App() {
@@ -89,24 +83,9 @@ function App() {
           <SpeedInsights />
           <Routes>
             <Route path='/' element={<LandingPage />} />
-            <Route
-              path='/demo-vendeur'
-              element={
-                <ExternalRedirectPage to='https://app.storylane.io/share/mdfkvdls5bg4' />
-              }
-            />
-            <Route
-              path='/demo-client'
-              element={
-                <ExternalRedirectPage to='https://app.storylane.io/share/imptycbxswra' />
-              }
-            />
-            <Route
-              path='/demo-client-mobile'
-              element={
-                <ExternalRedirectPage to='https://app.storylane.io/share/arwuuwthb6nk' />
-              }
-            />
+            <Route path='/demo-vendeur' element={<DemoPublicPage />} />
+            <Route path='/demo-client' element={<DemoPublicPage />} />
+            <Route path='/demo-client-mobile' element={<DemoPublicPage />} />
             {/* Pages publiques: PDF */}
             <Route path='/privacy_policy' element={<PrivacyPolicy />} />
             <Route
