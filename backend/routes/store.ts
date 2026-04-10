@@ -20,7 +20,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
 
 // Configuration Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 if (!supabaseUrl || !supabaseKey) {
   console.error("Supabase environment variables are missing");
@@ -587,8 +587,10 @@ router.post("/need-a-demo", async (req, res) => {
     if (customerEmail) {
       try {
         const transporter = createProspectTransporter();
-        const local = String(customerEmail.split("@")[0] || "").trim();
-        const cleaned = local
+        const fullNameRaw = String((user as any)?.fullName || "").trim();
+        const sourceName =
+          fullNameRaw || String(customerEmail.split("@")[0] || "").trim();
+        const cleaned = sourceName
           .replace(/[._\-+]+/g, " ")
           .replace(/\s+/g, " ")
           .trim();
@@ -598,9 +600,21 @@ router.post("/need-a-demo", async (req, res) => {
         const greeting = firstNameGuess
           ? `Bonjour ${firstNameGuess},`
           : "Bonjour,";
-        const logoPath = path.resolve(process.cwd(), "public", "black.png");
-        const hasLogo = fs.existsSync(logoPath);
-        const subject = "On organise une démo ? 🚀";
+        const logoCandidates = [
+          path.resolve(process.cwd(), "public", "logo_bis.png"),
+          path.resolve(
+            process.cwd(),
+            "..",
+            "frontend",
+            "public",
+            "logo_bis.png",
+          ),
+        ];
+        const logoPath = logoCandidates.find((p) => fs.existsSync(p)) || "";
+        const hasLogo = Boolean(logoPath);
+        const subject = firstNameGuess
+          ? `${firstNameGuess}, on organise une démo ? 🚀`
+          : "On organise une démo ? 🚀";
         const html = `<!DOCTYPE html>
         <html lang="fr">
         <head>
@@ -613,8 +627,8 @@ router.post("/need-a-demo", async (req, res) => {
             <div style="background:linear-gradient(90deg,#7c3aed,#2563eb);padding:24px;text-align:center;">
               ${
                 hasLogo
-                  ? `<img src="cid:paylive-logo" alt="PayLive" style="height:44px;vertical-align:middle;" />`
-                  : `<div style="font-size:24px;font-weight:800;color:#ffffff;letter-spacing:0.5px;">PayLive.cc</div>`
+                  ? `<a href="https://paylive.cc" target="_blank" rel="noopener noreferrer"><img src="cid:paylive-logo" alt="PayLive" style="height:44px;vertical-align:middle;" /></a>`
+                  : `<a href="https://paylive.cc" target="_blank" rel="noopener noreferrer" style="text-decoration:none;"><div style="font-size:24px;font-weight:800;color:#ffffff;letter-spacing:0.5px;">PayLive.cc</div></a>`
               }
               <div style="margin-top:8px;font-size:14px;color:#e5e7eb;">On organise une démo ? 🚀</div>
             </div>
@@ -653,7 +667,7 @@ router.post("/need-a-demo", async (req, res) => {
           </div>
         </body>
         </html>`;
-        const text = `${greeting}\n\nRavi d’avoir pu échanger avec vous !\n\nPour aller plus loin, je vous propose une démo rapide (30 min) pour vous montrer PayLive en action — directement sur vos cas d’usage.\n\nDeux petites choses pour qu’on cale ça :\n• Quelles sont vos disponibilités cette semaine ou la semaine prochaine ?\n• Quel est votre numéro de téléphone pour qu’on reste en contact facilement ?\n\nHâte de vous faire découvrir la solution !\n\nÀ très vite,\nL’équipe PayLive.cc`;
+        const text = `${greeting}\n\nPour aller plus loin, je vous propose une démo rapide (30 min) pour vous montrer PayLive en action — directement sur vos cas d’usage.\n\nDeux petites choses pour qu’on cale ça :\n• Quelles sont vos disponibilités cette semaine ou la semaine prochaine ?\n• Quel est votre numéro de téléphone pour qu’on reste en contact facilement ?\n\nHâte de vous faire découvrir la solution !\n\nÀ très vite,\nL’équipe PayLive.cc`;
         const fromEmail = process.env.SMTP_USER || "noreply@paylive.cc";
         const attachments: any[] = [];
         if (hasLogo) {

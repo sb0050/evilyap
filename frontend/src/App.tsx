@@ -25,6 +25,7 @@ import { frFR } from '@clerk/localizations';
 
 import PrivacyPolicy from './pages/public/PrivacyPolicy';
 import TermsAndConditions from './pages/public/TermsAndConditions';
+import DemoPublicPage from './pages/public/DemoPublicPage';
 import AdminPage from './pages/admin/AdminPage';
 import { useEffect } from 'react';
 import DashboardPage from './pages/dashboard/DashboardPage';
@@ -82,6 +83,9 @@ function App() {
           <SpeedInsights />
           <Routes>
             <Route path='/' element={<LandingPage />} />
+            <Route path='/demo-vendeur' element={<DemoPublicPage />} />
+            <Route path='/demo-client' element={<DemoPublicPage />} />
+            <Route path='/demo-client-mobile' element={<DemoPublicPage />} />
             {/* Pages publiques: PDF */}
             <Route path='/privacy_policy' element={<PrivacyPolicy />} />
             <Route

@@ -522,7 +522,7 @@ export default function OnboardingPage() {
           <div className='text-center mb-8'>
             <Link to='/'>
               <img
-                src='/logo_paylive.png'
+                src='/logo_bis.png'
                 alt='PayLive'
                 className='mx-auto h-12 w-auto'
               />

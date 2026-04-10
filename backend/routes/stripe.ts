@@ -16,7 +16,7 @@ const router = express.Router();
 
 // Configuration Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
 if (!supabaseUrl || !supabaseKey) {
   console.error("Supabase environment variables are missing");
@@ -735,6 +735,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
       openShipmentPaymentId || "",
     ).trim();
     let promotionCodeIdTrim = "";
+    let allowedPromoCustomerStripeIds: string[] = [];
     let storeIdForCheck: number | null = null;
     let storePromoCodesUpper: string[] = [];
     if (storeName) {
@@ -805,6 +806,45 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           !storePromoCodesUpper.includes(resolvedCodeUpper)
         ) {
           res.status(400).json({ error: "Code promo non autorisé" });
+          return;
+        }
+
+        const metadata = (resolvedPromo as any)?.metadata || {};
+        const parseList = (raw: unknown) =>
+          String(raw || "")
+            .split(/;;|,/)
+            .map((s) => String(s || "").trim())
+            .filter(Boolean);
+        allowedPromoCustomerStripeIds = Array.from(
+          new Set(
+            parseList((metadata as any)?.allowed_customer_stripe_ids).filter(
+              (v) => v.startsWith("cus_"),
+            ),
+          ),
+        );
+
+        const promoCustomer = String(
+          (resolvedPromo as any)?.customer || "",
+        ).trim();
+        const checkoutCustomerId = String(customerId || "").trim();
+        if (
+          promoCustomer &&
+          checkoutCustomerId &&
+          promoCustomer !== checkoutCustomerId
+        ) {
+          res
+            .status(400)
+            .json({ error: "Code promo non applicable à ce client" });
+          return;
+        }
+        if (
+          allowedPromoCustomerStripeIds.length > 0 &&
+          (!checkoutCustomerId ||
+            !allowedPromoCustomerStripeIds.includes(checkoutCustomerId))
+        ) {
+          res
+            .status(400)
+            .json({ error: "Code promo non applicable à ce client" });
           return;
         }
 
@@ -946,6 +986,7 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
           .filter((id) => id.startsWith("prod_")),
       ),
     );
+
     const stripeProductsById = new Map<string, Stripe.Product>();
     await Promise.all(
       uniqueStripeProductIds.map(async (pid) => {
@@ -2379,6 +2420,7 @@ router.post("/promotion-codes", async (req, res) => {
       active = true,
       max_redemptions,
       storeSlug,
+      allowed_customer_stripe_ids,
     } = req.body || {};
 
     if (!couponId || !code) {
@@ -2390,6 +2432,20 @@ router.post("/promotion-codes", async (req, res) => {
       code: String(code),
       active: !!active,
     } as Stripe.PromotionCodeCreateParams;
+
+    const normalizedAllowedCustomerStripeIds = Array.from(
+      new Set(
+        (Array.isArray(allowed_customer_stripe_ids)
+          ? allowed_customer_stripe_ids
+          : []
+        )
+          .map((s: any) => String(s || "").trim())
+          .filter((v: string) => v.startsWith("cus_")),
+      ),
+    );
+    if (normalizedAllowedCustomerStripeIds.length === 1) {
+      (params as any).customer = normalizedAllowedCustomerStripeIds[0];
+    }
 
     if (typeof max_redemptions === "number" && max_redemptions > 0) {
       (params as any).max_redemptions = max_redemptions;
@@ -2411,11 +2467,14 @@ router.post("/promotion-codes", async (req, res) => {
       } as Stripe.PromotionCodeCreateParams.Restrictions;
     }
 
-    // Ajouter metadata avec le storeSlug si fourni
-    if (storeSlug) {
-      (params as any).metadata = {
-        storeSlug: String(storeSlug),
-      } as Record<string, string>;
+    const metadataPayload: Record<string, string> = {};
+    if (storeSlug) metadataPayload.storeSlug = String(storeSlug);
+    if (normalizedAllowedCustomerStripeIds.length > 0) {
+      metadataPayload.allowed_customer_stripe_ids =
+        normalizedAllowedCustomerStripeIds.join(";;").slice(0, 500);
+    }
+    if (Object.keys(metadataPayload).length > 0) {
+      (params as any).metadata = metadataPayload;
     }
 
     const promotionCode = await stripe.promotionCodes.create(params);

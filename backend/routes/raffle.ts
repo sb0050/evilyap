@@ -8,7 +8,7 @@ import { emailService } from "../services/emailService";
 const router = express.Router();
 
 const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_ANON_KEY!;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
 });
@@ -56,8 +56,7 @@ router.post("/draw", async (req, res) => {
       email: customer.email,
       address: customer.address,
       shipping: customer.shipping,
-      deliveryMethod:
-        (customer.metadata?.delivery_method as any) || undefined,
+      deliveryMethod: (customer.metadata?.delivery_method as any) || undefined,
       parcelPointCode: (customer.metadata?.parcel_point as any) || undefined,
       deliveryNetwork:
         (customer.metadata?.delivery_network as any) || undefined,

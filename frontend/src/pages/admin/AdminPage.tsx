@@ -251,35 +251,34 @@ export default function AdminPage() {
                     </div>
                     <div className='text-sm text-gray-800'>
                       Objet:{' '}
-                      {`${String(contactName || '').trim() || '[Prénom]'}, Vous gérez encore vos commandes de vos live à la main ? 🤔`}
+                      {`${String(contactName || '').trim() || '[Prénom]'}, marre des paniers abandonnés après tes ventes en live sur Facebook ?`}
                     </div>
                     <pre className='mt-2 whitespace-pre-wrap text-sm text-gray-700 font-sans'>
                       {`Bonjour ${String(contactName || '').trim() || '[Prénom]'},
 
-Faire de la vente en live, ça devrait être simple : trouver les meilleurs articles pour vos clientes, animer votre communauté, et vendre. Mais dans les faits, vous passez la majorité de votre temps sur la logistique, l'organisation du live, et tout ce qui vient après, au lieu de vous concentrer sur ce qui fait vraiment la différence.
+Est-ce que tu rencontres ce genre de problèmes pendant ou après tes ventes en live sur Facebook ?
 
-Vous envoyez vos récapitulatifs de commande à la main. Vous relancez les paniers impayés un par un. Vous créez chaque colis manuellement. Vous répondez 10 fois par jour à "Mon colis a-t-il été envoyé ?".
+❌ commandes à noter
+❌ paiements à vérifier
+❌ colis à créer
+❌ clientes à relancer
+❌ récap + lien de paiement à envoyer manuellement
 
-Sans parler des liens de paiement envoyés à la main, des ventes notées dans un tableau Excel, des factures rédigées une par une, et d'un suivi client qui n'existe tout simplement pas.
+Au final, tu passes plus de temps à gérer qu’à vendre.
 
-Ce n'est pas une façon de faire grandir sa boutique. C'est une façon de s'épuiser.
+C’est exactement pour ça qu’on a créé PayLive.
 
-C'est exactement ce problème qu'on a résolu avec PayLive.
+👉 PayLive automatise tout ce qui te fait perdre du temps :
+💳 Notification instantané au paiement
+📦 Livraison & bordereaux intégrés
+📋 Envoi automatique des paniers
+📊 Suivi de tes ventes et de ton stock
 
-PayLive est une solution tout-en-un pensée pour les vendeuses en live :
-✅ Récapitulatifs de commande envoyés automatiquement à vos clientes
-✅ Relances des paniers impayés sans aucune intervention de votre part
-✅ Création de colis automatisée (Mondial Relay, Colissimo…)
-✅ Liens de paiement générés et envoyés en un clic
-✅ Suivi de vos clientes, factures et statistiques au même endroit
-✅ Frais sur vos paiements réduits, bien en dessous de PayPal, SumUp ou Lydia
+Résultat : tu te concentres sur tes lives… et PayLive s’occupe du reste.
 
-Vos clientes sont informées à chaque étape. Vous, vous faites du live.
-
-Je serais ravie de vous montrer concrètement comment ça fonctionne, en 10 minutes chrono.
-
-👉 Quelles sont vos disponibilités cette semaine ou la semaine prochaine ?
-👉 Quel est votre numéro de téléphone pour qu'on puisse échanger directement ?
+👇 Clique sur le bouton ci-dessous pour voir comment ça marche 👇
+[Bouton Voir comment ça marche → https://paylive.cc/needademo]
+[Image ad_paylive.png cliquable → https://paylive.cc/needademo]
 
 À très vite,`}
                     </pre>
@@ -338,8 +337,6 @@ Je serais ravie de vous montrer concrètement comment ça fonctionne, en 10 minu
                     </div>
                     <pre className='mt-2 whitespace-pre-wrap text-sm text-gray-700 font-sans'>
                       {`Bonjour ${String(rdvName || '').trim() || '[Prénom]'},
-
-Ravi d’avoir pu échanger avec vous !
 
 Pour aller plus loin, je vous propose une démo rapide (10 min) pour vous montrer PayLive en action — directement sur vos cas d’usage.
 
@@ -417,20 +414,20 @@ Hâte de vous faire découvrir la solution !
                     <pre className='mt-2 whitespace-pre-wrap text-sm text-gray-700 font-sans'>
                       {`Bonjour ${String(demoName || '').trim() || '[Prénom]'},
 
-Ravi d’avoir pu échanger avec vous !
-
 Comme promis, voici le lien vers notre tutoriel
-👉 Cliquez ici pour accéder au tutoriel
+👉 Cliquez ici pour accéder au tutoriel: paylive.cc/demo-vendeur
 
 J'ai également créé votre boutique personnalisée avec l'ensemble de vos articles, vous pouvez y accéder ici :
-🛍️ Lien vers votre boutique: https://paylive.cc/s/${String(demoSlug || '').trim() || '[slug]'}
+🛍️ Lien vers votre boutique: paylive.cc/s/${String(demoSlug || '').trim() || '[slug]'}
 
 Et voici le lien à partager directement à vos clientes lors de vos prochains lives afin qu'elles puissent constituer leurs paniers et procéder au paiement :
-📲 Lien à partager en live: https://paylive.cc/c/${String(demoSlug || '').trim() || '[slug]'}
+📲 Lien à partager en live: paylive.cc/c/${String(demoSlug || '').trim() || '[slug]'}
 
 N’hésitez pas à me contacter si vous avez des questions !
 
-À très vite,`}
+À très vite,
+PayLive.cc
+`}
                     </pre>
                   </div>
                   <button
