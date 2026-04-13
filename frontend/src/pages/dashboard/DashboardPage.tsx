@@ -2265,6 +2265,15 @@ export default function DashboardPage() {
     statsAttemptedSlug,
   ]);
 
+  useEffect(() => {
+    const slug = store?.slug;
+    if (section !== 'stats') return;
+    if (!slug) return;
+    if (stockLoading) return;
+    if (stockLoadedSlug === slug) return;
+    fetchStockProducts({ silent: true }).catch(() => {});
+  }, [section, store?.slug, stockLoading, stockLoadedSlug]);
+
   const walletTableTotalPages = Math.max(
     1,
     Math.ceil(walletTransactions.length / walletTablePageSize)
@@ -4377,7 +4386,6 @@ export default function DashboardPage() {
     const topCountry30Entry = Object.entries(countryCounts30).sort(
       (a, b) => b[1] - a[1]
     )[0] || [null, 0];
-
     return {
       totalCount,
       deliveredCount,
@@ -4422,6 +4430,7 @@ export default function DashboardPage() {
       networkTop5Rows30,
       topCustomer30Id: topCustomer30Entry[0],
       topCustomer30Count: Number(topCustomer30Entry[1] || 0),
+      topCustomer30Rate: pct(Number(topCustomer30Entry[1] || 0)),
       topCountry30Code: topCountry30Entry[0],
       topCountry30Count: Number(topCountry30Entry[1] || 0),
       topCountry30Rate: pct(Number(topCountry30Entry[1] || 0)),
@@ -4643,6 +4652,68 @@ export default function DashboardPage() {
       ],
     };
   }, [statsShipments]);
+
+  const statsTopProductsSoldDetails = useMemo(() => {
+    const entries = (stockItems || [])
+      .map((it, idx) => {
+        const d = getStockDisplay(it, idx);
+        const stock = it?.stock || null;
+        const product = it?.product || null;
+        const stripeId = String(
+          stock?.product_stripe_id || product?.id || d.ref || ''
+        ).trim();
+        return {
+          stripeId,
+          label: d.title && d.title !== '—' ? d.title : d.ref,
+          bought: Number(d.boughtCount || 0),
+          imageUrl: d.imageUrls?.[0] ? String(d.imageUrls[0]) : '',
+          priceEur: d.priceEur,
+          description: d.description || '',
+          stockQty: d.qtyLabel,
+        };
+      })
+      .filter(it => Number.isFinite(it.bought) && it.bought > 0)
+      .sort((a, b) => b.bought - a.bought)
+      .slice(0, 5);
+    return entries;
+  }, [stockItems]);
+
+  const statsTopProductFromStock = useMemo(() => {
+    const rows = (stockItems || [])
+      .map((it, idx) => {
+        const d = getStockDisplay(it, idx);
+        const label = d.title && d.title !== '—' ? d.title : d.ref;
+        const bought = Number(d.boughtCount || 0);
+        return { label, bought };
+      })
+      .filter(row => Number.isFinite(row.bought) && row.bought > 0);
+    const totalBought = rows.reduce((sum, row) => sum + row.bought, 0);
+    const top = rows.sort((a, b) => b.bought - a.bought)[0] || null;
+    const topCount = Number(top?.bought || 0);
+    return {
+      label: top?.label || null,
+      count: topCount,
+      rate:
+        totalBought > 0 ? Math.round((topCount / totalBought) * 100) : 0,
+    };
+  }, [stockItems]);
+
+  const statsTopProductsSoldChartData = useMemo(() => {
+    return {
+      labels: statsTopProductsSoldDetails.map(e => e.label),
+      datasets: [
+        {
+          label: 'Vendus',
+          data: statsTopProductsSoldDetails.map(e => e.bought),
+          backgroundColor: '#ad322a',
+          borderRadius: 6,
+          maxBarThickness: 36,
+          barPercentage: 0.65,
+          categoryPercentage: 0.75,
+        },
+      ],
+    };
+  }, [statsTopProductsSoldDetails]);
 
   if (loading) {
     return (
@@ -5607,7 +5678,8 @@ export default function DashboardPage() {
                   </p>
                   <p className='text-xs text-gray-600 mt-1'>
                     {shipmentStats.topCustomer30Count.toLocaleString('fr-FR')} commande
-                    {shipmentStats.topCustomer30Count > 1 ? 's' : ''}
+                    {shipmentStats.topCustomer30Count > 1 ? 's' : ''} (
+                    {shipmentStats.topCustomer30Rate}%)
                   </p>
                 </div>
                 <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
@@ -5621,6 +5693,21 @@ export default function DashboardPage() {
                     {shipmentStats.topCountry30Count.toLocaleString('fr-FR')} commande
                     {shipmentStats.topCountry30Count > 1 ? 's' : ''} (
                     {shipmentStats.topCountry30Rate}%)
+                  </p>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>
+                    Meilleur article vendu sur 30 jours
+                  </p>
+                  <p className='text-base font-semibold text-gray-900 mt-2 truncate'>
+                    {statsTopProductFromStock.label
+                      ? String(statsTopProductFromStock.label)
+                      : '—'}
+                  </p>
+                  <p className='text-xs text-gray-600 mt-1'>
+                    {statsTopProductFromStock.count.toLocaleString('fr-FR')} vendu
+                    {statsTopProductFromStock.count > 1 ? 's' : ''} (
+                    {statsTopProductFromStock.rate}%)
                   </p>
                 </div>
               </div>
@@ -5641,6 +5728,155 @@ export default function DashboardPage() {
                           y: {
                             beginAtZero: true,
                             ticks: { precision: 0 },
+                          },
+                        },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4 xl:col-span-2'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Top 5 articles vendus
+                  </h3>
+                  <div className='h-72'>
+                    <Bar
+                      data={statsTopProductsSoldChartData}
+                      options={{
+                        indexAxis: 'y' as const,
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                          legend: { display: false },
+                          tooltip: {
+                            enabled: false,
+                            external: context => {
+                              if (typeof document === 'undefined') return;
+                              const { chart, tooltip } = context;
+                              let el = document.getElementById(
+                                'stats-top-products-tooltip'
+                              ) as HTMLDivElement | null;
+                              if (!el) {
+                                el = document.createElement('div');
+                                el.id = 'stats-top-products-tooltip';
+                                el.style.position = 'absolute';
+                                el.style.pointerEvents = 'none';
+                                el.style.zIndex = '60';
+                                el.style.opacity = '0';
+                                el.style.transition = 'opacity 120ms ease';
+                                document.body.appendChild(el);
+                              }
+
+                              if (!tooltip || tooltip.opacity === 0) {
+                                el.style.opacity = '0';
+                                return;
+                              }
+
+                              const point = tooltip.dataPoints?.[0];
+                              const idx = point?.dataIndex ?? -1;
+                              const detail =
+                                idx >= 0 ? statsTopProductsSoldDetails[idx] : null;
+                              if (!detail) {
+                                el.style.opacity = '0';
+                                return;
+                              }
+
+                              const fmtMoney = (v?: number | null) =>
+                                v == null || !Number.isFinite(v)
+                                  ? '—'
+                                  : new Intl.NumberFormat('fr-FR', {
+                                      style: 'currency',
+                                      currency: 'EUR',
+                                      minimumFractionDigits: 2,
+                                      maximumFractionDigits: 2,
+                                    }).format(v);
+                              const safeText = (v: unknown) =>
+                                String(v ?? '')
+                                  .replace(/&/g, '&amp;')
+                                  .replace(/</g, '&lt;')
+                                  .replace(/>/g, '&gt;');
+
+                              const imageHtml = detail.imageUrl
+                                ? `<img src="${safeText(detail.imageUrl)}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;" />`
+                                : `<div style="width:56px;height:56px;border-radius:8px;border:1px dashed #d1d5db;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:11px;">No Img</div>`;
+                              const desc = String(detail.description || '').trim();
+                              const clippedDesc =
+                                desc.length > 90 ? `${desc.slice(0, 90)}...` : desc;
+                              const html = `
+                                <div style="max-width:320px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 10px 30px rgba(15,23,42,0.15);padding:10px;">
+                                  <div style="display:flex;gap:10px;align-items:flex-start;">
+                                    ${imageHtml}
+                                    <div style="min-width:0;">
+                                      <div style="font-weight:700;color:#111827;font-size:13px;line-height:1.25;word-break:break-word;">${safeText(detail.label)}</div>
+                                      <div style="margin-top:2px;color:#6b7280;font-size:11px;word-break:break-word;">ID: ${safeText(detail.stripeId || '—')}</div>
+                                      <div style="margin-top:6px;color:#111827;font-size:12px;">Prix: <b>${safeText(fmtMoney(detail.priceEur))}</b></div>
+                                      <div style="color:#111827;font-size:12px;">Stock: <b>${safeText(detail.stockQty)}</b></div>
+                                      <div style="color:#111827;font-size:12px;">Vendus: <b>${safeText(detail.bought)}</b></div>
+                                    </div>
+                                  </div>
+                                  <div style="margin-top:8px;color:#4b5563;font-size:11px;line-height:1.35;word-break:break-word;">${safeText(clippedDesc || 'Description indisponible')}</div>
+                                </div>
+                              `;
+                              el.innerHTML = html;
+
+                              const rect = chart.canvas.getBoundingClientRect();
+                              const anchorX = window.scrollX + rect.left + tooltip.caretX;
+                              const anchorY = window.scrollY + rect.top + tooltip.caretY;
+                              const gap = 12;
+                              const screenPadding = 8;
+                              const tipRect = el.getBoundingClientRect();
+                              let left = anchorX + gap;
+                              let top = anchorY + gap;
+
+                              const minLeft = window.scrollX + screenPadding;
+                              const maxLeft =
+                                window.scrollX + window.innerWidth - tipRect.width - screenPadding;
+                              if (left > maxLeft) left = anchorX - tipRect.width - gap;
+                              if (left < minLeft) left = minLeft;
+
+                              const minTop = window.scrollY + screenPadding;
+                              const maxTop =
+                                window.scrollY + window.innerHeight - tipRect.height - screenPadding;
+                              if (top > maxTop) top = anchorY - tipRect.height - gap;
+                              if (top < minTop) top = minTop;
+
+                              el.style.left = `${left}px`;
+                              el.style.top = `${top}px`;
+                              el.style.opacity = '1';
+                            },
+                          },
+                        },
+                        scales: {
+                          x: {
+                            beginAtZero: true,
+                            ticks: {
+                              stepSize: 1,
+                              precision: 0,
+                              callback: value => `${value}`,
+                            },
+                          },
+                          y: {
+                            ticks: {
+                              callback: (_value, index) => {
+                                const label = String(
+                                  statsTopProductsSoldChartData.labels[index] || ''
+                                );
+                                const words = label.split(' ');
+                                const lines: string[] = [];
+                                let current = '';
+                                words.forEach(word => {
+                                  const next = current ? `${current} ${word}` : word;
+                                  if (next.length > 22 && current) {
+                                    lines.push(current);
+                                    current = word;
+                                  } else {
+                                    current = next;
+                                  }
+                                });
+                                if (current) lines.push(current);
+                                return lines;
+                              },
+                            },
                           },
                         },
                       }}
