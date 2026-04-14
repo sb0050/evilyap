@@ -4705,7 +4705,7 @@ export default function DashboardPage() {
         {
           label: 'Vendus',
           data: statsTopProductsSoldDetails.map(e => e.bought),
-          backgroundColor: '#ad322a',
+          backgroundColor: '#d97706',
           borderRadius: 6,
           maxBarThickness: 36,
           barPercentage: 0.65,
