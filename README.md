@@ -1,6 +1,6 @@
-# PayLive - You Live Shopping Payment Gateway
+# You Live Shopping Payment Gateway
 
-Application de live shopping avec paiements Stripe et sélection de points relais Boxtal.
+Application de live shopping avec paiements Stripe et sélection de points relais.
 
 ## 🚀 Démarrage rapide
 
