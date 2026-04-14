@@ -1,6 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
+import {
+  ArcElement,
+  BarElement,
+  CategoryScale,
+  Chart as ChartJS,
+  Legend,
+  LinearScale,
+  PointElement,
+  Tooltip,
+} from 'chart.js';
+import { Bar, Doughnut } from 'react-chartjs-2';
 import Header from '../../components/Header';
 import Spinner from '../../components/Spinner';
 import {
@@ -23,6 +34,7 @@ import {
   Coins,
   Dice5,
   Check,
+  BarChart3,
 } from 'lucide-react';
 import {
   FaFacebook,
@@ -156,12 +168,32 @@ type StockApiItem = {
   prices: any[];
 };
 
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  BarElement,
+  ArcElement,
+  Tooltip,
+  Legend
+);
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { getToken } = useAuth();
   const { user } = useUser();
   const [store, setStore] = useState<Store | null>(null);
   const [shipments, setShipments] = useState<Shipment[]>([]);
+  const [statsShipments, setStatsShipments] = useState<Shipment[]>([]);
+  const [statsOpenCartsCount, setStatsOpenCartsCount] = useState<number | null>(
+    null
+  );
+  const [statsLoading, setStatsLoading] = useState<boolean>(false);
+  const [statsReloading, setStatsReloading] = useState<boolean>(false);
+  const [statsAttemptedSlug, setStatsAttemptedSlug] = useState<string | null>(
+    null
+  );
+  const [statsError, setStatsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [resolvedSlug, setResolvedSlug] = useState<string | null>(null);
@@ -199,6 +231,7 @@ export default function DashboardPage() {
   // Navigation des sections du dashboard
   const [section, setSection] = useState<
     | 'infos'
+    | 'stats'
     | 'wallet'
     | 'stock'
     | 'sales'
@@ -1607,6 +1640,85 @@ export default function DashboardPage() {
     }
   };
 
+  const fetchStatsShipments = async (options?: {
+    silent?: boolean;
+    background?: boolean;
+  }) => {
+    const slug = store?.slug;
+    if (!slug) return;
+    const background = Boolean(options?.background);
+    const silent = Boolean(options?.silent);
+    try {
+      setStatsError(null);
+      if (background) setStatsReloading(true);
+      else setStatsLoading(true);
+      const token = await getToken();
+      const statsUrl = new URL(
+        `${apiBase}/api/shipments/store/${encodeURIComponent(slug)}`
+      );
+      statsUrl.searchParams.set('_ts', String(Date.now()));
+      const shipResp = await fetch(
+        statsUrl.toString(),
+        {
+          cache: 'no-store',
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
+      );
+      const shipJson = await shipResp.json().catch(() => ({}));
+      if (!shipResp.ok) {
+        const msg = shipJson?.error || 'Erreur chargement statistiques';
+        throw new Error(typeof msg === 'string' ? msg : 'Erreur chargement statistiques');
+      }
+      if (!Array.isArray(shipJson?.shipments)) {
+        throw new Error('Réponse statistiques invalide');
+      }
+      setStatsShipments(shipJson.shipments);
+      setShipments(shipJson.shipments);
+      try {
+        const cartsUrl = new URL(
+          `${apiBase}/api/carts/store/${encodeURIComponent(slug)}`
+        );
+        cartsUrl.searchParams.set('_ts', String(Date.now()));
+        const cartsResp = await fetch(cartsUrl.toString(), {
+          cache: 'no-store',
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        });
+        const cartsJson = await cartsResp.json().catch(() => ({}));
+        if (cartsResp.ok && Array.isArray(cartsJson?.carts)) {
+          const openCartGroups = new Set<string>();
+          (cartsJson.carts as any[]).forEach((c: any) => {
+            const stripeId = String(c?.customer_stripe_id || '').trim();
+            if (!stripeId) return;
+            const paymentId = String(c?.payment_id || '').trim();
+            if (paymentId) return;
+            openCartGroups.add(stripeId);
+          });
+          setStatsOpenCartsCount(openCartGroups.size);
+        } else {
+          setStatsOpenCartsCount(null);
+        }
+      } catch {
+        setStatsOpenCartsCount(null);
+      }
+      setStatsAttemptedSlug(slug);
+      if (background) showToast('Statistiques rechargées', 'success');
+    } catch (e: any) {
+      const rawMsg = e?.message || 'Erreur chargement statistiques';
+      setStatsError(rawMsg);
+      if (!silent) {
+        showToast(rawMsg, 'error');
+      }
+      setStatsAttemptedSlug(slug);
+    } finally {
+      if (background) setStatsReloading(false);
+      else setStatsLoading(false);
+    }
+  };
+
   const handleReloadSales = async () => {
     try {
       const slug = store?.slug;
@@ -1632,7 +1744,6 @@ export default function DashboardPage() {
         Array.isArray(shipJson?.shipments) ? shipJson.shipments : []
       );
       showToast('Ventes et Clients rechargés', 'success');
-      // Réinitialiser la pagination si la page dépasse le total
       setPage(1);
     } catch (e: any) {
       const rawMsg = e?.message || 'Erreur inconnue';
@@ -2250,6 +2361,30 @@ export default function DashboardPage() {
   useEffect(() => {
     const slug = store?.slug;
     if (section !== 'stock') return;
+    if (!slug) return;
+    if (stockLoading) return;
+    if (stockLoadedSlug === slug) return;
+    fetchStockProducts({ silent: true }).catch(() => {});
+  }, [section, store?.slug, stockLoading, stockLoadedSlug]);
+
+  useEffect(() => {
+    const slug = store?.slug;
+    if (section !== 'stats') return;
+    if (!slug) return;
+    if (statsLoading || statsReloading) return;
+    if (statsAttemptedSlug === slug) return;
+    fetchStatsShipments({ silent: false }).catch(() => {});
+  }, [
+    section,
+    store?.slug,
+    statsLoading,
+    statsReloading,
+    statsAttemptedSlug,
+  ]);
+
+  useEffect(() => {
+    const slug = store?.slug;
+    if (section !== 'stats') return;
     if (!slug) return;
     if (stockLoading) return;
     if (stockLoadedSlug === slug) return;
@@ -2951,7 +3086,7 @@ export default function DashboardPage() {
       });
       return next;
     });
-  }, [shipments]);
+  }, [statsShipments]);
 
   useEffect(() => {
     const filteredLength = (shipments || []).filter(s => {
@@ -2995,7 +3130,12 @@ export default function DashboardPage() {
 
   // Chargement des clients Stripe basés sur les customer_stripe_id des shipments
   useEffect(() => {
-    if (section !== 'clients' && section !== 'sales' && section !== 'wallet')
+    if (
+      section !== 'clients' &&
+      section !== 'sales' &&
+      section !== 'wallet' &&
+      section !== 'stats'
+    )
       return;
     const ids = (() => {
       if (section === 'wallet') {
@@ -3004,6 +3144,13 @@ export default function DashboardPage() {
             (walletTransactions || [])
               .map(t => (t as any)?.customer?.id)
               .filter(Boolean)
+          )
+        ) as string[];
+      }
+      if (section === 'stats') {
+        return Array.from(
+          new Set(
+            (statsShipments || []).map(s => s.customer_stripe_id).filter(Boolean)
           )
         ) as string[];
       }
@@ -3047,7 +3194,7 @@ export default function DashboardPage() {
         });
       })
       .finally(() => setCustomersLoading(false));
-  }, [section, shipments, walletTransactions]);
+  }, [section, shipments, statsShipments, walletTransactions]);
 
   // Charger les réseaux sociaux (comptes externes) Clerk pour les clients Stripe qui exposent clerkUserId
   useEffect(() => {
@@ -4045,6 +4192,646 @@ export default function DashboardPage() {
     }
   };
 
+  const getShipmentCountryCode = (s: Shipment) => {
+    const candidates = [
+      (s as any)?.dropoff_point?.country,
+      (s as any)?.pickup_point?.country,
+      (s as any)?.boxtal_shipping_json?.content?.recipient?.address?.country,
+      (s as any)?.boxtal_shipping_json?.content?.shipper?.address?.country,
+    ];
+    const raw = candidates.find(v => String(v || '').trim()) || '';
+    const code = String(raw).trim().toUpperCase();
+    return code || 'INCONNU';
+  };
+
+  const getCountryLabel = (code?: string | null) => {
+    const c = String(code || '').trim().toUpperCase();
+    const map: Record<string, string> = {
+      FR: 'France',
+      BE: 'Belgique',
+      CH: 'Suisse',
+      LU: 'Luxembourg',
+      DE: 'Allemagne',
+      ES: 'Espagne',
+      IT: 'Italie',
+      NL: 'Pays-Bas',
+      PT: 'Portugal',
+      GB: 'Royaume-Uni',
+      UK: 'Royaume-Uni',
+    };
+    return map[c] || c || 'Inconnu';
+  };
+
+  const getCustomerDisplayName = (
+    customer: any,
+    fallback: string = 'Client'
+  ) => {
+    const fullName = `${customer?.name || customer?.full_name || customer?.fullName || ''}`.trim();
+    const first = `${customer?.first_name || customer?.firstName || ''}`.trim();
+    const last = `${customer?.last_name || customer?.lastName || ''}`.trim();
+    const combined = `${first} ${last}`.trim();
+    const email = `${customer?.email || customer?.email_address || ''}`.trim();
+    return fullName || combined || email || fallback;
+  };
+
+  const shipmentStats = useMemo(() => {
+    const rows = Array.isArray(statsShipments) ? statsShipments : [];
+    const statusCounts: Record<string, number> = {};
+    const dailyCounts: Record<string, number> = {};
+    const networkCounts: Record<string, number> = {
+      'Mondial Relay': 0,
+      'Colis Privé': 0,
+      Colissimo: 0,
+      Chronopost: 0,
+      'Relais Colis': 0,
+    };
+    const countryCounts: Record<string, number> = {};
+    const customerEarningsById: Record<string, number> = {};
+    let deliveredCount = 0;
+    let cancelledCount = 0;
+    let returnedCount = 0;
+    let pendingCount = 0;
+    let pickupCount = 0;
+    let homeCount = 0;
+    let storePickupCount = 0;
+    let totalSpentCents = 0;
+    let totalEarningsCents = 0;
+    let totalDeliveryCostEur = 0;
+
+    rows.forEach(s => {
+      const status = String(s.status || 'UNKNOWN')
+        .trim()
+        .toUpperCase();
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+
+      if (status === 'DELIVERED') deliveredCount += 1;
+      if (status === 'CANCELLED') cancelledCount += 1;
+      if (status === 'RETURNED') returnedCount += 1;
+      if (status === 'PENDING') pendingCount += 1;
+
+      const method = String(s.delivery_method || '')
+        .trim()
+        .toLowerCase();
+      if (method === 'pickup_point') {
+        pickupCount += 1;
+      } else if (method === 'home_delivery') {
+        homeCount += 1;
+      } else if (method === 'store_pickup') {
+        storePickupCount += 1;
+      }
+
+      const networkCode = String(s.delivery_network || '')
+        .trim()
+        .toUpperCase();
+      if (
+        networkCode === 'MONR-DOMICILEFRANCE' ||
+        networkCode === 'MONR-CPOURTOI'
+      ) {
+        networkCounts['Mondial Relay'] += 1;
+      } else if (
+        networkCode === 'COPR-COPRRELAISDOMICILENAT' ||
+        networkCode === 'COPR-COPRRELAISRELAISNAT'
+      ) {
+        networkCounts['Colis Privé'] += 1;
+      } else if (networkCode === 'POFR-COLISSIMOACCESS') {
+        networkCounts.Colissimo += 1;
+      } else if (
+        networkCode === 'CHRP-CHRONO2SHOPDIRECT' ||
+        networkCode === 'CHRP-CHRONO18'
+      ) {
+        networkCounts.Chronopost += 1;
+      } else if (networkCode === 'SOGP-RELAISCOLIS') {
+        networkCounts['Relais Colis'] += 1;
+      }
+
+      const country = getShipmentCountryCode(s);
+      countryCounts[country] = (countryCounts[country] || 0) + 1;
+
+      const spent = Number(s.customer_spent_amount || 0);
+      if (Number.isFinite(spent)) totalSpentCents += spent;
+
+      const earnings = Number(s.store_earnings_amount || 0);
+      if (Number.isFinite(earnings)) {
+        totalEarningsCents += earnings;
+        const customerId = String(s.customer_stripe_id || '').trim();
+        if (customerId) {
+          customerEarningsById[customerId] =
+            (customerEarningsById[customerId] || 0) + earnings;
+        }
+      }
+
+      const deliveryCost = Number(s.delivery_cost || 0);
+      if (Number.isFinite(deliveryCost)) totalDeliveryCostEur += deliveryCost;
+
+
+      const created = s.created_at ? new Date(s.created_at) : null;
+      const validDate = created && Number.isFinite(created.getTime());
+      if (validDate) {
+        const key = created.toISOString().slice(0, 10);
+        dailyCounts[key] = (dailyCounts[key] || 0) + 1;
+
+
+      }
+    });
+
+    const totalCount = rows.length;
+    const deliveredRate = totalCount
+      ? Math.round((deliveredCount / totalCount) * 100)
+      : 0;
+    const cancelledOrReturnedCount = cancelledCount + returnedCount;
+    const cancelledRate = totalCount
+      ? Math.round((cancelledCount / totalCount) * 100)
+      : 0;
+    const returnedRate = totalCount
+      ? Math.round((returnedCount / totalCount) * 100)
+      : 0;
+    const cancelledOrReturnedRate = totalCount
+      ? Math.round((cancelledOrReturnedCount / totalCount) * 100)
+      : 0;
+    const topStatuses = Object.entries(statusCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+    const last7Days = Array.from({ length: 7 }).map((_, idx) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (6 - idx));
+      const iso = d.toISOString().slice(0, 10);
+      return {
+        iso,
+        label: d.toLocaleDateString('fr-FR', {
+          day: '2-digit',
+          month: '2-digit',
+        }),
+        count: dailyCounts[iso] || 0,
+      };
+    });
+    const last30Days = Array.from({ length: 30 }).map((_, idx) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (29 - idx));
+      const iso = d.toISOString().slice(0, 10);
+      return {
+        iso,
+        label: d.toLocaleDateString('fr-FR', {
+          day: '2-digit',
+          month: '2-digit',
+        }),
+        count: dailyCounts[iso] || 0,
+      };
+    });
+    const shipments7DaysCount = last7Days.reduce((sum, d) => sum + d.count, 0);
+    const shipments30DaysCount = last30Days.reduce((sum, d) => sum + d.count, 0);
+    const topNetworks = Object.entries(networkCounts)
+      .filter(([, count]) => count > 0)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+    const topCountries = Object.entries(countryCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8);
+    const topCustomers = Object.entries(customerEarningsById)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8);
+    const last30IsoSet = new Set(last30Days.map(d => d.iso));
+    let delivered30Count = 0;
+    let cancelled30Count = 0;
+    let returned30Count = 0;
+    let pickup30Count = 0;
+    let home30Count = 0;
+    let storePickup30Count = 0;
+    let totalEarnings30Cents = 0;
+    const customerOrderCount30ById: Record<string, number> = {};
+    const countryCounts30: Record<string, number> = {};
+    const networkTop5Counts30: Record<string, number> = {
+      mondialRelay: 0,
+      relaisColis: 0,
+      colisPrive: 0,
+      colissimo: 0,
+      chronopost: 0,
+    };
+
+    rows.forEach(s => {
+      const created = s.created_at ? new Date(s.created_at) : null;
+      const validDate = created && Number.isFinite(created.getTime());
+      if (!validDate) return;
+      const key = created.toISOString().slice(0, 10);
+      if (!last30IsoSet.has(key)) return;
+
+      const status = String(s.status || 'UNKNOWN')
+        .trim()
+        .toUpperCase();
+      if (status === 'DELIVERED') delivered30Count += 1;
+      if (status === 'CANCELLED') cancelled30Count += 1;
+      if (status === 'RETURNED') returned30Count += 1;
+
+      const method = String(s.delivery_method || '')
+        .trim()
+        .toLowerCase();
+      if (method === 'pickup_point') pickup30Count += 1;
+      else if (method === 'home_delivery') home30Count += 1;
+      else if (method === 'store_pickup') storePickup30Count += 1;
+
+      const earnings = Number(s.store_earnings_amount || 0);
+      if (Number.isFinite(earnings)) totalEarnings30Cents += earnings;
+
+      const customerId = String(s.customer_stripe_id || '').trim();
+      if (customerId) {
+        customerOrderCount30ById[customerId] =
+          (customerOrderCount30ById[customerId] || 0) + 1;
+      }
+
+      const country = getShipmentCountryCode(s);
+      countryCounts30[country] = (countryCounts30[country] || 0) + 1;
+
+      const networkCode = String(s.delivery_network || '')
+        .trim()
+        .toUpperCase();
+      if (networkCode === 'MONR-DOMICILEFRANCE' || networkCode === 'MONR-CPOURTOI')
+        networkTop5Counts30.mondialRelay += 1;
+      else if (
+        networkCode === 'COPR-COPRRELAISDOMICILENAT' ||
+        networkCode === 'COPR-COPRRELAISRELAISNAT'
+      )
+        networkTop5Counts30.colisPrive += 1;
+      else if (networkCode === 'POFR-COLISSIMOACCESS')
+        networkTop5Counts30.colissimo += 1;
+      else if (
+        networkCode === 'CHRP-CHRONO2SHOPDIRECT' ||
+        networkCode === 'CHRP-CHRONO18'
+      )
+        networkTop5Counts30.chronopost += 1;
+      else if (networkCode === 'SOGP-RELAISCOLIS')
+        networkTop5Counts30.relaisColis += 1;
+    });
+
+    const total30Count = shipments30DaysCount;
+    const pct = (value: number) =>
+      total30Count > 0 ? Math.round((value / total30Count) * 100) : 0;
+    const others30Count = Math.max(
+      0,
+      total30Count - delivered30Count - cancelled30Count - returned30Count
+    );
+    const networkTop5Rows30 = [
+      {
+        key: 'mondialRelay',
+        label: 'Mondial Relay',
+        count: networkTop5Counts30.mondialRelay,
+      },
+      {
+        key: 'relaisColis',
+        label: 'Relais Colis',
+        count: networkTop5Counts30.relaisColis,
+      },
+      {
+        key: 'colisPrive',
+        label: 'Colis Privé',
+        count: networkTop5Counts30.colisPrive,
+      },
+      {
+        key: 'colissimo',
+        label: 'Colissimo',
+        count: networkTop5Counts30.colissimo,
+      },
+      {
+        key: 'chronopost',
+        label: 'Chronopost',
+        count: networkTop5Counts30.chronopost,
+      },
+    ]
+      .map(item => ({ ...item, rate: pct(item.count) }))
+      .filter(item => item.count > 0);
+    const topCustomer30Entry = Object.entries(customerOrderCount30ById).sort(
+      (a, b) => b[1] - a[1]
+    )[0] || [null, 0];
+    const topCountry30Entry = Object.entries(countryCounts30).sort(
+      (a, b) => b[1] - a[1]
+    )[0] || [null, 0];
+    return {
+      totalCount,
+      deliveredCount,
+      cancelledCount,
+      returnedCount,
+      pendingCount,
+      cancelledOrReturnedCount,
+      shipments7DaysCount,
+      shipments30DaysCount,
+      pickupCount,
+      homeCount,
+      storePickupCount,
+      totalSpentEur: totalSpentCents / 100,
+      totalEarningsEur: totalEarningsCents / 100,
+      totalDeliveryCostEur,
+      deliveredRate,
+      cancelledRate,
+      returnedRate,
+      cancelledOrReturnedRate,
+      topStatuses,
+      last7Days,
+      last30Days,
+      topNetworks,
+      topCountries,
+      topCustomers,
+      totalEarnings30Eur: totalEarnings30Cents / 100,
+      total30Count,
+      delivered30Count,
+      cancelled30Count,
+      returned30Count,
+      delivered30Rate: pct(delivered30Count),
+      cancelled30Rate: pct(cancelled30Count),
+      returned30Rate: pct(returned30Count),
+      others30Count,
+      others30Rate: pct(others30Count),
+      pickup30Count,
+      home30Count,
+      storePickup30Count,
+      pickup30Rate: pct(pickup30Count),
+      home30Rate: pct(home30Count),
+      storePickup30Rate: pct(storePickup30Count),
+      networkTop5Rows30,
+      topCustomer30Id: topCustomer30Entry[0],
+      topCustomer30Count: Number(topCustomer30Entry[1] || 0),
+      topCustomer30Rate: pct(Number(topCustomer30Entry[1] || 0)),
+      topCountry30Code: topCountry30Entry[0],
+      topCountry30Count: Number(topCountry30Entry[1] || 0),
+      topCountry30Rate: pct(Number(topCountry30Entry[1] || 0)),
+    };
+  }, [statsShipments]);
+
+  const statsVolume30ChartData = useMemo(() => {
+    const byMonth = new Map<string, number>();
+    (statsShipments || []).forEach(s => {
+      const created = s.created_at ? new Date(s.created_at) : null;
+      if (!created || !Number.isFinite(created.getTime())) return;
+      const year = created.getFullYear();
+      const month = created.getMonth() + 1;
+      const key = `${year}-${String(month).padStart(2, '0')}`;
+      byMonth.set(key, (byMonth.get(key) || 0) + 1);
+    });
+
+    const ordered = Array.from(byMonth.entries()).sort((a, b) =>
+      a[0].localeCompare(b[0])
+    );
+    const last12Months = ordered.slice(-12);
+
+    return {
+      labels: last12Months.map(([key]) => {
+        const [year, month] = key.split('-');
+        return `${month}/${year}`;
+      }),
+      datasets: [
+        {
+          label: 'Expéditions totales',
+          data: last12Months.map(([, count]) => count),
+          backgroundColor: 'rgba(49, 40, 231, 0.75)',
+          borderColor: '#4f46e5',
+          borderWidth: 1,
+          borderRadius: 4,
+          maxBarThickness: 40,
+        },
+      ],
+    };
+  }, [statsShipments]);
+
+  const statsStatusChartData = useMemo(() => {
+    const others = Math.max(
+      0,
+      shipmentStats.totalCount -
+        shipmentStats.deliveredCount -
+        shipmentStats.cancelledCount -
+        shipmentStats.returnedCount -
+        shipmentStats.pendingCount
+    );
+    return {
+      labels: ['Livrées', 'Annulées', 'Retournées', 'En Attente', 'Autres'],
+      datasets: [
+        {
+          data: [
+            shipmentStats.deliveredCount,
+            shipmentStats.cancelledCount,
+            shipmentStats.returnedCount,
+            shipmentStats.pendingCount,
+            others,
+          ],
+          backgroundColor: ['#16a34a', '#dc2626', '#d97706', '#0284c7', '#7c3aed'],
+          borderWidth: 0,
+        },
+      ],
+    };
+  }, [
+    shipmentStats.totalCount,
+    shipmentStats.deliveredCount,
+    shipmentStats.cancelledCount,
+    shipmentStats.returnedCount,
+    shipmentStats.pendingCount,
+  ]);
+
+  const statsMethodChartData = useMemo(
+    () => ({
+      labels: ['Point Relais', 'À domicile', 'Retrait en boutique'],
+      datasets: [
+        {
+          data: [
+            shipmentStats.pickupCount,
+            shipmentStats.homeCount,
+            shipmentStats.storePickupCount,
+          ],
+          backgroundColor: ['#2563eb', '#8b5cf6', '#f59e0b'],
+          borderWidth: 0,
+        },
+      ],
+    }),
+    [
+      shipmentStats.pickupCount,
+      shipmentStats.homeCount,
+      shipmentStats.storePickupCount,
+    ]
+  );
+
+  const statsNetworksChartData = useMemo(
+    () => ({
+      labels: shipmentStats.topNetworks.map(([name]) => name),
+      datasets: [
+        {
+          label: 'Expéditions',
+          data: shipmentStats.topNetworks.map(([, count]) => count),
+          backgroundColor: ['#2563eb', '#a855f7', '#f97316', '#06b6d4', '#22c55e'],
+          borderWidth: 0,
+        },
+      ],
+    }),
+    [shipmentStats.topNetworks]
+  );
+
+  const statsCountriesChartData = useMemo(() => {
+    const defaults = ['FR', 'BE', 'CH'];
+    const map = new Map(
+      shipmentStats.topCountries.map(([country, count]) => [
+        String(country || '').trim().toUpperCase(),
+        Number(count || 0),
+      ])
+    );
+
+    const base = defaults.map(code => [code, map.get(code) || 0] as const);
+    const extras = shipmentStats.topCountries
+      .map(([country, count]) => [
+        String(country || '').trim().toUpperCase(),
+        Number(count || 0),
+      ] as const)
+      .filter(([code, count]) => !defaults.includes(code) && count > 0)
+      .slice(0, 5);
+
+    const ordered = [...base, ...extras];
+
+    return {
+      labels: ordered.map(([country]) => getCountryLabel(country)),
+      datasets: [
+        {
+          label: 'Commandes',
+          data: ordered.map(([, count]) => count),
+          backgroundColor: ['#3b82f6', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6'],
+          borderWidth: 0,
+        },
+      ],
+    };
+  }, [shipmentStats.topCountries]);
+
+  const statsTopCustomersChartData = useMemo(
+    () => ({
+      labels: shipmentStats.topCustomers.map(([id], idx) => {
+        const customer = customersMap[id] || null;
+        const fullName = `${customer?.name || customer?.full_name || customer?.fullName || ''}`.trim();
+        const first = `${customer?.first_name || customer?.firstName || ''}`.trim();
+        const last = `${customer?.last_name || customer?.lastName || ''}`.trim();
+        const combined = `${first} ${last}`.trim();
+        const email = `${customer?.email || customer?.email_address || ''}`.trim();
+        return fullName || combined || email || `Client ${idx + 1}`;
+      }),
+      datasets: [
+        {
+          label: 'Gains (€)',
+          data: shipmentStats.topCustomers.map(([, cents]) =>
+            Number(cents || 0) / 100
+          ),
+          backgroundColor: '#0ea5e9',
+          borderRadius: 6,
+          maxBarThickness: 40,
+          barPercentage: 0.55,
+          categoryPercentage: 0.7,
+        },
+      ],
+    }),
+    [shipmentStats.topCustomers, customersMap]
+  );
+
+  const statsTopCustomersOrderCountById = useMemo(() => {
+    const ids = new Set(
+      shipmentStats.topCustomers.map(([id]) => String(id || '').trim())
+    );
+    const counts = new Map<string, number>();
+    (statsShipments || []).forEach(s => {
+      const customerId = String(s.customer_stripe_id || '').trim();
+      if (!customerId || !ids.has(customerId)) return;
+      counts.set(customerId, (counts.get(customerId) || 0) + 1);
+    });
+    return counts;
+  }, [statsShipments, shipmentStats.topCustomers]);
+
+  const statsMonthlyEarningsChartData = useMemo(() => {
+    const byMonth = new Map<string, number>();
+    (statsShipments || []).forEach(s => {
+      const created = s.created_at ? new Date(s.created_at) : null;
+      if (!created || !Number.isFinite(created.getTime())) return;
+      const earnings = Number(s.store_earnings_amount || 0);
+      if (!Number.isFinite(earnings)) return;
+      const year = created.getFullYear();
+      const month = created.getMonth() + 1;
+      const key = `${year}-${String(month).padStart(2, '0')}`;
+      byMonth.set(key, (byMonth.get(key) || 0) + earnings);
+    });
+
+    const ordered = Array.from(byMonth.entries()).sort((a, b) =>
+      a[0].localeCompare(b[0])
+    );
+    const last12Months = ordered.slice(-12);
+
+    return {
+      labels: last12Months.map(([key]) => {
+        const [year, month] = key.split('-');
+        return `${month}/${year}`;
+      }),
+      datasets: [
+        {
+          label: 'Gains (€)',
+          data: last12Months.map(([, cents]) => Number(cents || 0) / 100),
+          backgroundColor: 'rgba(8, 151, 103, 0.75)',
+          borderColor: '#10b981',
+          borderWidth: 1,
+          borderRadius: 6,
+          maxBarThickness: 40,
+        },
+      ],
+    };
+  }, [statsShipments]);
+
+  const statsTopProductsSoldDetails = useMemo(() => {
+    const entries = (stockItems || [])
+      .map((it, idx) => {
+        const d = getStockDisplay(it, idx);
+        const stock = it?.stock || null;
+        const product = it?.product || null;
+        const stripeId = String(
+          stock?.product_stripe_id || product?.id || d.ref || ''
+        ).trim();
+        return {
+          stripeId,
+          label: d.title && d.title !== '—' ? d.title : d.ref,
+          bought: Number(d.boughtCount || 0),
+          imageUrl: d.imageUrls?.[0] ? String(d.imageUrls[0]) : '',
+          priceEur: d.priceEur,
+          description: d.description || '',
+          stockQty: d.qtyLabel,
+        };
+      })
+      .filter(it => Number.isFinite(it.bought) && it.bought > 0)
+      .sort((a, b) => b.bought - a.bought)
+      .slice(0, 5);
+    return entries;
+  }, [stockItems]);
+
+  const statsTopProductFromStock = useMemo(() => {
+    const rows = (stockItems || [])
+      .map((it, idx) => {
+        const d = getStockDisplay(it, idx);
+        const label = d.title && d.title !== '—' ? d.title : d.ref;
+        const bought = Number(d.boughtCount || 0);
+        return { label, bought };
+      })
+      .filter(row => Number.isFinite(row.bought) && row.bought > 0);
+    const totalBought = rows.reduce((sum, row) => sum + row.bought, 0);
+    const top = rows.sort((a, b) => b.bought - a.bought)[0] || null;
+    const topCount = Number(top?.bought || 0);
+    return {
+      label: top?.label || null,
+      count: topCount,
+      rate:
+        totalBought > 0 ? Math.round((topCount / totalBought) * 100) : 0,
+    };
+  }, [stockItems]);
+
+  const statsTopProductsSoldChartData = useMemo(() => {
+    return {
+      labels: statsTopProductsSoldDetails.map(e => e.label),
+      datasets: [
+        {
+          label: 'Vendus',
+          data: statsTopProductsSoldDetails.map(e => e.bought),
+          backgroundColor: '#d97706',
+          borderRadius: 6,
+          maxBarThickness: 36,
+          barPercentage: 0.65,
+          categoryPercentage: 0.75,
+        },
+      ],
+    };
+  }, [statsTopProductsSoldDetails]);
+
   if (loading) {
     return (
       <div className='min-h-screen bg-gray-50'>
@@ -4230,6 +5017,17 @@ export default function DashboardPage() {
               <RiDiscountPercentFill className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
 
               <span className='truncate'>Code Promo</span>
+            </button>
+            <button
+              onClick={() => setSection('stats')}
+              className={`flex items-center  sm:basis-auto min-w-0 px-2 py-2 sm:px-3 sm:py-2 text-xs sm:text-sm rounded-md border ${
+                section === 'stats'
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <BarChart3 className='w-3 h-3 sm:w-4 sm:h-4 mr-2' />
+              <span className='truncate'>Statistiques</span>
             </button>
             <button
               onClick={() => setSection('support')}
@@ -4869,6 +5667,527 @@ export default function DashboardPage() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {section === 'stats' && (
+            <div className='bg-white rounded-lg shadow p-6'>
+              <div className='flex items-center mb-4'>
+                <BarChart3 className='w-5 h-5 text-indigo-600 mr-2' />
+                <h2 className='text-lg font-semibold text-gray-900 mr-3'>
+                  Statistiques
+                </h2>
+                <button
+                  onClick={() => fetchStatsShipments({ background: true })}
+                  disabled={statsLoading || statsReloading}
+                  className={`inline-flex items-center px-3 py-2 rounded-md text-xs sm:text-sm border ${statsLoading || statsReloading ? 'bg-indigo-100 text-indigo-300 border-indigo-200 cursor-not-allowed' : 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700'}`}
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 mr-2 ${statsReloading ? 'animate-spin' : ''}`}
+                  />
+                  Rafraîchir
+                </button>
+              </div>
+              <p className='text-sm text-gray-600 mb-6'>
+                Retrouvez ici l'ensemble de vos statistiques de vente.
+              </p>
+              {statsLoading && (
+                <div className='mb-6 rounded-md border border-indigo-100 bg-indigo-50 px-3 py-2 text-sm text-indigo-700'>
+                  Chargement des statistiques...
+                </div>
+              )}
+              {!statsLoading && statsError && (
+                <div className='mb-6 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700'>
+                  {statsError}
+                </div>
+              )}
+
+              <div className='grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-6'>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>Gains sur 30 jours</p>
+                  <p className='text-2xl font-semibold text-gray-900 mt-1'>
+                    {formatValue(shipmentStats.totalEarnings30Eur)}
+                  </p>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>Expéditions sur 30 jours</p>
+                  <p className='text-2xl font-semibold text-gray-900 mt-1'>
+                    {shipmentStats.shipments30DaysCount.toLocaleString('fr-FR')}
+                  </p>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>Paniers en cours</p>
+                  <p className='text-2xl font-semibold text-gray-900 mt-1'>
+                    {typeof statsOpenCartsCount === 'number'
+                      ? statsOpenCartsCount.toLocaleString('fr-FR')
+                      : '—'}
+                  </p>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>
+                    Statuts livraisons sur 30 jours
+                  </p>
+                  <div className='mt-2 space-y-1 text-sm'>
+                    <p className='text-emerald-700'>
+                      Livrées: {shipmentStats.delivered30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.delivered30Rate}%)
+                    </p>
+                    <p className='text-rose-700'>
+                      Annulées: {shipmentStats.cancelled30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.cancelled30Rate}%)
+                    </p>
+                    <p className='text-amber-700'>
+                      Retournées: {shipmentStats.returned30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.returned30Rate}%)
+                    </p>
+                    <p className='text-indigo-700'>
+                      Autres: {shipmentStats.others30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.others30Rate}%)
+                    </p>
+                  </div>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>
+                    Méthodes de livraison sur 30 jours
+                  </p>
+                  <div className='mt-2 space-y-1 text-sm text-gray-800'>
+                    <p>
+                      Point relais: {shipmentStats.pickup30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.pickup30Rate}%)
+                    </p>
+                    <p>
+                      À domicile: {shipmentStats.home30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.home30Rate}%)
+                    </p>
+                    <p>
+                      Retrait boutique:{' '}
+                      {shipmentStats.storePickup30Count.toLocaleString('fr-FR')} (
+                      {shipmentStats.storePickup30Rate}%)
+                    </p>
+                  </div>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>
+                    Meilleurs réseaux sur 30 jours
+                  </p>
+                  <div className='mt-2 space-y-1 text-sm text-gray-800'>
+                    {shipmentStats.networkTop5Rows30.length === 0 ? (
+                      <p className='text-gray-500'>Aucune donnée</p>
+                    ) : (
+                      shipmentStats.networkTop5Rows30.map((item: any) => (
+                        <p key={item.key}>
+                          {item.label}: {item.count.toLocaleString('fr-FR')} ({item.rate}
+                          %)
+                        </p>
+                      ))
+                    )}
+                  </div>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>Meilleur client sur 30 jours</p>
+                  <p className='text-base font-semibold text-gray-900 mt-2 truncate'>
+                    {shipmentStats.topCustomer30Id
+                      ? getCustomerDisplayName(
+                          customersMap[String(shipmentStats.topCustomer30Id)] || null,
+                          'Client'
+                        )
+                      : '—'}
+                  </p>
+                  <p className='text-xs text-gray-600 mt-1'>
+                    {shipmentStats.topCustomer30Count.toLocaleString('fr-FR')} commande
+                    {shipmentStats.topCustomer30Count > 1 ? 's' : ''} (
+                    {shipmentStats.topCustomer30Rate}%)
+                  </p>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>Meilleur pays sur 30 jours</p>
+                  <p className='text-base font-semibold text-gray-900 mt-2'>
+                    {shipmentStats.topCountry30Code
+                      ? getCountryLabel(String(shipmentStats.topCountry30Code))
+                      : '—'}
+                  </p>
+                  <p className='text-xs text-gray-600 mt-1'>
+                    {shipmentStats.topCountry30Count.toLocaleString('fr-FR')} commande
+                    {shipmentStats.topCountry30Count > 1 ? 's' : ''} (
+                    {shipmentStats.topCountry30Rate}%)
+                  </p>
+                </div>
+                <div className='rounded-lg border border-gray-200 bg-gray-50 p-4'>
+                  <p className='text-xs text-gray-500'>
+                    Meilleur article vendu sur 30 jours
+                  </p>
+                  <p className='text-base font-semibold text-gray-900 mt-2 truncate'>
+                    {statsTopProductFromStock.label
+                      ? String(statsTopProductFromStock.label)
+                      : '—'}
+                  </p>
+                  <p className='text-xs text-gray-600 mt-1'>
+                    {statsTopProductFromStock.count.toLocaleString('fr-FR')} vendu
+                    {statsTopProductFromStock.count > 1 ? 's' : ''} (
+                    {statsTopProductFromStock.rate}%)
+                  </p>
+                </div>
+              </div>
+
+              <div className='grid grid-cols-1 gap-4'>
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Évolution  des gains
+                  </h3>
+                  <div className='h-72'>
+                    <Bar
+                      data={statsMonthlyEarningsChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                          y: {
+                            beginAtZero: true,
+                            ticks: { precision: 0 },
+                          },
+                        },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4 xl:col-span-2'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Top 5 articles vendus
+                  </h3>
+                  <div className='h-72'>
+                    <Bar
+                      data={statsTopProductsSoldChartData}
+                      options={{
+                        indexAxis: 'y' as const,
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                          legend: { display: false },
+                          tooltip: {
+                            enabled: false,
+                            external: context => {
+                              if (typeof document === 'undefined') return;
+                              const { chart, tooltip } = context;
+                              let el = document.getElementById(
+                                'stats-top-products-tooltip'
+                              ) as HTMLDivElement | null;
+                              if (!el) {
+                                el = document.createElement('div');
+                                el.id = 'stats-top-products-tooltip';
+                                el.style.position = 'absolute';
+                                el.style.pointerEvents = 'none';
+                                el.style.zIndex = '60';
+                                el.style.opacity = '0';
+                                el.style.transition = 'opacity 120ms ease';
+                                document.body.appendChild(el);
+                              }
+
+                              if (!tooltip || tooltip.opacity === 0) {
+                                el.style.opacity = '0';
+                                return;
+                              }
+
+                              const point = tooltip.dataPoints?.[0];
+                              const idx = point?.dataIndex ?? -1;
+                              const detail =
+                                idx >= 0 ? statsTopProductsSoldDetails[idx] : null;
+                              if (!detail) {
+                                el.style.opacity = '0';
+                                return;
+                              }
+
+                              const fmtMoney = (v?: number | null) =>
+                                v == null || !Number.isFinite(v)
+                                  ? '—'
+                                  : new Intl.NumberFormat('fr-FR', {
+                                      style: 'currency',
+                                      currency: 'EUR',
+                                      minimumFractionDigits: 2,
+                                      maximumFractionDigits: 2,
+                                    }).format(v);
+                              const safeText = (v: unknown) =>
+                                String(v ?? '')
+                                  .replace(/&/g, '&amp;')
+                                  .replace(/</g, '&lt;')
+                                  .replace(/>/g, '&gt;');
+
+                              const imageHtml = detail.imageUrl
+                                ? `<img src="${safeText(detail.imageUrl)}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;" />`
+                                : `<div style="width:56px;height:56px;border-radius:8px;border:1px dashed #d1d5db;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:11px;">No Img</div>`;
+                              const desc = String(detail.description || '').trim();
+                              const clippedDesc =
+                                desc.length > 90 ? `${desc.slice(0, 90)}...` : desc;
+                              const html = `
+                                <div style="max-width:320px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 10px 30px rgba(15,23,42,0.15);padding:10px;">
+                                  <div style="display:flex;gap:10px;align-items:flex-start;">
+                                    ${imageHtml}
+                                    <div style="min-width:0;">
+                                      <div style="font-weight:700;color:#111827;font-size:13px;line-height:1.25;word-break:break-word;">${safeText(detail.label)}</div>
+                                      <div style="margin-top:2px;color:#6b7280;font-size:11px;word-break:break-word;">ID: ${safeText(detail.stripeId || '—')}</div>
+                                      <div style="margin-top:6px;color:#111827;font-size:12px;">Prix: <b>${safeText(fmtMoney(detail.priceEur))}</b></div>
+                                      <div style="color:#111827;font-size:12px;">Stock: <b>${safeText(detail.stockQty)}</b></div>
+                                      <div style="color:#111827;font-size:12px;">Vendus: <b>${safeText(detail.bought)}</b></div>
+                                    </div>
+                                  </div>
+                                  <div style="margin-top:8px;color:#4b5563;font-size:11px;line-height:1.35;word-break:break-word;">${safeText(clippedDesc || 'Description indisponible')}</div>
+                                </div>
+                              `;
+                              el.innerHTML = html;
+
+                              const rect = chart.canvas.getBoundingClientRect();
+                              const anchorX = window.scrollX + rect.left + tooltip.caretX;
+                              const anchorY = window.scrollY + rect.top + tooltip.caretY;
+                              const gap = 12;
+                              const screenPadding = 8;
+                              const tipRect = el.getBoundingClientRect();
+                              let left = anchorX + gap;
+                              let top = anchorY + gap;
+
+                              const minLeft = window.scrollX + screenPadding;
+                              const maxLeft =
+                                window.scrollX + window.innerWidth - tipRect.width - screenPadding;
+                              if (left > maxLeft) left = anchorX - tipRect.width - gap;
+                              if (left < minLeft) left = minLeft;
+
+                              const minTop = window.scrollY + screenPadding;
+                              const maxTop =
+                                window.scrollY + window.innerHeight - tipRect.height - screenPadding;
+                              if (top > maxTop) top = anchorY - tipRect.height - gap;
+                              if (top < minTop) top = minTop;
+
+                              el.style.left = `${left}px`;
+                              el.style.top = `${top}px`;
+                              el.style.opacity = '1';
+                            },
+                          },
+                        },
+                        scales: {
+                          x: {
+                            beginAtZero: true,
+                            ticks: {
+                              stepSize: 1,
+                              precision: 0,
+                              callback: value => `${value}`,
+                            },
+                          },
+                          y: {
+                            ticks: {
+                              callback: (_value, index) => {
+                                const label = String(
+                                  statsTopProductsSoldChartData.labels[index] || ''
+                                );
+                                const words = label.split(' ');
+                                const lines: string[] = [];
+                                let current = '';
+                                words.forEach(word => {
+                                  const next = current ? `${current} ${word}` : word;
+                                  if (next.length > 22 && current) {
+                                    lines.push(current);
+                                    current = word;
+                                  } else {
+                                    current = next;
+                                  }
+                                });
+                                if (current) lines.push(current);
+                                return lines;
+                              },
+                            },
+                          },
+                        },
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className='grid grid-cols-1 xl:grid-cols-2 gap-4 mt-4'>
+                <div className='rounded-lg border border-gray-200 p-4 xl:col-span-2'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Volume des expéditions total
+                  </h3>
+                  <div className='h-64'>
+                    <Bar
+                      data={statsVolume30ChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                          x: {
+                            ticks: {
+                              autoSkip: false,
+                              maxRotation: 0,
+                              minRotation: 0,
+                              callback: (_value, index) => {
+                                const label = String(
+                                  statsVolume30ChartData.labels[index] || ''
+                                );
+                                const isMobile =
+                                  typeof window !== 'undefined' &&
+                                  window.innerWidth < 640;
+                                if (isMobile && index % 3 !== 0) return '';
+                                return label;
+                              },
+                            },
+                          },
+                          y: {
+                            beginAtZero: true,
+                            ticks: { precision: 0 },
+                          },
+                        },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4 xl:col-span-2'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Dépense par client
+                  </h3>
+                  <div className='h-64'>
+                    <Bar
+                      data={statsTopCustomersChartData}
+                      options={{
+                        indexAxis: 'x' as const,
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                          legend: { display: false },
+                          tooltip: {
+                            displayColors: false,
+                            callbacks: {
+                              label: context => {
+                                const amount = Number(context.raw || 0);
+                                const amountLabel = new Intl.NumberFormat('fr-FR', {
+                                  style: 'currency',
+                                  currency: 'EUR',
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                }).format(amount);
+                                return `Montant: ${amountLabel}`;
+                              },
+                              afterLabel: context => {
+                                const customerId = String(
+                                  shipmentStats.topCustomers[context.dataIndex]?.[0] || ''
+                                );
+                                const orders =
+                                  statsTopCustomersOrderCountById.get(customerId) || 0;
+                                return `Nombre de commandes: ${orders}`;
+                              },
+                            },
+                          },
+                        },
+                        scales: {
+                          x: {
+                            ticks: {
+                              autoSkip: false,
+                              maxRotation: 0,
+                              minRotation: 0,
+                              callback: (_value, index) => {
+                                const label = String(
+                                  statsTopCustomersChartData.labels[index] || ''
+                                );
+                                const words = label.split(' ');
+                                const lines: string[] = [];
+                                let current = '';
+                                words.forEach(word => {
+                                  const next = current ? `${current} ${word}` : word;
+                                  if (next.length > 14 && current) {
+                                    lines.push(current);
+                                    current = word;
+                                  } else {
+                                    current = next;
+                                  }
+                                });
+                                if (current) lines.push(current);
+                                return lines;
+                              },
+                            },
+                          },
+                          y: {
+                            beginAtZero: true,
+                            suggestedMax: 300,
+                            ticks: {
+                              stepSize: 100,
+                              precision: 0,
+                              callback: value => `${value}`,
+                            },
+                          },
+                        },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Performance des statuts de livraison
+                  </h3>
+                  <div className='h-64'>
+                    <Doughnut
+                      data={statsStatusChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Répartition des méthodes de livraison
+                  </h3>
+                  <div className='h-64'>
+                    <Doughnut
+                      data={statsMethodChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Expédition par réseau de livraison
+                  </h3>
+                  <div className='h-64'>
+                    <Doughnut
+                      data={statsNetworksChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } },
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className='rounded-lg border border-gray-200 p-4'>
+                  <h3 className='text-sm font-semibold text-gray-900 mb-3'>
+                    Commandes par pays d'achat
+                  </h3>
+                  <div className='h-64'>
+                    <Doughnut
+                      data={statsCountriesChartData}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { position: 'bottom' } },
+                      }}
+                    />
+                  </div>
+                </div>
+
+              </div>
+
+
             </div>
           )}
 
