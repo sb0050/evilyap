@@ -27,6 +27,8 @@ import PrivacyPolicy from './pages/public/PrivacyPolicy';
 import TermsAndConditions from './pages/public/TermsAndConditions';
 import DemoPublicPage from './pages/public/DemoPublicPage';
 import AdminPage from './pages/admin/AdminPage';
+import LeadsPage from './pages/admin/LeadsPage';
+import MailsPage from './pages/admin/MailsPage';
 import { useEffect } from 'react';
 import DashboardPage from './pages/dashboard/DashboardPage';
 import StorePage from './pages/StorePage';
@@ -205,6 +207,36 @@ function App() {
                   <SignedIn>
                     <AdminRouteGuard>
                       <AdminPage />
+                    </AdminRouteGuard>
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path='/admin/mails'
+              element={
+                <>
+                  <SignedIn>
+                    <AdminRouteGuard>
+                      <MailsPage />
+                    </AdminRouteGuard>
+                  </SignedIn>
+                  <SignedOut>
+                    <RedirectToSignUp />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path='/admin/leads'
+              element={
+                <>
+                  <SignedIn>
+                    <AdminRouteGuard>
+                      <LeadsPage />
                     </AdminRouteGuard>
                   </SignedIn>
                   <SignedOut>
