@@ -2842,27 +2842,24 @@ export default function DashboardPage() {
         .toLowerCase() === 'true'
     );
   };
-  const selectedForDoc = selectedSales.filter(s => {
+  const isBordereauEligibleSale = (s: any) => {
     if (isStorePickupSale(s)) return false;
-    const stRaw = s.status;
+    const stRaw = s?.status;
     const st =
       stRaw == null
         ? null
         : String(stRaw || '')
             .trim()
             .toUpperCase();
-    return st === null || (st === 'PENDING' && isDocumentCreatedSale(s));
+    if (st === null || st === '') return true;
+    if (st === 'CANCELLED' || st === 'RETURNED') return false;
+    return isDocumentCreatedSale(s);
+  };
+  const selectedForDoc = selectedSales.filter(s => {
+    return isBordereauEligibleSale(s);
   });
   const hasBlockedDocSelection = selectedSales.some(s => {
-    if (isStorePickupSale(s)) return false;
-    const stRaw = s.status;
-    const st =
-      stRaw == null
-        ? null
-        : String(stRaw || '')
-            .trim()
-            .toUpperCase();
-    return !(st === null || (st === 'PENDING' && isDocumentCreatedSale(s)));
+    return !isBordereauEligibleSale(s);
   });
   const shippingDocDisabled = selectedForDoc.length === 0;
   const selectedForCancel = selectedSales.filter(

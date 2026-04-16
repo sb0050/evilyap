@@ -13,25 +13,35 @@ export default function AdminPage() {
   const { user } = useUser();
   const { getToken } = useAuth();
 
-  const [email, setEmail] = useState('');
-  const [sending, setSending] = useState(false);
-  const [result, setResult] = useState<{ ok?: boolean; error?: string } | null>(
+  const [activeTab, setActiveTab] = useState<'prospection' | 'demo'>(
+    'prospection'
+  );
+  const [prospectEmail, setProspectEmail] = useState('');
+  const [demoEmail, setDemoEmail] = useState('');
+  const [demoSlug, setDemoSlug] = useState('');
+  const [sendingProspect, setSendingProspect] = useState(false);
+  const [sendingDemo, setSendingDemo] = useState(false);
+  const [prospectResult, setProspectResult] = useState<{
+    ok?: boolean;
+    error?: string;
+  } | null>(null);
+  const [demoResult, setDemoResult] = useState<{ ok?: boolean; error?: string } | null>(
     null
   );
 
   const sendProspect = async () => {
-    setResult(null);
-    const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    setProspectResult(null);
+    const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(prospectEmail);
     if (!valid) {
-      setResult({ error: 'Email invalide' });
+      setProspectResult({ error: 'Email invalide' });
       return;
     }
     try {
-      setSending(true);
+      setSendingProspect(true);
       const token = await getToken();
       const resp = await apiPost(
         '/api/admin/prospect',
-        { email },
+        { email: prospectEmail },
         {
           headers: { Authorization: token ? `Bearer ${token}` : '' },
         }
@@ -40,11 +50,45 @@ export default function AdminPage() {
         const text = await resp.text();
         throw new Error(text || 'Erreur envoi');
       }
-      setResult({ ok: true });
+      setProspectResult({ ok: true });
     } catch (e: any) {
-      setResult({ error: e?.message || 'Erreur envoi' });
+      setProspectResult({ error: e?.message || 'Erreur envoi' });
     } finally {
-      setSending(false);
+      setSendingProspect(false);
+    }
+  };
+
+  const sendDemo = async () => {
+    setDemoResult(null);
+    const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(demoEmail);
+    if (!valid) {
+      setDemoResult({ error: 'Email invalide' });
+      return;
+    }
+    const slug = String(demoSlug || '').trim();
+    if (!slug) {
+      setDemoResult({ error: 'Slug boutique invalide' });
+      return;
+    }
+    try {
+      setSendingDemo(true);
+      const token = await getToken();
+      const resp = await apiPost(
+        '/api/admin/demo',
+        { email: demoEmail, slug },
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || 'Erreur envoi');
+      }
+      setDemoResult({ ok: true });
+    } catch (e: any) {
+      setDemoResult({ error: e?.message || 'Erreur envoi' });
+    } finally {
+      setSendingDemo(false);
     }
   };
 
@@ -62,35 +106,109 @@ export default function AdminPage() {
 
           <div className='border-b mb-4'>
             <nav className='flex gap-6'>
-              <span className='px-2 py-2 border-b-2 border-indigo-600 text-indigo-600 font-semibold'>
+              <button
+                type='button'
+                onClick={() => setActiveTab('prospection')}
+                className={`px-2 py-2 border-b-2 font-semibold ${
+                  activeTab === 'prospection'
+                    ? 'border-indigo-600 text-indigo-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
                 Prospection
-              </span>
+              </button>
+              <button
+                type='button'
+                onClick={() => setActiveTab('demo')}
+                className={`px-2 py-2 border-b-2 font-semibold ${
+                  activeTab === 'demo'
+                    ? 'border-indigo-600 text-indigo-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                Demo
+              </button>
             </nav>
           </div>
 
           <div className='bg-white rounded-lg shadow p-6'>
-            <label className='block text-sm font-medium text-gray-700 mb-2'>
-              Email du prospect
-            </label>
-            <input
-              type='email'
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              placeholder='ex: vendeur@example.com'
-              className='w-full border border-gray-300 rounded-lg p-3 mb-4'
-            />
-            <button
-              onClick={sendProspect}
-              disabled={sending || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)}
-              className='w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-3 font-semibold disabled:opacity-50'
-            >
-              {sending ? 'Envoi…' : 'Envoyer'}
-            </button>
-            {result?.ok && (
-              <div className='mt-3 text-sm text-green-700'>Email envoyé ✔</div>
-            )}
-            {result?.error && (
-              <div className='mt-3 text-sm text-red-600'>{result.error}</div>
+            {activeTab === 'prospection' ? (
+              <>
+                <label className='block text-sm font-medium text-gray-700 mb-2'>
+                  Email du prospect
+                </label>
+                <input
+                  type='email'
+                  value={prospectEmail}
+                  onChange={e => setProspectEmail(e.target.value)}
+                  placeholder='ex: vendeur@example.com'
+                  className='w-full border border-gray-300 rounded-lg p-3 mb-4'
+                />
+                <button
+                  onClick={sendProspect}
+                  disabled={
+                    sendingProspect ||
+                    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(prospectEmail)
+                  }
+                  className='w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-3 font-semibold disabled:opacity-50'
+                >
+                  {sendingProspect ? 'Envoi…' : 'Envoyer'}
+                </button>
+                {prospectResult?.ok && (
+                  <div className='mt-3 text-sm text-green-700'>
+                    Email envoyé ✔
+                  </div>
+                )}
+                {prospectResult?.error && (
+                  <div className='mt-3 text-sm text-red-600'>
+                    {prospectResult.error}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <label className='block text-sm font-medium text-gray-700 mb-2'>
+                  Email du contact à relancer
+                </label>
+                <input
+                  type='email'
+                  value={demoEmail}
+                  onChange={e => setDemoEmail(e.target.value)}
+                  placeholder='ex: vendeur@example.com'
+                  className='w-full border border-gray-300 rounded-lg p-3 mb-4'
+                />
+                <label className='block text-sm font-medium text-gray-700 mb-2'>
+                  Slug de la boutique
+                </label>
+                <input
+                  type='text'
+                  value={demoSlug}
+                  onChange={e => setDemoSlug(e.target.value)}
+                  placeholder='ex: ma-boutique'
+                  className='w-full border border-gray-300 rounded-lg p-3 mb-4'
+                />
+                <button
+                  onClick={sendDemo}
+                  disabled={
+                    sendingDemo ||
+                    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(demoEmail) ||
+                    !String(demoSlug || '').trim()
+                  }
+                  className='w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-3 font-semibold disabled:opacity-50'
+                >
+                  {sendingDemo ? 'Envoi…' : 'Envoyer'}
+                </button>
+                {demoResult?.ok && (
+                  <div className='mt-3 text-sm text-green-700'>
+                    Email de démo envoyé ✔
+                  </div>
+                )}
+                {demoResult?.error && (
+                  <div className='mt-3 text-sm text-red-600'>
+                    {demoResult.error}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import { useNavigate } from 'react-router-dom';
+import PhoneInput, { isValidPhoneNumber } from 'react-phone-number-input';
+import 'react-phone-number-input/style.css';
 import Spinner from '../components/Spinner';
 import { API_BASE_URL } from '../utils/api';
 
@@ -24,11 +26,58 @@ export default function NeedADemoPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [requested, setRequested] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [contactMethod, setContactMethod] = useState<'phone' | 'email'>(
+    'phone'
+  );
+  const [phoneInput, setPhoneInput] = useState<string | undefined>(undefined);
+  const [emailInput, setEmailInput] = useState('');
+  const [phoneError, setPhoneError] = useState<string | null>(null);
+  const isPhoneValid = Boolean(phoneInput && isValidPhoneNumber(phoneInput));
+  const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailInput);
+  const isContactValid =
+    contactMethod === 'phone' ? isPhoneValid : Boolean(isEmailValid);
 
-  const requestKey = useMemo(() => {
-    const id = String(user?.id || '').trim();
-    return id ? `needademo_sent_${id}` : '';
-  }, [user?.id]);
+  const sendNeedADemo = useCallback(
+    async (options: {
+      trigger: 'manual_recontact';
+      contactMethod: 'phone' | 'email';
+      phoneE164?: string | null;
+      phoneRaw?: string | null;
+      contactEmail?: string | null;
+    }) => {
+      try {
+        const token = (await getToken()) || '';
+        const post = await fetch(`${API_BASE_URL}/api/stores/need-a-demo`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+          body: JSON.stringify({
+            source: 'needademo',
+            trigger: options.trigger,
+            contactMethod: options.contactMethod,
+            phone: options.phoneE164 || null,
+            phoneRaw: options.phoneRaw || null,
+            contactEmail: options.contactEmail || null,
+          }),
+        });
+        if (!post.ok) {
+          const json = await post.json().catch(() => null as any);
+          throw new Error(
+            String(json?.error || "Erreur lors de l'envoi de la demande")
+          );
+        }
+        setRequested(true);
+        return true;
+      } catch (e: any) {
+        setError(String(e?.message || 'Erreur interne'));
+        return false;
+      }
+    },
+    [getToken]
+  );
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -54,33 +103,6 @@ export default function NeedADemoPage() {
           navigate('/dashboard', { replace: true });
           return;
         }
-
-        const alreadySent = (() => {
-          if (!requestKey) return false;
-          try {
-            return localStorage.getItem(requestKey) === '1';
-          } catch {
-            return false;
-          }
-        })();
-
-        if (!alreadySent) {
-          const post = await fetch(`${API_BASE_URL}/api/stores/need-a-demo`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: token ? `Bearer ${token}` : '',
-            },
-            body: JSON.stringify({ source: 'needademo' }),
-          });
-          if (post.ok) {
-            try {
-              if (requestKey) localStorage.setItem(requestKey, '1');
-            } catch {}
-          }
-        }
-
-        setRequested(true);
       } catch (e: any) {
         setError(String(e?.message || 'Erreur interne'));
       } finally {
@@ -89,7 +111,50 @@ export default function NeedADemoPage() {
     };
 
     run();
-  }, [isLoaded, getToken, navigate, requestKey]);
+  }, [isLoaded, getToken, navigate]);
+
+  useEffect(() => {
+    const primary = String(
+      (user as any)?.primaryEmailAddress?.emailAddress ||
+        user?.emailAddresses?.[0]?.emailAddress ||
+        ''
+    ).trim();
+    if (!emailInput && primary) {
+      setEmailInput(primary);
+    }
+  }, [user, emailInput]);
+
+  const handleManualRequest = async () => {
+    if (sending || requested) return;
+    setError(null);
+    const rawPhone = String(phoneInput || '').trim();
+    const rawEmail = String(emailInput || '').trim();
+    if (contactMethod === 'phone') {
+      if (!isPhoneValid) {
+        setPhoneError(
+          'Numéro invalide. Format attendu: numéro français valide.'
+        );
+        return;
+      }
+      setPhoneError(null);
+    } else if (!isEmailValid) {
+      setError('Email invalide');
+      return;
+    }
+    setSending(true);
+    const ok = await sendNeedADemo({
+      trigger: 'manual_recontact',
+      contactMethod,
+      phoneE164: contactMethod === 'phone' ? rawPhone : null,
+      phoneRaw: contactMethod === 'phone' ? rawPhone : null,
+      contactEmail: contactMethod === 'email' ? rawEmail : null,
+    });
+    if (!ok) {
+      setSending(false);
+      return;
+    }
+    setSending(false);
+  };
 
   if (loading) {
     return (
@@ -109,15 +174,91 @@ export default function NeedADemoPage() {
           {error ? (
             <div className='text-red-600 text-sm'>{error}</div>
           ) : (
-            <div className='space-y-2 text-gray-700'>
+            <div className='space-y-3 text-gray-700'>
               <p>
                 Merci{user?.firstName ? ` ${user.firstName}` : ''}, on va te
                 recontacter très vite pour une démo.
               </p>
+              <div className='space-y-2'>
+                <p className='text-sm font-medium text-gray-700'>
+                  Comment souhaites-tu être recontacté ?
+                </p>
+                <label className='inline-flex items-center mr-4 text-sm'>
+                  <input
+                    type='radio'
+                    name='needademo-contact-method'
+                    value='phone'
+                    checked={contactMethod === 'phone'}
+                    onChange={() => setContactMethod('phone')}
+                    disabled={requested}
+                    className='mr-2'
+                  />
+                  Téléphone
+                </label>
+                <label className='inline-flex items-center text-sm'>
+                  <input
+                    type='radio'
+                    name='needademo-contact-method'
+                    value='email'
+                    checked={contactMethod === 'email'}
+                    onChange={() => setContactMethod('email')}
+                    disabled={requested}
+                    className='mr-2'
+                  />
+                  E-mail
+                </label>
+              </div>
+              {contactMethod === 'phone' ? (
+                <div>
+                  <label
+                    htmlFor='needademo-phone'
+                    className='block text-sm font-medium text-gray-700 mb-1'
+                  >
+                    Numéro de téléphone (France par défaut)
+                  </label>
+                  <PhoneInput
+                    id='needademo-phone'
+                    value={phoneInput}
+                    onChange={setPhoneInput}
+                    placeholder='Entrez votre numéro'
+                    defaultCountry='FR'
+                    disabled={requested}
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500'
+                  />
+                  {phoneError ? (
+                    <p className='text-xs text-red-600 mt-1'>{phoneError}</p>
+                  ) : null}
+                </div>
+              ) : (
+                <div>
+                  <label
+                    htmlFor='needademo-email'
+                    className='block text-sm font-medium text-gray-700 mb-1'
+                  >
+                    E-mail de contact
+                  </label>
+                  <input
+                    id='needademo-email'
+                    type='email'
+                    value={emailInput}
+                    onChange={e => setEmailInput(e.target.value)}
+                    disabled={requested}
+                    className='w-full border border-gray-300 rounded-md px-3 py-2 text-sm disabled:bg-gray-100 disabled:text-gray-500'
+                  />
+                </div>
+              )}
+              <button
+                type='button'
+                onClick={handleManualRequest}
+                disabled={requested || sending || !isContactValid}
+                className='inline-flex items-center px-4 py-2 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-gray-300 disabled:text-gray-600 disabled:cursor-not-allowed'
+              >
+                {sending ? 'Envoi…' : 'Être recontacté'}
+              </button>
               <p className='text-sm text-gray-500'>
                 {requested
                   ? 'Ta demande a bien été transmise.'
-                  : 'Ta demande est en cours de traitement.'}
+                  : 'Clique sur le bouton pour nous envoyer ta demande de rappel.'}
               </p>
             </div>
           )}
