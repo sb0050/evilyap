@@ -3086,7 +3086,7 @@ export default function DashboardPage() {
       });
       return next;
     });
-  }, [statsShipments]);
+  }, [shipments]);
 
   useEffect(() => {
     const filteredLength = (shipments || []).filter(s => {

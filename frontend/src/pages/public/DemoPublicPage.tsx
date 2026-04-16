@@ -65,7 +65,7 @@ export default function DemoPublicPage() {
               href='https://paylive.cc'
               className='hidden md:inline-flex px-5 py-2.5 rounded-md border border-gray-300 text-gray-800 hover:bg-gray-50'
             >
-              Consulter notre FAQ
+              Retourner à l'accueil
             </a>
             <a
               href='https://paylive.cc/needademo'
