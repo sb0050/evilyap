@@ -87,6 +87,35 @@ const INVALID_REFERENCE_TOKENS = new Set([
   "passe",
   "sais",
   "pas",
+  "rouge",
+  "bleu",
+  "bleue",
+  "bleus",
+  "bleues",
+  "noir",
+  "noire",
+  "noirs",
+  "noires",
+  "blanc",
+  "blanche",
+  "blancs",
+  "blanches",
+  "vert",
+  "verte",
+  "verts",
+  "vertes",
+  "jaune",
+  "jaunes",
+  "rose",
+  "roses",
+  "marron",
+  "gris",
+  "grise",
+  "grises",
+  "violet",
+  "violette",
+  "violets",
+  "violettes",
 ]);
 
 function normalizeText(text: string): string {
@@ -144,10 +173,11 @@ function isLikelyReferenceToken(candidate: string): boolean {
 
   // Pourquoi cette heuristique:
   // - on accepte des refs courantes (AB12, PULL-XL, sac_noir),
+  // - on accepte aussi des refs boutique très courtes (ex: GSS, K12),
   // - on évite de transformer des phrases de chat générales en commande.
   const hasStructuredChars = /[\d\-_/]/.test(token);
   if (hasStructuredChars) return true;
-  return token.length >= 4;
+  return token.length >= 3;
 }
 
 function parseReferenceFromText(normalizedText: string): string | null {

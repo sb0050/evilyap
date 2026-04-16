@@ -12,6 +12,21 @@ const cases: Case[] = [
   { text: "email: CLIENT+live@gmail.com", expectedIntent: "LINK_EMAIL", expectedEmail: "client+live@gmail.com" },
   { text: "tu peux me joindre sur jean.dupont@outlook.fr stp", expectedIntent: "LINK_EMAIL", expectedEmail: "jean.dupont@outlook.fr" },
   { text: "<anna.shop@icloud.com>", expectedIntent: "LINK_EMAIL", expectedEmail: "anna.shop@icloud.com" },
+  {
+    text: "mon mail est ceyhuns2004 @ gmail . com",
+    expectedIntent: "LINK_EMAIL",
+    expectedEmail: "ceyhuns2004@gmail.com",
+  },
+  {
+    text: "mon mail est ceyhuns2004 arobase gmail point com",
+    expectedIntent: "LINK_EMAIL",
+    expectedEmail: "ceyhuns2004@gmail.com",
+  },
+  {
+    text: "contact: ceyhuns2004 (at) gmail (dot) com",
+    expectedIntent: "LINK_EMAIL",
+    expectedEmail: "ceyhuns2004@gmail.com",
+  },
   { text: "je prends ref AB12 x2", expectedIntent: "UNKNOWN", expectedEmail: null },
   { text: "merci pour le live", expectedIntent: "UNKNOWN", expectedEmail: null },
   { text: "mon email est test@localhost", expectedIntent: "UNKNOWN", expectedEmail: null },

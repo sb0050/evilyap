@@ -1,5 +1,7 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
+import { clerkClient, getAuth } from "@clerk/express";
+import { verifyToken } from "@clerk/backend";
 import { tiktokLiveService } from "../services/live/tiktokLiveService";
 import { interpretOrderMessage } from "../services/live/orderInterpreter";
 import {
@@ -18,6 +20,302 @@ if (!supabaseUrl || !supabaseKey) {
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 let liveProcessorBound = false;
+const LIVE_EMAIL_HINT_TTL_MS = 6 * 60 * 60 * 1000;
+const LIVE_EMAIL_HINT_MAX_ENTRIES = 5_000;
+const liveEmailHints = new Map<string, { email: string; updatedAt: number }>();
+const LIVE_ORDER_DEDUP_TTL_MS = 2_500;
+const LIVE_ORDER_DEDUP_MAX_ENTRIES = 10_000;
+const recentLiveOrderFingerprints = new Map<string, number>();
+
+function normalizeTikTokUsername(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "");
+}
+
+function buildEmailHintKey(storeId: number, username: string): string {
+  return `${storeId}:${normalizeTikTokUsername(username)}`;
+}
+
+function cleanupExpiredEmailHints(nowMs: number): void {
+  for (const [key, entry] of liveEmailHints.entries()) {
+    if (nowMs - Number(entry.updatedAt || 0) > LIVE_EMAIL_HINT_TTL_MS) {
+      liveEmailHints.delete(key);
+    }
+  }
+  // Pourquoi cette seconde borne:
+  // même avec un TTL, un live très actif peut pousser beaucoup d'entrées
+  // avant le prochain passage de nettoyage. On limite donc la mémoire.
+  while (liveEmailHints.size > LIVE_EMAIL_HINT_MAX_ENTRIES) {
+    const firstKey = liveEmailHints.keys().next().value;
+    if (!firstKey) break;
+    liveEmailHints.delete(firstKey);
+  }
+}
+
+function rememberEmailHintForLiveOrder(storeId: number, username: string, email: string): void {
+  const safeStoreId = Number(storeId);
+  const safeUsername = normalizeTikTokUsername(username);
+  const safeEmail = normalizeEmail(email);
+  if (!Number.isFinite(safeStoreId) || safeStoreId <= 0 || !safeUsername || !safeEmail) return;
+  const nowMs = Date.now();
+  cleanupExpiredEmailHints(nowMs);
+  liveEmailHints.set(buildEmailHintKey(safeStoreId, safeUsername), {
+    email: safeEmail,
+    updatedAt: nowMs,
+  });
+}
+
+function getRememberedEmailHint(storeId: number, username: string): string | null {
+  const safeStoreId = Number(storeId);
+  const safeUsername = normalizeTikTokUsername(username);
+  if (!Number.isFinite(safeStoreId) || safeStoreId <= 0 || !safeUsername) return null;
+  const nowMs = Date.now();
+  cleanupExpiredEmailHints(nowMs);
+  const key = buildEmailHintKey(safeStoreId, safeUsername);
+  const entry = liveEmailHints.get(key);
+  if (!entry?.email) return null;
+  if (nowMs - Number(entry.updatedAt || 0) > LIVE_EMAIL_HINT_TTL_MS) {
+    liveEmailHints.delete(key);
+    return null;
+  }
+  return entry.email;
+}
+
+function normalizeEmail(value: unknown): string {
+  return String(value || "").trim().toLowerCase();
+}
+
+function cleanupRecentLiveOrderFingerprints(nowMs: number): void {
+  for (const [key, ts] of recentLiveOrderFingerprints.entries()) {
+    if (nowMs - Number(ts || 0) > LIVE_ORDER_DEDUP_TTL_MS) {
+      recentLiveOrderFingerprints.delete(key);
+    }
+  }
+  while (recentLiveOrderFingerprints.size > LIVE_ORDER_DEDUP_MAX_ENTRIES) {
+    const firstKey = recentLiveOrderFingerprints.keys().next().value;
+    if (!firstKey) break;
+    recentLiveOrderFingerprints.delete(firstKey);
+  }
+}
+
+function shouldSkipDuplicateLiveOrderEvent(input: {
+  storeId: number;
+  username: string;
+  comment: string;
+}): boolean {
+  const storeId = Number(input.storeId);
+  const username = normalizeTikTokUsername(input.username);
+  const comment = String(input.comment || "").trim().toLowerCase();
+  if (!Number.isFinite(storeId) || storeId <= 0 || !username || !comment) return false;
+  const nowMs = Date.now();
+  cleanupRecentLiveOrderFingerprints(nowMs);
+  const fingerprint = `${storeId}|${username}|${comment}`;
+  const previousTs = recentLiveOrderFingerprints.get(fingerprint);
+  if (typeof previousTs === "number" && nowMs - previousTs <= LIVE_ORDER_DEDUP_TTL_MS) {
+    return true;
+  }
+  recentLiveOrderFingerprints.set(fingerprint, nowMs);
+  return false;
+}
+
+async function linkTikTokUsernameToClerkByEmail(input: {
+  email: string;
+  tiktokUsername: string;
+}): Promise<{ success: boolean; reason: string; clerkUserId: string | null }> {
+  const normalizedEmail = normalizeEmail(input.email);
+  const normalizedTikTokUsername = normalizeTikTokUsername(input.tiktokUsername);
+  if (!normalizedEmail) {
+    return {
+      success: false,
+      reason: "Email invalide",
+      clerkUserId: null,
+    };
+  }
+  if (!normalizedTikTokUsername) {
+    return {
+      success: false,
+      reason: "Username TikTok invalide",
+      clerkUserId: null,
+    };
+  }
+
+  try {
+    // Pourquoi cette recherche ciblée:
+    // on évite de parcourir toute la base utilisateurs Clerk à chaque message live.
+    const direct = await clerkClient.users.getUserList({
+      emailAddress: [normalizedEmail],
+      limit: 10,
+    } as any);
+    const directArr = ((direct as any)?.data || direct || []) as any[];
+    let matchedUser = directArr.find((user: any) => {
+      const emails = Array.isArray(user?.emailAddresses) ? user.emailAddresses : [];
+      return emails.some(
+        (entry: any) => normalizeEmail(entry?.emailAddress) === normalizedEmail,
+      );
+    });
+
+    if (!matchedUser) {
+      // Fallback défensif paginé:
+      // si le filtre direct ne renvoie rien, on scanne par pages pour éviter
+      // de rater l'utilisateur sur des instances Clerk volumineuses.
+      const pageSize = 100;
+      const maxScannedUsers = 3_000;
+      let offset = 0;
+      let scanned = 0;
+      while (!matchedUser && scanned < maxScannedUsers) {
+        const listed = await clerkClient.users.getUserList({
+          limit: pageSize,
+          offset,
+        } as any);
+        const users = ((listed as any)?.data || listed || []) as any[];
+        if (!Array.isArray(users) || users.length === 0) break;
+        scanned += users.length;
+        matchedUser =
+          users.find((user: any) => {
+            const emails = Array.isArray(user?.emailAddresses) ? user.emailAddresses : [];
+            return emails.some(
+              (entry: any) => normalizeEmail(entry?.emailAddress) === normalizedEmail,
+            );
+          }) || null;
+        if (matchedUser) break;
+        if (users.length < pageSize) break;
+        offset += users.length;
+      }
+    }
+
+    if (!matchedUser?.id) {
+      return {
+        success: false,
+        reason: "Aucun utilisateur Clerk trouvé pour cet email",
+        clerkUserId: null,
+      };
+    }
+
+    const existingPublicMetadata =
+      matchedUser?.publicMetadata && typeof matchedUser.publicMetadata === "object"
+        ? (matchedUser.publicMetadata as Record<string, unknown>)
+        : {};
+    await clerkClient.users.updateUserMetadata(String(matchedUser.id), {
+      // Pourquoi merger explicitement:
+      // on veut enrichir les metadata sans risquer d'écraser d'autres clés
+      // comme stripe_id, préférences, etc.
+      publicMetadata: {
+        ...existingPublicMetadata,
+        tiktok_username: normalizedTikTokUsername,
+      },
+    } as any);
+
+    return {
+      success: true,
+      reason: "Metadata Clerk mise à jour",
+      clerkUserId: String(matchedUser.id),
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      reason: String(error?.message || "Erreur Clerk update metadata"),
+      clerkUserId: null,
+    };
+  }
+}
+
+async function requireAuthorizedStore(
+  req: express.Request,
+  res: express.Response,
+  storeSlugInput: unknown,
+  options?: { allowQueryToken?: boolean },
+): Promise<{ id: number; slug: string } | null> {
+  const auth = getAuth(req);
+  let authenticatedUserId = auth?.isAuthenticated && auth.userId ? String(auth.userId) : "";
+  if (!authenticatedUserId && options?.allowQueryToken) {
+    const queryTokenRaw = req.query?.authToken;
+    const queryToken = Array.isArray(queryTokenRaw)
+      ? String(queryTokenRaw[0] || "").trim()
+      : String(queryTokenRaw || "").trim();
+    if (queryToken) {
+      try {
+        const payload = await verifyToken(queryToken, {
+          secretKey: process.env.CLERK_SECRET_KEY,
+        });
+        authenticatedUserId = String((payload as any)?.sub || "").trim();
+      } catch {
+        // Token invalide/expiré: on laisse la réponse Unauthorized ci-dessous.
+      }
+    }
+  }
+  if (!authenticatedUserId) {
+    res.status(401).json({ error: "Unauthorized" });
+    return null;
+  }
+
+  const storeSlug = String(storeSlugInput || "").trim();
+  if (!storeSlug) {
+    res.status(400).json({ error: "storeSlug requis" });
+    return null;
+  }
+
+  const { data: storeRow, error: storeErr } = await supabase
+    .from("stores")
+    .select("id, slug, clerk_id, owner_email")
+    .eq("slug", storeSlug)
+    .maybeSingle();
+  if (storeErr) {
+    res.status(500).json({ error: storeErr.message || "Erreur store" });
+    return null;
+  }
+  if (!storeRow?.id) {
+    res.status(404).json({ error: "Boutique introuvable" });
+    return null;
+  }
+
+  let authorized = Boolean(
+    (storeRow as any)?.clerk_id &&
+    String((storeRow as any).clerk_id) === String(authenticatedUserId),
+  );
+
+  if (!authorized) {
+    try {
+      const user = await clerkClient.users.getUser(authenticatedUserId);
+      const ownerEmail = normalizeEmail((storeRow as any)?.owner_email);
+      const userEmails = (Array.isArray((user as any)?.emailAddresses)
+        ? (user as any).emailAddresses
+        : []
+      )
+        .map((entry: any) => normalizeEmail(entry?.emailAddress))
+        .filter(Boolean);
+      if (ownerEmail && userEmails.includes(ownerEmail)) {
+        authorized = true;
+      }
+    } catch {
+      // Si Clerk échoue, on garde un refus explicite pour éviter toute fuite cross-tenant.
+    }
+  }
+
+  if (!authorized) {
+    res.status(403).json({ error: "Forbidden" });
+    return null;
+  }
+
+  return {
+    id: Number((storeRow as any).id),
+    slug: String((storeRow as any).slug || storeSlug),
+  };
+}
+
+function buildScopedDisconnectedState(store: { id: number; slug: string }) {
+  return {
+    status: "disconnected" as const,
+    uniqueId: null,
+    roomId: null,
+    lastError: null,
+    reconnectAttempts: 0,
+    messagePerMinute: 0,
+    storeSlug: store.slug,
+    storeId: store.id,
+  };
+}
 
 async function processChatOrder(
   event: {
@@ -27,8 +325,21 @@ async function processChatOrder(
   storeId: number,
 ): Promise<void> {
   try {
+    if (
+      shouldSkipDuplicateLiveOrderEvent({
+        storeId,
+        username: event.username,
+        comment: event.comment,
+      })
+    ) {
+      return;
+    }
     const parsedContact = parseContactFromRegex(event.comment);
     if (parsedContact.intent === "LINK_EMAIL" && parsedContact.email) {
+      // Pourquoi on mémorise aussi localement:
+      // le client peut envoyer son email AVANT sa commande. Dans ce cas, il n'existe
+      // pas encore de ligne panier à mettre à jour immédiatement.
+      rememberEmailHintForLiveOrder(storeId, event.username, parsedContact.email);
       const linked = await linkTikTokUsernameToEmail({
         storeId,
         tiktokUsername: event.username,
@@ -41,6 +352,21 @@ async function processChatOrder(
           email: parsedContact.email,
           customerStripeId: linked.customerStripeId,
           reason: linked.reason,
+        },
+      );
+
+      const clerkLinked = await linkTikTokUsernameToClerkByEmail({
+        email: parsedContact.email,
+        tiktokUsername: event.username,
+      });
+      tiktokLiveService.emitSystemEvent(
+        clerkLinked.success ? "email_linked" : "email_link_failed",
+        {
+          username: event.username,
+          email: parsedContact.email,
+          clerkUserId: clerkLinked.clerkUserId,
+          reason: clerkLinked.reason,
+          scope: "clerk_metadata",
         },
       );
     }
@@ -59,13 +385,14 @@ async function processChatOrder(
       return;
     }
     const quantity = interpreted.quantity && interpreted.quantity > 0 ? interpreted.quantity : 1;
+    const rememberedEmail = getRememberedEmailHint(storeId, event.username);
     const result = await createOrUpdateCartFromLiveOrder({
       storeId,
       tiktokUsername: event.username,
       reference: interpreted.reference,
       quantity,
       sourceComment: event.comment,
-      customerEmail: parsedContact.email,
+      customerEmail: parsedContact.email || rememberedEmail,
     });
     tiktokLiveService.emitOrderEvent({
       type: "order",
@@ -122,10 +449,19 @@ bindLiveProcessorOnce();
  */
 router.get("/state", async (_req, res) => {
   try {
+    const store = await requireAuthorizedStore(_req, res, _req.query?.storeSlug);
+    if (!store) return;
+    const liveState = tiktokLiveService.getState();
+    const isCurrentStoreSession = Number(liveState.storeId || 0) === store.id;
+    const events = isCurrentStoreSession
+      ? tiktokLiveService
+        .getRecentEvents(100)
+        .filter((event: any) => Number(event?.storeId || 0) === store.id)
+      : [];
     return res.json({
       success: true,
-      state: tiktokLiveService.getState(),
-      events: tiktokLiveService.getRecentEvents(100),
+      state: isCurrentStoreSession ? liveState : buildScopedDisconnectedState(store),
+      events,
     });
   } catch (e: any) {
     return res.status(500).json({
@@ -150,25 +486,13 @@ router.post("/connect", async (req, res) => {
     if (!uniqueId) {
       return res.status(400).json({ error: "uniqueId requis" });
     }
-    if (!storeSlug) {
-      return res.status(400).json({ error: "storeSlug requis" });
-    }
-    const { data: store, error: storeErr } = await supabase
-      .from("stores")
-      .select("id,slug")
-      .eq("slug", storeSlug)
-      .maybeSingle();
-    if (storeErr) {
-      return res.status(500).json({ error: storeErr.message || "Erreur store" });
-    }
-    if (!store?.id) {
-      return res.status(404).json({ error: "Boutique introuvable" });
-    }
+    const store = await requireAuthorizedStore(req, res, storeSlug);
+    if (!store) return;
 
     const state = await tiktokLiveService.connect({
       uniqueId,
-      storeSlug: String(store.slug || storeSlug),
-      storeId: Number(store.id),
+      storeSlug: store.slug,
+      storeId: store.id,
       roomId: roomId || null,
     });
     return res.json({ success: true, state });
@@ -183,6 +507,15 @@ router.post("/connect", async (req, res) => {
  */
 router.post("/disconnect", async (_req, res) => {
   try {
+    const store = await requireAuthorizedStore(_req, res, _req.body?.storeSlug);
+    if (!store) return;
+    const currentState = tiktokLiveService.getState();
+    if (Number(currentState.storeId || 0) !== store.id) {
+      return res.json({
+        success: true,
+        state: buildScopedDisconnectedState(store),
+      });
+    }
     const state = await tiktokLiveService.disconnect();
     return res.json({ success: true, state });
   } catch (e: any) {
@@ -196,6 +529,10 @@ router.post("/disconnect", async (_req, res) => {
  */
 router.post("/parse-preview", async (req, res) => {
   try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
     const text = String(req.body?.text || "").trim();
     if (!text) {
       return res.status(400).json({ error: "text requis" });
@@ -208,64 +545,15 @@ router.post("/parse-preview", async (req, res) => {
 });
 
 /**
- * POST /api/live/simulate-message
- * Simule un message live et exécute le même pipeline métier.
- */
-router.post("/simulate-message", async (req, res) => {
-  try {
-    const storeSlug = String(req.body?.storeSlug || "").trim();
-    const username = String(req.body?.username || "")
-      .trim()
-      .replace(/^@+/, "")
-      .toLowerCase();
-    const comment = String(req.body?.comment || "").trim();
-    if (!storeSlug) {
-      return res.status(400).json({ error: "storeSlug requis" });
-    }
-    if (!username) {
-      return res.status(400).json({ error: "username requis" });
-    }
-    if (!comment) {
-      return res.status(400).json({ error: "comment requis" });
-    }
-    const { data: store, error: storeErr } = await supabase
-      .from("stores")
-      .select("id,slug")
-      .eq("slug", storeSlug)
-      .maybeSingle();
-    if (storeErr) {
-      return res.status(500).json({ error: storeErr.message || "Erreur store" });
-    }
-    if (!store?.id) {
-      return res.status(404).json({ error: "Boutique introuvable" });
-    }
-
-    tiktokLiveService.emitChatEvent({
-      username,
-      nickname: username,
-      comment,
-      raw: { simulated: true },
-    });
-    await processChatOrder({ username, comment }, Number(store.id));
-
-    return res.json({
-      success: true,
-      storeId: Number(store.id),
-      username,
-      comment,
-    });
-  } catch (e: any) {
-    return res
-      .status(500)
-      .json({ error: String(e?.message || "Erreur simulate-message") });
-  }
-});
-
-/**
  * GET /api/live/events
  * Flux SSE pour l'UI dashboard live.
  */
 router.get("/events", async (req, res) => {
+  const store = await requireAuthorizedStore(req, res, req.query?.storeSlug, {
+    allowQueryToken: true,
+  });
+  if (!store) return;
+
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
@@ -276,12 +564,18 @@ router.get("/events", async (req, res) => {
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
   };
 
-  sendEvent("state", tiktokLiveService.getState());
-  for (const event of tiktokLiveService.getRecentEvents(100)) {
-    sendEvent("live", event);
+  const currentState = tiktokLiveService.getState();
+  const isCurrentStoreSession = Number(currentState.storeId || 0) === store.id;
+  sendEvent("state", isCurrentStoreSession ? currentState : buildScopedDisconnectedState(store));
+  if (isCurrentStoreSession) {
+    for (const event of tiktokLiveService.getRecentEvents(100)) {
+      if (Number((event as any)?.storeId || 0) !== store.id) continue;
+      sendEvent("live", event);
+    }
   }
 
   const unsubscribe = tiktokLiveService.subscribe((event) => {
+    if (Number((event as any)?.storeId || 0) !== store.id) return;
     sendEvent("live", event);
   });
 

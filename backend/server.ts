@@ -38,7 +38,12 @@ app.use((req: any, res: any, next: NextFunction) => {
 
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+  // Inclure PATCH pour les endpoints Clerk (ex: tiktok-username) qui
+  // nécessitent un preflight CORS valide côté navigateur.
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+  );
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();

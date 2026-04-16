@@ -5,6 +5,13 @@ import { verifyWebhook } from "@clerk/express/webhooks";
 
 const router = express.Router();
 
+function normalizeTikTokUsername(raw: unknown): string {
+  return String(raw || "")
+    .trim()
+    .replace(/^@+/, "")
+    .toLowerCase();
+}
+
 // POST /api/clerk/update-public-metadata
 // Met à jour les public metadata de l'utilisateur Clerk authentifié
 router.post("/update-public-metadata", async (req, res) => {
@@ -48,7 +55,69 @@ router.post("/update-public-metadata", async (req, res) => {
   }
 });
 
-export default router;
+/**
+ * PATCH /api/clerk/tiktok-username
+ * Enregistre définitivement le @tiktok de l'utilisateur Clerk connecté.
+ * Pourquoi: le panier live est indexé par `customer_tiktok_username`.
+ */
+router.patch("/tiktok-username", async (req, res) => {
+  try {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const normalized = normalizeTikTokUsername(req.body?.tiktok_username);
+    if (!normalized) {
+      return res.status(400).json({ error: "tiktok_username requis" });
+    }
+    if (/\s/.test(normalized)) {
+      return res
+        .status(400)
+        .json({ error: "Le nom d'utilisateur TikTok ne doit pas contenir d'espaces" });
+    }
+    if (normalized.length > 24) {
+      return res
+        .status(400)
+        .json({ error: "Le nom d'utilisateur TikTok ne peut pas dépasser 24 caractères" });
+    }
+
+    const clerkUser = await clerkClient.users.getUser(auth.userId);
+    const existingPublicMetadata =
+      clerkUser?.publicMetadata && typeof clerkUser.publicMetadata === "object"
+        ? (clerkUser.publicMetadata as Record<string, unknown>)
+        : {};
+    const existingTikTokUsername = normalizeTikTokUsername(
+      (existingPublicMetadata as any)?.tiktok_username,
+    );
+
+    // Le username TikTok est figé après premier enregistrement pour éviter
+    // les usurpations involontaires de panier entre plusieurs comptes clients.
+    if (existingTikTokUsername) {
+      return res.status(409).json({
+        error:
+          "Ton @TikTok est déjà enregistré et ne peut pas être modifié. Contacte le support si besoin.",
+      });
+    }
+
+    const nextPublicMetadata: Record<string, unknown> = {
+      ...existingPublicMetadata,
+      tiktok_username: normalized,
+    };
+
+    await clerkClient.users.updateUser(auth.userId, {
+      publicMetadata: nextPublicMetadata,
+    });
+
+    return res.json({ success: true });
+  } catch (e: any) {
+    console.error("Erreur serveur (PATCH /api/clerk/tiktok-username):", e);
+    return res
+      .status(500)
+      .json({ error: String(e?.message || "Erreur interne du serveur") });
+  }
+});
+
 // GET /api/clerk/users?search=...
 router.get("/users", async (req, res) => {
   try {
@@ -98,3 +167,5 @@ router.get("/users", async (req, res) => {
     return res.status(500).json({ error: "Erreur interne du serveur" });
   }
 });
+
+export default router;

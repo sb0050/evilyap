@@ -75,30 +75,12 @@ function App() {
             />
             <Route
               path='/checkout/:storeName'
-              element={
-                <>
-                  <SignedIn>
-                    <CheckoutPage />
-                  </SignedIn>
-                  <SignedOut>
-                    <RedirectToSignUp />
-                  </SignedOut>
-                </>
-              }
+              element={<CheckoutPage />}
             />
             {/* Alias court vers Checkout */}
             <Route
               path='/c/:storeName'
-              element={
-                <>
-                  <SignedIn>
-                    <CheckoutPage />
-                  </SignedIn>
-                  <SignedOut>
-                    <RedirectToSignUp />
-                  </SignedOut>
-                </>
-              }
+              element={<CheckoutPage />}
             />
             <Route
               path='/store/:storeName'

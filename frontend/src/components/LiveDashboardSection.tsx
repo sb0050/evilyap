@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, Radio, RefreshCw, Square } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "@clerk/clerk-react";
+import { Activity, Check, Copy, Radio, RefreshCw, Square } from "lucide-react";
 import { API_BASE_URL, apiGet, apiPost } from "../utils/api";
 
 type LiveStatus = "disconnected" | "connecting" | "connected" | "reconnecting";
@@ -30,6 +31,7 @@ type LiveDashboardSectionProps = {
 type StoreCartItem = {
   id: number;
   customer_stripe_id?: string | null;
+  payment_id?: string | null;
   product_reference?: string | null;
   quantity?: number | null;
   value?: number | null;
@@ -61,10 +63,63 @@ function formatTimestamp(iso: string): string {
   });
 }
 
+function normalizeBaseUrl(raw?: string): string {
+  const val = String(raw || "").trim();
+  if (!val) return "http://localhost:3000";
+  if (/^https?:\/\//i.test(val)) return val.replace(/\/+$/, "");
+  const isLocal = /^(localhost|127\.0\.0\.1)/i.test(val);
+  const defaultScheme = isLocal ? "http" : "https";
+  return `${defaultScheme}://${val}`.replace(/\/+$/, "");
+}
+
+function getClientBaseUrl(): string {
+  const env = (import.meta as any)?.env || {};
+  const vercelEnv = String(env.VERCEL_ENV || env.VITE_VERCEL_ENV || "")
+    .toLowerCase()
+    .trim();
+  if (vercelEnv === "prod") return "https://paylive.cc";
+  if (vercelEnv === "preview") return "https://preview-paylive.vercel.app";
+  const fromEnv = String(env.VITE_CLIENT_URL || "").trim();
+  if (fromEnv) return normalizeBaseUrl(fromEnv);
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return normalizeBaseUrl(window.location.origin);
+  }
+  return "http://localhost:3000";
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  const value = String(text || "").trim();
+  if (!value) throw new Error("Texte vide");
+
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  if (typeof document === "undefined") {
+    throw new Error("Copie indisponible dans cet environnement");
+  }
+
+  // Fallback pour les navigateurs/environnements qui bloquent l'API Clipboard.
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, value.length);
+  const ok = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  if (!ok) throw new Error("Impossible de copier le lien");
+}
+
 export default function LiveDashboardSection({
   storeSlug,
   onToast,
 }: LiveDashboardSectionProps) {
+  const { getToken, isLoaded } = useAuth();
   const [liveUsername, setLiveUsername] = useState("");
   const [liveRoomId, setLiveRoomId] = useState("");
   const [state, setState] = useState<LiveState>({
@@ -80,12 +135,12 @@ export default function LiveDashboardSection({
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
-  const [isSimulating, setIsSimulating] = useState(false);
-  const [simUsername, setSimUsername] = useState("");
-  const [simComment, setSimComment] = useState("");
+  const [isBioLinkCopied, setIsBioLinkCopied] = useState(false);
   const [liveCarts, setLiveCarts] = useState<StoreCartItem[]>([]);
   const [isLoadingLiveCarts, setIsLoadingLiveCarts] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const eventSourceUrlRef = useRef<string | null>(null);
+  const eventSourceOpenAttemptRef = useRef(0);
 
   const sortedChatEvents = useMemo(() => {
     // Le panneau "Flux du chat" ne doit afficher que les messages utilisateur
@@ -96,17 +151,38 @@ export default function LiveDashboardSection({
       .slice(0, 80);
   }, [events]);
 
+  const tiktokBioCheckoutUrl = useMemo(() => {
+    if (!storeSlug) return "";
+    return `${getClientBaseUrl()}/checkout/${encodeURIComponent(storeSlug)}?tiktok=true`;
+  }, [storeSlug]);
+
+  const getAuthHeaders = async (): Promise<Record<string, string>> => {
+    if (!isLoaded) {
+      throw new Error("Chargement de la session en cours, réessaie dans quelques secondes.");
+    }
+    const token = await getToken();
+    if (!token) {
+      throw new Error("Session expirée. Merci de vous reconnecter.");
+    }
+    return {
+      Authorization: `Bearer ${token}`,
+    };
+  };
+
   const loadLiveCarts = async () => {
     if (!storeSlug) return;
+    if (!isLoaded) return;
     try {
       setIsLoadingLiveCarts(true);
-      const resp = await apiGet(`/api/carts/store/${encodeURIComponent(storeSlug)}`);
+      const headers = await getAuthHeaders();
+      const resp = await apiGet(`/api/carts/store/${encodeURIComponent(storeSlug)}`, { headers });
       const json = await resp.json().catch(() => ({}));
       if (!resp.ok) {
         throw new Error(json?.error || "Erreur chargement paniers live");
       }
       const carts = Array.isArray(json?.carts) ? (json.carts as StoreCartItem[]) : [];
       const liveOnly = carts.filter((c) =>
+        !String(c?.payment_id || "").trim() &&
         String(c?.description || "").toLowerCase().includes("commande tiktok @")
       );
       setLiveCarts(liveOnly.slice(0, 20));
@@ -118,8 +194,24 @@ export default function LiveDashboardSection({
   };
 
   const loadState = async () => {
+    if (!isLoaded) return;
+    if (!storeSlug) {
+      setState((prev) => ({
+        ...prev,
+        status: "disconnected",
+        uniqueId: null,
+        roomId: null,
+        messagePerMinute: 0,
+        reconnectAttempts: 0,
+      }));
+      setEvents([]);
+      return;
+    }
     try {
-      const resp = await apiGet("/api/live/state");
+      const headers = await getAuthHeaders();
+      const resp = await apiGet(`/api/live/state?storeSlug=${encodeURIComponent(storeSlug)}`, {
+        headers,
+      });
       const json = await resp.json().catch(() => ({}));
       if (!resp.ok) {
         throw new Error(json?.error || "Erreur chargement état live");
@@ -141,16 +233,35 @@ export default function LiveDashboardSection({
     }
   };
 
-  const closeEventSource = () => {
+  const closeEventSource = (invalidatePending = true) => {
+    if (invalidatePending) {
+      eventSourceOpenAttemptRef.current += 1;
+    }
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
+      eventSourceUrlRef.current = null;
     }
   };
 
-  const openEventSource = () => {
-    closeEventSource();
-    const es = new EventSource(`${API_BASE_URL}/api/live/events`);
+  const openEventSource = async () => {
+    const attemptId = eventSourceOpenAttemptRef.current + 1;
+    eventSourceOpenAttemptRef.current = attemptId;
+    closeEventSource(false);
+    if (!storeSlug || !isLoaded) return;
+    const token = await getToken().catch(() => null);
+    if (attemptId !== eventSourceOpenAttemptRef.current) return;
+    if (!token) return;
+    const url = `${API_BASE_URL}/api/live/events?storeSlug=${encodeURIComponent(storeSlug)}&authToken=${encodeURIComponent(token)}`;
+    // Pourquoi ce garde-fou:
+    // en dev (React StrictMode) et/ou via plusieurs hooks, on peut ouvrir plusieurs
+    // connexions SSE. Chaque connexion pousse le même événement, d'où les doublons.
+    if (eventSourceRef.current && eventSourceUrlRef.current === url) return;
+    const es = new EventSource(url);
+    if (attemptId !== eventSourceOpenAttemptRef.current) {
+      es.close();
+      return;
+    }
     es.addEventListener("state", (evt: MessageEvent) => {
       try {
         const parsed = JSON.parse(evt.data || "{}");
@@ -174,12 +285,18 @@ export default function LiveDashboardSection({
       }
     });
     es.onerror = () => {
-      // Pas de toast ici: EventSource gère déjà sa reconnexion.
+      // Si le stream est coupé, EventSource va tenter de se reconnecter.
+      // On n'affiche pas de toast bruité ici.
     };
     eventSourceRef.current = es;
+    eventSourceUrlRef.current = url;
   };
 
   const handleConnect = async () => {
+    if (!isLoaded) {
+      onToast("Session en cours de chargement, réessaie dans quelques secondes.", "info");
+      return;
+    }
     const uniqueId = String(liveUsername || "")
       .trim()
       .replace(/^@+/, "");
@@ -193,20 +310,21 @@ export default function LiveDashboardSection({
     }
     try {
       setIsConnecting(true);
+      const headers = await getAuthHeaders();
       const resp = await apiPost("/api/live/connect", {
         uniqueId,
         storeSlug,
         roomId: String(liveRoomId || "")
           .trim()
           .replace(/\D+/g, ""),
-      });
+      }, { headers });
       const json = await resp.json().catch(() => ({}));
       if (!resp.ok) {
         throw new Error(json?.error || "Connexion live impossible");
       }
       setState((json?.state || state) as LiveState);
       onToast("Connexion TikTok en cours", "success");
-      openEventSource();
+      // Le SSE est géré par un effet dédié pour éviter les connexions en double.
       await loadState();
     } catch (e: any) {
       onToast(e?.message || "Erreur de connexion live", "error");
@@ -216,9 +334,18 @@ export default function LiveDashboardSection({
   };
 
   const handleDisconnect = async () => {
+    if (!isLoaded) {
+      onToast("Session en cours de chargement, réessaie dans quelques secondes.", "info");
+      return;
+    }
+    if (!storeSlug) {
+      onToast("La boutique est introuvable, impossible de déconnecter le live", "error");
+      return;
+    }
     try {
       setIsDisconnecting(true);
-      const resp = await apiPost("/api/live/disconnect", {});
+      const headers = await getAuthHeaders();
+      const resp = await apiPost("/api/live/disconnect", { storeSlug }, { headers });
       const json = await resp.json().catch(() => ({}));
       if (!resp.ok) {
         throw new Error(json?.error || "Déconnexion live impossible");
@@ -233,59 +360,35 @@ export default function LiveDashboardSection({
     }
   };
 
-  const handleSimulate = async () => {
-    if (!storeSlug) {
-      onToast("La boutique est introuvable", "error");
-      return;
-    }
-    const username = String(simUsername || "")
-      .trim()
-      .replace(/^@+/, "")
-      .toLowerCase();
-    const comment = String(simComment || "").trim();
-    if (!username) {
-      onToast("Username requis", "error");
-      return;
-    }
-    if (!comment) {
-      onToast("Message requis", "error");
+  const handleCopyBioLink = async () => {
+    if (!tiktokBioCheckoutUrl) {
+      onToast("Lien checkout indisponible: slug boutique manquant", "error");
       return;
     }
     try {
-      setIsSimulating(true);
-      const resp = await apiPost("/api/live/simulate-message", {
-        storeSlug,
-        username,
-        comment,
-      });
-      const json = await resp.json().catch(() => ({}));
-      if (!resp.ok) {
-        throw new Error(json?.error || "Simulation impossible");
-      }
-      onToast("Message simulé envoyé", "success");
-      await loadState();
-      await loadLiveCarts();
+      await copyTextToClipboard(tiktokBioCheckoutUrl);
+      setIsBioLinkCopied(true);
+      onToast("Lien bio TikTok copié", "success");
+      setTimeout(() => {
+        setIsBioLinkCopied(false);
+      }, 2000);
     } catch (e: any) {
-      onToast(e?.message || "Erreur simulation live", "error");
-    } finally {
-      setIsSimulating(false);
+      onToast(e?.message || "Impossible de copier le lien", "error");
     }
   };
 
   useEffect(() => {
+    // Source unique de vérité: on (ré)ouvre le SSE uniquement quand la boutique change
+    // et que la session Clerk est prête.
     loadState();
-    openEventSource();
+    void openEventSource();
+    if (storeSlug) {
+      loadLiveCarts();
+    }
     return () => {
       closeEventSource();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!storeSlug) return;
-    loadLiveCarts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeSlug]);
+  }, [storeSlug, isLoaded]);
 
   return (
     <div className="bg-white rounded-lg shadow p-6 space-y-6">
@@ -320,6 +423,37 @@ export default function LiveDashboardSection({
         <div className="rounded-md border border-gray-200 p-3">
           <p className="text-xs text-gray-500">Tentatives reconnexion</p>
           <p className="text-sm font-medium text-gray-900">{state.reconnectAttempts || 0}</p>
+        </div>
+      </div>
+
+      <div className="rounded-md border border-indigo-200 bg-indigo-50/40 p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-900">Lien bio TikTok</h3>
+        <p className="text-xs text-gray-600">
+          Copie ce lien dans la bio TikTok pour rediriger les acheteurs vers le checkout live.
+        </p>
+        <div className="flex flex-col md:flex-row md:items-center gap-2">
+          <input
+            type="text"
+            readOnly
+            value={tiktokBioCheckoutUrl}
+            className="w-full border border-indigo-100 rounded-md px-3 py-2 text-sm text-gray-700 bg-white"
+            placeholder="Lien indisponible tant que la boutique n'est pas chargée"
+          />
+          <button
+            type="button"
+            onClick={handleCopyBioLink}
+            disabled={!tiktokBioCheckoutUrl}
+            className={`inline-flex items-center justify-center gap-2 px-4 py-2 text-sm rounded-md text-white ${
+              !tiktokBioCheckoutUrl
+                ? "bg-gray-300 cursor-not-allowed"
+                : isBioLinkCopied
+                  ? "bg-green-600 hover:bg-green-700"
+                  : "bg-indigo-600 hover:bg-indigo-700"
+            }`}
+          >
+            {isBioLinkCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+            {isBioLinkCopied ? "Copié" : "Copier le lien"}
+          </button>
         </div>
       </div>
 
@@ -367,48 +501,6 @@ export default function LiveDashboardSection({
           <Square className="w-4 h-4" />
           {isDisconnecting ? "Déconnexion..." : "Déconnecter"}
         </button>
-        </div>
-      </div>
-
-      <div className="rounded-md border border-gray-200 p-4 space-y-3">
-        <h3 className="text-sm font-semibold text-gray-900">Simulation live</h3>
-        <p className="text-xs text-gray-500">
-          Simule un message d&apos;achat pour tester l&apos;ajout panier en temps réel.
-        </p>
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-          <div className="md:col-span-3">
-            <label className="block text-xs font-medium text-gray-700 mb-1">Username</label>
-            <input
-              type="text"
-              value={simUsername}
-              onChange={(e) => setSimUsername(e.target.value)}
-              placeholder="client_test"
-              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
-            />
-          </div>
-          <div className="md:col-span-7">
-            <label className="block text-xs font-medium text-gray-700 mb-1">Message chat</label>
-            <input
-              type="text"
-              value={simComment}
-              onChange={(e) => setSimComment(e.target.value)}
-              placeholder="je prends ref AB12 x2"
-              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
-            />
-          </div>
-          <div className="md:col-span-2">
-            <button
-              onClick={handleSimulate}
-              disabled={isSimulating || !storeSlug}
-              className={`w-full inline-flex items-center justify-center gap-2 px-4 py-2 text-sm rounded-md text-white ${
-                isSimulating || !storeSlug
-                  ? "bg-indigo-300"
-                  : "bg-indigo-600 hover:bg-indigo-700"
-              }`}
-            >
-              {isSimulating ? "Simulation..." : "Simuler"}
-            </button>
-          </div>
         </div>
       </div>
 

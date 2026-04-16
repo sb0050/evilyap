@@ -59,6 +59,15 @@ const isDeliveryRegulationText = (text: unknown) => {
   return /\b(?:regulation|regularisation)\s+livraison\b/i.test(normalized);
 };
 
+const extractTikTokUsernameFromCartDescription = (description: unknown): string => {
+  const raw = String(description || '');
+  const match = raw.match(/commande\s+tiktok\s+@([a-z0-9._-]+)/i);
+  return String(match?.[1] || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, '');
+};
+
 /**
  * Construit une clé de groupe stable pour le panier:
  * - priorité au customer Stripe (cas standard),
@@ -78,6 +87,10 @@ const getCartRecipientKey = (cart: any): string => {
     .toLowerCase()
     .replace(/^@+/, '');
   if (tiktokUsername) return `tiktok:${tiktokUsername}`;
+  const tiktokFromDescription = extractTikTokUsernameFromCartDescription(
+    cart?.description
+  );
+  if (tiktokFromDescription) return `tiktok:${tiktokFromDescription}`;
   const id = Number(cart?.id || 0);
   return id > 0 ? `unknown:${id}` : 'unknown:0';
 };
@@ -3079,7 +3092,10 @@ export default function DashboardPage() {
           `/api/carts/store/${encodeURIComponent(store.slug)}`
         );
         const json = await resp.json().catch(() => ({}));
-        setStoreCarts(Array.isArray(json?.carts) ? json.carts : []);
+        const carts = Array.isArray(json?.carts) ? json.carts : [];
+        setStoreCarts(
+          carts.filter((c: any) => !String((c as any)?.payment_id || '').trim())
+        );
       } catch (e: any) {
         const raw =
           e?.message || 'Erreur lors du chargement des paniers du store';
@@ -3437,7 +3453,10 @@ export default function DashboardPage() {
             `/api/carts/store/${encodeURIComponent(store.slug)}`
           );
           const j = await r.json().catch(() => ({}));
-          setStoreCarts(Array.isArray(j?.carts) ? j.carts : []);
+          const carts = Array.isArray(j?.carts) ? j.carts : [];
+          setStoreCarts(
+            carts.filter((c: any) => !String((c as any)?.payment_id || '').trim())
+          );
         }
         return;
       }
@@ -3467,7 +3486,10 @@ export default function DashboardPage() {
           `/api/carts/store/${encodeURIComponent(store.slug)}`
         );
         const j = await r.json().catch(() => ({}));
-        setStoreCarts(Array.isArray(j?.carts) ? j.carts : []);
+        const carts = Array.isArray(j?.carts) ? j.carts : [];
+        setStoreCarts(
+          carts.filter((c: any) => !String((c as any)?.payment_id || '').trim())
+        );
       }
     } catch (e: any) {
       const raw = e?.message || 'Erreur inconnue';
@@ -3508,7 +3530,10 @@ export default function DashboardPage() {
         `/api/carts/store/${encodeURIComponent(store.slug)}`
       );
       const json = await resp.json().catch(() => ({}));
-      setStoreCarts(Array.isArray(json?.carts) ? json.carts : []);
+      const carts = Array.isArray(json?.carts) ? json.carts : [];
+      setStoreCarts(
+        carts.filter((c: any) => !String((c as any)?.payment_id || '').trim())
+      );
     } catch (e: any) {
       showToast(e?.message || 'Erreur inconnue', 'error');
     } finally {

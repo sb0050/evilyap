@@ -53,6 +53,13 @@ function normalizeEmail(value: unknown): string {
   return String(value || "").trim().toLowerCase();
 }
 
+function normalizeTikTokUsername(value: unknown): string {
+  return String(value || "")
+    .trim()
+    .replace(/^@+/, "")
+    .toLowerCase();
+}
+
 function extractTikTokUsernameFromDescription(description: unknown): string | null {
   const raw = String(description || "");
   const match = raw.match(/commande\s+tiktok\s+@([a-z0-9._-]+)/i);
@@ -97,6 +104,28 @@ async function resolveExistingStripeIdForClerkUser(
     // Best effort: l'appel peut échouer en environnement local.
   }
   return "";
+}
+
+/**
+ * Résout la liste des customers Stripe pour un email.
+ * Pourquoi: `customer_email` n'est plus persisté côté `carts`, on doit donc
+ * passer par Stripe pour relier un lien email legacy au bon `customer_stripe_id`.
+ */
+async function resolveStripeCustomerIdsByEmail(email: string): Promise<string[]> {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) return [];
+  try {
+    const listed = await stripe.customers.list({ email: normalizedEmail, limit: 100 });
+    return Array.from(
+      new Set(
+        (Array.isArray(listed.data) ? listed.data : [])
+          .map((customer: any) => String(customer?.id || "").trim())
+          .filter((id) => id.startsWith("cus_")),
+      ),
+    );
+  } catch {
+    return [];
+  }
 }
 
 async function deleteCartInternal(id: number) {
@@ -556,18 +585,21 @@ router.get("/summary", async (req, res) => {
 });
 
 /**
- * GET /api/carts/summary-live?storeSlug=<slug>&email=<email>
- * Récupère le panier live par email (avant liaison customer_stripe_id).
+ * GET /api/carts/summary-live?storeSlug=<slug>&email=<email>|tiktokUsername=<username>
+ * Récupère le panier live par username TikTok, ou par email legacy (résolu via Stripe).
  */
 router.get("/summary-live", async (req, res) => {
   try {
     const storeSlug = String(req.query.storeSlug || "").trim();
     const email = normalizeEmail(req.query.email);
+    const tiktokUsername = normalizeTikTokUsername(req.query.tiktokUsername);
     if (!storeSlug) {
       return res.status(400).json({ error: "storeSlug requis" });
     }
-    if (!email) {
-      return res.status(400).json({ error: "email requis" });
+    if ((!email && !tiktokUsername) || (email && tiktokUsername)) {
+      return res
+        .status(400)
+        .json({ error: "Fournir exactement un identifiant: email ou tiktokUsername" });
     }
 
     const { data: storeRow, error: storeErr } = await supabase
@@ -591,35 +623,82 @@ router.get("/summary-live", async (req, res) => {
 
     let rows: any[] | null = null;
     let error: any = null;
+    const stripeIdsByEmail = email ? await resolveStripeCustomerIdsByEmail(email) : [];
+    if (email && stripeIdsByEmail.length === 0) {
+      return res.json({
+        itemsByStore: [
+          {
+            store: {
+              id: Number(storeRow.id),
+              name: String((storeRow as any)?.name || ""),
+              slug: String((storeRow as any)?.slug || storeSlug),
+            },
+            total: 0,
+            suggestedWeight: 0.5,
+            items: [],
+          },
+        ],
+        grandTotal: 0,
+      });
+    }
+    const applyIdentityFilter = (query: any) => {
+      if (email) return query.in("customer_stripe_id", stripeIdsByEmail as any);
+      return query.eq("customer_tiktok_username", tiktokUsername);
+    };
+
     {
-      const resp = await supabase
-        .from("carts")
-        .select(selectWithWeight)
-        .eq("store_id", Number(storeRow.id))
-        .eq("customer_email", email)
-        .order("id", { ascending: false });
+      const resp = await applyIdentityFilter(
+        supabase
+          .from("carts")
+          .select(selectWithWeight)
+          .eq("store_id", Number(storeRow.id))
+          .order("id", { ascending: false }),
+      );
       rows = resp.data as any;
       error = resp.error;
     }
     if (error && isMissingColumnError(error, "weight")) {
-      const resp2 = await supabase
-        .from("carts")
-        .select(selectWithoutWeight)
-        .eq("store_id", Number(storeRow.id))
-        .eq("customer_email", email)
-        .order("id", { ascending: false });
+      const resp2 = await applyIdentityFilter(
+        supabase
+          .from("carts")
+          .select(selectWithoutWeight)
+          .eq("store_id", Number(storeRow.id))
+          .order("id", { ascending: false }),
+      );
       rows = resp2.data as any;
       error = resp2.error;
     }
     if (error && isMissingColumnError(error, "payment_id")) {
-      const resp3 = await supabase
+      const resp3 = await applyIdentityFilter(
+        supabase
+          .from("carts")
+          .select(selectWithoutPayment)
+          .eq("store_id", Number(storeRow.id))
+          .order("id", { ascending: false }),
+      );
+      rows = resp3.data as any;
+      error = resp3.error;
+    }
+
+    if (error && tiktokUsername && isMissingColumnError(error, "customer_tiktok_username")) {
+      // Fallback de compatibilité: si la colonne n'existe pas encore, on tente
+      // d'identifier les lignes via la description "commande tiktok @...".
+      const fallbackResp = await supabase
         .from("carts")
         .select(selectWithoutPayment)
         .eq("store_id", Number(storeRow.id))
-        .eq("customer_email", email)
         .order("id", { ascending: false });
-      rows = resp3.data as any;
-      error = resp3.error;
+      if (fallbackResp.error) {
+        return res
+          .status(500)
+          .json({ error: fallbackResp.error.message || "Erreur lecture panier live" });
+      }
+      const allStoreRows = Array.isArray(fallbackResp.data) ? fallbackResp.data : [];
+      rows = allStoreRows.filter((row: any) => {
+        const fromDescription = extractTikTokUsernameFromDescription(row?.description);
+        return String(fromDescription || "").trim().toLowerCase() === tiktokUsername;
+      });
+      error = null;
     }
     if (error) {
       return res.status(500).json({ error: error.message || "Erreur lecture panier live" });
@@ -803,110 +882,84 @@ router.post("/link-live-cart", async (req, res) => {
     }
 
     let tiktokUsername: string | null = null;
-    const cartRowsResp = await supabase
+    const tiktokCandidates = new Set<string>();
+    const clerkTikTok = normalizeTikTokUsername(
+      String((clerkUser as any)?.publicMetadata?.tiktok_username || ""),
+    );
+    if (clerkTikTok) {
+      tiktokCandidates.add(clerkTikTok);
+      tiktokUsername = clerkTikTok;
+    }
+
+    const rowsForCurrentStripeResp = await supabase
       .from("carts")
-      .select("id,customer_tiktok_username,customer_stripe_id,description")
+      .select("customer_tiktok_username,description")
       .eq("store_id", Number(storeRow.id))
-      .eq("customer_email", userEmail)
+      .eq("customer_stripe_id", stripeId)
       .is("payment_id", null)
       .order("id", { ascending: false })
-      .limit(200);
+      .limit(100);
     if (
-      cartRowsResp.error &&
-      !isMissingColumnError(cartRowsResp.error, "customer_tiktok_username")
+      rowsForCurrentStripeResp.error &&
+      !isMissingColumnError(rowsForCurrentStripeResp.error, "customer_tiktok_username")
     ) {
-      return res.status(500).json({ error: cartRowsResp.error.message || "Erreur lecture panier" });
-    }
-    const rows = Array.isArray(cartRowsResp.data) ? cartRowsResp.data : [];
-    if (rows.length === 0) {
-      // Cas user déjà connecté Clerk:
-      // si aucune ligne n'est trouvée par email, on tente de retrouver un username
-      // TikTok depuis les lignes déjà liées au customer Stripe du user.
-      const fallbackRowsResp = await supabase
-        .from("carts")
-        .select("customer_tiktok_username,description")
-        .eq("store_id", Number(storeRow.id))
-        .eq("customer_stripe_id", stripeId)
-        .is("payment_id", null)
-        .order("id", { ascending: false })
-        .limit(50);
-      if (
-        fallbackRowsResp.error &&
-        !isMissingColumnError(fallbackRowsResp.error, "customer_tiktok_username")
-      ) {
-        return res.status(500).json({
-          error: fallbackRowsResp.error.message || "Erreur lecture panier (fallback stripe)",
-        });
-      }
-
-      let fallbackTikTokUsername: string | null = null;
-      const fallbackRows = Array.isArray(fallbackRowsResp.data)
-        ? fallbackRowsResp.data
-        : [];
-      for (const row of fallbackRows) {
-        const byColumn = String((row as any)?.customer_tiktok_username || "")
-          .trim()
-          .toLowerCase();
-        const byDescription = extractTikTokUsernameFromDescription(
-          (row as any)?.description,
-        );
-        const candidate = byColumn || byDescription || "";
-        if (candidate) {
-          fallbackTikTokUsername = candidate;
-          break;
-        }
-      }
-
-      const nextPublicMetadata: Record<string, unknown> = {
-        stripe_id: stripeId,
-        tiktok_username:
-          fallbackTikTokUsername ||
-          String((clerkUser as any)?.publicMetadata?.tiktok_username || "")
-            .trim()
-            .toLowerCase(),
-      };
-      await clerkClient.users.updateUserMetadata(auth.userId, {
-        publicMetadata: nextPublicMetadata,
-      } as any);
-
-      return res.json({
-        success: true,
-        stripeId,
-        email: userEmail,
-        tiktokUsername: fallbackTikTokUsername,
-        linkedStoreId: Number(storeRow.id),
-        linkedCount: 0,
-        matchedEmail: false,
+      return res.status(500).json({
+        error: rowsForCurrentStripeResp.error.message || "Erreur lecture panier (fallback stripe)",
       });
     }
-    for (const row of rows) {
-      const byColumn = String((row as any)?.customer_tiktok_username || "")
-        .trim()
-        .toLowerCase();
-      const byDescription = extractTikTokUsernameFromDescription((row as any)?.description);
+    for (const row of Array.isArray(rowsForCurrentStripeResp.data) ? rowsForCurrentStripeResp.data : []) {
+      const byColumn = normalizeTikTokUsername((row as any)?.customer_tiktok_username);
+      const byDescription = normalizeTikTokUsername(
+        extractTikTokUsernameFromDescription((row as any)?.description) || "",
+      );
       const candidate = byColumn || byDescription || "";
       if (candidate) {
-        tiktokUsername = candidate;
-        break;
+        tiktokCandidates.add(candidate);
+        if (!tiktokUsername) tiktokUsername = candidate;
       }
     }
 
-    const idsToLink = rows
-      .map((row: any) => Number(row?.id || 0))
-      .filter((id) => Number.isFinite(id) && id > 0);
-    const idsToLinkWithoutCurrentStripe = rows
-      .filter(
-        (row: any) =>
-          String((row as any)?.customer_stripe_id || "").trim() !== stripeId,
-      )
-      .map((row: any) => Number(row?.id || 0))
-      .filter((id) => Number.isFinite(id) && id > 0);
+    const idsToLink = new Set<number>();
+    const idsToLinkWithoutCurrentStripe = new Set<number>();
+    for (const candidate of tiktokCandidates) {
+      let rowsByTikTokResp = await supabase
+        .from("carts")
+        .select("id,customer_stripe_id")
+        .eq("store_id", Number(storeRow.id))
+        .eq("customer_tiktok_username", candidate)
+        .is("payment_id", null)
+        .order("id", { ascending: false })
+        .limit(500);
+      if (rowsByTikTokResp.error && isMissingColumnError(rowsByTikTokResp.error, "customer_tiktok_username")) {
+        rowsByTikTokResp = await supabase
+          .from("carts")
+          .select("id,customer_stripe_id,description")
+          .eq("store_id", Number(storeRow.id))
+          .is("payment_id", null)
+          .ilike("description", `%commande tiktok @${candidate}%`)
+          .order("id", { ascending: false })
+          .limit(500);
+      }
+      if (rowsByTikTokResp.error) {
+        return res.status(500).json({
+          error: rowsByTikTokResp.error.message || "Erreur lecture panier (username TikTok)",
+        });
+      }
+      for (const row of Array.isArray(rowsByTikTokResp.data) ? rowsByTikTokResp.data : []) {
+        const id = Number((row as any)?.id || 0);
+        if (!Number.isFinite(id) || id <= 0) continue;
+        idsToLink.add(id);
+        if (String((row as any)?.customer_stripe_id || "").trim() !== stripeId) {
+          idsToLinkWithoutCurrentStripe.add(id);
+        }
+      }
+    }
 
-    if (idsToLinkWithoutCurrentStripe.length > 0) {
+    if (idsToLinkWithoutCurrentStripe.size > 0) {
       const upd = await supabase
         .from("carts")
         .update({ customer_stripe_id: stripeId })
-        .in("id", idsToLinkWithoutCurrentStripe);
+        .in("id", Array.from(idsToLinkWithoutCurrentStripe) as any);
       if (upd.error) {
         return res.status(500).json({ error: upd.error.message || "Erreur liaison panier" });
       }
@@ -933,9 +986,8 @@ router.post("/link-live-cart", async (req, res) => {
       email: userEmail,
       tiktokUsername,
       linkedStoreId: Number(storeRow.id),
-      linkedCount: idsToLinkWithoutCurrentStripe.length,
-      matchedEmail: true,
-      inspectedCount: idsToLink.length,
+      linkedCount: idsToLinkWithoutCurrentStripe.size,
+      inspectedCount: idsToLink.size,
     });
   } catch (e: any) {
     console.error("Error linking live cart:", e);
@@ -1034,8 +1086,8 @@ router.get("/store/:slug", async (req, res) => {
     let carts: any[] | null = null;
     let error: any = null;
     let includeWeight = true;
-    let includeCustomerEmail = true;
     let includeTikTokUsername = true;
+    let includePaymentId = true;
     const buildSelect = () => {
       const cols = [
         "id",
@@ -1048,17 +1100,21 @@ router.get("/store/:slug", async (req, res) => {
         "description",
         "recap_sent_at",
       ];
-      if (includeCustomerEmail) cols.push("customer_email");
       if (includeTikTokUsername) cols.push("customer_tiktok_username");
       if (includeWeight) cols.push("weight");
+      if (includePaymentId) cols.push("payment_id");
       return cols.join(", ");
     };
     for (let attempt = 0; attempt < 8; attempt++) {
-      const resp = await supabase
+      let q = supabase
         .from("carts")
         .select(buildSelect())
         .eq("store_id", storeId)
         .order("id", { ascending: false });
+      if (includePaymentId) {
+        q = q.is("payment_id", null);
+      }
+      const resp = await q;
       carts = resp.data as any;
       error = resp.error;
       if (!error) break;
@@ -1068,17 +1124,14 @@ router.get("/store/:slug", async (req, res) => {
         changed = true;
       }
       if (
-        includeCustomerEmail &&
-        isMissingColumnError(error, "customer_email")
-      ) {
-        includeCustomerEmail = false;
-        changed = true;
-      }
-      if (
         includeTikTokUsername &&
         isMissingColumnError(error, "customer_tiktok_username")
       ) {
         includeTikTokUsername = false;
+        changed = true;
+      }
+      if (includePaymentId && isMissingColumnError(error, "payment_id")) {
+        includePaymentId = false;
         changed = true;
       }
       if (!changed) break;
@@ -1174,7 +1227,7 @@ router.post("/recap", async (req, res) => {
       const selectedRowsResp = await supabase
         .from("carts")
         .select(
-          "id,store_id,customer_email,customer_stripe_id,customer_tiktok_username,product_reference,value,description,quantity,payment_id",
+          "id,store_id,customer_stripe_id,customer_tiktok_username,product_reference,value,description,quantity,payment_id",
         )
         .eq("store_id", storeId)
         .in("id", selectedIds as any);
@@ -1200,23 +1253,37 @@ router.post("/recap", async (req, res) => {
           failedRecipientKeys.push(recipientKey);
           continue;
         }
-
-        // Cas prioritaire: reconstruction stricte depuis les IDs sélectionnés.
-        let carts: Array<{
-          id: unknown;
-          product_reference: unknown;
-          value: unknown;
-          description: unknown;
-          quantity: unknown;
-          customer_tiktok_username?: unknown;
-        }> = [];
+        const stripeIds = await resolveStripeCustomerIdsByEmail(customerEmail);
+        const stripeIdFromEmail = stripeIds[0] || "";
+        if (!stripeIdFromEmail) {
+          failedRecipientKeys.push(recipientKey);
+          continue;
+        }
+        const mappedKey = stripeIdFromEmail;
+        // Normalise les clés legacy "email:*" en clé Stripe pour la suite du flux.
+        // On bascule sur la branche Stripe standard.
+        const recipientKeyStripe = mappedKey;
+        const stripeId = recipientKeyStripe;
+        let customerEmailFromStripe = "";
+        let customerName = "Client";
+        try {
+          const customer = await stripe.customers.retrieve(stripeId);
+          customerEmailFromStripe = String((customer as any)?.email || "");
+          customerName = String((customer as any)?.name || "Client");
+        } catch {}
+        if (!customerEmailFromStripe) {
+          failedRecipientKeys.push(recipientKey);
+          continue;
+        }
+        let carts: any[] | null = null;
+        let error: any = null;
         if (selectedIds.length > 0) {
           carts = selectedIds
             .map((id) => selectedRowsById.get(Number(id)))
             .filter((row) => !!row)
             .filter(
               (row: any) =>
-                normalizeEmail((row as any)?.customer_email) === customerEmail &&
+                String((row as any)?.customer_stripe_id || "").trim() === stripeId &&
                 !String((row as any)?.payment_id || "").trim(),
             )
             .map((row: any) => ({
@@ -1225,46 +1292,22 @@ router.post("/recap", async (req, res) => {
               value: (row as any)?.value,
               description: (row as any)?.description,
               quantity: (row as any)?.quantity,
-              customer_tiktok_username: (row as any)?.customer_tiktok_username,
             }));
         } else {
-          const cartsResp = await supabase
+          const resp = await supabase
             .from("carts")
-            .select(
-              "id, product_reference, value, description, quantity, customer_tiktok_username",
-            )
-            .eq("customer_email", customerEmail)
+            .select("id, product_reference, value, description, quantity")
+            .eq("customer_stripe_id", stripeId)
             .eq("store_id", storeId)
             .is("payment_id", null);
-          if (
-            cartsResp.error &&
-            !isMissingColumnError(cartsResp.error, "customer_tiktok_username")
-          ) {
-            failedRecipientKeys.push(recipientKey);
-            continue;
-          }
-          carts = Array.isArray(cartsResp.data) ? (cartsResp.data as any[]) : [];
-          if (
-            cartsResp.error &&
-            isMissingColumnError(cartsResp.error, "customer_tiktok_username")
-          ) {
-            const cartsRespFallback = await supabase
-              .from("carts")
-              .select("id, product_reference, value, description, quantity")
-              .eq("customer_email", customerEmail)
-              .eq("store_id", storeId)
-              .is("payment_id", null);
-            if (cartsRespFallback.error) {
-              failedRecipientKeys.push(recipientKey);
-              continue;
-            }
-            carts = Array.isArray(cartsRespFallback.data)
-              ? (cartsRespFallback.data as any[])
-              : [];
-          }
+          carts = resp.data as any;
+          error = resp.error;
         }
-
-        const items = (carts || []).map((c: any) => ({
+        if (error || !Array.isArray(carts) || carts.length === 0) {
+          failedRecipientKeys.push(recipientKey);
+          continue;
+        }
+        const items = carts.map((c: any) => ({
           product_reference: String(c.product_reference || ""),
           value: Number(c.value || 0),
           description: typeof c.description === "string" ? c.description : "",
@@ -1275,34 +1318,181 @@ router.post("/recap", async (req, res) => {
               ? c.quantity
               : 1,
         }));
-        if (items.length === 0) {
+        const selectedIdsForRecipient = carts
+          .map((c: any) => Number(c?.id || 0))
+          .filter((id: number) => Number.isFinite(id) && id > 0);
+        const checkoutLink = buildCheckoutLink({
+          recipientType: "stripe",
+          recipientValue: stripeId,
+          selectedIdsForRecipient,
+        });
+        const ok = await emailService.sendCartRecap({
+          customerEmail: customerEmailFromStripe,
+          customerName,
+          storeName,
+          storeLogo,
+          carts: items,
+          checkoutLink,
+        });
+        if (!ok) {
+          failedRecipientKeys.push(recipientKey);
+          continue;
+        }
+        const nowIso = new Date().toISOString();
+        const updResp = await supabase
+          .from("carts")
+          .update({ recap_sent_at: nowIso })
+          .in("id", selectedIdsForRecipient as any);
+        if (updResp.error) {
+          failedRecipientKeys.push(recipientKey);
+        } else {
+          sentRecipientKeys.push(recipientKey);
+        }
+        continue;
+      }
+
+      if (recipientKey.toLowerCase().startsWith("tiktok:")) {
+        const tiktokUsername = normalizeTikTokUsername(
+          recipientKey.slice("tiktok:".length),
+        );
+        if (!tiktokUsername) {
           failedRecipientKeys.push(recipientKey);
           continue;
         }
 
-        let customerName = "Client";
-        const byUsernameColumn = String((carts[0] as any)?.customer_tiktok_username || "")
-          .trim()
-          .replace(/^@+/, "");
-        const byDescription = extractTikTokUsernameFromDescription((carts[0] as any)?.description);
-        if (byUsernameColumn) {
-          customerName = `@${byUsernameColumn}`;
-        } else if (byDescription) {
-          customerName = `@${byDescription}`;
+        let stripeIdFromTikTok = "";
+        if (selectedIds.length > 0) {
+          const selectedRows = selectedIds
+            .map((id) => selectedRowsById.get(Number(id)))
+            .filter((row) => !!row)
+            .filter((row: any) => {
+              const byColumn = normalizeTikTokUsername(
+                String((row as any)?.customer_tiktok_username || ""),
+              );
+              const byDescription = normalizeTikTokUsername(
+                extractTikTokUsernameFromDescription((row as any)?.description) || "",
+              );
+              return (
+                (byColumn === tiktokUsername || byDescription === tiktokUsername) &&
+                !String((row as any)?.payment_id || "").trim()
+              );
+            });
+          const firstStripe = String((selectedRows[0] as any)?.customer_stripe_id || "").trim();
+          if (firstStripe.startsWith("cus_")) {
+            stripeIdFromTikTok = firstStripe;
+          }
+        } else {
+          const cartsResp = await supabase
+            .from("carts")
+            .select("customer_stripe_id")
+            .eq("customer_tiktok_username", tiktokUsername)
+            .eq("store_id", storeId)
+            .not("customer_stripe_id", "is", null)
+            .is("payment_id", null);
+          if (
+            cartsResp.error &&
+            !isMissingColumnError(cartsResp.error, "customer_tiktok_username")
+          ) {
+            failedRecipientKeys.push(recipientKey);
+            continue;
+          }
+          if (Array.isArray(cartsResp.data) && cartsResp.data.length > 0) {
+            stripeIdFromTikTok = String((cartsResp.data[0] as any)?.customer_stripe_id || "").trim();
+          }
+          if (
+            cartsResp.error &&
+            isMissingColumnError(cartsResp.error, "customer_tiktok_username")
+          ) {
+            const fallbackResp = await supabase
+              .from("carts")
+              .select("customer_stripe_id")
+              .eq("store_id", storeId)
+              .not("customer_stripe_id", "is", null)
+              .is("payment_id", null)
+              .ilike("description", `%commande tiktok @${tiktokUsername}%`);
+            if (fallbackResp.error) {
+              failedRecipientKeys.push(recipientKey);
+              continue;
+            }
+            if (Array.isArray(fallbackResp.data) && fallbackResp.data.length > 0) {
+              stripeIdFromTikTok = String((fallbackResp.data[0] as any)?.customer_stripe_id || "").trim();
+            }
+          }
         }
 
-        const selectedIdsForRecipient = (carts || [])
+        if (!stripeIdFromTikTok.startsWith("cus_")) {
+          failedRecipientKeys.push(recipientKey);
+          continue;
+        }
+
+        let customerEmail = "";
+        let customerName = `@${tiktokUsername}`;
+        try {
+          const customer = await stripe.customers.retrieve(stripeIdFromTikTok);
+          customerEmail = String((customer as any)?.email || "").trim();
+          customerName = String((customer as any)?.name || customerName).trim() || customerName;
+        } catch {}
+        if (!customerEmail) {
+          failedRecipientKeys.push(recipientKey);
+          continue;
+        }
+
+        let carts: any[] = [];
+        if (selectedIds.length > 0) {
+          carts = selectedIds
+            .map((id) => selectedRowsById.get(Number(id)))
+            .filter((row) => !!row)
+            .filter(
+              (row: any) =>
+                String((row as any)?.customer_stripe_id || "").trim() === stripeIdFromTikTok &&
+                !String((row as any)?.payment_id || "").trim(),
+            )
+            .map((row: any) => ({
+              id: (row as any)?.id,
+              product_reference: (row as any)?.product_reference,
+              value: (row as any)?.value,
+              description: (row as any)?.description,
+              quantity: (row as any)?.quantity,
+            }));
+        } else {
+          const cartsResp = await supabase
+            .from("carts")
+            .select("id, product_reference, value, description, quantity")
+            .eq("customer_stripe_id", stripeIdFromTikTok)
+            .eq("store_id", storeId)
+            .is("payment_id", null);
+          if (cartsResp.error) {
+            failedRecipientKeys.push(recipientKey);
+            continue;
+          }
+          carts = Array.isArray(cartsResp.data) ? cartsResp.data : [];
+        }
+        if (!Array.isArray(carts) || carts.length === 0) {
+          failedRecipientKeys.push(recipientKey);
+          continue;
+        }
+        const items = carts.map((c: any) => ({
+          product_reference: String(c.product_reference || ""),
+          value: Number(c.value || 0),
+          description: typeof c.description === "string" ? c.description : "",
+          quantity:
+            typeof c.quantity === "number" &&
+            Number.isFinite(c.quantity) &&
+            c.quantity > 0
+              ? c.quantity
+              : 1,
+        }));
+        const selectedIdsForRecipient = carts
           .map((c: any) => Number(c?.id || 0))
           .filter((id: number) => Number.isFinite(id) && id > 0);
         const checkoutLink = buildCheckoutLink({
-          recipientType: "email",
-          recipientValue: customerEmail,
+          recipientType: "stripe",
+          recipientValue: stripeIdFromTikTok,
           selectedIdsForRecipient,
         });
-
         const ok = await emailService.sendCartRecap({
           customerEmail,
-          customerName,
+          customerName: `@${tiktokUsername}`,
           storeName,
           storeLogo,
           carts: items,

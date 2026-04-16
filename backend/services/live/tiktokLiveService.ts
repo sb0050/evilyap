@@ -24,6 +24,8 @@ export type LiveEvent =
       id: number;
       type: "system";
       timestamp: string;
+      storeSlug: string | null;
+      storeId: number | null;
       event: LiveSystemEventName;
       payload?: Record<string, unknown>;
     }
@@ -31,6 +33,8 @@ export type LiveEvent =
       id: number;
       type: "chat";
       timestamp: string;
+      storeSlug: string | null;
+      storeId: number | null;
       username: string;
       nickname: string | null;
       comment: string;
@@ -40,6 +44,8 @@ export type LiveEvent =
       id: number;
       type: "order";
       timestamp: string;
+      storeSlug: string | null;
+      storeId: number | null;
       username: string;
       comment: string;
       intent: string;
@@ -52,9 +58,9 @@ export type LiveEvent =
     };
 
 type LiveEventInput =
-  | Omit<Extract<LiveEvent, { type: "system" }>, "id" | "timestamp">
-  | Omit<Extract<LiveEvent, { type: "chat" }>, "id" | "timestamp">
-  | Omit<Extract<LiveEvent, { type: "order" }>, "id" | "timestamp">;
+  | Omit<Extract<LiveEvent, { type: "system" }>, "id" | "timestamp" | "storeSlug" | "storeId">
+  | Omit<Extract<LiveEvent, { type: "chat" }>, "id" | "timestamp" | "storeSlug" | "storeId">
+  | Omit<Extract<LiveEvent, { type: "order" }>, "id" | "timestamp" | "storeSlug" | "storeId">;
 
 export type LiveState = {
   status: LiveStatus;
@@ -108,6 +114,11 @@ class TikTokLiveService {
   private messageTimestampsMs: number[] = [];
   private storeSlug: string | null = null;
   private storeId: number | null = null;
+  private forcedRoomId: string | null = null;
+  private connectionToken = 0;
+  private readonly duplicateChatTtlMs = 8_000;
+  private readonly duplicateChatMaxEntries = 5_000;
+  private recentChatFingerprints = new Map<string, number>();
 
   private sanitizeUniqueId(value: string): string {
     return String(value || "")
@@ -154,11 +165,65 @@ class TikTokLiveService {
     }
   }
 
+  private cleanupRecentChatFingerprints(nowMs: number): void {
+    for (const [key, ts] of this.recentChatFingerprints.entries()) {
+      if (nowMs - ts > this.duplicateChatTtlMs) {
+        this.recentChatFingerprints.delete(key);
+      }
+    }
+    while (this.recentChatFingerprints.size > this.duplicateChatMaxEntries) {
+      const oldest = this.recentChatFingerprints.keys().next().value;
+      if (!oldest) break;
+      this.recentChatFingerprints.delete(oldest);
+    }
+  }
+
+  private buildStableChatFingerprint(data: any, username: string, comment: string): string {
+    const asString = (value: unknown): string => String(value ?? "").trim();
+    const candidates = [
+      asString(data?.msgId),
+      asString(data?.messageId),
+      asString(data?.eventId),
+      asString(data?.logId),
+      asString(data?.common?.msgId),
+      asString(data?.common?.messageId),
+    ].filter(Boolean);
+    if (candidates.length > 0) {
+      // Quand TikTok fournit un identifiant d'événement, on l'utilise
+      // pour une déduplication exacte sans risquer de masquer un vrai
+      // deuxième message utilisateur.
+      return `id:${candidates[0]}`;
+    }
+    const userId = asString(data?.user?.userId);
+    const createTime = asString(data?.createTime || data?.common?.createTime);
+    const normalizedComment = String(comment || "").trim().toLowerCase();
+    const stableSeed = [username, userId, createTime, normalizedComment]
+      .filter(Boolean)
+      .join("|");
+    if (stableSeed) return `seed:${stableSeed}`;
+    return `fallback:${username}|${normalizedComment}`;
+  }
+
+  private shouldDropDuplicateChat(data: any, username: string, comment: string): boolean {
+    const nowMs = Date.now();
+    this.cleanupRecentChatFingerprints(nowMs);
+    const fingerprint = this.buildStableChatFingerprint(data, username, comment);
+    if (!fingerprint) return false;
+    const previousTs = this.recentChatFingerprints.get(fingerprint);
+    if (typeof previousTs === "number" && nowMs - previousTs <= this.duplicateChatTtlMs) {
+      return true;
+    }
+    this.recentChatFingerprints.set(fingerprint, nowMs);
+    return false;
+  }
+
   private pushEvent(event: LiveEventInput): LiveEvent {
     const fullEvent = {
       ...event,
       id: ++this.eventId,
       timestamp: new Date().toISOString(),
+      storeSlug: this.storeSlug,
+      storeId: this.storeId,
     } as LiveEvent;
     this.bufferedEvents.push(fullEvent);
     if (this.bufferedEvents.length > this.maxBufferedEvents) {
@@ -168,8 +233,9 @@ class TikTokLiveService {
     return fullEvent;
   }
 
-  private attachConnectionListeners(conn: TikTokLiveConnection): void {
+  private attachConnectionListeners(conn: TikTokLiveConnection, token: number): void {
     conn.on(ControlEvent.CONNECTED, (state: any) => {
+      if (token !== this.connectionToken) return;
       this.roomId = String(state?.roomId || "") || null;
       this.lastError = null;
       this.reconnectAttempts = 0;
@@ -187,6 +253,7 @@ class TikTokLiveService {
     });
 
     conn.on(ControlEvent.DISCONNECTED, ({ code, reason }: any) => {
+      if (token !== this.connectionToken) return;
       this.roomId = null;
       const reasonText = String(reason || "").trim() || null;
       this.setStatus(this.shouldReconnect ? "reconnecting" : "disconnected");
@@ -201,6 +268,7 @@ class TikTokLiveService {
     });
 
     conn.on(ControlEvent.ERROR, (err: any) => {
+      if (token !== this.connectionToken) return;
       const info = String(err?.info || "Erreur inconnue TikTok LIVE");
       const exception = String(err?.exception || "").trim();
       this.lastError = exception ? `${info}: ${exception}` : info;
@@ -215,9 +283,12 @@ class TikTokLiveService {
     });
 
     conn.on(WebcastEvent.CHAT, (data: any) => {
+      if (token !== this.connectionToken) return;
       const comment = String(data?.comment || "").trim();
       if (!comment) return;
       const username = String(data?.user?.uniqueId || "").trim().toLowerCase();
+      if (!username) return;
+      if (this.shouldDropDuplicateChat(data, username, comment)) return;
       const nicknameRaw = String(data?.user?.nickname || "").trim();
       const nickname = nicknameRaw || null;
       const nowMs = Date.now();
@@ -255,6 +326,7 @@ class TikTokLiveService {
           uniqueId: this.uniqueId,
           storeSlug: this.storeSlug,
           storeId: this.storeId,
+          roomId: this.forcedRoomId,
         });
       } catch {
         this.scheduleReconnect();
@@ -287,7 +359,9 @@ class TikTokLiveService {
     };
   }
 
-  emitOrderEvent(event: Omit<Extract<LiveEvent, { type: "order" }>, "id" | "timestamp">): void {
+  emitOrderEvent(
+    event: Omit<Extract<LiveEvent, { type: "order" }>, "id" | "timestamp" | "storeSlug" | "storeId">,
+  ): void {
     this.pushEvent(event);
   }
 
@@ -345,12 +419,13 @@ class TikTokLiveService {
     const roomIdInput = String(roomId || "")
       .trim()
       .replace(/\D+/g, "");
+    this.forcedRoomId = roomIdInput || null;
 
     this.emitSystemEvent("connect_requested", {
       uniqueId: this.uniqueId,
       storeSlug: this.storeSlug,
       storeId: this.storeId,
-      roomId: roomIdInput || null,
+      roomId: this.forcedRoomId,
     });
 
     if (this.connection) {
@@ -439,14 +514,15 @@ class TikTokLiveService {
     for (const profile of connectProfiles) {
       for (let attempt = 1; attempt <= maxAttemptsPerProfile; attempt += 1) {
         const conn = new TikTokLiveConnection(normalizedUniqueId, profile.options as any);
+        const token = ++this.connectionToken;
         this.connection = conn;
-        this.attachConnectionListeners(conn);
+        this.attachConnectionListeners(conn, token);
 
         this.emitSystemEvent("reconnecting", {
           profile: profile.name,
           attempt,
           maxAttempts: maxAttemptsPerProfile,
-          roomId: roomIdInput || null,
+          roomId: this.forcedRoomId,
         });
 
         try {
@@ -508,6 +584,7 @@ class TikTokLiveService {
     }
     this.connection = null;
     this.roomId = null;
+    this.forcedRoomId = null;
     this.setStatus("disconnected");
     this.emitSystemEvent("disconnected", {
       manual: true,
