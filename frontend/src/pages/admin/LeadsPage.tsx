@@ -1,9 +1,33 @@
-import React, { useMemo, useState } from 'react';
-import { useUser, SignedIn, SignedOut, RedirectToSignIn, UserButton } from '@clerk/clerk-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useUser,
+  useAuth,
+  SignedIn,
+  SignedOut,
+  RedirectToSignIn,
+  UserButton,
+} from '@clerk/clerk-react';
 import { Link } from 'react-router-dom';
+import {
+  DndContext,
+  DragEndEvent,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import { CSS } from '@dnd-kit/utilities';
+import { EditorContent, useEditor } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import Underline from '@tiptap/extension-underline';
+import Highlight from '@tiptap/extension-highlight';
+import PhoneInput, { isValidPhoneNumber } from 'react-phone-number-input';
+import 'react-phone-number-input/style.css';
+import { apiDelete, apiGet, apiPost, apiPut } from '../../utils/api';
 
 type LeadStatus =
-  | 'À contacter'
+  | 'A contacter'
   | 'Contacté'
   | 'Répondu'
   | 'Interessé'
@@ -19,6 +43,8 @@ type Lead = {
   phone: string;
   email: string;
   webLink: string;
+  quickNote: string;
+  note: string;
   status: LeadStatus;
 };
 
@@ -31,7 +57,7 @@ type LeadColumn = Readonly<{
 // Structure fixe: colonnes non modifiables/supprimables/deplacables via l'UI.
 const LEAD_COLUMNS: ReadonlyArray<LeadColumn> = Object.freeze([
   {
-    key: 'À contacter',
+    key: 'A contacter',
     colorClass: 'bg-blue-600 text-white',
     badgeClass: 'bg-blue-100 text-blue-700',
   },
@@ -72,14 +98,760 @@ const LEAD_COLUMNS: ReadonlyArray<LeadColumn> = Object.freeze([
   },
 ]);
 
+const STATUS_LABEL_TO_ID: Record<LeadStatus, number> = {
+  'A contacter': 1,
+  'Contacté': 2,
+  'Répondu': 3,
+  'Interessé': 4,
+  'Call / Démo prévu': 5,
+  'En Onboarding': 6,
+  'Perdu / Refusé': 7,
+  Actif: 8,
+};
+
+const STATUS_ID_TO_LABEL: Record<number, LeadStatus> = {
+  1: 'A contacter',
+  2: 'Contacté',
+  3: 'Répondu',
+  4: 'Interessé',
+  5: 'Call / Démo prévu',
+  6: 'En Onboarding',
+  7: 'Perdu / Refusé',
+  8: 'Actif',
+};
+
+const isLeadStatusLabel = (value: string): value is LeadStatus =>
+  LEAD_COLUMNS.some(column => column.key === value);
+
+const normalizeLeadStatus = (raw: unknown): LeadStatus => {
+  const value = String(raw ?? '').trim();
+  if (!value) return 'A contacter';
+
+  if (isLeadStatusLabel(value)) {
+    return value;
+  }
+
+  const asNumber = Number(value);
+  if (
+    Number.isInteger(asNumber) &&
+    asNumber >= 1 &&
+    asNumber <= 8 &&
+    STATUS_ID_TO_LABEL[asNumber]
+  ) {
+    return STATUS_ID_TO_LABEL[asNumber];
+  }
+
+  return 'A contacter';
+};
+
+const columnDropId = (status: LeadStatus) => `column:${status}`;
+
+const extractApiErrorMessage = (error: unknown, fallback: string): string => {
+  const rawMessage = String((error as any)?.message || '').trim();
+  if (!rawMessage) return fallback;
+  const withoutPrefix = rawMessage.startsWith('Error: ')
+    ? rawMessage.slice('Error: '.length).trim()
+    : rawMessage;
+  try {
+    const parsed = JSON.parse(withoutPrefix);
+    const apiError = String(parsed?.error || '').trim();
+    return apiError || fallback;
+  } catch {
+    return withoutPrefix || fallback;
+  }
+};
+
+const normalizeStoreForCompare = (raw: string): string =>
+  String(raw || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+
+const normalizeSearchText = (raw: string): string =>
+  String(raw || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+
+const mapApiLeadToLead = (row: any): Lead => ({
+  id: String(row?.id || crypto.randomUUID()),
+  name: String(row?.name || '').trim(),
+  store: String(row?.store || '').trim(),
+  phone: String(row?.phone || '').trim(),
+  email: String(row?.mail || row?.email || '').trim(),
+  webLink: String(row?.link || row?.web_link || row?.webLink || '').trim(),
+  quickNote: String(row?.quick_note || row?.quickNote || '').trim(),
+  note: String(row?.note || '').trim(),
+  status: normalizeLeadStatus(
+    row?.status_text ||
+      row?.status_label ||
+      row?.lead_status ||
+      row?.statut ||
+      row?.status
+  ),
+});
+
+type LeadCardProps = {
+  lead: Lead;
+  onSaveQuickNote: (leadId: string, quickNote: string) => void;
+  onOpenLead: (leadId: string) => void;
+};
+
+function LeadCard({ lead, onSaveQuickNote, onOpenLead }: LeadCardProps) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } =
+    useDraggable({
+      id: lead.id,
+      data: { leadId: lead.id },
+    });
+  const [isQuickNoteEditing, setIsQuickNoteEditing] = useState(false);
+  const [quickNoteDraft, setQuickNoteDraft] = useState(lead.quickNote);
+  const draggedRef = useRef(false);
+
+  const style: React.CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    opacity: isDragging ? 0.55 : 1,
+  };
+
+  useEffect(() => {
+    if (isDragging) {
+      draggedRef.current = true;
+    }
+  }, [isDragging]);
+
+  const startQuickNoteEdit = () => {
+    setQuickNoteDraft(lead.quickNote);
+    setIsQuickNoteEditing(true);
+  };
+
+  const cancelQuickNoteEdit = () => {
+    setQuickNoteDraft(lead.quickNote);
+    setIsQuickNoteEditing(false);
+  };
+
+  const submitQuickNoteEdit = () => {
+    onSaveQuickNote(lead.id, quickNoteDraft.trim());
+    setIsQuickNoteEditing(false);
+  };
+
+  return (
+    <article
+      ref={setNodeRef}
+      style={style}
+      {...listeners}
+      {...attributes}
+      className='cursor-grab rounded-md border border-gray-200 bg-white p-3 shadow-sm active:cursor-grabbing'
+      onClick={() => {
+        if (draggedRef.current) {
+          draggedRef.current = false;
+          return;
+        }
+        onOpenLead(lead.id);
+      }}
+    >
+      <p className='text-sm font-semibold text-gray-900'>{lead.name}</p>
+      {lead.store ? (
+        <p className='mt-1 text-xs font-medium text-gray-700'>
+          Boutique: {lead.store}
+        </p>
+      ) : null}
+      {lead.phone ? (
+        <p className='mt-1 text-xs text-gray-600'>Tel: {lead.phone}</p>
+      ) : null}
+      {lead.email ? (
+        <p className='text-xs text-gray-600 break-all'>E-mail: {lead.email}</p>
+      ) : null}
+      {lead.webLink ? (
+        <a
+          href={lead.webLink}
+          target='_blank'
+          rel='noreferrer'
+          className='mt-1 block text-xs text-indigo-600 hover:underline break-all'
+        >
+          Lien web: {lead.webLink}
+        </a>
+      ) : null}
+      {lead.quickNote ? (
+        <p className='mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800'>
+          Quick Note: {lead.quickNote}
+        </p>
+      ) : null}
+      <div
+        className='mt-2 border-t border-gray-100 pt-2'
+        onClick={e => e.stopPropagation()}
+        onPointerDown={e => e.stopPropagation()}
+      >
+        {isQuickNoteEditing ? (
+          <div className='flex items-center gap-1'>
+            <input
+              type='text'
+              value={quickNoteDraft}
+              onChange={e => setQuickNoteDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') submitQuickNoteEdit();
+                if (e.key === 'Escape') cancelQuickNoteEdit();
+              }}
+              placeholder='Quick note...'
+              className='w-full rounded-md border border-gray-300 px-2 py-1 text-xs'
+            />
+            <button
+              type='button'
+              onClick={submitQuickNoteEdit}
+              className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50'
+              aria-label='Valider la note rapide'
+            >
+              ✓
+            </button>
+            <button
+              type='button'
+              onClick={cancelQuickNoteEdit}
+              className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-300 text-red-700 hover:bg-red-50'
+              aria-label='Annuler la note rapide'
+            >
+              ✕
+            </button>
+          </div>
+        ) : (
+          <button
+            type='button'
+            onClick={startQuickNoteEdit}
+            className='inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-700'
+          >
+            <span aria-hidden='true'>📝</span>
+            {lead.quickNote ? 'Modifier la note rapide' : 'Ajouter une note rapide'}
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
+type LeadColumnProps = {
+  column: LeadColumn;
+  leads: Lead[];
+  isCollapsed: boolean;
+  onToggle: (status: LeadStatus) => void;
+  onSaveQuickNote: (leadId: string, quickNote: string) => void;
+  onOpenLead: (leadId: string) => void;
+};
+
+function LeadColumnLane({
+  column,
+  leads,
+  isCollapsed,
+  onToggle,
+  onSaveQuickNote,
+  onOpenLead,
+}: LeadColumnProps) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: columnDropId(column.key),
+  });
+
+  return (
+    <section
+      ref={setNodeRef}
+      className={`bg-white border rounded-lg min-h-[760px] transition-all ${
+        isCollapsed ? 'w-[86px]' : 'w-[360px]'
+      } ${isOver ? 'border-indigo-400 ring-2 ring-indigo-200' : 'border-gray-200'}`}
+    >
+      <header className='px-3 py-3 border-b border-gray-200'>
+        {isCollapsed ? (
+          <div className='flex flex-col items-center gap-3'>
+            <button
+              type='button'
+              onClick={() => onToggle(column.key)}
+              className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100'
+              aria-label={`Déplier ${column.key}`}
+            >
+              <svg
+                xmlns='http://www.w3.org/2000/svg'
+                viewBox='0 0 24 24'
+                fill='none'
+                stroke='currentColor'
+                strokeWidth='2'
+                className='h-4 w-4'
+                aria-hidden='true'
+              >
+                <path d='M9 6l6 6-6 6' />
+              </svg>
+            </button>
+            <span
+              className={`inline-flex items-center rounded-full px-2 py-2 text-xs font-semibold ${column.colorClass} [writing-mode:vertical-rl] [text-orientation:mixed]`}
+            >
+              {column.key}
+            </span>
+            <span
+              className={`inline-flex h-7 min-w-7 items-center justify-center rounded-full px-2 text-xs font-semibold ${column.badgeClass}`}
+            >
+              {leads.length}
+            </span>
+          </div>
+        ) : (
+          <div className='flex items-center justify-between gap-2'>
+            <div className='flex items-center gap-2 min-w-0'>
+              <button
+                type='button'
+                onClick={() => onToggle(column.key)}
+                className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100'
+                aria-label={`Replier ${column.key}`}
+              >
+                <svg
+                  xmlns='http://www.w3.org/2000/svg'
+                  viewBox='0 0 24 24'
+                  fill='none'
+                  stroke='currentColor'
+                  strokeWidth='2'
+                  className='h-4 w-4'
+                  aria-hidden='true'
+                >
+                  <path d='M9 6l6 6-6 6' />
+                </svg>
+              </button>
+              <span
+                className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${column.colorClass}`}
+              >
+                <span className='truncate'>{column.key}</span>
+              </span>
+            </div>
+            <span
+              className={`inline-flex h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs font-semibold ${column.badgeClass}`}
+            >
+              {leads.length}
+            </span>
+          </div>
+        )}
+      </header>
+
+      {isCollapsed ? (
+        <div className='min-h-[700px] bg-gray-50/60' />
+      ) : (
+        <div className='p-3 space-y-3 min-h-[700px] bg-gray-50/60'>
+          {leads.length === 0 ? (
+            <div className='h-full rounded-md border border-dashed border-gray-300 bg-white/70 p-3 text-xs text-gray-400'>
+              Aucun prospect
+            </div>
+          ) : (
+            leads.map(lead => (
+              <LeadCard
+                key={lead.id}
+                lead={lead}
+                onSaveQuickNote={onSaveQuickNote}
+                onOpenLead={onOpenLead}
+              />
+            ))
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+type LeadDetailsModalProps = {
+  lead: Lead;
+  onClose: () => void;
+  onUpdateLead: (
+    leadId: string,
+    updates: Partial<Pick<Lead, 'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote' | 'note'>>
+  ) => Promise<void>;
+  onDeleteLead: (leadId: string) => Promise<void>;
+};
+
+function LeadDetailsModal({
+  lead,
+  onClose,
+  onUpdateLead,
+  onDeleteLead,
+}: LeadDetailsModalProps) {
+  const [editingField, setEditingField] = useState<
+    'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote' | null
+  >(null);
+  const [draftValue, setDraftValue] = useState('');
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSavingField, setIsSavingField] = useState(false);
+  const [richTextDraft, setRichTextDraft] = useState(lead.note || '<p></p>');
+  const [isRichTextDirty, setIsRichTextDirty] = useState(false);
+  const [isSavingRichText, setIsSavingRichText] = useState(false);
+  const [isDeletingLead, setIsDeletingLead] = useState(false);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+
+  const editor = useEditor({
+    extensions: [StarterKit, Underline, Highlight],
+    content: lead.note || '<p></p>',
+    onUpdate: ({ editor: currentEditor }) => {
+      setRichTextDraft(currentEditor.getHTML());
+      setIsRichTextDirty(true);
+    },
+  });
+
+  useEffect(() => {
+    setEditingField(null);
+    setDraftValue('');
+    setSaveError(null);
+    const nextContent = lead.note || '<p></p>';
+    setRichTextDraft(nextContent);
+    setIsRichTextDirty(false);
+  }, [lead.id, lead.name, lead.store, lead.phone, lead.email, lead.webLink, lead.quickNote, lead.note]);
+
+  useEffect(() => {
+    if (!editor) return;
+    const nextContent = lead.note || '<p></p>';
+    if (editor.getHTML() !== nextContent) {
+      editor.commands.setContent(nextContent);
+    }
+  }, [editor, lead.id, lead.note]);
+
+  const startEditing = (
+    field: 'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote',
+    value: string
+  ) => {
+    setEditingField(field);
+    setDraftValue(value);
+    setSaveError(null);
+  };
+
+  const cancelEditing = () => {
+    setEditingField(null);
+    setDraftValue('');
+    setSaveError(null);
+  };
+
+  const saveField = async (
+    field: 'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote'
+  ) => {
+    const nextValue = draftValue.trim();
+    if ((field === 'name' || field === 'store') && !nextValue) {
+      setSaveError(
+        field === 'name'
+          ? 'Le nom du prospect est obligatoire.'
+          : 'Le nom de la boutique est obligatoire.'
+      );
+      return;
+    }
+    if (field === 'phone' && nextValue && !isValidPhoneNumber(nextValue)) {
+      setSaveError('Le numéro de téléphone est invalide.');
+      return;
+    }
+
+    try {
+      setIsSavingField(true);
+      setSaveError(null);
+      await onUpdateLead(lead.id, { [field]: nextValue } as Partial<Lead>);
+      setEditingField(null);
+      setDraftValue('');
+    } catch (e: any) {
+      setSaveError(e?.message || 'Erreur lors de la mise à jour');
+    } finally {
+      setIsSavingField(false);
+    }
+  };
+
+  const saveRichText = async () => {
+    try {
+      setIsSavingRichText(true);
+      setSaveError(null);
+      await onUpdateLead(lead.id, { note: richTextDraft.trim() });
+      setIsRichTextDirty(false);
+    } catch (e: any) {
+      setSaveError(e?.message || 'Erreur lors de la mise à jour de la note');
+    } finally {
+      setIsSavingRichText(false);
+    }
+  };
+
+  const cancelRichText = () => {
+    const nextContent = lead.note || '<p></p>';
+    setRichTextDraft(nextContent);
+    setIsRichTextDirty(false);
+    setSaveError(null);
+    if (!editor) return;
+    if (editor.getHTML() !== nextContent) {
+      editor.commands.setContent(nextContent);
+    }
+  };
+
+  const deleteLead = async () => {
+    try {
+      setIsDeletingLead(true);
+      setSaveError(null);
+      await onDeleteLead(lead.id);
+      setIsDeleteConfirmOpen(false);
+      onClose();
+    } catch (e: any) {
+      setSaveError(e?.message || 'Erreur lors de la suppression');
+    } finally {
+      setIsDeletingLead(false);
+    }
+  };
+
+  const renderEditableField = (
+    label: string,
+    field: 'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote',
+    value: string,
+    inputType: 'text' | 'email' | 'url' = 'text',
+    wrapperClass = ''
+  ) => (
+    <div className={wrapperClass}>
+      <div className='flex items-start gap-2'>
+        {editingField === field ? null : (
+          <button
+            type='button'
+            onClick={() => startEditing(field, value)}
+            className='inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100'
+            aria-label={`Modifier ${label}`}
+          >
+            ✎
+          </button>
+        )}
+        <p>
+          <span className='font-semibold'>{label}:</span>{' '}
+          {!editingField || editingField !== field ? value || '-' : null}
+        </p>
+      </div>
+      {editingField === field ? (
+        <div className='mt-2 flex items-center gap-1'>
+          {field === 'phone' ? (
+            <PhoneInput
+              international
+              defaultCountry='FR'
+              value={draftValue}
+              onChange={value => setDraftValue(value || '')}
+              placeholder='Téléphone'
+              className={`w-full rounded-md border px-2 py-1 text-xs ${
+                draftValue.trim() && !isValidPhoneNumber(draftValue)
+                  ? 'border-red-400'
+                  : 'border-gray-300'
+              }`}
+            />
+          ) : (
+            <input
+              type={inputType}
+              value={draftValue}
+              onChange={e => setDraftValue(e.target.value)}
+              className='w-full rounded-md border border-gray-300 px-2 py-1 text-xs'
+            />
+          )}
+          <button
+            type='button'
+            onClick={() => void saveField(field)}
+            disabled={isSavingField}
+            className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50'
+            aria-label={`Valider ${label}`}
+          >
+            ✓
+          </button>
+          <button
+            type='button'
+            onClick={cancelEditing}
+            disabled={isSavingField}
+            className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-300 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50'
+            aria-label={`Annuler ${label}`}
+          >
+            ✕
+          </button>
+        </div>
+      ) : null}
+      {editingField === field &&
+      field === 'phone' &&
+      draftValue.trim() &&
+      !isValidPhoneNumber(draftValue) ? (
+        <p className='mt-1 text-xs text-red-600'>Numéro de téléphone invalide.</p>
+      ) : null}
+    </div>
+  );
+
+  const toolbarButtonClass =
+    'inline-flex items-center rounded border border-gray-300 px-2 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-100';
+
+  return (
+    <div
+      className='fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4'
+      onClick={onClose}
+    >
+      <div
+        className='w-full max-w-3xl rounded-xl bg-white shadow-xl'
+        onClick={e => e.stopPropagation()}
+      >
+        <div className='flex items-center justify-between border-b border-gray-200 px-5 py-4'>
+          <h2 className='text-lg font-semibold text-gray-900'>Détails du client</h2>
+          <div className='flex items-center gap-2'>
+            <button
+              type='button'
+              onClick={() => setIsDeleteConfirmOpen(true)}
+              disabled={isDeletingLead}
+              className='inline-flex items-center rounded-md border border-red-300 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50'
+            >
+              Supprimer
+            </button>
+            <button
+              type='button'
+              onClick={onClose}
+              className='inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100'
+              aria-label='Fermer'
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+
+        <div className='p-5'>
+          {saveError ? (
+            <div className='mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700'>
+              {saveError}
+            </div>
+          ) : null}
+          <div className='grid grid-cols-1 gap-2 text-sm text-gray-700 md:grid-cols-2'>
+            {renderEditableField('Nom', 'name', lead.name)}
+            {renderEditableField('Boutique', 'store', lead.store)}
+            {renderEditableField('Téléphone', 'phone', lead.phone)}
+            {renderEditableField('E-mail', 'email', lead.email, 'email')}
+            {renderEditableField(
+              'Lien web',
+              'webLink',
+              lead.webLink,
+              'url'
+            )}
+            {renderEditableField(
+              'Quick Note',
+              'quickNote',
+              lead.quickNote,
+              'text'
+            )}
+          </div>
+
+          <div className='mt-5'>
+            <p className='mb-2 text-sm font-semibold text-gray-900'>
+              Zone de texte enrichie
+            </p>
+            <div className='mb-2 flex flex-wrap gap-2'>
+              <button
+                type='button'
+                onClick={() => editor?.chain().focus().toggleBold().run()}
+                className={`${toolbarButtonClass} ${
+                  editor?.isActive('bold') ? 'bg-gray-200' : ''
+                }`}
+              >
+                Gras
+              </button>
+              <button
+                type='button'
+                onClick={() => editor?.chain().focus().toggleItalic().run()}
+                className={`${toolbarButtonClass} ${
+                  editor?.isActive('italic') ? 'bg-gray-200' : ''
+                }`}
+              >
+                Italique
+              </button>
+              <button
+                type='button'
+                onClick={() => editor?.chain().focus().toggleUnderline().run()}
+                className={`${toolbarButtonClass} ${
+                  editor?.isActive('underline') ? 'bg-gray-200' : ''
+                }`}
+              >
+                Souligné
+              </button>
+              <button
+                type='button'
+                onClick={() => editor?.chain().focus().toggleBulletList().run()}
+                className={`${toolbarButtonClass} ${
+                  editor?.isActive('bulletList') ? 'bg-gray-200' : ''
+                }`}
+              >
+                Puces
+              </button>
+              <button
+                type='button'
+                onClick={() => editor?.chain().focus().toggleHighlight().run()}
+                className={`${toolbarButtonClass} ${
+                  editor?.isActive('highlight') ? 'bg-yellow-200' : ''
+                }`}
+              >
+                Surligner jaune
+              </button>
+            </div>
+            <div className='rounded-lg border border-gray-300 bg-white p-3'>
+              <EditorContent
+                editor={editor}
+                className='min-h-[180px] text-sm [&_.ProseMirror]:min-h-[160px] [&_.ProseMirror]:outline-none'
+              />
+            </div>
+            <div className='mt-2 flex items-center justify-end gap-1'>
+              <button
+                type='button'
+                onClick={() => void saveRichText()}
+                disabled={!isRichTextDirty || isSavingRichText}
+                className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50'
+                aria-label='Valider la zone de texte enrichie'
+              >
+                ✓
+              </button>
+              <button
+                type='button'
+                onClick={cancelRichText}
+                disabled={!isRichTextDirty || isSavingRichText}
+                className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-300 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50'
+                aria-label='Annuler la zone de texte enrichie'
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      {isDeleteConfirmOpen ? (
+        <div
+          className='fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4'
+          onClick={e => {
+            e.stopPropagation();
+            if (isDeletingLead) return;
+            setIsDeleteConfirmOpen(false);
+          }}
+        >
+          <div
+            className='w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-xl'
+            onClick={e => e.stopPropagation()}
+          >
+            <div className='border-b border-gray-200 px-5 py-4'>
+              <h3 className='text-base font-semibold text-gray-900'>
+                Confirmer la suppression
+              </h3>
+            </div>
+            <div className='px-5 py-4 text-sm text-gray-700'>
+              Voulez-vous vraiment supprimer ce client ? Cette action est
+              irreversible.
+            </div>
+            <div className='flex justify-end gap-2 border-t border-gray-200 px-5 py-4'>
+              <button
+                type='button'
+                onClick={() => setIsDeleteConfirmOpen(false)}
+                disabled={isDeletingLead}
+                className='inline-flex items-center rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50'
+              >
+                Annuler
+              </button>
+              <button
+                type='button'
+                onClick={() => void deleteLead()}
+                disabled={isDeletingLead}
+                className='inline-flex items-center rounded-lg border border-red-300 bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50'
+              >
+                {isDeletingLead ? 'Suppression...' : 'Supprimer'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function LeadsPage() {
   const { user } = useUser();
+  const { getToken } = useAuth();
   const role = String(user?.publicMetadata?.role || '')
     .trim()
     .toLowerCase();
   const isAdmin = role === 'admin';
   const [leads, setLeads] = useState<Lead[]>([]);
-  const [draggedLeadId, setDraggedLeadId] = useState<string | null>(null);
   const [collapsedStatuses, setCollapsedStatuses] = useState<
     Record<LeadStatus, boolean>
   >(
@@ -94,51 +866,254 @@ export default function LeadsPage() {
   const [newLeadPhone, setNewLeadPhone] = useState('');
   const [newLeadEmail, setNewLeadEmail] = useState('');
   const [newLeadWebLink, setNewLeadWebLink] = useState('');
-  const [newLeadStatus, setNewLeadStatus] = useState<LeadStatus>('À contacter');
+  const [newLeadQuickNote, setNewLeadQuickNote] = useState('');
+  const [newLeadNote, setNewLeadNote] = useState('');
+  const [newLeadStatus, setNewLeadStatus] = useState<LeadStatus>('A contacter');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+  const [createLeadError, setCreateLeadError] = useState<string | null>(null);
+  const [loadLeadsError, setLoadLeadsError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    })
+  );
+  const trimmedNewLeadName = newLeadName.trim();
+  const trimmedNewLeadStore = newLeadStore.trim();
+  const hasPhoneValue = Boolean(newLeadPhone.trim());
+  const isNewLeadPhoneValid = !hasPhoneValue || isValidPhoneNumber(newLeadPhone);
+  const isCreateLeadDisabled =
+    !trimmedNewLeadName || !trimmedNewLeadStore || !isNewLeadPhoneValid;
+
+  const filteredLeads = useMemo(() => {
+    const query = normalizeSearchText(searchQuery);
+    if (!query) return leads;
+    return leads.filter(lead => {
+      const leadName = normalizeSearchText(lead.name);
+      const leadStore = normalizeSearchText(lead.store);
+      return leadName.includes(query) || leadStore.includes(query);
+    });
+  }, [leads, searchQuery]);
 
   const leadsByStatus = useMemo(
     () =>
       LEAD_COLUMNS.reduce((acc, column) => {
-        acc[column.key] = leads.filter(lead => lead.status === column.key);
+        acc[column.key] = filteredLeads.filter(lead => lead.status === column.key);
         return acc;
       }, {} as Record<LeadStatus, Lead[]>),
-    [leads]
+    [filteredLeads]
+  );
+  const selectedLead = useMemo(
+    () => leads.find(lead => lead.id === selectedLeadId) || null,
+    [leads, selectedLeadId]
   );
 
-  const createLead = () => {
-    const name = newLeadName.trim();
-    const store = newLeadStore.trim();
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+
+    const loadLeads = async () => {
+      try {
+        setLoadLeadsError(null);
+        const token = await getToken();
+        const response = await apiGet('/api/admin/leads', {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        });
+        const json = await response.json();
+        const rows = Array.isArray(json?.leads) ? json.leads : [];
+        if (cancelled) return;
+        setLeads(rows.map(mapApiLeadToLead));
+      } catch (e: any) {
+        if (cancelled) return;
+        setLoadLeadsError(e?.message || 'Erreur lors du chargement des leads');
+      }
+    };
+
+    void loadLeads();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin, getToken]);
+
+  const createLead = async () => {
+    const name = trimmedNewLeadName;
+    const store = trimmedNewLeadStore;
     const phone = newLeadPhone.trim();
     const email = newLeadEmail.trim();
     const webLink = newLeadWebLink.trim();
+    const quickNote = newLeadQuickNote.trim();
+    const note = newLeadNote.trim();
 
-    if (!name) return;
+    if (!name || !store) {
+      setCreateLeadError('Les champs Nom et Boutique sont obligatoires.');
+      return;
+    }
+    if (phone && !isValidPhoneNumber(phone)) {
+      setCreateLeadError('Le numéro de téléphone est invalide.');
+      return;
+    }
+    if (store) {
+      const normalizedStore = normalizeStoreForCompare(store);
+      const exists = leads.some(
+        lead => normalizeStoreForCompare(lead.store) === normalizedStore
+      );
+      if (exists) {
+        setCreateLeadError('Cette boutique existe deja');
+        return;
+      }
+    }
 
-    const lead: Lead = {
-      id: crypto.randomUUID(),
-      name,
-      store,
-      phone,
-      email,
-      webLink,
-      status: newLeadStatus,
-    };
+    try {
+      setCreateLeadError(null);
+      const token = await getToken();
+      const response = await apiPost(
+        '/api/admin/leads',
+        {
+          name,
+          store,
+          phone,
+          email,
+          webLink,
+          quickNote,
+          note,
+          status: newLeadStatus,
+        },
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+      const json = await response.json();
+      const createdLead = mapApiLeadToLead(json?.lead);
 
-    setLeads(prev => [lead, ...prev]);
-    setNewLeadName('');
-    setNewLeadStore('');
-    setNewLeadPhone('');
-    setNewLeadEmail('');
-    setNewLeadWebLink('');
-    setNewLeadStatus('À contacter');
-    setIsCreateModalOpen(false);
+      setLeads(prev => [createdLead, ...prev]);
+      setNewLeadName('');
+      setNewLeadStore('');
+      setNewLeadPhone('');
+      setNewLeadEmail('');
+      setNewLeadWebLink('');
+      setNewLeadQuickNote('');
+      setNewLeadNote('');
+      setNewLeadStatus('A contacter');
+      setIsCreateModalOpen(false);
+    } catch (e: any) {
+      setCreateLeadError(
+        extractApiErrorMessage(e, 'Erreur lors de la creation du lead')
+      );
+    }
   };
 
-  const moveLeadToStatus = (leadId: string, status: LeadStatus) => {
+  const moveLeadToStatus = async (leadId: string, nextStatus: LeadStatus) => {
+    const previousLead = leads.find(lead => lead.id === leadId);
+    if (!previousLead || previousLead.status === nextStatus) return;
+
     setLeads(prev =>
-      prev.map(lead => (lead.id === leadId ? { ...lead, status } : lead))
+      prev.map(lead =>
+        lead.id === leadId ? { ...lead, status: nextStatus } : lead
+      )
     );
+
+    try {
+      const token = await getToken();
+      await apiPut(
+        `/api/admin/leads/${encodeURIComponent(leadId)}/status`,
+        { status: STATUS_LABEL_TO_ID[nextStatus] },
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
+    } catch (e) {
+      // rollback visuel si l'API échoue
+      setLeads(prev =>
+        prev.map(lead =>
+          lead.id === leadId ? { ...lead, status: previousLead.status } : lead
+        )
+      );
+    }
+  };
+
+  const saveQuickNote = (leadId: string, quickNote: string) => {
+    void updateLeadFields(leadId, { quickNote });
+  };
+
+  const updateLeadFields = async (
+    leadId: string,
+    updates: Partial<
+      Pick<Lead, 'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote' | 'note'>
+    >
+  ) => {
+    const previousLead = leads.find(lead => lead.id === leadId);
+    if (!previousLead) return;
+    if (Object.prototype.hasOwnProperty.call(updates, 'store')) {
+      const nextStore = normalizeStoreForCompare(String(updates.store || ''));
+      if (nextStore) {
+        const exists = leads.some(
+          lead =>
+            lead.id !== leadId &&
+            normalizeStoreForCompare(lead.store) === nextStore
+        );
+        if (exists) {
+          throw new Error('Cette boutique existe deja');
+        }
+      }
+    }
+
+    setLeads(prev =>
+      prev.map(lead => (lead.id === leadId ? { ...lead, ...updates } : lead))
+    );
+
+    try {
+      const token = await getToken();
+      await apiPut(`/api/admin/leads/${encodeURIComponent(leadId)}`, updates, {
+        headers: { Authorization: token ? `Bearer ${token}` : '' },
+      });
+    } catch (e) {
+      setLeads(prev =>
+        prev.map(lead => (lead.id === leadId ? previousLead : lead))
+      );
+      throw new Error(extractApiErrorMessage(e, 'Erreur lors de la mise a jour'));
+    }
+  };
+
+  const deleteLead = async (leadId: string) => {
+    const previousLeads = leads;
+    setLeads(prev => prev.filter(lead => lead.id !== leadId));
+    setSelectedLeadId(prev => (prev === leadId ? null : prev));
+    try {
+      const token = await getToken();
+      await apiDelete(`/api/admin/leads/${encodeURIComponent(leadId)}`, {
+        headers: { Authorization: token ? `Bearer ${token}` : '' },
+      });
+    } catch (e) {
+      setLeads(previousLeads);
+      throw new Error(
+        extractApiErrorMessage(e, 'Erreur lors de la suppression du lead')
+      );
+    }
+  };
+
+  const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over) return;
+    const leadId = String(active.id);
+    const overId = String(over.id);
+    let targetColumn: LeadStatus | null = null;
+
+    if (overId.startsWith('column:')) {
+      const statusRaw = overId.replace('column:', '').trim();
+      targetColumn = isLeadStatusLabel(statusRaw) ? statusRaw : null;
+    } else {
+      const overLead = leads.find(item => item.id === overId);
+      if (overLead) {
+        targetColumn = overLead.status;
+      }
+    }
+
+    if (!targetColumn) return;
+
+    const lead = leads.find(item => item.id === leadId);
+    if (!lead || lead.status === targetColumn) return;
+    void moveLeadToStatus(leadId, targetColumn);
   };
 
   const toggleColumn = (status: LeadStatus) => {
@@ -162,7 +1137,7 @@ export default function LeadsPage() {
             </div>
           </div>
         ) : (
-          <div className='max-w-6xl mx-auto px-4 py-10'>
+          <div className='w-full px-6 pt-16 pb-6'>
             <div className='mb-6 flex items-start justify-between gap-4'>
               <div>
                 <h1 className='text-2xl font-bold text-gray-900'>
@@ -191,7 +1166,16 @@ export default function LeadsPage() {
               </Link>
             </div>
 
-            <div className='mb-6 flex justify-end'>
+            <div className='mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'>
+              <div className='w-full sm:max-w-md'>
+                <input
+                  type='text'
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  placeholder='Rechercher par boutique ou prospect...'
+                  className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700'
+                />
+              </div>
               <button
                 type='button'
                 onClick={() => setIsCreateModalOpen(true)}
@@ -201,147 +1185,38 @@ export default function LeadsPage() {
               </button>
             </div>
 
-            <div className='overflow-x-auto pb-2'>
-              <div className='inline-flex min-w-max gap-4'>
-                {LEAD_COLUMNS.map(column => {
-                  const leads = leadsByStatus[column.key];
-                  const isCollapsed = collapsedStatuses[column.key];
-                  return (
-                    <section
-                      key={column.key}
-                      className={`bg-white border border-gray-200 rounded-lg min-h-[760px] transition-all ${
-                        isCollapsed ? 'w-[86px]' : 'w-[320px]'
-                      }`}
-                      onDragOver={e => e.preventDefault()}
-                      onDrop={() => {
-                        if (!draggedLeadId) return;
-                        moveLeadToStatus(draggedLeadId, column.key);
-                        setDraggedLeadId(null);
-                      }}
-                    >
-                      <header className='px-3 py-3 border-b border-gray-200'>
-                        {isCollapsed ? (
-                          <div className='flex flex-col items-center gap-3'>
-                            <button
-                              type='button'
-                              onClick={() => toggleColumn(column.key)}
-                              className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100'
-                              aria-label={`Déplier ${column.key}`}
-                            >
-                              <svg
-                                xmlns='http://www.w3.org/2000/svg'
-                                viewBox='0 0 24 24'
-                                fill='none'
-                                stroke='currentColor'
-                                strokeWidth='2'
-                                className='h-4 w-4'
-                                aria-hidden='true'
-                              >
-                                <path d='M9 6l6 6-6 6' />
-                              </svg>
-                            </button>
-                            <span
-                              className={`inline-flex items-center rounded-full px-2 py-2 text-xs font-semibold ${column.colorClass} [writing-mode:vertical-rl] [text-orientation:mixed]`}
-                            >
-                              {column.key}
-                            </span>
-                            <span
-                              className={`inline-flex h-7 min-w-7 items-center justify-center rounded-full px-2 text-xs font-semibold ${column.badgeClass}`}
-                            >
-                              {leads.length}
-                            </span>
-                          </div>
-                        ) : (
-                          <div className='flex items-center justify-between gap-2'>
-                            <div className='flex items-center gap-2 min-w-0'>
-                              <button
-                                type='button'
-                                onClick={() => toggleColumn(column.key)}
-                                className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100'
-                                aria-label={`Replier ${column.key}`}
-                              >
-                                <svg
-                                  xmlns='http://www.w3.org/2000/svg'
-                                  viewBox='0 0 24 24'
-                                  fill='none'
-                                  stroke='currentColor'
-                                  strokeWidth='2'
-                                  className='h-4 w-4'
-                                  aria-hidden='true'
-                                >
-                                  <path d='M9 6l6 6-6 6' />
-                                </svg>
-                              </button>
-                              <span
-                                className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${column.colorClass}`}
-                              >
-                                <span className='truncate'>{column.key}</span>
-                              </span>
-                            </div>
-                            <span
-                              className={`inline-flex h-6 min-w-6 items-center justify-center rounded-full px-2 text-xs font-semibold ${column.badgeClass}`}
-                            >
-                              {leads.length}
-                            </span>
-                          </div>
-                        )}
-                      </header>
-
-                      {isCollapsed ? (
-                        <div className='min-h-[700px] bg-gray-50/60' />
-                      ) : (
-                        <div className='p-3 space-y-3 min-h-[700px] bg-gray-50/60'>
-                          {leads.length === 0 ? (
-                            <div className='h-full rounded-md border border-dashed border-gray-300 bg-white/70 p-3 text-xs text-gray-400'>
-                              Aucun prospect
-                            </div>
-                          ) : (
-                            leads.map(lead => (
-                              <article
-                                key={lead.id}
-                                draggable
-                                onDragStart={() => setDraggedLeadId(lead.id)}
-                                onDragEnd={() => setDraggedLeadId(null)}
-                                className='cursor-grab rounded-md border border-gray-200 bg-white p-3 shadow-sm active:cursor-grabbing'
-                              >
-                                <p className='text-sm font-semibold text-gray-900'>
-                                  {lead.name}
-                                </p>
-                              {lead.store ? (
-                                <p className='mt-1 text-xs font-medium text-gray-700'>
-                                  Boutique: {lead.store}
-                                </p>
-                              ) : null}
-                                {lead.phone ? (
-                                  <p className='mt-1 text-xs text-gray-600'>
-                                    Tel: {lead.phone}
-                                  </p>
-                                ) : null}
-                                {lead.email ? (
-                                  <p className='text-xs text-gray-600 break-all'>
-                                    E-mail: {lead.email}
-                                  </p>
-                                ) : null}
-                              {lead.webLink ? (
-                                <a
-                                  href={lead.webLink}
-                                  target='_blank'
-                                  rel='noreferrer'
-                                  className='mt-1 block text-xs text-indigo-600 hover:underline break-all'
-                                >
-                                  Lien web: {lead.webLink}
-                                </a>
-                              ) : null}
-                              </article>
-                            ))
-                          )}
-                        </div>
-                      )}
-                    </section>
-                  );
-                })}
+            {loadLeadsError ? (
+              <div className='mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700'>
+                {loadLeadsError}
               </div>
-            </div>
+            ) : null}
+
+            <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+              <div className='overflow-x-auto pb-2'>
+                <div className='inline-flex min-w-max gap-4'>
+                  {LEAD_COLUMNS.map(column => (
+                    <LeadColumnLane
+                      key={column.key}
+                      column={column}
+                      leads={leadsByStatus[column.key]}
+                      isCollapsed={collapsedStatuses[column.key]}
+                      onToggle={toggleColumn}
+                      onSaveQuickNote={saveQuickNote}
+                      onOpenLead={setSelectedLeadId}
+                    />
+                  ))}
+                </div>
+              </div>
+            </DndContext>
+
+            {selectedLead ? (
+              <LeadDetailsModal
+                lead={selectedLead}
+                onClose={() => setSelectedLeadId(null)}
+                onUpdateLead={updateLeadFields}
+                onDeleteLead={deleteLead}
+              />
+            ) : null}
 
             {isCreateModalOpen ? (
               <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4'>
@@ -361,27 +1236,37 @@ export default function LeadsPage() {
                   </div>
 
                   <div className='p-5'>
+                    {createLeadError ? (
+                      <div className='mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700'>
+                        {createLeadError}
+                      </div>
+                    ) : null}
                     <div className='grid grid-cols-1 gap-3 md:grid-cols-2'>
                       <input
                         type='text'
                         value={newLeadName}
                         onChange={e => setNewLeadName(e.target.value)}
-                        placeholder='Nom du prospect'
+                        placeholder='Nom du prospect *'
                         className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm'
                       />
                       <input
                         type='text'
                         value={newLeadStore}
                         onChange={e => setNewLeadStore(e.target.value)}
-                        placeholder='Boutique'
+                        placeholder='Boutique *'
                         className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm'
                       />
-                      <input
-                        type='text'
+                      <PhoneInput
+                        international
+                        defaultCountry='FR'
                         value={newLeadPhone}
-                        onChange={e => setNewLeadPhone(e.target.value)}
+                        onChange={value => setNewLeadPhone(value || '')}
                         placeholder='Téléphone'
-                        className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm'
+                        className={`w-full rounded-lg border px-3 py-2 text-sm ${
+                          hasPhoneValue && !isNewLeadPhoneValid
+                            ? 'border-red-400'
+                            : 'border-gray-300'
+                        }`}
                       />
                       <input
                         type='email'
@@ -397,7 +1282,26 @@ export default function LeadsPage() {
                         placeholder='Lien web'
                         className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm md:col-span-2'
                       />
+                      <input
+                        type='text'
+                        value={newLeadQuickNote}
+                        onChange={e => setNewLeadQuickNote(e.target.value)}
+                        placeholder='Quick Note'
+                        className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm md:col-span-2'
+                      />
+                      <textarea
+                        value={newLeadNote}
+                        onChange={e => setNewLeadNote(e.target.value)}
+                        placeholder='Note'
+                        rows={4}
+                        className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm md:col-span-2'
+                      />
                     </div>
+                    {hasPhoneValue && !isNewLeadPhoneValid ? (
+                      <p className='mt-3 text-sm text-red-600'>
+                        Numéro de téléphone invalide.
+                      </p>
+                    ) : null}
                   </div>
 
                   <div className='flex justify-end gap-2 border-t border-gray-200 px-5 py-4'>
@@ -411,7 +1315,7 @@ export default function LeadsPage() {
                     <button
                       type='button'
                       onClick={createLead}
-                      disabled={!newLeadName.trim()}
+                      disabled={isCreateLeadDisabled}
                       className='inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50'
                     >
                       Créer la carte
