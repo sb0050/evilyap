@@ -55,9 +55,9 @@ Le produit couvre le flux complet: découverte boutique → checkout client → 
   - `shipments`
   - `store`
   - `carts`
-  - `clerk`, `clerk.webhook`
+  - `clerk`
   - `support`, `admin`, `insee-bce`, `raffle`
-- Les webhooks Stripe/Boxtal/Clerk sont traités en `raw body` avant `express.json`.
+- Les webhooks Stripe/Boxtal sont traités en `raw body` avant `express.json`.
 
 ## Flux métier principaux
 
