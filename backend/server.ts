@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from "express";
 import * as dotenv from "dotenv";
 import { clerkMiddleware, getAuth } from "@clerk/express";
+import helmet from "helmet";
 // Charger les variables d'environnement
 dotenv.config();
 
@@ -18,10 +19,29 @@ import inseeBceRoutes from "./routes/insee-bce";
 import adminRoutes from "./routes/admin";
 import { stripeWebhookHandler } from "./routes/stripe.webhook";
 import { boxtalWebhookHandler } from "./routes/boxtal.webhook";
-import { clerkWebhookHandler } from "./routes/clerk.webhook";
 import raffleRoutes from "./routes/raffle";
 
 const app = express();
+app.use(
+  helmet({
+    // Bloque l'interprétation de types MIME incorrects par les navigateurs.
+    noSniff: true,
+    // Empêche l'application d'être chargée dans une iframe (clickjacking).
+    frameguard: { action: "deny" },
+    // Définit explicitement la politique anti-iframe via CSP.
+    contentSecurityPolicy: {
+      directives: {
+        frameAncestors: ["'none'"],
+      },
+    },
+    // Renforce HSTS en couvrant aussi les sous-domaines.
+    hsts: {
+      maxAge: 63072000,
+      includeSubDomains: true,
+      preload: true,
+    },
+  }),
+);
 
 app.use((req: any, res: any, next: NextFunction) => {
   const origin = req.headers.origin;
@@ -59,20 +79,12 @@ app.post(
   boxtalWebhookHandler,
 );
 
-// Pour le webhook Clerk, traiter le raw body avant express.json
-app.post(
-  "/api/clerk/webhook",
-  express.raw({ type: "application/json" }),
-  clerkWebhookHandler,
-);
-
 app.use(clerkMiddleware());
 
 app.use("/api", (req: Request, res: Response, next: NextFunction) => {
   if (
     req.path.startsWith("/stripe/webhook") ||
-    req.path.startsWith("/boxtal/webhook") ||
-    req.path.startsWith("/clerk/webhook")
+    req.path.startsWith("/boxtal/webhook")
   ) {
     return next();
   }

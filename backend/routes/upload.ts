@@ -7,6 +7,7 @@ import {
   CloudFrontClient,
   CreateInvalidationCommand,
 } from "@aws-sdk/client-cloudfront";
+import { detectImageFromMagicBytes } from "../utils/fileMagicBytes";
 
 const router = express.Router();
 
@@ -76,23 +77,53 @@ if (!supabaseUrl || !supabaseKey) {
 }
 const supabase = createClient(supabaseUrl!, supabaseKey!);
 
+/**
+ * Whitelist of accepted raster image MIME types for logo uploads.
+ *
+ * SVG (`image/svg+xml`) is intentionally EXCLUDED because it is an XML
+ * document that can embed `<script>` / event handlers — see the module
+ * comment of `utils/fileMagicBytes.ts` for the full rationale.
+ *
+ * The whitelist is applied both as a Multer pre-filter (on the untrusted
+ * client MIME) AND, authoritatively, on the magic-byte detection result.
+ */
+const ALLOWED_IMAGE_MIMES = new Set<string>([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/avif",
+]);
+
 const uploadImages = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Only image files are allowed!"));
+    if (ALLOWED_IMAGE_MIMES.has(file.mimetype)) cb(null, true);
+    else cb(new Error("Type d'image non supporté (SVG et autres formats refusés)"));
   },
 });
+
+/**
+ * Subset of {@link ALLOWED_IMAGE_MIMES} authorized for stock product thumbnails.
+ *
+ * GIF and AVIF are deliberately excluded for this route to keep product
+ * thumbnails on universally-supported raster formats and avoid animated GIFs
+ * in a commerce listing context. As elsewhere, the client-declared MIME is
+ * only used as a first pre-filter — authoritative validation happens via
+ * {@link detectImageFromMagicBytes} in the handler.
+ */
+const ALLOWED_STOCK_PRODUCT_MIMES = new Set<string>([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
 
 const uploadStockProductImage = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const ok = ["image/jpeg", "image/png", "image/webp"].includes(
-      file.mimetype,
-    );
-    if (ok) cb(null, true);
+    if (ALLOWED_STOCK_PRODUCT_MIMES.has(file.mimetype)) cb(null, true);
     else cb(new Error("Type de fichier non supporté"));
   },
 });
@@ -123,6 +154,19 @@ router.post("/", uploadImages.single("image"), async (req, res) => {
       return res.status(404).json({ error: "Boutique non trouvée" });
     }
 
+    // Authoritative server-side classification. Prevents an attacker from
+    // smuggling a `<script>`-laden SVG (or any non-raster payload) past the
+    // MIME filter by forging the `Content-Type` HTTP header. We then use the
+    // DETECTED MIME for the S3 `ContentType` so the CDN always serves the file
+    // as the real format we verified, never as `image/svg+xml` or any other
+    // type that could be interpreted as active content by the browser.
+    const detected = await detectImageFromMagicBytes(req.file.buffer);
+    if (!detected || !ALLOWED_IMAGE_MIMES.has(detected.mime)) {
+      return res
+        .status(415)
+        .json({ error: "Format d'image invalide ou non supporté" });
+    }
+
     // Renommer le logo sans extension avec id immuable: images/<storeId>
     const key = `images/${(store as any).id}`;
 
@@ -130,7 +174,7 @@ router.post("/", uploadImages.single("image"), async (req, res) => {
       Bucket: awsBucket!,
       Key: key,
       Body: req.file.buffer,
-      ContentType: req.file.mimetype,
+      ContentType: detected.mime,
       CacheControl: "no-cache, no-store, must-revalidate",
       Metadata: {
         "upload-date": new Date().toISOString(),
@@ -219,12 +263,20 @@ router.post(
         return res.status(500).json({ error: "store_id invalide" });
       }
 
-      const ext =
-        req.file.mimetype === "image/png"
-          ? "png"
-          : req.file.mimetype === "image/webp"
-            ? "webp"
-            : "jpg";
+      // Authoritative classification by magic bytes. The client-sent
+      // `req.file.mimetype` and the original filename are both attacker-
+      // controlled and cannot be trusted to decide the stored extension,
+      // the S3 `ContentType`, or what the CDN will serve the file as.
+      // Re-check against the route's own whitelist as defense in depth in
+      // case a format accepted by `detectImageFromMagicBytes` (e.g. GIF,
+      // AVIF) somehow reaches this handler.
+      const detected = await detectImageFromMagicBytes(req.file.buffer);
+      if (!detected || !ALLOWED_STOCK_PRODUCT_MIMES.has(detected.mime)) {
+        return res
+          .status(415)
+          .json({ error: "Format d'image invalide ou non supporté" });
+      }
+
       const rawName = String(req.file.originalname || "")
         .toLowerCase()
         .replace(/[^a-z0-9._-]+/g, "-")
@@ -232,13 +284,15 @@ router.post(
         .replace(/^[-.]+|[-.]+$/g, "")
         .slice(0, 60);
       const base = rawName ? rawName.replace(/\.[a-z0-9]+$/i, "") : "image";
-      const key = `stock/${storeId}/${Date.now()}-${base}.${ext}`;
+      // Key uses the DETECTED extension, not the one from `originalname`, so a
+      // `.png` filename wrapping a PE binary cannot land on S3 as `.png`.
+      const key = `stock/${storeId}/${Date.now()}-${base}.${detected.ext}`;
 
       const params = {
         Bucket: awsBucket!,
         Key: key,
         Body: req.file.buffer,
-        ContentType: req.file.mimetype,
+        ContentType: detected.mime,
         CacheControl: "public, max-age=31536000, immutable",
         Metadata: {
           "upload-date": new Date().toISOString(),

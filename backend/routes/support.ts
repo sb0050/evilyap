@@ -4,13 +4,39 @@ import { createClient } from "@supabase/supabase-js";
 import { emailService } from "../services/emailService";
 import { clerkClient } from "@clerk/express";
 import { getAuth } from "@clerk/express";
+import {
+  detectFileFromMagicBytes,
+  sanitizeAttachmentFilename,
+} from "../utils/fileMagicBytes";
 
 const router = express.Router();
+
+/**
+ * MIME types accepted as email attachments on support endpoints.
+ *
+ * Kept deliberately narrow: the file is forwarded to a human (admin inbox or
+ * store owner), so we only accept formats the recipient can safely open — no
+ * HTML, no office macros, no archives, no executables.
+ *
+ * Enforcement happens twice:
+ *  - Multer `fileFilter` rejects early on the untrusted client-declared MIME.
+ *  - The handler re-validates by magic bytes via {@link detectFileFromMagicBytes}
+ *    so a file renamed from `exploit.html` to `image.png` cannot slip through.
+ */
+const ALLOWED_SUPPORT_ATTACHMENT_MIMES = new Set<string>([
+  "application/pdf",
+  "image/png",
+  "image/jpeg",
+]);
 
 // Upload config: mémoire, limite de 8MB
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (ALLOWED_SUPPORT_ATTACHMENT_MIMES.has(file.mimetype)) cb(null, true);
+    else cb(new Error("Type de fichier non supporté"));
+  },
 });
 
 const supabaseUrl = process.env.SUPABASE_URL!;
@@ -78,14 +104,32 @@ router.post("/contact", upload.single("attachment"), async (req, res) => {
     }> = [];
     const file = (req as any).file as Express.Multer.File | undefined;
     if (file) {
-      const allowed = ["application/pdf", "image/png", "image/jpeg"];
-      if (!allowed.includes(file.mimetype)) {
-        return res.status(400).json({ error: "Type de fichier non supporté" });
+      // Authoritative magic-byte check: `file.mimetype` is the untrusted
+      // `Content-Type` sent by the client and can be spoofed to smuggle a
+      // disallowed payload (HTML, executable, archive) past the MIME filter.
+      // We re-classify the buffer here and also intersect with the route's
+      // own whitelist as defense in depth.
+      const detected = await detectFileFromMagicBytes(
+        file.buffer,
+        ALLOWED_SUPPORT_ATTACHMENT_MIMES,
+      );
+      if (!detected) {
+        return res
+          .status(415)
+          .json({ error: "Type de fichier non supporté" });
       }
       attachments.push({
-        filename: file.originalname,
+        // `originalname` can contain CR/LF (MIME header injection on some
+        // transports) or path separators (traversal in a few mail clients).
+        // We replace the extension with the one derived from magic bytes so
+        // the attachment cannot be re-labeled.
+        filename: sanitizeAttachmentFilename(
+          file.originalname,
+          detected.ext,
+        ),
         content: file.buffer,
-        contentType: file.mimetype,
+        // `contentType` must reflect the VERIFIED MIME, not the client's one.
+        contentType: detected.mime,
       });
     }
 
@@ -230,7 +274,7 @@ router.post(
           .json({ error: "Boutique introuvable ou email propriétaire absent" });
       }
 
-      // Pièce jointe
+      // Pièce jointe — même contrôle magic-bytes que `/contact` ci-dessus.
       let attachments: Array<{
         filename: string;
         content: Buffer;
@@ -238,16 +282,22 @@ router.post(
       }> = [];
       const file = (req as any).file as Express.Multer.File | undefined;
       if (file) {
-        const allowed = ["application/pdf", "image/png", "image/jpeg"];
-        if (!allowed.includes(file.mimetype)) {
+        const detected = await detectFileFromMagicBytes(
+          file.buffer,
+          ALLOWED_SUPPORT_ATTACHMENT_MIMES,
+        );
+        if (!detected) {
           return res
-            .status(400)
+            .status(415)
             .json({ error: "Type de fichier non supporté" });
         }
         attachments.push({
-          filename: file.originalname,
+          filename: sanitizeAttachmentFilename(
+            file.originalname,
+            detected.ext,
+          ),
           content: file.buffer,
-          contentType: file.mimetype,
+          contentType: detected.mime,
         });
       }
 
