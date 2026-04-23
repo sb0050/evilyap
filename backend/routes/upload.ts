@@ -99,8 +99,13 @@ const uploadImages = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (req, file, cb) => {
-    if (ALLOWED_IMAGE_MIMES.has(file.mimetype)) cb(null, true);
-    else cb(new Error("Type d'image non supporté (SVG et autres formats refusés)"));
+    // Pre-filtre souple pour eviter les faux negatifs (image/jpg, variantes vendor...).
+    // La validation autoritative est faite ensuite par magic-bytes.
+    if (String(file.mimetype || "").toLowerCase().startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Type de fichier non supporte"));
+    }
   },
 });
 
@@ -123,8 +128,12 @@ const uploadStockProductImage = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (ALLOWED_STOCK_PRODUCT_MIMES.has(file.mimetype)) cb(null, true);
-    else cb(new Error("Type de fichier non supporté"));
+    // Meme logique: pre-filtre large, controle strict via magic-bytes dans le handler.
+    if (String(file.mimetype || "").toLowerCase().startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Type de fichier non supporte"));
+    }
   },
 });
 

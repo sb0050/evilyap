@@ -1,4 +1,4 @@
-import express from "express";
+import express, { NextFunction, Request, Response } from "express";
 import multer from "multer";
 import { createClient } from "@supabase/supabase-js";
 import { emailService } from "../services/emailService";
@@ -34,10 +34,43 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (ALLOWED_SUPPORT_ATTACHMENT_MIMES.has(file.mimetype)) cb(null, true);
-    else cb(new Error("Type de fichier non supporté"));
+    // Pre-filter permissif pour eviter les faux negatifs cote client MIME.
+    // Le controle autoritatif reste le magic-byte check dans les handlers.
+    const mime = String(file.mimetype || "").toLowerCase().trim();
+    const looksLikeImage = mime.startsWith("image/");
+    const looksLikePdf =
+      mime === "application/pdf" || mime === "application/x-pdf";
+    if (looksLikeImage || looksLikePdf) cb(null, true);
+    else cb(new Error("Type de fichier non supporte"));
   },
 });
+
+
+
+const attachmentUploadSingle = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  upload.single("attachment")(req as any, res as any, (err: any) => {
+    if (!err) return next();
+
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res
+          .status(413)
+          .json({ error: "Fichier trop volumineux (max 8MB)" });
+      }
+      return res.status(400).json({ error: "Fichier invalide" });
+    }
+
+    if (String(err?.message || "").includes("Type de fichier non support")) {
+      return res.status(415).json({ error: "Type de fichier non supporte" });
+    }
+
+    return next(err);
+  });
+};
 
 const supabaseUrl = process.env.SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -49,7 +82,7 @@ if (!supabaseUrl || !supabaseKey) {
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // POST /api/support/contact - Store owner sends a support message to admin
-router.post("/contact", upload.single("attachment"), async (req, res) => {
+router.post("/contact", attachmentUploadSingle, async (req, res) => {
   try {
     const {
       storeSlug,
@@ -161,7 +194,7 @@ export default router;
 // Nouveau endpoint: client contacte le propriétaire du store à propos d'un shipment
 router.post(
   "/customer-contact",
-  upload.single("attachment"),
+  attachmentUploadSingle,
   async (req, res) => {
     try {
       const auth = getAuth(req);
