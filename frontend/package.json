@@ -39,6 +39,9 @@
     "preview": "vite preview",
     "dev": "vite"
   },
+  "engines": {
+    "node": "24.x"
+  },
   "devDependencies": {
     "@types/canvas-confetti": "^1.9.0",
     "@types/dompurify": "^3.0.5",
