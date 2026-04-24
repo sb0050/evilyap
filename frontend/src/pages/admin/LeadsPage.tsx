@@ -22,6 +22,7 @@ import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
 import Highlight from '@tiptap/extension-highlight';
+import LinkExtension from '@tiptap/extension-link';
 import PhoneInput, { isValidPhoneNumber } from 'react-phone-number-input';
 import 'react-phone-number-input/style.css';
 import { apiDelete, apiGet, apiPost, apiPut } from '../../utils/api';
@@ -45,6 +46,7 @@ type Lead = {
   webLink: string;
   quickNote: string;
   note: string;
+  imageUrls: string[];
   status: LeadStatus;
 };
 
@@ -173,6 +175,74 @@ const normalizeSearchText = (raw: string): string =>
     .replace(/\s+/g, ' ')
     .toLowerCase();
 
+const isValidEmailFormat = (raw: string): boolean => {
+  const value = String(raw || '').trim();
+  if (!value) return true;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+};
+
+const isValidWebLinkFormat = (raw: string): boolean => {
+  const value = String(raw || '').trim();
+  if (!value) return true;
+  const withProtocol = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+  try {
+    const url = new URL(withProtocol);
+    return Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+};
+
+const toBrowserUrl = (raw: string): string => {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+};
+
+const normalizeImageUrls = (raw: unknown): string[] => {
+  const source = String(raw || '');
+  if (!source.trim()) return [];
+  const unique = new Set<string>();
+  source
+    .split(';')
+    .map(item => String(item || '').trim())
+    .filter(Boolean)
+    .forEach(url => unique.add(url));
+  return Array.from(unique);
+};
+
+const joinImageUrlsForStorage = (urls: string[]): string =>
+  Array.from(
+    new Set(
+      (urls || [])
+        .map(item => String(item || '').trim())
+        .filter(Boolean)
+    )
+  ).join(';');
+
+const getImageAttachmentLabel = (url: string): string => {
+  try {
+    const parsed = new URL(url);
+    const pathName = decodeURIComponent(parsed.pathname || '');
+    const parts = pathName.split('/').filter(Boolean);
+    return parts[parts.length - 1] || parsed.hostname || url;
+  } catch {
+    return url;
+  }
+};
+
+const formatAttachmentAddedAt = (iso: string): string => {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toLocaleString('fr-FR', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
 const mapApiLeadToLead = (row: any): Lead => ({
   id: String(row?.id || crypto.randomUUID()),
   name: String(row?.name || '').trim(),
@@ -182,6 +252,7 @@ const mapApiLeadToLead = (row: any): Lead => ({
   webLink: String(row?.link || row?.web_link || row?.webLink || '').trim(),
   quickNote: String(row?.quick_note || row?.quickNote || '').trim(),
   note: String(row?.note || '').trim(),
+  imageUrls: normalizeImageUrls(row?.image_url || row?.imageUrl),
   status: normalizeLeadStatus(
     row?.status_text ||
       row?.status_label ||
@@ -267,19 +338,19 @@ function LeadCard({ lead, onSaveQuickNote, onOpenLead }: LeadCardProps) {
           rel='noreferrer'
           className='mt-1 block text-xs text-indigo-600 hover:underline break-all'
         >
-          Lien web: {lead.webLink}
+          {lead.webLink}
         </a>
-      ) : null}
-      {lead.quickNote ? (
-        <p className='mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800'>
-          Quick Note: {lead.quickNote}
-        </p>
       ) : null}
       <div
         className='mt-2 border-t border-gray-100 pt-2'
         onClick={e => e.stopPropagation()}
         onPointerDown={e => e.stopPropagation()}
       >
+        {lead.quickNote ? (
+          <p className='mb-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800'>
+            Note Reapide: {lead.quickNote}
+          </p>
+        ) : null}
         {isQuickNoteEditing ? (
           <div className='flex items-center gap-1'>
             <input
@@ -290,14 +361,14 @@ function LeadCard({ lead, onSaveQuickNote, onOpenLead }: LeadCardProps) {
                 if (e.key === 'Enter') submitQuickNoteEdit();
                 if (e.key === 'Escape') cancelQuickNoteEdit();
               }}
-              placeholder='Quick note...'
+              placeholder='Note Reapide...'
               className='w-full rounded-md border border-gray-300 px-2 py-1 text-xs'
             />
             <button
               type='button'
               onClick={submitQuickNoteEdit}
               className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50'
-              aria-label='Valider la note rapide'
+              aria-label='Valider la note reapide'
             >
               ✓
             </button>
@@ -305,19 +376,28 @@ function LeadCard({ lead, onSaveQuickNote, onOpenLead }: LeadCardProps) {
               type='button'
               onClick={cancelQuickNoteEdit}
               className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-300 text-red-700 hover:bg-red-50'
-              aria-label='Annuler la note rapide'
+              aria-label='Annuler la note reapide'
             >
               ✕
             </button>
           </div>
+        ) : lead.quickNote ? (
+          <button
+            type='button'
+            onClick={startQuickNoteEdit}
+            className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700'
+            aria-label='Modifier la Note Reapide'
+          >
+            ✎
+          </button>
         ) : (
           <button
             type='button'
             onClick={startQuickNoteEdit}
             className='inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-700'
+            aria-label='Ajouter une Note Reapide'
           >
-            <span aria-hidden='true'>📝</span>
-            {lead.quickNote ? 'Modifier la note rapide' : 'Ajouter une note rapide'}
+            + Ajouter une Note Reapide
           </button>
         )}
       </div>
@@ -450,7 +530,12 @@ type LeadDetailsModalProps = {
   onClose: () => void;
   onUpdateLead: (
     leadId: string,
-    updates: Partial<Pick<Lead, 'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote' | 'note'>>
+    updates: Partial<
+      Pick<
+        Lead,
+        'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote' | 'note' | 'imageUrls'
+      >
+    >
   ) => Promise<void>;
   onDeleteLead: (leadId: string) => Promise<void>;
 };
@@ -461,6 +546,8 @@ function LeadDetailsModal({
   onUpdateLead,
   onDeleteLead,
 }: LeadDetailsModalProps) {
+  const initialLeadRef = useRef(lead);
+  const [localLead, setLocalLead] = useState<Lead>(lead);
   const [editingField, setEditingField] = useState<
     'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote' | null
   >(null);
@@ -472,9 +559,25 @@ function LeadDetailsModal({
   const [isSavingRichText, setIsSavingRichText] = useState(false);
   const [isDeletingLead, setIsDeletingLead] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [isLinkModalOpen, setIsLinkModalOpen] = useState(false);
+  const [linkDraft, setLinkDraft] = useState('https://');
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [imageUrlDraft, setImageUrlDraft] = useState('');
+  const [imageAddedAtByUrl, setImageAddedAtByUrl] = useState<Record<string, string>>(
+    {}
+  );
 
   const editor = useEditor({
-    extensions: [StarterKit, Underline, Highlight],
+    extensions: [
+      StarterKit,
+      Underline,
+      Highlight,
+      LinkExtension.configure({
+        openOnClick: true,
+        autolink: true,
+        linkOnPaste: true,
+      }),
+    ],
     content: lead.note || '<p></p>',
     onUpdate: ({ editor: currentEditor }) => {
       setRichTextDraft(currentEditor.getHTML());
@@ -483,13 +586,49 @@ function LeadDetailsModal({
   });
 
   useEffect(() => {
+    initialLeadRef.current = lead;
+    setLocalLead(lead);
     setEditingField(null);
     setDraftValue('');
     setSaveError(null);
     const nextContent = lead.note || '<p></p>';
     setRichTextDraft(nextContent);
     setIsRichTextDirty(false);
-  }, [lead.id, lead.name, lead.store, lead.phone, lead.email, lead.webLink, lead.quickNote, lead.note]);
+    setImageUrlDraft('');
+    setImageAddedAtByUrl({});
+  }, [
+    lead.id,
+    lead.name,
+    lead.store,
+    lead.phone,
+    lead.email,
+    lead.webLink,
+    lead.quickNote,
+    lead.note,
+    lead.imageUrls,
+  ]);
+
+  useEffect(() => {
+    setImageAddedAtByUrl(prev => {
+      const existingUrls = new Set(localLead.imageUrls || []);
+      let changed = false;
+      const next: Record<string, string> = {};
+
+      Object.entries(prev).forEach(([url, addedAt]) => {
+        if (existingUrls.has(url)) next[url] = addedAt;
+        else changed = true;
+      });
+
+      (localLead.imageUrls || []).forEach(url => {
+        if (!next[url]) {
+          next[url] = new Date().toISOString();
+          changed = true;
+        }
+      });
+
+      return changed ? next : prev;
+    });
+  }, [localLead.imageUrls]);
 
   useEffect(() => {
     if (!editor) return;
@@ -514,51 +653,78 @@ function LeadDetailsModal({
     setSaveError(null);
   };
 
-  const saveField = async (
+  const validateFieldDraft = (
+    field: 'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote',
+    value: string
+  ): string | null => {
+    const nextValue = value.trim();
+    if ((field === 'name' || field === 'store') && !nextValue) {
+      return field === 'name'
+        ? 'Le nom du prospect est obligatoire.'
+        : 'Le nom de la boutique est obligatoire.';
+    }
+    if (field === 'phone' && nextValue && !isValidPhoneNumber(nextValue)) {
+      return 'Le numéro de téléphone est invalide.';
+    }
+    if (field === 'email' && !isValidEmailFormat(nextValue)) {
+      return "L'adresse e-mail est invalide.";
+    }
+    if (field === 'webLink' && !isValidWebLinkFormat(nextValue)) {
+      return 'Le lien web est invalide.';
+    }
+    return null;
+  };
+
+  const saveField = (
     field: 'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote'
   ) => {
     const nextValue = draftValue.trim();
-    if ((field === 'name' || field === 'store') && !nextValue) {
+    const validationError = validateFieldDraft(field, nextValue);
+    if (validationError) {
+      setSaveError(validationError);
+      return;
+    }
+
+    setSaveError(null);
+    setLocalLead(prev => ({ ...prev, [field]: nextValue }));
+    setEditingField(null);
+    setDraftValue('');
+  };
+
+  const addImageUrl = () => {
+    const nextValue = imageUrlDraft.trim();
+    if (!nextValue) return;
+    if (!isValidWebLinkFormat(nextValue)) {
       setSaveError(
-        field === 'name'
-          ? 'Le nom du prospect est obligatoire.'
-          : 'Le nom de la boutique est obligatoire.'
+                        'Lien image invalide.'
       );
       return;
     }
-    if (field === 'phone' && nextValue && !isValidPhoneNumber(nextValue)) {
-      setSaveError('Le numéro de téléphone est invalide.');
-      return;
-    }
-
-    try {
-      setIsSavingField(true);
-      setSaveError(null);
-      await onUpdateLead(lead.id, { [field]: nextValue } as Partial<Lead>);
-      setEditingField(null);
-      setDraftValue('');
-    } catch (e: any) {
-      setSaveError(e?.message || 'Erreur lors de la mise à jour');
-    } finally {
-      setIsSavingField(false);
-    }
+    setSaveError(null);
+    setLocalLead(prev => {
+      const existing = new Set((prev.imageUrls || []).map(url => url.trim()));
+      existing.add(nextValue);
+      return { ...prev, imageUrls: Array.from(existing) };
+    });
+    setImageAddedAtByUrl(prev => ({ ...prev, [nextValue]: new Date().toISOString() }));
+    setImageUrlDraft('');
   };
 
-  const saveRichText = async () => {
-    try {
-      setIsSavingRichText(true);
-      setSaveError(null);
-      await onUpdateLead(lead.id, { note: richTextDraft.trim() });
-      setIsRichTextDirty(false);
-    } catch (e: any) {
-      setSaveError(e?.message || 'Erreur lors de la mise à jour de la note');
-    } finally {
-      setIsSavingRichText(false);
-    }
+  const removeImageUrl = (urlToRemove: string) => {
+    const target = String(urlToRemove || '').trim();
+    setLocalLead(prev => ({
+      ...prev,
+      imageUrls: (prev.imageUrls || []).filter(url => url.trim() !== target),
+    }));
+    setImageAddedAtByUrl(prev => {
+      const next = { ...prev };
+      delete next[target];
+      return next;
+    });
   };
 
-  const cancelRichText = () => {
-    const nextContent = lead.note || '<p></p>';
+  const cancelRichText = (targetNote?: string) => {
+    const nextContent = (targetNote ?? localLead.note) || '<p></p>';
     setRichTextDraft(nextContent);
     setIsRichTextDirty(false);
     setSaveError(null);
@@ -566,6 +732,68 @@ function LeadDetailsModal({
     if (editor.getHTML() !== nextContent) {
       editor.commands.setContent(nextContent);
     }
+  };
+
+  const handleValidateAndClose = async () => {
+    const activeField = editingField;
+    if (activeField) {
+      const validationError = validateFieldDraft(activeField, draftValue);
+      if (validationError) {
+        setSaveError(validationError);
+        return;
+      }
+    }
+    const finalLead: Lead = {
+      ...localLead,
+      ...(activeField ? { [activeField]: draftValue.trim() } : {}),
+      note: richTextDraft.trim(),
+    };
+    const initialLead = initialLeadRef.current;
+    const updates: Partial<
+      Pick<
+        Lead,
+        'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote' | 'note' | 'imageUrls'
+      >
+    > = {};
+    if (finalLead.name !== initialLead.name) updates.name = finalLead.name;
+    if (finalLead.store !== initialLead.store) updates.store = finalLead.store;
+    if (finalLead.phone !== initialLead.phone) updates.phone = finalLead.phone;
+    if (finalLead.email !== initialLead.email) updates.email = finalLead.email;
+    if (finalLead.webLink !== initialLead.webLink) updates.webLink = finalLead.webLink;
+    if (finalLead.quickNote !== initialLead.quickNote) {
+      updates.quickNote = finalLead.quickNote;
+    }
+    if (finalLead.note !== initialLead.note) updates.note = finalLead.note;
+    if (
+      joinImageUrlsForStorage(finalLead.imageUrls) !==
+      joinImageUrlsForStorage(initialLead.imageUrls)
+    ) {
+      updates.imageUrls = finalLead.imageUrls;
+    }
+
+    try {
+      setIsSavingField(true);
+      setIsSavingRichText(true);
+      setSaveError(null);
+      if (Object.keys(updates).length > 0) {
+        await onUpdateLead(lead.id, updates);
+      }
+      setIsRichTextDirty(false);
+      onClose();
+    } catch (e: any) {
+      setSaveError(e?.message || 'Erreur lors de la mise à jour');
+    } finally {
+      setIsSavingField(false);
+      setIsSavingRichText(false);
+    }
+  };
+
+  const handleCancelAndClose = () => {
+    setLocalLead(initialLeadRef.current);
+    cancelRichText(initialLeadRef.current.note || '<p></p>');
+    setEditingField(null);
+    setDraftValue('');
+    onClose();
   };
 
   const deleteLead = async () => {
@@ -655,17 +883,60 @@ function LeadDetailsModal({
       !isValidPhoneNumber(draftValue) ? (
         <p className='mt-1 text-xs text-red-600'>Numéro de téléphone invalide.</p>
       ) : null}
+      {editingField === field &&
+      field === 'email' &&
+      draftValue.trim() &&
+      !isValidEmailFormat(draftValue) ? (
+        <p className='mt-1 text-xs text-red-600'>Adresse e-mail invalide.</p>
+      ) : null}
+      {editingField === field &&
+      field === 'webLink' &&
+      draftValue.trim() &&
+      !isValidWebLinkFormat(draftValue) ? (
+        <p className='mt-1 text-xs text-red-600'>
+          Lien web invalide (http:// ou https://).
+        </p>
+      ) : null}
     </div>
   );
 
   const toolbarButtonClass =
     'inline-flex items-center rounded border border-gray-300 px-2 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-100';
 
+  const openLinkModalForEditor = () => {
+    const currentHref = String(editor?.getAttributes('link')?.href || '').trim();
+    setLinkDraft(currentHref || 'https://');
+    setLinkError(null);
+    setIsLinkModalOpen(true);
+  };
+
+  const submitLinkOnEditor = () => {
+    const normalizedUrl = linkDraft.trim();
+    if (!normalizedUrl) {
+      editor?.chain().focus().unsetLink().run();
+      setIsLinkModalOpen(false);
+      setLinkError(null);
+      return;
+    }
+    if (!isValidWebLinkFormat(normalizedUrl)) {
+      setLinkError(
+        'Lien invalide. Utilisez un lien commençant par http:// ou https://'
+      );
+      return;
+    }
+    setSaveError(null);
+    setLinkError(null);
+    editor
+      ?.chain()
+      .focus()
+      .extendMarkRange('link')
+      .setLink({ href: normalizedUrl })
+      .run();
+    setIsLinkModalOpen(false);
+  };
+
   return (
-    <div
-      className='fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4'
-      onClick={onClose}
-    >
+    <div className='fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4'>
       <div
         className='w-full max-w-3xl rounded-xl bg-white shadow-xl'
         onClick={e => e.stopPropagation()}
@@ -681,14 +952,6 @@ function LeadDetailsModal({
             >
               Supprimer
             </button>
-            <button
-              type='button'
-              onClick={onClose}
-              className='inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100'
-              aria-label='Fermer'
-            >
-              ✕
-            </button>
           </div>
         </div>
 
@@ -699,20 +962,20 @@ function LeadDetailsModal({
             </div>
           ) : null}
           <div className='grid grid-cols-1 gap-2 text-sm text-gray-700 md:grid-cols-2'>
-            {renderEditableField('Nom', 'name', lead.name)}
-            {renderEditableField('Boutique', 'store', lead.store)}
-            {renderEditableField('Téléphone', 'phone', lead.phone)}
-            {renderEditableField('E-mail', 'email', lead.email, 'email')}
+            {renderEditableField('Nom', 'name', localLead.name)}
+            {renderEditableField('Boutique', 'store', localLead.store)}
+            {renderEditableField('Téléphone', 'phone', localLead.phone)}
+            {renderEditableField('E-mail', 'email', localLead.email, 'email')}
             {renderEditableField(
               'Lien web',
               'webLink',
-              lead.webLink,
+              localLead.webLink,
               'url'
             )}
             {renderEditableField(
-              'Quick Note',
+              'Note Reapide',
               'quickNote',
-              lead.quickNote,
+              localLead.quickNote,
               'text'
             )}
           </div>
@@ -767,31 +1030,108 @@ function LeadDetailsModal({
               >
                 Surligner jaune
               </button>
+              <button
+                type='button'
+                onClick={openLinkModalForEditor}
+                className={`${toolbarButtonClass} ${
+                  editor?.isActive('link') ? 'bg-blue-100 text-blue-700' : ''
+                }`}
+              >
+                Lien
+              </button>
             </div>
             <div className='rounded-lg border border-gray-300 bg-white p-3'>
               <EditorContent
                 editor={editor}
-                className='min-h-[180px] text-sm [&_.ProseMirror]:min-h-[160px] [&_.ProseMirror]:outline-none'
+                className='tiptap-content min-h-[180px] text-sm [&_.ProseMirror]:min-h-[160px] [&_.ProseMirror]:outline-none'
               />
             </div>
-            <div className='mt-2 flex items-center justify-end gap-1'>
+            <div className='mt-4'>
+              <div className='mb-2 flex items-center gap-2'>
+                <p className='text-sm font-semibold text-gray-900'>Pieces jointes</p>
+                <span className='inline-flex h-6 min-w-6 items-center justify-center rounded-md bg-gray-100 px-2 text-xs font-semibold text-gray-700'>
+                  {localLead.imageUrls.length}
+                </span>
+              </div>
+              <div className='flex items-center gap-2'>
+                <input
+                  type='url'
+                  value={imageUrlDraft}
+                  onChange={e => setImageUrlDraft(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addImageUrl();
+                    }
+                  }}
+                  placeholder='https://...'
+                  className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700'
+                />
+                <button
+                  type='button'
+                  onClick={addImageUrl}
+                  className='inline-flex items-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100'
+                >
+                  Ajouter
+                </button>
+              </div>
+              {localLead.imageUrls.length > 0 ? (
+                <div className='mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2'>
+                  {localLead.imageUrls.map(url => (
+                    <div
+                      key={url}
+                      className='overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm'
+                    >
+                      <a
+                        href={toBrowserUrl(url)}
+                        target='_blank'
+                        rel='noreferrer'
+                        className='block group'
+                      >
+                        <img
+                          src={url}
+                          alt={getImageAttachmentLabel(url)}
+                          className='h-32 w-full object-cover bg-gray-50'
+                        />
+                        <div className='px-3 py-2 text-sm text-gray-800'>
+                          <p className='truncate font-medium'>
+                            {getImageAttachmentLabel(url)}
+                          </p>
+                          <p className='truncate text-xs text-indigo-600 group-hover:underline'>
+                            {url}
+                          </p>
+                        </div>
+                      </a>
+                      <div className='border-t border-gray-100 px-3 py-2'>
+                        <button
+                          type='button'
+                          onClick={() => removeImageUrl(url)}
+                          className='inline-flex items-center rounded-md border border-red-300 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50'
+                        >
+                          Retirer
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <div className='mt-2 flex items-center justify-end gap-2'>
               <button
                 type='button'
-                onClick={() => void saveRichText()}
-                disabled={!isRichTextDirty || isSavingRichText}
-                className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50'
-                aria-label='Valider la zone de texte enrichie'
+                onClick={handleCancelAndClose}
+                disabled={isSavingRichText}
+                className='inline-flex items-center rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50'
               >
-                ✓
+                Annuler
               </button>
               <button
                 type='button'
-                onClick={cancelRichText}
-                disabled={!isRichTextDirty || isSavingRichText}
-                className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-300 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50'
-                aria-label='Annuler la zone de texte enrichie'
+                onClick={() => void handleValidateAndClose()}
+                disabled={isSavingRichText}
+                className='inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50'
               >
-                ✕
+                Valider
               </button>
             </div>
           </div>
@@ -840,6 +1180,58 @@ function LeadDetailsModal({
           </div>
         </div>
       ) : null}
+      {isLinkModalOpen ? (
+        <div
+          className='fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4'
+          onClick={e => {
+            e.stopPropagation();
+            setIsLinkModalOpen(false);
+            setLinkError(null);
+          }}
+        >
+          <div
+            className='w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-xl'
+            onClick={e => e.stopPropagation()}
+          >
+            <div className='border-b border-gray-200 px-5 py-4'>
+              <h3 className='text-base font-semibold text-gray-900'>
+                Ajouter un lien
+              </h3>
+            </div>
+            <div className='px-5 py-4'>
+              <input
+                type='url'
+                value={linkDraft}
+                onChange={e => setLinkDraft(e.target.value)}
+                placeholder='https://...'
+                className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700'
+              />
+              {linkError ? (
+                <p className='mt-2 text-sm text-red-600'>{linkError}</p>
+              ) : null}
+            </div>
+            <div className='flex justify-end gap-2 border-t border-gray-200 px-5 py-4'>
+              <button
+                type='button'
+                onClick={() => {
+                  setIsLinkModalOpen(false);
+                  setLinkError(null);
+                }}
+                className='inline-flex items-center rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100'
+              >
+                Annuler
+              </button>
+              <button
+                type='button'
+                onClick={submitLinkOnEditor}
+                className='inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700'
+              >
+                Valider
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -868,17 +1260,43 @@ export default function LeadsPage() {
   const [newLeadWebLink, setNewLeadWebLink] = useState('');
   const [newLeadQuickNote, setNewLeadQuickNote] = useState('');
   const [newLeadNote, setNewLeadNote] = useState('');
+  const [newLeadImageUrlInput, setNewLeadImageUrlInput] = useState('');
+  const [newLeadImageUrls, setNewLeadImageUrls] = useState<string[]>([]);
   const [newLeadStatus, setNewLeadStatus] = useState<LeadStatus>('A contacter');
+  const [newLeadImageAddedAtByUrl, setNewLeadImageAddedAtByUrl] = useState<
+    Record<string, string>
+  >({});
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [createLeadError, setCreateLeadError] = useState<string | null>(null);
   const [loadLeadsError, setLoadLeadsError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isCreateLinkModalOpen, setIsCreateLinkModalOpen] = useState(false);
+  const [createLinkDraft, setCreateLinkDraft] = useState('https://');
+  const [createLinkModalError, setCreateLinkModalError] = useState<
+    string | null
+  >(null);
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 },
     })
   );
+  const createNoteEditor = useEditor({
+    extensions: [
+      StarterKit,
+      Underline,
+      Highlight,
+      LinkExtension.configure({
+        openOnClick: true,
+        autolink: true,
+        linkOnPaste: true,
+      }),
+    ],
+    content: newLeadNote || '<p></p>',
+    onUpdate: ({ editor }) => {
+      setNewLeadNote(editor.getHTML());
+    },
+  });
   const trimmedNewLeadName = newLeadName.trim();
   const trimmedNewLeadStore = newLeadStore.trim();
   const hasPhoneValue = Boolean(newLeadPhone.trim());
@@ -908,6 +1326,36 @@ export default function LeadsPage() {
     () => leads.find(lead => lead.id === selectedLeadId) || null,
     [leads, selectedLeadId]
   );
+
+  useEffect(() => {
+    if (!createNoteEditor) return;
+    const nextContent = newLeadNote || '<p></p>';
+    if (createNoteEditor.getHTML() !== nextContent) {
+      createNoteEditor.commands.setContent(nextContent);
+    }
+  }, [createNoteEditor, newLeadNote]);
+
+  useEffect(() => {
+    setNewLeadImageAddedAtByUrl(prev => {
+      const existingUrls = new Set(newLeadImageUrls || []);
+      let changed = false;
+      const next: Record<string, string> = {};
+
+      Object.entries(prev).forEach(([url, addedAt]) => {
+        if (existingUrls.has(url)) next[url] = addedAt;
+        else changed = true;
+      });
+
+      (newLeadImageUrls || []).forEach(url => {
+        if (!next[url]) {
+          next[url] = new Date().toISOString();
+          changed = true;
+        }
+      });
+
+      return changed ? next : prev;
+    });
+  }, [newLeadImageUrls]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -945,6 +1393,7 @@ export default function LeadsPage() {
     const webLink = newLeadWebLink.trim();
     const quickNote = newLeadQuickNote.trim();
     const note = newLeadNote.trim();
+    const imageUrl = joinImageUrlsForStorage(newLeadImageUrls);
 
     if (!name || !store) {
       setCreateLeadError('Les champs Nom et Boutique sont obligatoires.');
@@ -952,6 +1401,14 @@ export default function LeadsPage() {
     }
     if (phone && !isValidPhoneNumber(phone)) {
       setCreateLeadError('Le numéro de téléphone est invalide.');
+      return;
+    }
+    if (!isValidEmailFormat(email)) {
+      setCreateLeadError("L'adresse e-mail est invalide.");
+      return;
+    }
+    if (!isValidWebLinkFormat(webLink)) {
+      setCreateLeadError('Le lien web est invalide.');
       return;
     }
     if (store) {
@@ -978,6 +1435,7 @@ export default function LeadsPage() {
           webLink,
           quickNote,
           note,
+          imageUrl,
           status: newLeadStatus,
         },
         {
@@ -995,6 +1453,9 @@ export default function LeadsPage() {
       setNewLeadWebLink('');
       setNewLeadQuickNote('');
       setNewLeadNote('');
+      setNewLeadImageUrlInput('');
+      setNewLeadImageUrls([]);
+      setNewLeadImageAddedAtByUrl({});
       setNewLeadStatus('A contacter');
       setIsCreateModalOpen(false);
     } catch (e: any) {
@@ -1040,7 +1501,10 @@ export default function LeadsPage() {
   const updateLeadFields = async (
     leadId: string,
     updates: Partial<
-      Pick<Lead, 'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote' | 'note'>
+      Pick<
+        Lead,
+        'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote' | 'note' | 'imageUrls'
+      >
     >
   ) => {
     const previousLead = leads.find(lead => lead.id === leadId);
@@ -1065,7 +1529,14 @@ export default function LeadsPage() {
 
     try {
       const token = await getToken();
-      await apiPut(`/api/admin/leads/${encodeURIComponent(leadId)}`, updates, {
+      const updatesForApi: Record<string, unknown> = { ...updates };
+      if (Object.prototype.hasOwnProperty.call(updates, 'imageUrls')) {
+        updatesForApi.imageUrl = joinImageUrlsForStorage(
+          Array.isArray(updates.imageUrls) ? updates.imageUrls : []
+        );
+        delete updatesForApi.imageUrls;
+      }
+      await apiPut(`/api/admin/leads/${encodeURIComponent(leadId)}`, updatesForApi, {
         headers: { Authorization: token ? `Bearer ${token}` : '' },
       });
     } catch (e) {
@@ -1118,6 +1589,74 @@ export default function LeadsPage() {
 
   const toggleColumn = (status: LeadStatus) => {
     setCollapsedStatuses(prev => ({ ...prev, [status]: !prev[status] }));
+  };
+  const createModalToolbarButtonClass =
+    'inline-flex items-center rounded border border-gray-300 px-2 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-100';
+
+  const openLinkModalForCreateEditor = () => {
+    const currentHref = String(
+      createNoteEditor?.getAttributes('link')?.href || ''
+    ).trim();
+    setCreateLinkDraft(currentHref || 'https://');
+    setCreateLinkModalError(null);
+    setIsCreateLinkModalOpen(true);
+  };
+
+  const submitLinkOnCreateEditor = () => {
+    const normalizedUrl = createLinkDraft.trim();
+    if (!normalizedUrl) {
+      createNoteEditor?.chain().focus().unsetLink().run();
+      setIsCreateLinkModalOpen(false);
+      setCreateLinkModalError(null);
+      return;
+    }
+    if (!isValidWebLinkFormat(normalizedUrl)) {
+      setCreateLinkModalError(
+        'Lien invalide. Utilisez un lien commençant par http:// ou https://'
+      );
+      return;
+    }
+    setCreateLinkModalError(null);
+    setCreateLeadError(null);
+    createNoteEditor
+      ?.chain()
+      .focus()
+      .extendMarkRange('link')
+      .setLink({ href: normalizedUrl })
+      .run();
+    setIsCreateLinkModalOpen(false);
+  };
+
+  const addCreateImageUrl = () => {
+    const nextValue = newLeadImageUrlInput.trim();
+    if (!nextValue) return;
+    if (!isValidWebLinkFormat(nextValue)) {
+      setCreateLeadError('Lien image invalide.');
+      return;
+    }
+    setCreateLeadError(null);
+    setNewLeadImageUrls(prev => {
+      const next = new Set((prev || []).map(url => String(url || '').trim()));
+      next.add(nextValue);
+      return Array.from(next);
+    });
+    setNewLeadImageAddedAtByUrl(prev => ({
+      ...prev,
+      [nextValue]: new Date().toISOString(),
+    }));
+    setNewLeadImageUrlInput('');
+  };
+
+  const removeCreateImageUrl = (urlToRemove: string) => {
+    const target = String(urlToRemove || '').trim();
+    setNewLeadImageUrls(prev =>
+      (prev || []).filter(url => String(url || '').trim() !== target)
+    );
+    setNewLeadImageAddedAtByUrl(prev => {
+      const next = { ...prev };
+      delete next[target];
+      return next;
+    });
   };
 
   return (
@@ -1286,16 +1825,186 @@ export default function LeadsPage() {
                         type='text'
                         value={newLeadQuickNote}
                         onChange={e => setNewLeadQuickNote(e.target.value)}
-                        placeholder='Quick Note'
+                        placeholder='Note Reapide'
                         className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm md:col-span-2'
                       />
-                      <textarea
-                        value={newLeadNote}
-                        onChange={e => setNewLeadNote(e.target.value)}
-                        placeholder='Note'
-                        rows={4}
-                        className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm md:col-span-2'
-                      />
+                      <div className='md:col-span-2'>
+                        <p className='mb-2 text-sm font-semibold text-gray-900'>
+                          Note enrichie
+                        </p>
+                        <div className='mb-2 flex flex-wrap gap-2'>
+                          <button
+                            type='button'
+                            onClick={() =>
+                              createNoteEditor?.chain().focus().toggleBold().run()
+                            }
+                            className={`${createModalToolbarButtonClass} ${
+                              createNoteEditor?.isActive('bold') ? 'bg-gray-200' : ''
+                            }`}
+                          >
+                            Gras
+                          </button>
+                          <button
+                            type='button'
+                            onClick={() =>
+                              createNoteEditor?.chain().focus().toggleItalic().run()
+                            }
+                            className={`${createModalToolbarButtonClass} ${
+                              createNoteEditor?.isActive('italic') ? 'bg-gray-200' : ''
+                            }`}
+                          >
+                            Italique
+                          </button>
+                          <button
+                            type='button'
+                            onClick={() =>
+                              createNoteEditor
+                                ?.chain()
+                                .focus()
+                                .toggleUnderline()
+                                .run()
+                            }
+                            className={`${createModalToolbarButtonClass} ${
+                              createNoteEditor?.isActive('underline')
+                                ? 'bg-gray-200'
+                                : ''
+                            }`}
+                          >
+                            Souligné
+                          </button>
+                          <button
+                            type='button'
+                            onClick={() =>
+                              createNoteEditor
+                                ?.chain()
+                                .focus()
+                                .toggleBulletList()
+                                .run()
+                            }
+                            className={`${createModalToolbarButtonClass} ${
+                              createNoteEditor?.isActive('bulletList')
+                                ? 'bg-gray-200'
+                                : ''
+                            }`}
+                          >
+                            Puces
+                          </button>
+                          <button
+                            type='button'
+                            onClick={() =>
+                              createNoteEditor
+                                ?.chain()
+                                .focus()
+                                .toggleHighlight()
+                                .run()
+                            }
+                            className={`${createModalToolbarButtonClass} ${
+                              createNoteEditor?.isActive('highlight')
+                                ? 'bg-yellow-200'
+                                : ''
+                            }`}
+                          >
+                            Surligner jaune
+                          </button>
+                          <button
+                            type='button'
+                            onClick={openLinkModalForCreateEditor}
+                            className={`${createModalToolbarButtonClass} ${
+                              createNoteEditor?.isActive('link')
+                                ? 'bg-blue-100 text-blue-700'
+                                : ''
+                            }`}
+                          >
+                            Lien
+                          </button>
+                        </div>
+                        <div className='rounded-lg border border-gray-300 bg-white p-3'>
+                          <EditorContent
+                            editor={createNoteEditor}
+                            className='tiptap-content min-h-[160px] text-sm [&_.ProseMirror]:min-h-[140px] [&_.ProseMirror]:outline-none'
+                          />
+                        </div>
+                        <div className='mt-4'>
+                          <div className='mb-2 flex items-center gap-2'>
+                            <p className='text-sm font-semibold text-gray-900'>
+                              Pieces jointes
+                            </p>
+                            <span className='inline-flex h-6 min-w-6 items-center justify-center rounded-md bg-gray-100 px-2 text-xs font-semibold text-gray-700'>
+                              {newLeadImageUrls.length}
+                            </span>
+                          </div>
+                          <div className='flex items-center gap-2'>
+                            <input
+                              type='url'
+                              value={newLeadImageUrlInput}
+                              onChange={e => setNewLeadImageUrlInput(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  addCreateImageUrl();
+                                }
+                              }}
+                              placeholder='https://...'
+                              className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700'
+                            />
+                            <button
+                              type='button'
+                              onClick={addCreateImageUrl}
+                              className='inline-flex items-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100'
+                            >
+                              Ajouter
+                            </button>
+                          </div>
+                          {newLeadImageUrls.length > 0 ? (
+                            <div className='mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2'>
+                              {newLeadImageUrls.map(url => (
+                                <div
+                                  key={url}
+                                  className='overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm'
+                                >
+                                  <a
+                                    href={toBrowserUrl(url)}
+                                    target='_blank'
+                                    rel='noreferrer'
+                                    className='block group'
+                                  >
+                                    <img
+                                      src={url}
+                                      alt={getImageAttachmentLabel(url)}
+                                      className='h-32 w-full object-cover bg-gray-50'
+                                    />
+                                    <div className='px-3 py-2 text-sm text-gray-800'>
+                                      <p className='truncate font-medium'>
+                                        {getImageAttachmentLabel(url)}
+                                      </p>
+                                      {newLeadImageAddedAtByUrl[url] ? (
+                                        <p className='truncate text-xs text-gray-500'>
+                                          Ajoutée le{' '}
+                                          {formatAttachmentAddedAt(
+                                            newLeadImageAddedAtByUrl[url]
+                                          )}
+                                        </p>
+                                      ) : null}
+                                      <p className='truncate text-xs text-indigo-600 group-hover:underline'>
+                                        {url}
+                                      </p>
+                                    </div>
+                                  </a>
+                                  <div className='border-t border-gray-100 px-3 py-2'>
+                                    <button
+                                      type='button'
+                                      onClick={() => removeCreateImageUrl(url)}
+                                      className='inline-flex items-center rounded-md border border-red-300 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50'
+                                    >
+                                      Retirer
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
                     </div>
                     {hasPhoneValue && !isNewLeadPhoneValid ? (
                       <p className='mt-3 text-sm text-red-600'>
@@ -1322,6 +2031,59 @@ export default function LeadsPage() {
                     </button>
                   </div>
                 </div>
+                {isCreateLinkModalOpen ? (
+                  <div
+                    className='fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4'
+                    onClick={() => {
+                      setIsCreateLinkModalOpen(false);
+                      setCreateLinkModalError(null);
+                    }}
+                  >
+                    <div
+                      className='w-full max-w-md rounded-xl border border-gray-200 bg-white shadow-xl'
+                      onClick={e => e.stopPropagation()}
+                    >
+                      <div className='border-b border-gray-200 px-5 py-4'>
+                        <h3 className='text-base font-semibold text-gray-900'>
+                          Ajouter un lien
+                        </h3>
+                      </div>
+                      <div className='px-5 py-4'>
+                        <input
+                          type='url'
+                          value={createLinkDraft}
+                          onChange={e => setCreateLinkDraft(e.target.value)}
+                          placeholder='https://...'
+                          className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700'
+                        />
+                        {createLinkModalError ? (
+                          <p className='mt-2 text-sm text-red-600'>
+                            {createLinkModalError}
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className='flex justify-end gap-2 border-t border-gray-200 px-5 py-4'>
+                        <button
+                          type='button'
+                          onClick={() => {
+                            setIsCreateLinkModalOpen(false);
+                            setCreateLinkModalError(null);
+                          }}
+                          className='inline-flex items-center rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100'
+                        >
+                          Annuler
+                        </button>
+                        <button
+                          type='button'
+                          onClick={submitLinkOnCreateEditor}
+                          className='inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700'
+                        >
+                          Valider
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>

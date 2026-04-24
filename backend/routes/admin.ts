@@ -152,6 +152,7 @@ router.post("/leads", async (req, res) => {
       webLink,
       quickNote,
       note,
+      imageUrl,
       status,
     } = req.body || {};
 
@@ -181,6 +182,7 @@ router.post("/leads", async (req, res) => {
       link: String(webLink || "").trim() || null,
       quick_note: String(quickNote || "").trim() || null,
       note: String(note || "").trim() || null,
+      image_url: String(imageUrl || "").trim() || null,
       status: leadStatusId,
     };
 
@@ -267,6 +269,9 @@ const updateLeadHandler: express.RequestHandler = async (req, res) => {
     }
     if (Object.prototype.hasOwnProperty.call(body, "note")) {
       payload.note = String(body.note || "").trim() || null;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "imageUrl")) {
+      payload.image_url = String(body.imageUrl || "").trim() || null;
     }
 
     if (Object.keys(payload).length === 0) {
