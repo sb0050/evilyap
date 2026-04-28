@@ -3164,11 +3164,18 @@ export default function DashboardPage() {
     const idsToFetch = ids.filter(id => !(id in customersMap));
     if (idsToFetch.length === 0) return;
     setCustomersLoading(true);
-    Promise.all(
+    const loadCustomers = async () => {
+      const token = await getToken();
+      return Promise.all(
       idsToFetch.map(async id => {
         try {
           const resp = await fetch(
-            `${apiBase}/api/stripe/get-customer-by-id?customerId=${encodeURIComponent(id)}`
+            `${apiBase}/api/stripe/get-customer-by-id?customerId=${encodeURIComponent(id)}`,
+            {
+              headers: {
+                Authorization: token ? `Bearer ${token}` : '',
+              },
+            }
           );
           const json = await resp.json().catch(() => ({}));
           if (!resp.ok) {
@@ -3184,7 +3191,9 @@ export default function DashboardPage() {
           return { id, customer: null };
         }
       })
-    )
+      );
+    };
+    loadCustomers()
       .then(results => {
         setCustomersMap(prev => {
           const next = { ...prev };
@@ -3195,7 +3204,7 @@ export default function DashboardPage() {
         });
       })
       .finally(() => setCustomersLoading(false));
-  }, [section, shipments, statsShipments, walletTransactions]);
+  }, [section, shipments, statsShipments, walletTransactions, getToken, apiBase]);
 
   // Charger les réseaux sociaux (comptes externes) Clerk pour les clients Stripe qui exposent clerkUserId
   useEffect(() => {
@@ -3273,8 +3282,12 @@ export default function DashboardPage() {
     if (!store?.slug) return;
     const run = async () => {
       try {
+        const token = await getToken();
         const resp = await apiGet(
-          `/api/carts/store/${encodeURIComponent(store.slug)}`
+          `/api/carts/store/${encodeURIComponent(store.slug)}`,
+          {
+            headers: { Authorization: token ? `Bearer ${token}` : '' },
+          }
         );
         const json = await resp.json().catch(() => ({}));
         setStoreCarts(Array.isArray(json?.carts) ? json.carts : []);
@@ -3285,7 +3298,7 @@ export default function DashboardPage() {
       }
     };
     run();
-  }, [section, store?.slug]);
+  }, [section, store?.slug, getToken]);
 
   useEffect(() => {
     const loadUsers = async () => {
@@ -3565,6 +3578,7 @@ export default function DashboardPage() {
         return;
       }
       setCartCreating(true);
+      const token = await getToken();
       let stripeId = cartSelectedUser.stripeId || '';
       if (!stripeId) {
         try {
@@ -3573,7 +3587,6 @@ export default function DashboardPage() {
             email: cartSelectedUser.email || '',
             clerkUserId: cartSelectedUser.id,
           };
-          const token = await getToken();
           const resp = await apiPost('/api/stripe/create-customer', body, {
             headers: { Authorization: token ? `Bearer ${token}` : '' },
           });
@@ -3612,7 +3625,10 @@ export default function DashboardPage() {
           `${API_BASE_URL}/api/carts/${existingForCustomer.id}`,
           {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: token ? `Bearer ${token}` : '',
+            },
             body: JSON.stringify({ quantity: nextQty }),
           }
         );
@@ -3632,7 +3648,10 @@ export default function DashboardPage() {
         setCartQuantity('1');
         if (store?.slug) {
           const r = await apiGet(
-            `/api/carts/store/${encodeURIComponent(store.slug)}`
+            `/api/carts/store/${encodeURIComponent(store.slug)}`,
+            {
+              headers: { Authorization: token ? `Bearer ${token}` : '' },
+            }
           );
           const j = await r.json().catch(() => ({}));
           setStoreCarts(Array.isArray(j?.carts) ? j.carts : []);
@@ -3648,7 +3667,9 @@ export default function DashboardPage() {
         weight,
         quantity: qty,
       };
-      const resp = await apiPost('/api/carts', payload);
+      const resp = await apiPost('/api/carts', payload, {
+        headers: { Authorization: token ? `Bearer ${token}` : '' },
+      });
       const json = await resp.json().catch(() => ({}));
       if (!resp.ok) {
         const msg = json?.error || 'Création du panier échouée';
@@ -3662,7 +3683,10 @@ export default function DashboardPage() {
       setCartQuantity('1');
       if (store?.slug) {
         const r = await apiGet(
-          `/api/carts/store/${encodeURIComponent(store.slug)}`
+          `/api/carts/store/${encodeURIComponent(store.slug)}`,
+          {
+            headers: { Authorization: token ? `Bearer ${token}` : '' },
+          }
         );
         const j = await r.json().catch(() => ({}));
         setStoreCarts(Array.isArray(j?.carts) ? j.carts : []);
@@ -3679,9 +3703,13 @@ export default function DashboardPage() {
     try {
       if (!id) return;
       setCartDeletingIds(prev => ({ ...prev, [id]: true }));
+      const token = await getToken();
       const resp = await apiDelete('/api/carts', {
         body: JSON.stringify({ id }),
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
       });
       const json = await resp.json().catch(() => ({}));
       if (!resp.ok) {
@@ -3702,8 +3730,12 @@ export default function DashboardPage() {
     try {
       if (!store?.slug) return;
       setCartReloading(true);
+      const token = await getToken();
       const resp = await apiGet(
-        `/api/carts/store/${encodeURIComponent(store.slug)}`
+        `/api/carts/store/${encodeURIComponent(store.slug)}`,
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
       );
       const json = await resp.json().catch(() => ({}));
       setStoreCarts(Array.isArray(json?.carts) ? json.carts : []);
@@ -3786,20 +3818,28 @@ export default function DashboardPage() {
   useEffect(() => {
     const resolveStoreAndLoad = async () => {
       try {
-        // 1) Résoudre le slug si absent via check-owner
+        // 1) Résoudre le slug depuis l'identité Clerk courante. Ne pas se
+        // baser sur l'email: l'endpoint public ne renvoie plus les détails
+        // propriétaire depuis le durcissement anti-énumération.
         let slugToUse = resolvedSlug;
         if (!slugToUse) {
-          const email = user?.primaryEmailAddress?.emailAddress || '';
-          if (!email) {
-            // Attendre que Clerk charge l'email
+          const clerkId = String(user?.id || '').trim();
+          if (!clerkId) {
+            // Attendre que Clerk charge l'utilisateur
             return;
           }
+          const token = await getToken();
           const resp = await fetch(
-            `${apiBase}/api/stores/check-owner/${encodeURIComponent(email)}`
+            `${apiBase}/api/stores/me`,
+            {
+              headers: {
+                Authorization: token ? `Bearer ${token}` : '',
+              },
+            }
           );
-          const json = await resp.json();
-          if (resp.ok && json?.exists && json?.slug) {
-            slugToUse = json.slug as string;
+          const json = await resp.json().catch(() => null);
+          if (resp.ok && json?.hasStore && json?.store?.slug) {
+            slugToUse = json.store.slug as string;
             setResolvedSlug(slugToUse);
           } else {
             setNoStore(true);
@@ -3887,7 +3927,7 @@ export default function DashboardPage() {
       }
     };
     resolveStoreAndLoad();
-  }, [resolvedSlug, user?.primaryEmailAddress?.emailAddress, user?.id]);
+  }, [resolvedSlug, user?.id, getToken, apiBase]);
 
   const saveStoreInfo = async () => {
     setIsSubmittingModifications(true);

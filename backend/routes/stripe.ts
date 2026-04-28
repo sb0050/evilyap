@@ -11,6 +11,13 @@ import {
 
 import { getAuth } from "@clerk/express";
 import { clerkClient } from "@clerk/express";
+import {
+  getAuthContext,
+  requireAdmin,
+  requireAuth,
+  requireAuthWithStripe,
+} from "../middlewares/requireAuth";
+import { requireStoreOwner } from "../middlewares/ownership";
 
 const router = express.Router();
 
@@ -24,6 +31,66 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+async function userOwnsStoreSlug(userId: string, storeSlug: string) {
+  const slug = String(storeSlug || "").trim();
+  if (!slug) return false;
+
+  const { data: store, error } = await supabase
+    .from("stores")
+    .select("id, clerk_id")
+    .eq("slug", slug)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return Boolean((store as any)?.clerk_id) && (store as any).clerk_id === userId;
+}
+
+async function userOwnsCustomerResource(userId: string, customerId: string) {
+  const cid = String(customerId || "").trim();
+  if (!cid) return false;
+
+  const { data: stores, error: storesErr } = await supabase
+    .from("stores")
+    .select("id")
+    .eq("clerk_id", userId);
+  if (storesErr) {
+    throw storesErr;
+  }
+
+  const storeIds = Array.from(
+    new Set((stores || []).map((s: any) => Number(s?.id)).filter(Boolean)),
+  );
+  if (storeIds.length === 0) return false;
+
+  const { data: shipment, error: shipmentErr } = await supabase
+    .from("shipments")
+    .select("id")
+    .eq("customer_stripe_id", cid)
+    .in("store_id", storeIds as any)
+    .limit(1)
+    .maybeSingle();
+  if (shipmentErr && (shipmentErr as any)?.code !== "PGRST116") {
+    throw shipmentErr;
+  }
+  if (shipment) return true;
+
+  const { data: cart, error: cartErr } = await supabase
+    .from("carts")
+    .select("id")
+    .eq("customer_stripe_id", cid)
+    .in("store_id", storeIds as any)
+    .limit(1)
+    .maybeSingle();
+  if (cartErr && (cartErr as any)?.code !== "PGRST116") {
+    throw cartErr;
+  }
+
+  return Boolean(cart);
+}
 
 const extractFirstWord = (text: unknown): string => {
   const raw = String(text || "").trim();
@@ -127,7 +194,8 @@ const calculateParcelWeight = (
 };
 
 // Endpoint to get customer details
-router.get("/get-customer-details", async (req, res) => {
+router.get("/get-customer-details", requireAuthWithStripe(), async (req, res): Promise<void> => {
+  const auth = getAuthContext(res);
   const { customerEmail } = req.query;
 
   if (!customerEmail) {
@@ -148,6 +216,11 @@ router.get("/get-customer-details", async (req, res) => {
     }
 
     const customer = existingCustomers.data[0];
+    const customerClerkId = String((customer.metadata as any)?.clerk_id || "");
+    if (customer.id !== auth.stripeCustomerId && customerClerkId !== auth.userId) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
 
     const metadata = (customer.metadata || {}) as Record<string, string>;
     const shippingAny: any = customer.shipping || null;
@@ -197,20 +270,17 @@ router.get("/get-customer-details", async (req, res) => {
       parcel_point: derivedParcelPoint,
     };
     res.json({ customer: customerData });
+    return;
   } catch (error) {
     console.log("Error retrieving customer:", error);
     console.error("Error retrieving customer:", error);
     res.status(500).json({ error: (error as Error).message });
+    return;
   }
 });
 
-router.post("/products/by-ids", async (req, res) => {
+router.post("/products/by-ids", requireAuth(), async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated || !auth.userId) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
     const idsRaw = (req.body as any)?.ids;
     const ids = Array.isArray(idsRaw)
       ? idsRaw
@@ -353,13 +423,8 @@ router.post("/create-customer", async (req, res) => {
   }
 });
 
-router.post("/delete-coupon", async (req, res) => {
+router.post("/delete-coupon", requireAdmin(), async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated || !auth.userId) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
     const { couponId } = req.body as { couponId?: string };
     const cid = String(couponId || "").trim();
     if (!cid) {
@@ -1893,10 +1958,16 @@ router.post("/create-checkout-session", async (req, res): Promise<void> => {
   }
 });
 
-router.post("/save-customer-address", async (req, res) => {
+router.post("/save-customer-address", requireAuthWithStripe(), async (req, res): Promise<void> => {
+  const auth = getAuthContext(res);
   const { customerId, address, shippingAddress } = req.body;
 
   try {
+    if (!customerId || String(customerId) !== auth.stripeCustomerId) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+
     let customer;
     // Update existing customer
     customer = await stripe.customers.update(customerId, {
@@ -1924,9 +1995,11 @@ router.post("/save-customer-address", async (req, res) => {
       },
     });
     res.json({ success: true, customerId: customer.id });
+    return;
   } catch (error) {
     console.error("Error saving customer address:", error);
     res.status(500).json({ error: (error as Error).message });
+    return;
   }
 });
 
@@ -2275,14 +2348,25 @@ router.get("/session/:sessionId", async (req, res): Promise<void> => {
 });
 
 // Nouveau endpoint: récupérer un client Stripe par son ID
-router.get("/get-customer-by-id", async (req, res) => {
+router.get("/get-customer-by-id", requireAuthWithStripe(), async (req, res): Promise<void> => {
+  const auth = getAuthContext(res);
   const { customerId } = req.query;
   if (!customerId) {
     res.status(400).json({ error: "Customer ID is required" });
     return;
   }
   try {
-    const customer = await stripe.customers.retrieve(customerId as string);
+    const requestedCustomerId = String(customerId);
+    const isOwnCustomer = requestedCustomerId === auth.stripeCustomerId;
+    const isStoreOwnerCustomer =
+      !isOwnCustomer &&
+      (await userOwnsCustomerResource(auth.userId, requestedCustomerId));
+    if (!isOwnCustomer && !isStoreOwnerCustomer) {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+
+    const customer = await stripe.customers.retrieve(requestedCustomerId);
     if (!customer || (customer as any).deleted) {
       res.status(404).json({ error: "Customer not found" });
       return;
@@ -2301,9 +2385,11 @@ router.get("/get-customer-by-id", async (req, res) => {
       clerkUserId: (c.metadata as any)?.clerk_id,
     } as any;
     res.json({ customer: customerData });
+    return;
   } catch (error) {
     console.error("Error retrieving customer by ID:", error);
     res.status(500).json({ error: (error as Error).message });
+    return;
   }
 });
 
@@ -2346,15 +2432,15 @@ router.get("/customer-credit-balance", async (req, res) => {
 });
 
 // Nouveau endpoint: récupérer les comptes externes Clerk d’un utilisateur via clerk_id
-router.get("/get-clerk-user-by-id", async (req, res) => {
+router.get("/get-clerk-user-by-id", requireAuth(), async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+    const auth = getAuthContext(res);
     const clerkUserId = (req.query.clerkUserId as string) || "";
     if (!clerkUserId) {
       return res.status(400).json({ error: "Missing clerkUserId" });
+    }
+    if (clerkUserId !== auth.userId) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     const user = await clerkClient.users.getUser(clerkUserId);
@@ -2404,13 +2490,12 @@ router.get("/get-clerk-user-by-id", async (req, res) => {
 });
 
 // Créer un code promo Stripe à partir d'un coupon
-router.post("/promotion-codes", async (req, res) => {
+router.post(
+  "/promotion-codes",
+  requireAuth(),
+  requireStoreOwner({ source: "body", key: "storeSlug", column: "slug" }),
+  async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
     const {
       couponId,
       code,
@@ -2531,16 +2616,16 @@ router.post("/promotion-codes", async (req, res) => {
       .status(500)
       .json({ error: error instanceof Error ? error.message : "Erreur" });
   }
-});
+  },
+);
 
 // Lister les codes promo (optionnellement filtré par couponId ou active)
-router.get("/promotion-codes", async (req, res) => {
+router.get(
+  "/promotion-codes",
+  requireAuth(),
+  requireStoreOwner({ source: "query", key: "storeSlug", column: "slug" }),
+  async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
     const { couponId, active, limit, storeSlug } = req.query as {
       couponId?: string;
       active?: string;
@@ -2575,19 +2660,30 @@ router.get("/promotion-codes", async (req, res) => {
       .status(500)
       .json({ error: error instanceof Error ? error.message : "Erreur" });
   }
-});
+  },
+);
 
 // Désactiver (supprimer logiquement) un code promo Stripe
-router.delete("/promotion-codes/:id", async (req, res) => {
+router.delete("/promotion-codes/:id", requireAuth(), async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+    const auth = getAuthContext(res);
 
     const { id } = req.params as { id?: string };
     if (!id) {
       return res.status(400).json({ error: "promotion code id requis" });
+    }
+
+    const existingPromotionCode = await stripe.promotionCodes.retrieve(
+      String(id),
+    );
+    const existingStoreSlug = String(
+      (existingPromotionCode as any)?.metadata?.storeSlug || "",
+    ).trim();
+    if (!existingStoreSlug) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    if (!(await userOwnsStoreSlug(auth.userId, existingStoreSlug))) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     // Stripe ne supprime pas vraiment les codes promo; on les désactive
@@ -2645,12 +2741,9 @@ router.delete("/promotion-codes/:id", async (req, res) => {
   }
 });
 
-router.put("/promotion-codes/:id/active", async (req, res) => {
+router.put("/promotion-codes/:id/active", requireAuth(), async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+    const auth = getAuthContext(res);
 
     const { id } = req.params as { id?: string };
     if (!id) {
@@ -2659,6 +2752,19 @@ router.put("/promotion-codes/:id/active", async (req, res) => {
 
     const { active } = req.body || {};
     const nextActive = Boolean(active);
+
+    const existingPromotionCode = await stripe.promotionCodes.retrieve(
+      String(id),
+    );
+    const existingStoreSlug = String(
+      (existingPromotionCode as any)?.metadata?.storeSlug || "",
+    ).trim();
+    if (!existingStoreSlug) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    if (!(await userOwnsStoreSlug(auth.userId, existingStoreSlug))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     const promotionCode = await stripe.promotionCodes.update(String(id), {
       active: nextActive,
@@ -2720,13 +2826,8 @@ router.put("/promotion-codes/:id/active", async (req, res) => {
   }
 });
 
-router.get("/coupons", async (req, res) => {
+router.get("/coupons", requireAuth(), async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
     const desiredLimit = 50000;
     const pageLimit = 100;
     let startingAfter: string | undefined = undefined;

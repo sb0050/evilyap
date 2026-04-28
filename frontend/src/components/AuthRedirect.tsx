@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useUser } from '@clerk/clerk-react';
+import { useAuth, useUser } from '@clerk/clerk-react';
 import { useNavigate } from 'react-router-dom';
 import slugify from 'slugify';
 
@@ -16,6 +16,7 @@ interface AuthRedirectProps {
 
 export default function AuthRedirect({ children }: AuthRedirectProps) {
   const { user, isLoaded } = useUser();
+  const { getToken } = useAuth();
   const navigate = useNavigate();
   const [checking, setChecking] = useState(true);
 
@@ -29,11 +30,14 @@ export default function AuthRedirect({ children }: AuthRedirectProps) {
       }
 
       try {
-        const userEmail = encodeURIComponent(
-          user.primaryEmailAddress.emailAddress
-        );
+        const token = await getToken();
         const response = await fetch(
-          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores/check-owner/${userEmail}`
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores/me`,
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+          }
         );
 
         if (!response.ok) {
@@ -42,13 +46,14 @@ export default function AuthRedirect({ children }: AuthRedirectProps) {
           return;
         }
 
-        const data: StoreCheckResponse = await response.json();
+        const data = await response.json();
+        const store = data?.store || null;
 
-        if (data.exists && (data.slug || data.storeName)) {
+        if (data.hasStore && (store?.slug || store?.name)) {
           // L'utilisateur a déjà une boutique, rediriger vers checkout/<slug>
           const storeSlug =
-            data.slug ||
-            slugify(String(data.storeName || 'default'), {
+            store.slug ||
+            slugify(String(store.name || 'default'), {
               lower: true,
               strict: true,
             });
@@ -64,7 +69,7 @@ export default function AuthRedirect({ children }: AuthRedirectProps) {
     };
 
     checkUserStore();
-  }, [user, isLoaded, navigate]);
+  }, [user, isLoaded, navigate, getToken]);
 
   if (!isLoaded || checking) {
     return (

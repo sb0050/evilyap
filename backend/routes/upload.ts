@@ -3,6 +3,8 @@ import multer from "multer";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { createClient } from "@supabase/supabase-js";
 import { clerkClient, getAuth } from "@clerk/express";
+import { requireAuth } from "../middlewares/requireAuth";
+import { requireStoreOwner } from "../middlewares/ownership";
 import {
   CloudFrontClient,
   CreateInvalidationCommand,
@@ -146,7 +148,17 @@ const uploadStockProductImage = multer({
 });
 
 // POST /api/upload (images)
-router.post("/", uploadImages.single("image"), async (req, res) => {
+router.post(
+  "/",
+  requireAuth(),
+  uploadImages.single("image"),
+  requireStoreOwner({
+    source: "body",
+    key: "slug",
+    column: "slug",
+    allowOwnerEmailFallback: true,
+  }),
+  async (req, res) => {
   try {
     const slug = (req.body?.slug as string)?.trim();
     if (!req.file) {
@@ -155,21 +167,7 @@ router.post("/", uploadImages.single("image"), async (req, res) => {
     if (!slug) {
       return res.status(400).json({ error: "Slug requis" });
     }
-    // Récupérer l'id du store à partir du slug
-    const { data: store, error: storeErr } = await supabase
-      .from("stores")
-      .select("id, slug")
-      .eq("slug", slug)
-      .maybeSingle();
-    if (storeErr && (storeErr as any)?.code !== "PGRST116") {
-      console.error("Erreur Supabase (get store by slug):", storeErr);
-      return res
-        .status(500)
-        .json({ error: "Erreur lors de la récupération de la boutique" });
-    }
-    if (!store) {
-      return res.status(404).json({ error: "Boutique non trouvée" });
-    }
+    const store = res.locals.store as any;
 
     // Authoritative server-side classification. Prevents an attacker from
     // smuggling a `<script>`-laden SVG (or any non-raster payload) past the
@@ -222,11 +220,19 @@ router.post("/", uploadImages.single("image"), async (req, res) => {
     console.error("Upload error:", error);
     return res.status(500).json({ error: "Upload failed" });
   }
-});
+  },
+);
 
 router.post(
   "/stock-product",
+  requireAuth(),
   uploadStockProductImage.single("image"),
+  requireStoreOwner({
+    source: "body",
+    key: "slug",
+    column: "slug",
+    allowOwnerEmailFallback: true,
+  }),
   async (req, res) => {
     try {
       const auth = getAuth(req);

@@ -81,24 +81,28 @@ app.post(
 
 app.use(clerkMiddleware());
 
+const protectedVercelEnvs = new Set(["production", "preview", "prod"]);
+const shouldEnforceApiAuth = protectedVercelEnvs.has(
+  String(process.env.VERCEL_ENV || "").toLowerCase(),
+);
+const authExcludedPathPrefixes = ["/stripe/webhook", "/sendcloud/webhook"];
+
 app.use("/api", (req: Request, res: Response, next: NextFunction) => {
-  if (
-    req.path.startsWith("/stripe/webhook") ||
-    req.path.startsWith("/boxtal/webhook")
-  ) {
+  if (authExcludedPathPrefixes.some((prefix) => req.path.startsWith(prefix))) {
     return next();
   }
 
   const allowUnauthenticated =
     req.method === "GET" &&
-    (req.path.startsWith("/stores/exists") ||
+    (req.path === "/health" ||
+      req.path.startsWith("/stores/exists") ||
       /^\/stores\/[^/]+$/.test(req.path) ||
       /^\/stores\/[^/]+\/stock\/public$/.test(req.path));
   if (allowUnauthenticated) {
     return next();
   }
 
-  if (process.env.VERCEL_ENV === "prod") {
+  if (shouldEnforceApiAuth) {
     const auth = getAuth(req);
     if (!auth?.isAuthenticated || !auth.userId) {
       return res.status(401).json({ error: "Unauthorized" });

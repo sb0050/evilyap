@@ -1,6 +1,10 @@
 import express from "express";
 import { createClient } from "@supabase/supabase-js";
 import { clerkClient, getAuth } from "@clerk/express";
+import {
+  getAuthContext,
+  requireAuthWithStripe,
+} from "../middlewares/requireAuth";
 import Stripe from "stripe";
 import PDFDocument from "pdfkit";
 import { emailService } from "../services/emailService";
@@ -1953,15 +1957,18 @@ router.get("/customer", async (req, res) => {
 });
 
 // GET /api/shipments/stores-for-customer/:stripeId
-router.get("/stores-for-customer/:stripeId", async (req, res) => {
+router.get(
+  "/stores-for-customer/:stripeId",
+  requireAuthWithStripe(),
+  async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+    const auth = getAuthContext(res);
     const stripeId = req.params.stripeId;
     if (!stripeId) {
       return res.status(400).json({ error: "Missing stripeId" });
+    }
+    if (stripeId !== auth.stripeCustomerId) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     console.log("Fetching stores for customer with stripeId:", stripeId);
@@ -1998,7 +2005,8 @@ router.get("/stores-for-customer/:stripeId", async (req, res) => {
     console.error("Error fetching stores for customer:", e);
     return res.status(500).json({ error: "Internal server error" });
   }
-});
+  },
+);
 
 // GET /api/shipments/store/:storeSlug - list shipments for a store (owner/admin only)
 router.get("/store/:storeSlug", async (req, res) => {
