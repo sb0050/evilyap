@@ -62,10 +62,43 @@ const createProspectTransporter = () => {
   } as any);
 };
 
-const resolveFirstName = (nameRaw?: unknown, emailRaw?: unknown) => {
-  const fromName = String(nameRaw || "")
+/**
+ * Characters allowed in a resolved first name.
+ *
+ * Allow-list (safe by construction):
+ *   - \p{L} Unicode letters (incl. accented, CJK, Cyrillic, etc.)
+ *   - \p{M} combining marks (accents as separate code points)
+ *   - space, ASCII apostrophe `'`, typographic apostrophe `’`, hyphen `-`, dot `.`
+ *
+ * Everything else — notably CR/LF/NUL/TAB/control chars (CRLF header
+ * injection), `<>&"'` (HTML/phishing injection), and any other symbol — is
+ * stripped. This is the primary defense against issue #12 (email header
+ * injection / HTML injection via the `name` field of admin routes).
+ */
+const SAFE_FIRST_NAME_CHARS = /[^\p{L}\p{M} '’\-.]/gu;
+
+/** Max length applied to a sanitized first name (keeps Subject well below
+ *  RFC 5322's 998-octet line limit even after Q-encoding). */
+const MAX_FIRST_NAME_LENGTH = 80;
+
+/**
+ * Normalizes a raw string into a safe first name by applying the allow-list,
+ * collapsing whitespace, trimming and truncating to {@link MAX_FIRST_NAME_LENGTH}.
+ *
+ * @param raw Untrusted input from request body or email local-part.
+ * @returns A string that is guaranteed safe for use in email headers and
+ *          plain-text bodies. HTML contexts must still be escaped via
+ *          {@link escapeHtml} as defense in depth.
+ */
+const normalizeFirstName = (raw: string): string =>
+  raw
+    .replace(SAFE_FIRST_NAME_CHARS, " ")
+    .replace(/\s+/g, " ")
     .trim()
-    .replace(/\s+/g, " ");
+    .slice(0, MAX_FIRST_NAME_LENGTH);
+
+const resolveFirstName = (nameRaw?: unknown, emailRaw?: unknown): string => {
+  const fromName = normalizeFirstName(String(nameRaw || ""));
   if (fromName) {
     return fromName.charAt(0).toUpperCase() + fromName.slice(1);
   }
@@ -73,13 +106,32 @@ const resolveFirstName = (nameRaw?: unknown, emailRaw?: unknown) => {
     .split("@")[0]
     .trim();
   if (!local) return "";
-  const cleaned = local
-    .replace(/[._\-+]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  // Typical email local-parts use `._-+` as word separators; promote them to
+  // spaces before applying the allow-list so `jean.dupont` becomes `Jean dupont`.
+  const cleaned = normalizeFirstName(local.replace(/[._\-+]+/g, " "));
   if (!cleaned) return "";
   return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 };
+
+/**
+ * Escapes the five HTML special characters so a string can be safely
+ * interpolated into element content or a double-quoted attribute value.
+ *
+ * Applied as defense in depth on values that already passed through
+ * {@link resolveFirstName}: if the allow-list is ever relaxed or bypassed,
+ * this layer still prevents stored phishing / XSS payloads from rendering in
+ * outgoing emails.
+ *
+ * @param value Already-sanitized string (but see defense-in-depth note).
+ * @returns HTML-safe representation.
+ */
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 
 const STATUS_LABEL_TO_ID: Record<string, number> = {
   "A contacter": 1,
@@ -371,8 +423,14 @@ router.post("/prospect", async (req, res) => {
 
     const transporter = createProspectTransporter();
 
+    // `firstName` is already constrained by the allow-list in `resolveFirstName`
+    // (no CR/LF/control chars, no HTML metacharacters) so it is safe for the
+    // Subject header and plain-text body. The HTML body still gets escaped as
+    // defense in depth (see `firstNameHtml`).
+    const firstNameHtml = escapeHtml(firstName);
     const subject = `${firstName}, marre des paniers abandonnés après tes ventes en live sur Facebook ?`;
-    const greeting = `Bonjour ${firstName},`;
+    const greetingText = `Bonjour ${firstName},`;
+    const greetingHtml = `Bonjour ${firstNameHtml},`;
 
     const logoPath = path.resolve(process.cwd(), "public", "logo_bis.png");
     const hasLogo = fs.existsSync(logoPath);
@@ -403,7 +461,7 @@ router.post("/prospect", async (req, res) => {
 
         <div style="padding:28px 28px 8px 28px;">
           <div style="font-size:18px;line-height:1.5;">
-            <span style="font-weight:700;">${greeting}</span>
+            <span style="font-weight:700;">${greetingHtml}</span>
           </div>
           <p style="margin:14px 0 0 0;font-size:16px;line-height:1.6;">
             Est-ce que tu rencontres ce genre de problèmes pendant ou après tes ventes en live sur Facebook ?
@@ -463,7 +521,7 @@ router.post("/prospect", async (req, res) => {
     </body>
     </html>`;
 
-    const text = `${greeting}\n\nEst-ce que tu rencontres ce genre de problèmes pendant ou après tes ventes en live sur Facebook ?\n\n❌ commandes à noter\n❌ paiements à vérifier\n❌ colis à créer\n❌ clientes à relancer\n❌ récap + lien de paiement à envoyer manuellement\n\nAu final, tu passes plus de temps à gérer qu’à vendre.\n\nC’est exactement pour ça qu’on a créé PayLive.\n\n👉 PayLive automatise tout ce qui te fait perdre du temps :\n💳 Notification instantané au paiement\n📦 Livraison & bordereaux intégrés\n📋 Envoi automatique des paniers\n📊 Suivi de tes ventes et de ton stock\n\nRésultat : tu te concentres sur tes lives… et PayLive s’occupe du reste.\n\n 👇 Clique sur le bouton ci-dessous pour voir comment ça marche 👇: https://paylive.cc/needademo\n\nÀ très vite,\nL’équipe PayLive.cc`;
+    const text = `${greetingText}\n\nEst-ce que tu rencontres ce genre de problèmes pendant ou après tes ventes en live sur Facebook ?\n\n❌ commandes à noter\n❌ paiements à vérifier\n❌ colis à créer\n❌ clientes à relancer\n❌ récap + lien de paiement à envoyer manuellement\n\nAu final, tu passes plus de temps à gérer qu’à vendre.\n\nC’est exactement pour ça qu’on a créé PayLive.\n\n👉 PayLive automatise tout ce qui te fait perdre du temps :\n💳 Notification instantané au paiement\n📦 Livraison & bordereaux intégrés\n📋 Envoi automatique des paniers\n📊 Suivi de tes ventes et de ton stock\n\nRésultat : tu te concentres sur tes lives… et PayLive s’occupe du reste.\n\n 👇 Clique sur le bouton ci-dessous pour voir comment ça marche 👇: https://paylive.cc/needademo\n\nÀ très vite,\nL’équipe PayLive.cc`;
 
     const fromEmail = process.env.SMTP_USER || "noreply@paylive.cc";
     const attachments: any[] = [];
@@ -514,8 +572,12 @@ router.post("/rdv-demo", async (req, res) => {
       return res.status(400).json({ error: "Nom invalide" });
     }
     const transporter = createProspectTransporter();
+    // Same sanitization contract as `/prospect` above: `firstName` is already
+    // safe for headers/text; HTML contexts get an extra escape layer.
+    const firstNameHtml = escapeHtml(firstName);
     const subject = `${firstName}, on organise une démo ? 🚀`;
-    const greeting = `Bonjour ${firstName},`;
+    const greetingText = `Bonjour ${firstName},`;
+    const greetingHtml = `Bonjour ${firstNameHtml},`;
     const logoPath = path.resolve(process.cwd(), "public", "logo_bis.png");
     const hasLogo = fs.existsSync(logoPath);
 
@@ -539,7 +601,7 @@ router.post("/rdv-demo", async (req, res) => {
 
         <div style="padding:28px 28px 8px 28px;">
           <div style="font-size:18px;line-height:1.5;">
-            <span style="font-weight:700;">${greeting}</span>
+            <span style="font-weight:700;">${greetingHtml}</span>
           </div>
           <p style="margin:14px 0 0 0;font-size:16px;line-height:1.6;">
             Merci pour votre inscription !
@@ -572,7 +634,7 @@ router.post("/rdv-demo", async (req, res) => {
     </body>
     </html>`;
 
-    const text = `${greeting}\n\nPour aller plus loin, je vous propose une démo rapide (10 min) pour vous montrer PayLive en action — directement sur vos cas d’usage.\n\nDeux petites choses pour qu’on cale ça :\n• Quelles sont vos disponibilités cette semaine ou la semaine prochaine ?\n• Quel est votre numéro de téléphone pour qu’on reste en contact facilement ?\n\nHâte de vous faire découvrir la solution !\n\nÀ très vite,\nL’équipe PayLive.cc`;
+    const text = `${greetingText}\n\nPour aller plus loin, je vous propose une démo rapide (10 min) pour vous montrer PayLive en action — directement sur vos cas d’usage.\n\nDeux petites choses pour qu’on cale ça :\n• Quelles sont vos disponibilités cette semaine ou la semaine prochaine ?\n• Quel est votre numéro de téléphone pour qu’on reste en contact facilement ?\n\nHâte de vous faire découvrir la solution !\n\nÀ très vite,\nL’équipe PayLive.cc`;
 
     const fromEmail = process.env.SMTP_USER || "noreply@paylive.cc";
     const attachments: any[] = [];
@@ -621,8 +683,11 @@ router.post("/demo", async (req, res) => {
     }
 
     const transporter = createProspectTransporter();
+    // Same sanitization contract as other admin email routes.
+    const firstNameHtml = escapeHtml(firstName);
     const subject = `${firstName}, suite à notre échange, retrouvez ci-dessous le tutoriel et le lien vers votre boutique.`;
-    const greeting = `Bonjour ${firstName},`;
+    const greetingText = `Bonjour ${firstName},`;
+    const greetingHtml = `Bonjour ${firstNameHtml},`;
     const demoLink = "https://paylive.cc/demo-vendeur";
     const storeLink = `https://paylive.cc/s/${slugSafe}`;
     const checkoutLink = `https://paylive.cc/c/${slugSafe}`;
@@ -649,7 +714,7 @@ router.post("/demo", async (req, res) => {
 
         <div style="padding:28px 28px 8px 28px;">
           <div style="font-size:18px;line-height:1.5;">
-            <span style="font-weight:700;">${greeting}</span>
+            <span style="font-weight:700;">${greetingHtml}</span>
           </div>
           <p style="margin:14px 0 0 0;font-size:16px;line-height:1.6;">
             Comme convenu, voici le lien vers notre tutoriel
@@ -685,7 +750,7 @@ router.post("/demo", async (req, res) => {
     </body>
     </html>`;
 
-    const text = `${greeting}\n\nComme convenu, voici le lien vers notre tutoriel\n\n👉 Cliquez ici pour accéder au tutoriel : ${demoLink}\n\nJ'ai également créé votre boutique personnalisée avec l'ensemble de vos articles, vous pouvez y accéder ici :\n\n🛍️ Lien vers votre boutique : ${storeLink}\n\nEt voici le lien à partager directement à vos clientes lors de vos prochains lives afin qu'elles puissent constituer leurs paniers et procéder au paiement :\n\n📲 Lien à partager en live : ${checkoutLink}\n\nN’hésitez pas à me contacter si vous avez des questions !\n\nÀ très vite,\nL’équipe PayLive.cc`;
+    const text = `${greetingText}\n\nComme convenu, voici le lien vers notre tutoriel\n\n👉 Cliquez ici pour accéder au tutoriel : ${demoLink}\n\nJ'ai également créé votre boutique personnalisée avec l'ensemble de vos articles, vous pouvez y accéder ici :\n\n🛍️ Lien vers votre boutique : ${storeLink}\n\nEt voici le lien à partager directement à vos clientes lors de vos prochains lives afin qu'elles puissent constituer leurs paniers et procéder au paiement :\n\n📲 Lien à partager en live : ${checkoutLink}\n\nN’hésitez pas à me contacter si vous avez des questions !\n\nÀ très vite,\nL’équipe PayLive.cc`;
 
     const fromEmail = process.env.SMTP_USER || "noreply@paylive.cc";
     const attachments: any[] = [];

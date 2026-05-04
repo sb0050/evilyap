@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import DOMPurify from 'dompurify';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth, useUser } from '@clerk/clerk-react';
 import {
@@ -3086,7 +3087,7 @@ export default function DashboardPage() {
       });
       return next;
     });
-  }, [statsShipments]);
+  }, [shipments]);
 
   useEffect(() => {
     const filteredLength = (shipments || []).filter(s => {
@@ -5911,7 +5912,9 @@ export default function DashboardPage() {
                                 String(v ?? '')
                                   .replace(/&/g, '&amp;')
                                   .replace(/</g, '&lt;')
-                                  .replace(/>/g, '&gt;');
+                                  .replace(/>/g, '&gt;')
+                                  .replace(/"/g, '&quot;')
+                                  .replace(/'/g, '&#39;');
 
                               const imageHtml = detail.imageUrl
                                 ? `<img src="${safeText(detail.imageUrl)}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;" />`
@@ -5934,7 +5937,7 @@ export default function DashboardPage() {
                                   <div style="margin-top:8px;color:#4b5563;font-size:11px;line-height:1.35;word-break:break-word;">${safeText(clippedDesc || 'Description indisponible')}</div>
                                 </div>
                               `;
-                              el.innerHTML = html;
+                              el.innerHTML = DOMPurify.sanitize(html);
 
                               const rect = chart.canvas.getBoundingClientRect();
                               const anchorX = window.scrollX + rect.left + tooltip.caretX;

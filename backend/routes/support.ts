@@ -1,17 +1,76 @@
-import express from "express";
+import express, { NextFunction, Request, Response } from "express";
 import multer from "multer";
 import { createClient } from "@supabase/supabase-js";
 import { emailService } from "../services/emailService";
 import { clerkClient } from "@clerk/express";
 import { getAuth } from "@clerk/express";
+import {
+  detectFileFromMagicBytes,
+  sanitizeAttachmentFilename,
+} from "../utils/fileMagicBytes";
 
 const router = express.Router();
+
+/**
+ * MIME types accepted as email attachments on support endpoints.
+ *
+ * Kept deliberately narrow: the file is forwarded to a human (admin inbox or
+ * store owner), so we only accept formats the recipient can safely open — no
+ * HTML, no office macros, no archives, no executables.
+ *
+ * Enforcement happens twice:
+ *  - Multer `fileFilter` rejects early on the untrusted client-declared MIME.
+ *  - The handler re-validates by magic bytes via {@link detectFileFromMagicBytes}
+ *    so a file renamed from `exploit.html` to `image.png` cannot slip through.
+ */
+const ALLOWED_SUPPORT_ATTACHMENT_MIMES = new Set<string>([
+  "application/pdf",
+  "image/png",
+  "image/jpeg",
+]);
 
 // Upload config: mémoire, limite de 8MB
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    // Pre-filter permissif pour eviter les faux negatifs cote client MIME.
+    // Le controle autoritatif reste le magic-byte check dans les handlers.
+    const mime = String(file.mimetype || "").toLowerCase().trim();
+    const looksLikeImage = mime.startsWith("image/");
+    const looksLikePdf =
+      mime === "application/pdf" || mime === "application/x-pdf";
+    if (looksLikeImage || looksLikePdf) cb(null, true);
+    else cb(new Error("Type de fichier non supporte"));
+  },
 });
+
+
+
+const attachmentUploadSingle = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  upload.single("attachment")(req as any, res as any, (err: any) => {
+    if (!err) return next();
+
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res
+          .status(413)
+          .json({ error: "Fichier trop volumineux (max 8MB)" });
+      }
+      return res.status(400).json({ error: "Fichier invalide" });
+    }
+
+    if (String(err?.message || "").includes("Type de fichier non support")) {
+      return res.status(415).json({ error: "Type de fichier non supporte" });
+    }
+
+    return next(err);
+  });
+};
 
 const supabaseUrl = process.env.SUPABASE_URL!;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -23,7 +82,7 @@ if (!supabaseUrl || !supabaseKey) {
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // POST /api/support/contact - Store owner sends a support message to admin
-router.post("/contact", upload.single("attachment"), async (req, res) => {
+router.post("/contact", attachmentUploadSingle, async (req, res) => {
   try {
     const {
       storeSlug,
@@ -78,14 +137,32 @@ router.post("/contact", upload.single("attachment"), async (req, res) => {
     }> = [];
     const file = (req as any).file as Express.Multer.File | undefined;
     if (file) {
-      const allowed = ["application/pdf", "image/png", "image/jpeg"];
-      if (!allowed.includes(file.mimetype)) {
-        return res.status(400).json({ error: "Type de fichier non supporté" });
+      // Authoritative magic-byte check: `file.mimetype` is the untrusted
+      // `Content-Type` sent by the client and can be spoofed to smuggle a
+      // disallowed payload (HTML, executable, archive) past the MIME filter.
+      // We re-classify the buffer here and also intersect with the route's
+      // own whitelist as defense in depth.
+      const detected = await detectFileFromMagicBytes(
+        file.buffer,
+        ALLOWED_SUPPORT_ATTACHMENT_MIMES,
+      );
+      if (!detected) {
+        return res
+          .status(415)
+          .json({ error: "Type de fichier non supporté" });
       }
       attachments.push({
-        filename: file.originalname,
+        // `originalname` can contain CR/LF (MIME header injection on some
+        // transports) or path separators (traversal in a few mail clients).
+        // We replace the extension with the one derived from magic bytes so
+        // the attachment cannot be re-labeled.
+        filename: sanitizeAttachmentFilename(
+          file.originalname,
+          detected.ext,
+        ),
         content: file.buffer,
-        contentType: file.mimetype,
+        // `contentType` must reflect the VERIFIED MIME, not the client's one.
+        contentType: detected.mime,
       });
     }
 
@@ -117,7 +194,7 @@ export default router;
 // Nouveau endpoint: client contacte le propriétaire du store à propos d'un shipment
 router.post(
   "/customer-contact",
-  upload.single("attachment"),
+  attachmentUploadSingle,
   async (req, res) => {
     try {
       const auth = getAuth(req);
@@ -230,7 +307,7 @@ router.post(
           .json({ error: "Boutique introuvable ou email propriétaire absent" });
       }
 
-      // Pièce jointe
+      // Pièce jointe — même contrôle magic-bytes que `/contact` ci-dessus.
       let attachments: Array<{
         filename: string;
         content: Buffer;
@@ -238,16 +315,22 @@ router.post(
       }> = [];
       const file = (req as any).file as Express.Multer.File | undefined;
       if (file) {
-        const allowed = ["application/pdf", "image/png", "image/jpeg"];
-        if (!allowed.includes(file.mimetype)) {
+        const detected = await detectFileFromMagicBytes(
+          file.buffer,
+          ALLOWED_SUPPORT_ATTACHMENT_MIMES,
+        );
+        if (!detected) {
           return res
-            .status(400)
+            .status(415)
             .json({ error: "Type de fichier non supporté" });
         }
         attachments.push({
-          filename: file.originalname,
+          filename: sanitizeAttachmentFilename(
+            file.originalname,
+            detected.ext,
+          ),
           content: file.buffer,
-          contentType: file.mimetype,
+          contentType: detected.mime,
         });
       }
 
