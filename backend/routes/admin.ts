@@ -3,8 +3,29 @@ import nodemailer from "nodemailer";
 import fs from "fs";
 import path from "path";
 import { clerkClient, getAuth } from "@clerk/express";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 const router = express.Router();
+
+const supabaseUrl = String(process.env.SUPABASE_URL || "").trim();
+const supabaseKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+const supabase: SupabaseClient | null =
+  supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
+if (!supabase) {
+  console.error("Supabase environment variables are missing; leads routes disabled");
+}
+
+const getSupabaseClientOrRespond = (
+  res: express.Response,
+): SupabaseClient | null => {
+  if (!supabase) {
+    res
+      .status(503)
+      .json({ error: "Configuration Supabase manquante pour ce service" });
+    return null;
+  }
+  return supabase;
+};
 
 const requireAdmin = async (
   req: express.Request,
@@ -121,6 +142,352 @@ const escapeHtml = (value: string): string =>
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+
+const STATUS_LABEL_TO_ID: Record<string, number> = {
+  "A contacter": 1,
+  "Contacté": 2,
+  "Répondu": 3,
+  "Interessé": 4,
+  "Call / Démo prévu": 5,
+  "En Onboarding": 6,
+  "Perdu / Refusé": 7,
+  "Actif": 8,
+};
+
+const decodePotentialMojibake = (value: string): string => {
+  const normalized = String(value || "").trim();
+  if (!/[\u00C2\u00C3\u00E2]/.test(normalized)) {
+    return normalized;
+  }
+  try {
+    return Buffer.from(normalized, "latin1").toString("utf8").trim();
+  } catch {
+    return normalized;
+  }
+};
+
+const normalizeStatusLabel = (value: string): string =>
+  decodePotentialMojibake(value)
+    .replace(/^Contacte$/i, "Contacté")
+    .replace(/^Repondu$/i, "Répondu")
+    .replace(/^Interesse$/i, "Interessé")
+    .replace(/^Call \/ Demo prevu$/i, "Call / Démo prévu")
+    .replace(/^Perdu \/ Refuse$/i, "Perdu / Refusé");
+
+const normalizeStatusToId = (raw: unknown): number | null => {
+  const value = normalizeStatusLabel(String(raw ?? ""));
+  if (!value) return null;
+
+  const asNumber = Number(value);
+  if (Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= 8) {
+    return asNumber;
+  }
+
+  if (value in STATUS_LABEL_TO_ID) {
+    return STATUS_LABEL_TO_ID[value];
+  }
+
+  return null;
+};
+
+const normalizeStoreForCompare = (raw: unknown): string =>
+  String(raw || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+const findLeadByStore = async (
+  client: SupabaseClient,
+  normalizedStore: string,
+  rawStore: string,
+  excludedLeadId?: string,
+): Promise<{ id: string } | null> => {
+  const ilikePattern = normalizedStore.split(" ").filter(Boolean).join("%");
+  const queryPattern = ilikePattern || rawStore;
+
+  const { data, error } = await client
+    .from("leads")
+    .select("id, store")
+    .ilike("store", queryPattern)
+    .not("store", "is", null);
+
+  if (error) {
+    throw new Error(error.message || "Erreur vérification boutique lead");
+  }
+
+  const match = (data || []).find((row: any) => {
+    const sameStore = normalizeStoreForCompare(row?.store) === normalizedStore;
+    const sameLead = excludedLeadId
+      ? String(row?.id || "").trim() === excludedLeadId
+      : false;
+    return sameStore && !sameLead;
+  });
+
+  if (!match) return null;
+  return { id: String(match.id || "") };
+};
+
+router.post("/leads", async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const client = getSupabaseClientOrRespond(res);
+    if (!client) return;
+
+    const {
+      name,
+      store,
+      phone,
+      email,
+      webLink,
+      quickNote,
+      note,
+      imageUrl,
+      status,
+    } = req.body || {};
+
+    const leadName = String(name || "").trim();
+    if (!leadName) {
+      return res.status(400).json({ error: "Nom du prospect requis" });
+    }
+
+    const leadStatusId = normalizeStatusToId(status ?? 1);
+    if (!leadStatusId) {
+      return res.status(400).json({ error: "Statut invalide" });
+    }
+
+    const normalizedStore = normalizeStoreForCompare(store);
+    if (normalizedStore) {
+      const existingLead = await findLeadByStore(
+        client,
+        normalizedStore,
+        String(store || "").trim(),
+      );
+      if (existingLead) {
+        return res.status(409).json({ error: "Cette boutique existe deja" });
+      }
+    }
+
+    const payload = {
+      name: leadName,
+      store: String(store || "").trim() || null,
+      phone: String(phone || "").trim() || null,
+      mail: String(email || "").trim().toLowerCase() || null,
+      link: String(webLink || "").trim() || null,
+      quick_note: String(quickNote || "").trim() || null,
+      note: String(note || "").trim() || null,
+      image_url: String(imageUrl || "").trim() || null,
+      status: leadStatusId,
+    };
+
+    const { data, error } = await client
+      .from("leads")
+      .insert([payload])
+      .select("*")
+      .single();
+
+    if (error) {
+      if (String((error as any)?.code || "") === "23505") {
+        return res.status(409).json({ error: "Cette boutique existe deja" });
+      }
+      return res.status(500).json({ error: error.message || "Erreur insertion lead" });
+    }
+
+    return res.json({ success: true, lead: data });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Erreur interne" });
+  }
+});
+
+router.get("/leads", async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const client = getSupabaseClientOrRespond(res);
+    if (!client) return;
+
+    const { data, error } = await client
+      .from("leads")
+      .select("*")
+      .order("id", { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ error: error.message || "Erreur lecture leads" });
+    }
+
+    return res.json({ success: true, leads: data || [] });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Erreur interne" });
+  }
+});
+
+const updateLeadHandler: express.RequestHandler = async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const client = getSupabaseClientOrRespond(res);
+    if (!client) return;
+
+    const leadId = String(req.params.id || "").trim();
+    if (!leadId) {
+      return res.status(400).json({ error: "Lead id invalide" });
+    }
+
+    const body = req.body || {};
+    const payload: Record<string, any> = {};
+
+    if (Object.prototype.hasOwnProperty.call(body, "name")) {
+      const name = String(body.name || "").trim();
+      if (!name) {
+        return res.status(400).json({ error: "Nom du prospect requis" });
+      }
+      payload.name = name;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "store")) {
+      const store = String(body.store || "").trim();
+      if (!store) {
+        return res.status(400).json({ error: "Boutique requise" });
+      }
+      const normalizedStore = normalizeStoreForCompare(store);
+      const existingLead = await findLeadByStore(
+        client,
+        normalizedStore,
+        store,
+        leadId,
+      );
+      if (existingLead) {
+        return res.status(409).json({ error: "Cette boutique existe deja" });
+      }
+      payload.store = store;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "phone")) {
+      payload.phone = String(body.phone || "").trim() || null;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "email")) {
+      const nextEmail = String(body.email || "").trim().toLowerCase();
+      payload.mail = nextEmail || null;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "webLink")) {
+      payload.link = String(body.webLink || "").trim() || null;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "quickNote")) {
+      payload.quick_note = String(body.quickNote || "").trim() || null;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "note")) {
+      payload.note = String(body.note || "").trim() || null;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, "imageUrl")) {
+      payload.image_url = String(body.imageUrl || "").trim() || null;
+    }
+
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({ error: "Aucun champ valide à mettre à jour" });
+    }
+
+    const { data, error } = await client
+      .from("leads")
+      .update(payload)
+      .eq("id", leadId)
+      .select("*")
+      .maybeSingle();
+    if (error) {
+      if (String((error as any)?.code || "") === "23505") {
+        return res.status(409).json({ error: "Cette boutique existe deja" });
+      }
+      return res.status(500).json({ error: error.message || "Erreur maj lead" });
+    }
+    if (!data) {
+      return res.status(404).json({ error: "Prospect introuvable" });
+    }
+
+    return res.json({ success: true, lead: data });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Erreur interne" });
+  }
+};
+
+router.patch("/leads/:id", updateLeadHandler);
+router.put("/leads/:id", updateLeadHandler);
+
+const deleteLeadHandler: express.RequestHandler = async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const client = getSupabaseClientOrRespond(res);
+    if (!client) return;
+
+    const leadId = String(req.params.id || "").trim();
+    if (!leadId) {
+      return res.status(400).json({ error: "Lead id invalide" });
+    }
+
+    const { data: existingLead, error: existingLeadError } = await client
+      .from("leads")
+      .select("id")
+      .eq("id", leadId)
+      .maybeSingle();
+
+    if (existingLeadError) {
+      return res.status(500).json({
+        error:
+          existingLeadError.message || "Erreur recherche lead avant suppression",
+      });
+    }
+    if (!existingLead) {
+      return res.status(404).json({ error: "Prospect introuvable" });
+    }
+
+    const { error } = await client.from("leads").delete().eq("id", leadId);
+    if (error) {
+      return res.status(500).json({ error: error.message || "Erreur suppression lead" });
+    }
+
+    return res.json({ success: true, id: leadId });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Erreur interne" });
+  }
+};
+
+router.delete("/leads/:id", deleteLeadHandler);
+
+const updateLeadStatusHandler: express.RequestHandler = async (req, res) => {
+  try {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    const client = getSupabaseClientOrRespond(res);
+    if (!client) return;
+
+    const leadId = String(req.params.id || "").trim();
+    if (!leadId) {
+      return res.status(400).json({ error: "Lead id invalide" });
+    }
+
+    const leadStatusId = normalizeStatusToId(req.body?.status);
+    if (!leadStatusId) {
+      return res.status(400).json({ error: "Statut invalide" });
+    }
+
+    const { data, error } = await client
+      .from("leads")
+      .update({ status: leadStatusId })
+      .eq("id", leadId)
+      .select("*")
+      .maybeSingle();
+    if (error) {
+      return res.status(500).json({ error: error.message || "Erreur maj status lead" });
+    }
+    if (!data) {
+      return res.status(404).json({ error: "Prospect introuvable" });
+    }
+
+    return res.json({ success: true, lead: data });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || "Erreur interne" });
+  }
+};
+
+router.patch("/leads/:id/status", updateLeadStatusHandler);
+router.put("/leads/:id/status", updateLeadStatusHandler);
 
 router.post("/prospect", async (req, res) => {
   try {
