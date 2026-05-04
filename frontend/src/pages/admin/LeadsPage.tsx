@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   useUser,
   useAuth,
@@ -108,7 +108,7 @@ const STATUS_LABEL_TO_ID: Record<LeadStatus, number> = {
   'Call / Démo prévu': 5,
   'En Onboarding': 6,
   'Perdu / Refusé': 7,
-  Actif: 8,
+  'Actif': 8,
 };
 
 const STATUS_ID_TO_LABEL: Record<number, LeadStatus> = {
@@ -126,7 +126,13 @@ const isLeadStatusLabel = (value: string): value is LeadStatus =>
   LEAD_COLUMNS.some(column => column.key === value);
 
 const normalizeLeadStatus = (raw: unknown): LeadStatus => {
-  const value = String(raw ?? '').trim();
+  const value = String(raw ?? '')
+    .trim()
+    .replace('ContactÃ©', 'Contacté')
+    .replace('RÃ©pondu', 'Répondu')
+    .replace('InteressÃ©', 'Interessé')
+    .replace('Call / DÃ©mo prÃ©vu', 'Call / Démo prévu')
+    .replace('Perdu / RefusÃ©', 'Perdu / Refusé');
   if (!value) return 'A contacter';
 
   if (isLeadStatusLabel(value)) {
@@ -213,11 +219,7 @@ const normalizeImageUrls = (raw: unknown): string[] => {
 
 const joinImageUrlsForStorage = (urls: string[]): string =>
   Array.from(
-    new Set(
-      (urls || [])
-        .map(item => String(item || '').trim())
-        .filter(Boolean)
-    )
+    new Set((urls || []).map(item => String(item || '').trim()).filter(Boolean))
   ).join(';');
 
 const getImageAttachmentLabel = (url: string): string => {
@@ -310,7 +312,7 @@ function LeadCard({ lead, onSaveQuickNote, onOpenLead }: LeadCardProps) {
       style={style}
       {...listeners}
       {...attributes}
-      className='cursor-grab rounded-md border border-gray-200 bg-white p-3 shadow-sm active:cursor-grabbing'
+      className='relative cursor-grab rounded-md border border-gray-200 bg-white p-3 pr-11 shadow-sm active:cursor-grabbing'
       onClick={() => {
         if (draggedRef.current) {
           draggedRef.current = false;
@@ -319,6 +321,29 @@ function LeadCard({ lead, onSaveQuickNote, onOpenLead }: LeadCardProps) {
         onOpenLead(lead.id);
       }}
     >
+      <button
+        type='button'
+        onClick={e => {
+          e.stopPropagation();
+          onOpenLead(lead.id);
+        }}
+        onPointerDown={e => e.stopPropagation()}
+        className='absolute top-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100 hover:text-indigo-700'
+        aria-label='Modifier le prospect'
+      >
+        <svg
+          xmlns='http://www.w3.org/2000/svg'
+          viewBox='0 0 24 24'
+          fill='none'
+          stroke='currentColor'
+          strokeWidth='2'
+          className='h-4 w-4'
+          aria-hidden='true'
+        >
+          <path d='M12 20h9' />
+          <path d='M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z' />
+        </svg>
+      </button>
       <p className='text-sm font-semibold text-gray-900'>{lead.name}</p>
       {lead.store ? (
         <p className='mt-1 text-xs font-medium text-gray-700'>
@@ -333,12 +358,12 @@ function LeadCard({ lead, onSaveQuickNote, onOpenLead }: LeadCardProps) {
       ) : null}
       {lead.webLink ? (
         <a
-          href={lead.webLink}
+          href={toBrowserUrl(lead.webLink)}
           target='_blank'
           rel='noreferrer'
           className='mt-1 block text-xs text-indigo-600 hover:underline break-all'
         >
-          {lead.webLink}
+          Lien web
         </a>
       ) : null}
       <div
@@ -346,9 +371,58 @@ function LeadCard({ lead, onSaveQuickNote, onOpenLead }: LeadCardProps) {
         onClick={e => e.stopPropagation()}
         onPointerDown={e => e.stopPropagation()}
       >
+        {(lead.quickNote || isQuickNoteEditing) && (
+          <div className='mb-2 flex items-center justify-between gap-2'>
+            <p className='text-xs font-semibold uppercase tracking-wide text-gray-500'>
+              Note Rapide
+            </p>
+            {lead.quickNote ? (
+              <div className='ml-auto flex items-center gap-1'>
+                <button
+                  type='button'
+                  onClick={startQuickNoteEdit}
+                  className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700'
+                  aria-label='Modifier la Note Rapide'
+                >
+                  <svg
+                    xmlns='http://www.w3.org/2000/svg'
+                    viewBox='0 0 24 24'
+                    fill='none'
+                    stroke='currentColor'
+                    strokeWidth='2'
+                    className='h-4 w-4'
+                    aria-hidden='true'
+                  >
+                    <path d='M12 20h9' />
+                    <path d='M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z' />
+                  </svg>
+                </button>
+                <button
+                  type='button'
+                  onClick={() => onSaveQuickNote(lead.id, '')}
+                  className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-300 text-red-700 hover:bg-red-50'
+                  aria-label='Supprimer la Note Rapide'
+                >
+                  <svg
+                    xmlns='http://www.w3.org/2000/svg'
+                    viewBox='0 0 24 24'
+                    fill='none'
+                    stroke='currentColor'
+                    strokeWidth='2'
+                    className='h-4 w-4'
+                    aria-hidden='true'
+                  >
+                    <path d='M18 6 6 18' />
+                    <path d='m6 6 12 12' />
+                  </svg>
+                </button>
+              </div>
+            ) : null}
+          </div>
+        )}
         {lead.quickNote ? (
           <p className='mb-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800'>
-            Note Reapide: {lead.quickNote}
+            {lead.quickNote}
           </p>
         ) : null}
         {isQuickNoteEditing ? (
@@ -361,45 +435,57 @@ function LeadCard({ lead, onSaveQuickNote, onOpenLead }: LeadCardProps) {
                 if (e.key === 'Enter') submitQuickNoteEdit();
                 if (e.key === 'Escape') cancelQuickNoteEdit();
               }}
-              placeholder='Note Reapide...'
+              placeholder='Note Rapide...'
               className='w-full rounded-md border border-gray-300 px-2 py-1 text-xs'
             />
             <button
               type='button'
               onClick={submitQuickNoteEdit}
               className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50'
-              aria-label='Valider la note reapide'
+              aria-label='Valider la Note Rapide'
             >
-              ✓
+              <svg
+                xmlns='http://www.w3.org/2000/svg'
+                viewBox='0 0 24 24'
+                fill='none'
+                stroke='currentColor'
+                strokeWidth='2'
+                className='h-4 w-4'
+                aria-hidden='true'
+              >
+                <path d='m20 6-11 11-5-5' />
+              </svg>
             </button>
             <button
               type='button'
               onClick={cancelQuickNoteEdit}
               className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-300 text-red-700 hover:bg-red-50'
-              aria-label='Annuler la note reapide'
+              aria-label='Annuler la Note Rapide'
             >
-              ✕
+              <svg
+                xmlns='http://www.w3.org/2000/svg'
+                viewBox='0 0 24 24'
+                fill='none'
+                stroke='currentColor'
+                strokeWidth='2'
+                className='h-4 w-4'
+                aria-hidden='true'
+              >
+                <path d='M18 6 6 18' />
+                <path d='m6 6 12 12' />
+              </svg>
             </button>
           </div>
-        ) : lead.quickNote ? (
-          <button
-            type='button'
-            onClick={startQuickNoteEdit}
-            className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-gray-300 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700'
-            aria-label='Modifier la Note Reapide'
-          >
-            ✎
-          </button>
-        ) : (
+        ) : !lead.quickNote ? (
           <button
             type='button'
             onClick={startQuickNoteEdit}
             className='inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-700'
-            aria-label='Ajouter une Note Reapide'
+            aria-label='Ajouter une Note Rapide'
           >
-            + Ajouter une Note Reapide
+            + Ajouter une Note Rapide
           </button>
-        )}
+        ) : null}
       </div>
     </article>
   );
@@ -533,7 +619,14 @@ type LeadDetailsModalProps = {
     updates: Partial<
       Pick<
         Lead,
-        'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote' | 'note' | 'imageUrls'
+        | 'name'
+        | 'store'
+        | 'phone'
+        | 'email'
+        | 'webLink'
+        | 'quickNote'
+        | 'note'
+        | 'imageUrls'
       >
     >
   ) => Promise<void>;
@@ -563,9 +656,9 @@ function LeadDetailsModal({
   const [linkDraft, setLinkDraft] = useState('https://');
   const [linkError, setLinkError] = useState<string | null>(null);
   const [imageUrlDraft, setImageUrlDraft] = useState('');
-  const [imageAddedAtByUrl, setImageAddedAtByUrl] = useState<Record<string, string>>(
-    {}
-  );
+  const [imageAddedAtByUrl, setImageAddedAtByUrl] = useState<
+    Record<string, string>
+  >({});
 
   const editor = useEditor({
     extensions: [
@@ -695,9 +788,7 @@ function LeadDetailsModal({
     const nextValue = imageUrlDraft.trim();
     if (!nextValue) return;
     if (!isValidWebLinkFormat(nextValue)) {
-      setSaveError(
-                        'Lien image invalide.'
-      );
+      setSaveError('Lien image invalide.');
       return;
     }
     setSaveError(null);
@@ -706,9 +797,28 @@ function LeadDetailsModal({
       existing.add(nextValue);
       return { ...prev, imageUrls: Array.from(existing) };
     });
-    setImageAddedAtByUrl(prev => ({ ...prev, [nextValue]: new Date().toISOString() }));
+    setImageAddedAtByUrl(prev => ({
+      ...prev,
+      [nextValue]: new Date().toISOString(),
+    }));
     setImageUrlDraft('');
   };
+  const trimmedImageUrlDraft = imageUrlDraft.trim();
+  const isImageUrlDraftInvalid =
+    Boolean(trimmedImageUrlDraft) && !isValidWebLinkFormat(trimmedImageUrlDraft);
+  const hasInvalidExistingLeadFields =
+    (localLead.phone.trim() && !isValidPhoneNumber(localLead.phone)) ||
+    !isValidEmailFormat(localLead.email) ||
+    !isValidWebLinkFormat(localLead.webLink);
+  const activeFieldValidationError = editingField
+    ? validateFieldDraft(editingField, draftValue)
+    : null;
+  const isModalValidateDisabled =
+    isSavingRichText ||
+    isSavingField ||
+    Boolean(activeFieldValidationError) ||
+    isImageUrlDraftInvalid ||
+    hasInvalidExistingLeadFields;
 
   const removeImageUrl = (urlToRemove: string) => {
     const target = String(urlToRemove || '').trim();
@@ -752,14 +862,22 @@ function LeadDetailsModal({
     const updates: Partial<
       Pick<
         Lead,
-        'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote' | 'note' | 'imageUrls'
+        | 'name'
+        | 'store'
+        | 'phone'
+        | 'email'
+        | 'webLink'
+        | 'quickNote'
+        | 'note'
+        | 'imageUrls'
       >
     > = {};
     if (finalLead.name !== initialLead.name) updates.name = finalLead.name;
     if (finalLead.store !== initialLead.store) updates.store = finalLead.store;
     if (finalLead.phone !== initialLead.phone) updates.phone = finalLead.phone;
     if (finalLead.email !== initialLead.email) updates.email = finalLead.email;
-    if (finalLead.webLink !== initialLead.webLink) updates.webLink = finalLead.webLink;
+    if (finalLead.webLink !== initialLead.webLink)
+      updates.webLink = finalLead.webLink;
     if (finalLead.quickNote !== initialLead.quickNote) {
       updates.quickNote = finalLead.quickNote;
     }
@@ -826,7 +944,18 @@ function LeadDetailsModal({
             className='inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100'
             aria-label={`Modifier ${label}`}
           >
-            ✎
+            <svg
+              xmlns='http://www.w3.org/2000/svg'
+              viewBox='0 0 24 24'
+              fill='none'
+              stroke='currentColor'
+              strokeWidth='2'
+              className='h-4 w-4'
+              aria-hidden='true'
+            >
+              <path d='M12 20h9' />
+              <path d='M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z' />
+            </svg>
           </button>
         )}
         <p>
@@ -854,17 +983,31 @@ function LeadDetailsModal({
               type={inputType}
               value={draftValue}
               onChange={e => setDraftValue(e.target.value)}
-              className='w-full rounded-md border border-gray-300 px-2 py-1 text-xs'
+              className={`w-full rounded-md border px-2 py-1 text-xs ${
+                validateFieldDraft(field, draftValue)
+                  ? 'border-red-400'
+                  : 'border-gray-300'
+              }`}
             />
           )}
           <button
             type='button'
             onClick={() => void saveField(field)}
-            disabled={isSavingField}
+            disabled={isSavingField || Boolean(validateFieldDraft(field, draftValue))}
             className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50'
             aria-label={`Valider ${label}`}
           >
-            ✓
+            <svg
+              xmlns='http://www.w3.org/2000/svg'
+              viewBox='0 0 24 24'
+              fill='none'
+              stroke='currentColor'
+              strokeWidth='2'
+              className='h-4 w-4'
+              aria-hidden='true'
+            >
+              <path d='m20 6-11 11-5-5' />
+            </svg>
           </button>
           <button
             type='button'
@@ -873,7 +1016,18 @@ function LeadDetailsModal({
             className='inline-flex h-7 w-7 items-center justify-center rounded-md border border-red-300 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50'
             aria-label={`Annuler ${label}`}
           >
-            ✕
+            <svg
+              xmlns='http://www.w3.org/2000/svg'
+              viewBox='0 0 24 24'
+              fill='none'
+              stroke='currentColor'
+              strokeWidth='2'
+              className='h-4 w-4'
+              aria-hidden='true'
+            >
+              <path d='M18 6 6 18' />
+              <path d='m6 6 12 12' />
+            </svg>
           </button>
         </div>
       ) : null}
@@ -881,7 +1035,9 @@ function LeadDetailsModal({
       field === 'phone' &&
       draftValue.trim() &&
       !isValidPhoneNumber(draftValue) ? (
-        <p className='mt-1 text-xs text-red-600'>Numéro de téléphone invalide.</p>
+        <p className='mt-1 text-xs text-red-600'>
+          Numéro de téléphone invalide.
+        </p>
       ) : null}
       {editingField === field &&
       field === 'email' &&
@@ -904,7 +1060,9 @@ function LeadDetailsModal({
     'inline-flex items-center rounded border border-gray-300 px-2 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-100';
 
   const openLinkModalForEditor = () => {
-    const currentHref = String(editor?.getAttributes('link')?.href || '').trim();
+    const currentHref = String(
+      editor?.getAttributes('link')?.href || ''
+    ).trim();
     setLinkDraft(currentHref || 'https://');
     setLinkError(null);
     setIsLinkModalOpen(true);
@@ -942,7 +1100,9 @@ function LeadDetailsModal({
         onClick={e => e.stopPropagation()}
       >
         <div className='flex items-center justify-between border-b border-gray-200 px-5 py-4'>
-          <h2 className='text-lg font-semibold text-gray-900'>Détails du client</h2>
+          <h2 className='text-lg font-semibold text-gray-900'>
+            Détails du client
+          </h2>
           <div className='flex items-center gap-2'>
             <button
               type='button'
@@ -973,7 +1133,7 @@ function LeadDetailsModal({
               'url'
             )}
             {renderEditableField(
-              'Note Reapide',
+              'Note Rapide',
               'quickNote',
               localLead.quickNote,
               'text'
@@ -1048,7 +1208,9 @@ function LeadDetailsModal({
             </div>
             <div className='mt-4'>
               <div className='mb-2 flex items-center gap-2'>
-                <p className='text-sm font-semibold text-gray-900'>Pieces jointes</p>
+                <p className='text-sm font-semibold text-gray-900'>
+                  Pieces jointes
+                </p>
                 <span className='inline-flex h-6 min-w-6 items-center justify-center rounded-md bg-gray-100 px-2 text-xs font-semibold text-gray-700'>
                   {localLead.imageUrls.length}
                 </span>
@@ -1065,7 +1227,9 @@ function LeadDetailsModal({
                     }
                   }}
                   placeholder='https://...'
-                  className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700'
+                  className={`w-full rounded-lg border px-3 py-2 text-sm text-gray-700 ${
+                    isImageUrlDraftInvalid ? 'border-red-400' : 'border-gray-300'
+                  }`}
                 />
                 <button
                   type='button'
@@ -1128,7 +1292,7 @@ function LeadDetailsModal({
               <button
                 type='button'
                 onClick={() => void handleValidateAndClose()}
-                disabled={isSavingRichText}
+                disabled={isModalValidateDisabled}
                 className='inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50'
               >
                 Valider
@@ -1246,12 +1410,14 @@ export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [collapsedStatuses, setCollapsedStatuses] = useState<
     Record<LeadStatus, boolean>
-  >(
-    () =>
-      LEAD_COLUMNS.reduce((acc, column) => {
+  >(() =>
+    LEAD_COLUMNS.reduce(
+      (acc, column) => {
         acc[column.key] = false;
         return acc;
-      }, {} as Record<LeadStatus, boolean>)
+      },
+      {} as Record<LeadStatus, boolean>
+    )
   );
   const [newLeadName, setNewLeadName] = useState('');
   const [newLeadStore, setNewLeadStore] = useState('');
@@ -1300,9 +1466,21 @@ export default function LeadsPage() {
   const trimmedNewLeadName = newLeadName.trim();
   const trimmedNewLeadStore = newLeadStore.trim();
   const hasPhoneValue = Boolean(newLeadPhone.trim());
-  const isNewLeadPhoneValid = !hasPhoneValue || isValidPhoneNumber(newLeadPhone);
+  const isNewLeadPhoneValid =
+    !hasPhoneValue || isValidPhoneNumber(newLeadPhone);
+  const isNewLeadEmailValid = isValidEmailFormat(newLeadEmail);
+  const isNewLeadWebLinkValid = isValidWebLinkFormat(newLeadWebLink);
+  const trimmedNewLeadImageUrlInput = newLeadImageUrlInput.trim();
+  const isNewLeadImageUrlDraftInvalid =
+    Boolean(trimmedNewLeadImageUrlInput) &&
+    !isValidWebLinkFormat(trimmedNewLeadImageUrlInput);
   const isCreateLeadDisabled =
-    !trimmedNewLeadName || !trimmedNewLeadStore || !isNewLeadPhoneValid;
+    !trimmedNewLeadName ||
+    !trimmedNewLeadStore ||
+    !isNewLeadPhoneValid ||
+    !isNewLeadEmailValid ||
+    !isNewLeadWebLinkValid ||
+    isNewLeadImageUrlDraftInvalid;
 
   const filteredLeads = useMemo(() => {
     const query = normalizeSearchText(searchQuery);
@@ -1316,10 +1494,15 @@ export default function LeadsPage() {
 
   const leadsByStatus = useMemo(
     () =>
-      LEAD_COLUMNS.reduce((acc, column) => {
-        acc[column.key] = filteredLeads.filter(lead => lead.status === column.key);
-        return acc;
-      }, {} as Record<LeadStatus, Lead[]>),
+      LEAD_COLUMNS.reduce(
+        (acc, column) => {
+          acc[column.key] = filteredLeads.filter(
+            lead => lead.status === column.key
+          );
+          return acc;
+        },
+        {} as Record<LeadStatus, Lead[]>
+      ),
     [filteredLeads]
   );
   const selectedLead = useMemo(
@@ -1503,7 +1686,14 @@ export default function LeadsPage() {
     updates: Partial<
       Pick<
         Lead,
-        'name' | 'store' | 'phone' | 'email' | 'webLink' | 'quickNote' | 'note' | 'imageUrls'
+        | 'name'
+        | 'store'
+        | 'phone'
+        | 'email'
+        | 'webLink'
+        | 'quickNote'
+        | 'note'
+        | 'imageUrls'
       >
     >
   ) => {
@@ -1536,14 +1726,20 @@ export default function LeadsPage() {
         );
         delete updatesForApi.imageUrls;
       }
-      await apiPut(`/api/admin/leads/${encodeURIComponent(leadId)}`, updatesForApi, {
-        headers: { Authorization: token ? `Bearer ${token}` : '' },
-      });
+      await apiPut(
+        `/api/admin/leads/${encodeURIComponent(leadId)}`,
+        updatesForApi,
+        {
+          headers: { Authorization: token ? `Bearer ${token}` : '' },
+        }
+      );
     } catch (e) {
       setLeads(prev =>
         prev.map(lead => (lead.id === leadId ? previousLead : lead))
       );
-      throw new Error(extractApiErrorMessage(e, 'Erreur lors de la mise a jour'));
+      throw new Error(
+        extractApiErrorMessage(e, 'Erreur lors de la mise a jour')
+      );
     }
   };
 
@@ -1720,7 +1916,7 @@ export default function LeadsPage() {
                 onClick={() => setIsCreateModalOpen(true)}
                 className='inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700'
               >
-                Créer une carte
+                Ajouter un prospect
               </button>
             </div>
 
@@ -1770,7 +1966,18 @@ export default function LeadsPage() {
                       className='inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 text-gray-600 hover:bg-gray-100'
                       aria-label='Fermer'
                     >
-                      ✕
+                      <svg
+                        xmlns='http://www.w3.org/2000/svg'
+                        viewBox='0 0 24 24'
+                        fill='none'
+                        stroke='currentColor'
+                        strokeWidth='2'
+                        className='h-4 w-4'
+                        aria-hidden='true'
+                      >
+                        <path d='M18 6 6 18' />
+                        <path d='m6 6 12 12' />
+                      </svg>
                     </button>
                   </div>
 
@@ -1786,14 +1993,18 @@ export default function LeadsPage() {
                         value={newLeadName}
                         onChange={e => setNewLeadName(e.target.value)}
                         placeholder='Nom du prospect *'
-                        className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm'
+                        className={`w-full rounded-lg border px-3 py-2 text-sm ${
+                          !trimmedNewLeadName ? 'border-red-400' : 'border-gray-300'
+                        }`}
                       />
                       <input
                         type='text'
                         value={newLeadStore}
                         onChange={e => setNewLeadStore(e.target.value)}
                         placeholder='Boutique *'
-                        className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm'
+                        className={`w-full rounded-lg border px-3 py-2 text-sm ${
+                          !trimmedNewLeadStore ? 'border-red-400' : 'border-gray-300'
+                        }`}
                       />
                       <PhoneInput
                         international
@@ -1812,20 +2023,24 @@ export default function LeadsPage() {
                         value={newLeadEmail}
                         onChange={e => setNewLeadEmail(e.target.value)}
                         placeholder='E-mail'
-                        className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm'
+                        className={`w-full rounded-lg border px-3 py-2 text-sm ${
+                          !isNewLeadEmailValid ? 'border-red-400' : 'border-gray-300'
+                        }`}
                       />
                       <input
                         type='url'
                         value={newLeadWebLink}
                         onChange={e => setNewLeadWebLink(e.target.value)}
                         placeholder='Lien web'
-                        className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm md:col-span-2'
+                        className={`w-full rounded-lg border px-3 py-2 text-sm md:col-span-2 ${
+                          !isNewLeadWebLinkValid ? 'border-red-400' : 'border-gray-300'
+                        }`}
                       />
                       <input
                         type='text'
                         value={newLeadQuickNote}
                         onChange={e => setNewLeadQuickNote(e.target.value)}
-                        placeholder='Note Reapide'
+                        placeholder='Note Rapide'
                         className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm md:col-span-2'
                       />
                       <div className='md:col-span-2'>
@@ -1836,10 +2051,16 @@ export default function LeadsPage() {
                           <button
                             type='button'
                             onClick={() =>
-                              createNoteEditor?.chain().focus().toggleBold().run()
+                              createNoteEditor
+                                ?.chain()
+                                .focus()
+                                .toggleBold()
+                                .run()
                             }
                             className={`${createModalToolbarButtonClass} ${
-                              createNoteEditor?.isActive('bold') ? 'bg-gray-200' : ''
+                              createNoteEditor?.isActive('bold')
+                                ? 'bg-gray-200'
+                                : ''
                             }`}
                           >
                             Gras
@@ -1847,10 +2068,16 @@ export default function LeadsPage() {
                           <button
                             type='button'
                             onClick={() =>
-                              createNoteEditor?.chain().focus().toggleItalic().run()
+                              createNoteEditor
+                                ?.chain()
+                                .focus()
+                                .toggleItalic()
+                                .run()
                             }
                             className={`${createModalToolbarButtonClass} ${
-                              createNoteEditor?.isActive('italic') ? 'bg-gray-200' : ''
+                              createNoteEditor?.isActive('italic')
+                                ? 'bg-gray-200'
+                                : ''
                             }`}
                           >
                             Italique
@@ -1937,7 +2164,9 @@ export default function LeadsPage() {
                             <input
                               type='url'
                               value={newLeadImageUrlInput}
-                              onChange={e => setNewLeadImageUrlInput(e.target.value)}
+                              onChange={e =>
+                                setNewLeadImageUrlInput(e.target.value)
+                              }
                               onKeyDown={e => {
                                 if (e.key === 'Enter') {
                                   e.preventDefault();
@@ -1945,7 +2174,11 @@ export default function LeadsPage() {
                                 }
                               }}
                               placeholder='https://...'
-                              className='w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700'
+                              className={`w-full rounded-lg border px-3 py-2 text-sm text-gray-700 ${
+                                isNewLeadImageUrlDraftInvalid
+                                  ? 'border-red-400'
+                                  : 'border-gray-300'
+                              }`}
                             />
                             <button
                               type='button'
@@ -2027,7 +2260,7 @@ export default function LeadsPage() {
                       disabled={isCreateLeadDisabled}
                       className='inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50'
                     >
-                      Créer la carte
+                      Valider
                     </button>
                   </div>
                 </div>
@@ -2095,3 +2328,4 @@ export default function LeadsPage() {
     </div>
   );
 }
+

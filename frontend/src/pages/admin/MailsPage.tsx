@@ -47,7 +47,7 @@ export default function MailsPage() {
   const sendContact = async () => {
     setContactResult(null);
     if (!isAdmin) {
-      setContactResult({ error: 'Accأ¨s refusأ©' });
+      setContactResult({ error: 'Accès refusé' });
       return;
     }
     const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail);
@@ -85,7 +85,7 @@ export default function MailsPage() {
   const sendRdv = async () => {
     setRdvResult(null);
     if (!isAdmin) {
-      setRdvResult({ error: 'Accأ¨s refusأ©' });
+      setRdvResult({ error: 'Accès refusé' });
       return;
     }
     const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rdvEmail);
@@ -123,7 +123,7 @@ export default function MailsPage() {
   const sendDemo = async () => {
     setDemoResult(null);
     if (!isAdmin) {
-      setDemoResult({ error: 'Accأ¨s refusأ©' });
+      setDemoResult({ error: 'Accès refusé' });
       return;
     }
     const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(demoEmail);
@@ -172,9 +172,9 @@ export default function MailsPage() {
         {!isAdmin ? (
           <div className='max-w-2xl mx-auto px-4 py-10'>
             <div className='bg-white rounded-lg shadow p-6'>
-              <h1 className='text-2xl font-bold text-gray-900'>Accأ¨s refusأ©</h1>
+              <h1 className='text-2xl font-bold text-gray-900'>Accès refusé</h1>
               <p className='text-gray-600 mt-2'>
-                Cette page est rأ©servأ©e aux administrateurs.
+                Cette page est réservée aux administrateurs.
               </p>
             </div>
           </div>
@@ -226,7 +226,7 @@ export default function MailsPage() {
                       : 'border-transparent text-gray-500 hover:text-gray-700'
                   }`}
                 >
-                  RDV Dأ©mo
+                  RDV Démo
                 </button>
                 <button
                   type='button'
@@ -237,7 +237,7 @@ export default function MailsPage() {
                       : 'border-transparent text-gray-500 hover:text-gray-700'
                   }`}
                 >
-                  Dأ©mo
+                  Démo
                 </button>
               </nav>
             </div>
@@ -256,7 +256,7 @@ export default function MailsPage() {
                     className='w-full border border-gray-300 rounded-lg p-3 mb-4'
                   />
                   <label className='block text-sm font-medium text-gray-700 mb-2'>
-                    Prأ©nom
+                    Prénom
                   </label>
                   <input
                     type='text'
@@ -267,41 +267,39 @@ export default function MailsPage() {
                   />
                   <div className='mb-4 rounded-lg border border-gray-200 bg-gray-50 p-4'>
                     <div className='text-sm font-semibold text-gray-900 mb-2'>
-                      Mail qui sera envoyأ©
+                      Mail qui sera envoyé
                     </div>
                     <div className='text-sm text-gray-800'>
                       Objet:{' '}
-                      {`${String(contactName || '').trim() || '[Prأ©nom]'}, marre des paniers abandonnأ©s aprأ¨s tes ventes en live sur Facebook ?`}
+                      {`${String(contactName || '').trim() || '[Prénom]'}, marre des paniers abandonnés après tes ventes en live sur Facebook ?`}
                     </div>
-                    <pre className='mt-2 whitespace-pre-wrap text-sm text-gray-700 font-sans'>
-                      {`Bonjour ${String(contactName || '').trim() || '[Prأ©nom]'},
+                    <pre className='mt-2 whitespace-pre-wrap text-sm text-gray-700 font-sans'>{`Bonjour ${String(contactName || '').trim() || '[Prénom]'},
 
-Est-ce que tu rencontres ce genre de problأ¨mes pendant ou aprأ¨s tes ventes en live sur Facebook ?
+Est-ce que tu rencontres ce genre de problèmes pendant ou après tes ventes en live sur Facebook ?
 
-â‌Œ commandes أ  noter
-â‌Œ paiements أ  vأ©rifier
-â‌Œ colis أ  crأ©er
-â‌Œ clientes أ  relancer
-â‌Œ rأ©cap + lien de paiement أ  envoyer manuellement
+• commandes à noter
+• paiements à vérifier
+• colis à créer
+• clientes à relancer
+• récap + lien de paiement à envoyer manuellement
 
-Au final, tu passes plus de temps أ  gأ©rer quâ€™أ  vendre.
+Au final, tu passes plus de temps à gérer qu’à vendre.
 
-Câ€™est exactement pour أ§a quâ€™on a crأ©أ© PayLive.
+C’est exactement pour ça qu’on a créé PayLive.
 
-ًں‘‰ PayLive automatise tout ce qui te fait perdre du temps :
-ًں’³ Notification instantanأ© au paiement
-ًں“¦ Livraison & bordereaux intأ©grأ©s
-ًں“‹ Envoi automatique des paniers
-ًں“ٹ Suivi de tes ventes et de ton stock
+👉 PayLive automatise tout ce qui te fait perdre du temps :
+💳 Notification instantanée au paiement
+📦 Livraison & bordereaux intégrés
+📋 Envoi automatique des paniers
+📈 Suivi de tes ventes et de ton stock
 
-Rأ©sultat : tu te concentres sur tes livesâ€¦ et PayLive sâ€™occupe du reste.
+Résultat : tu te concentres sur tes lives... et PayLive s’occupe du reste.
 
-ًں‘‡ Clique sur le bouton ci-dessous pour voir comment أ§a marche ًں‘‡
-[Bouton Voir comment أ§a marche â†’ https://paylive.cc/needademo]
-[Image ad_paylive.png cliquable â†’ https://paylive.cc/needademo]
+👇 Clique sur le bouton ci-dessous pour voir comment ça marche 👇
+[Bouton Voir comment ça marche → https://paylive.cc/needademo]
+[Image ad_paylive.png cliquable → https://paylive.cc/needademo]
 
-أ€ trأ¨s vite,`}
-                    </pre>
+À très vite,`}</pre>
                   </div>
                   <button
                     onClick={sendContact}
@@ -312,12 +310,10 @@ Rأ©sultat : tu te concentres sur tes livesâ€¦ et PayLive sâ€™occupe d
                     }
                     className='w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-3 font-semibold disabled:opacity-50'
                   >
-                    {sendingContact ? 'Envoiâ€¦' : 'Envoyer'}
+                    {sendingContact ? 'Envoi...' : 'Envoyer'}
                   </button>
                   {contactResult?.ok && (
-                    <div className='mt-3 text-sm text-green-700'>
-                      Email envoyأ© âœ”
-                    </div>
+                    <div className='mt-3 text-sm text-green-700'>Email envoyé ✓</div>
                   )}
                   {contactResult?.error && (
                     <div className='mt-3 text-sm text-red-600'>
@@ -338,7 +334,7 @@ Rأ©sultat : tu te concentres sur tes livesâ€¦ et PayLive sâ€™occupe d
                     className='w-full border border-gray-300 rounded-lg p-3 mb-4'
                   />
                   <label className='block text-sm font-medium text-gray-700 mb-2'>
-                    Prأ©nom
+                    Prénom
                   </label>
                   <input
                     type='text'
@@ -349,25 +345,23 @@ Rأ©sultat : tu te concentres sur tes livesâ€¦ et PayLive sâ€™occupe d
                   />
                   <div className='mb-4 rounded-lg border border-gray-200 bg-gray-50 p-4'>
                     <div className='text-sm font-semibold text-gray-900 mb-2'>
-                      Mail qui sera envoyأ©
+                      Mail qui sera envoyé
                     </div>
                     <div className='text-sm text-gray-800'>
                       Objet:{' '}
-                      {`${String(rdvName || '').trim() || '[Prأ©nom]'}, on organise une dأ©mo ? ًںڑ€`}
+                      {`${String(rdvName || '').trim() || '[Prénom]'}, on organise une démo ? 🚀`}
                     </div>
-                    <pre className='mt-2 whitespace-pre-wrap text-sm text-gray-700 font-sans'>
-                      {`Bonjour ${String(rdvName || '').trim() || '[Prأ©nom]'},
+                    <pre className='mt-2 whitespace-pre-wrap text-sm text-gray-700 font-sans'>{`Bonjour ${String(rdvName || '').trim() || '[Prénom]'},
 
-Pour aller plus loin, je vous propose une dأ©mo rapide (10 min) pour vous montrer PayLive en action â€” directement sur vos cas dâ€™usage.
+Pour aller plus loin, je vous propose une démo rapide (10 min) pour vous montrer PayLive en action - directement sur vos cas d’usage.
 
-Deux petites choses pour quâ€™on cale أ§a :
-â€¢ Quelles sont vos disponibilitأ©s cette semaine ou la semaine prochaine ?
-â€¢ Quel est votre numأ©ro de tأ©lأ©phone pour quâ€™on reste en contact facilement ?
+Deux petites choses pour qu’on cale ça :
+• Quelles sont vos disponibilités cette semaine ou la semaine prochaine ?
+• Quel est votre numéro de téléphone pour qu’on reste en contact facilement ?
 
-Hأ¢te de vous faire dأ©couvrir la solution !
+Hâte de vous faire découvrir la solution !
 
-أ€ trأ¨s vite,`}
-                    </pre>
+À très vite,`}</pre>
                   </div>
                   <button
                     onClick={sendRdv}
@@ -378,23 +372,19 @@ Hأ¢te de vous faire dأ©couvrir la solution !
                     }
                     className='w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-3 font-semibold disabled:opacity-50'
                   >
-                    {sendingRdv ? 'Envoiâ€¦' : 'Envoyer'}
+                    {sendingRdv ? 'Envoi...' : 'Envoyer'}
                   </button>
                   {rdvResult?.ok && (
-                    <div className='mt-3 text-sm text-green-700'>
-                      Email envoyأ© âœ”
-                    </div>
+                    <div className='mt-3 text-sm text-green-700'>Email envoyé ✓</div>
                   )}
                   {rdvResult?.error && (
-                    <div className='mt-3 text-sm text-red-600'>
-                      {rdvResult.error}
-                    </div>
+                    <div className='mt-3 text-sm text-red-600'>{rdvResult.error}</div>
                   )}
                 </>
               ) : (
                 <>
                   <label className='block text-sm font-medium text-gray-700 mb-2'>
-                    Email du contact أ  relancer
+                    Email du contact à relancer
                   </label>
                   <input
                     type='email'
@@ -404,7 +394,7 @@ Hأ¢te de vous faire dأ©couvrir la solution !
                     className='w-full border border-gray-300 rounded-lg p-3 mb-4'
                   />
                   <label className='block text-sm font-medium text-gray-700 mb-2'>
-                    Prأ©nom
+                    Prénom
                   </label>
                   <input
                     type='text'
@@ -425,30 +415,28 @@ Hأ¢te de vous faire dأ©couvrir la solution !
                   />
                   <div className='mb-4 rounded-lg border border-gray-200 bg-gray-50 p-4'>
                     <div className='text-sm font-semibold text-gray-900 mb-2'>
-                      Mail qui sera envoyأ©
+                      Mail qui sera envoyé
                     </div>
                     <div className='text-sm text-gray-800'>
                       Objet:{' '}
-                      {`${String(demoName || '').trim() || '[Prأ©nom]'}, suite أ  notre أ©change, retrouvez ci-dessous le tutoriel et le lien vers votre boutique.ًں‘‡`}
+                      {`${String(demoName || '').trim() || '[Prénom]'}, suite à notre échange, retrouvez ci-dessous le tutoriel et le lien vers votre boutique.👇`}
                     </div>
-                    <pre className='mt-2 whitespace-pre-wrap text-sm text-gray-700 font-sans'>
-                      {`Bonjour ${String(demoName || '').trim() || '[Prأ©nom]'},
+                    <pre className='mt-2 whitespace-pre-wrap text-sm text-gray-700 font-sans'>{`Bonjour ${String(demoName || '').trim() || '[Prénom]'},
 
 Comme promis, voici le lien vers notre tutoriel
-ًں‘‰ Cliquez ici pour accأ©der au tutoriel: paylive.cc/demo-vendeur
+👉 Cliquez ici pour accéder au tutoriel: paylive.cc/demo-vendeur
 
-J'ai أ©galement crأ©أ© votre boutique personnalisأ©e avec l'ensemble de vos articles, vous pouvez y accأ©der ici :
-ًں›چï¸ڈ Lien vers votre boutique: paylive.cc/s/${String(demoSlug || '').trim() || '[slug]'}
+J'ai également créé votre boutique personnalisée avec l'ensemble de vos articles, vous pouvez y accéder ici :
+🛍️ Lien vers votre boutique: paylive.cc/s/${String(demoSlug || '').trim() || '[slug]'}
 
-Et voici le lien أ  partager directement أ  vos clientes lors de vos prochains lives afin qu'elles puissent constituer leurs paniers et procأ©der au paiement :
-ًں“² Lien أ  partager en live: paylive.cc/c/${String(demoSlug || '').trim() || '[slug]'}
+Et voici le lien à partager directement à vos clientes lors de vos prochains lives afin qu'elles puissent constituer leurs paniers et procéder au paiement :
+📲 Lien à partager en live: paylive.cc/c/${String(demoSlug || '').trim() || '[slug]'}
 
-Nâ€™hأ©sitez pas أ  me contacter si vous avez des questions !
+N’hésitez pas à me contacter si vous avez des questions !
 
-أ€ trأ¨s vite,
+À très vite,
 PayLive.cc
-`}
-                    </pre>
+`}</pre>
                   </div>
                   <button
                     onClick={sendDemo}
@@ -460,17 +448,15 @@ PayLive.cc
                     }
                     className='w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg py-3 font-semibold disabled:opacity-50'
                   >
-                    {sendingDemo ? 'Envoiâ€¦' : 'Envoyer'}
+                    {sendingDemo ? 'Envoi...' : 'Envoyer'}
                   </button>
                   {demoResult?.ok && (
                     <div className='mt-3 text-sm text-green-700'>
-                      Email de dأ©mo envoyأ© âœ”
+                      Email de démo envoyé ✓
                     </div>
                   )}
                   {demoResult?.error && (
-                    <div className='mt-3 text-sm text-red-600'>
-                      {demoResult.error}
-                    </div>
+                    <div className='mt-3 text-sm text-red-600'>{demoResult.error}</div>
                   )}
                 </>
               )}
