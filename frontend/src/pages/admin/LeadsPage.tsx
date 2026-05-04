@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   useUser,
   useAuth,
@@ -23,6 +23,7 @@ import StarterKit from '@tiptap/starter-kit';
 import Underline from '@tiptap/extension-underline';
 import Highlight from '@tiptap/extension-highlight';
 import LinkExtension from '@tiptap/extension-link';
+import DOMPurify from 'dompurify';
 import PhoneInput, { isValidPhoneNumber } from 'react-phone-number-input';
 import 'react-phone-number-input/style.css';
 import { apiDelete, apiGet, apiPost, apiPut } from '../../utils/api';
@@ -205,6 +206,67 @@ const toBrowserUrl = (raw: string): string => {
   return /^https?:\/\//i.test(value) ? value : `https://${value}`;
 };
 
+const isAllowedNoteLinkProtocol = (href: string): boolean => {
+  const value = String(href || '').trim();
+  if (!value) return false;
+  try {
+    const parsed = new URL(value, 'https://paylive.local');
+    return (
+      parsed.protocol === 'http:' ||
+      parsed.protocol === 'https:' ||
+      parsed.protocol === 'mailto:' ||
+      parsed.protocol === 'tel:'
+    );
+  } catch {
+    return false;
+  }
+};
+
+const sanitizeLeadNoteHtml = (raw: unknown): string => {
+  const source = String(raw ?? '');
+  const sanitized = DOMPurify.sanitize(source, {
+    ALLOWED_TAGS: [
+      'p',
+      'br',
+      'strong',
+      'b',
+      'em',
+      'i',
+      'u',
+      's',
+      'ul',
+      'ol',
+      'li',
+      'blockquote',
+      'h1',
+      'h2',
+      'h3',
+      'h4',
+      'h5',
+      'h6',
+      'a',
+      'mark',
+    ],
+    ALLOWED_ATTR: ['href', 'target', 'rel'],
+    ALLOW_DATA_ATTR: false,
+  }).trim();
+
+  if (!sanitized) return '<p></p>';
+
+  const parser = new DOMParser();
+  const documentNode = parser.parseFromString(sanitized, 'text/html');
+  documentNode.querySelectorAll('a').forEach(anchor => {
+    const href = String(anchor.getAttribute('href') || '').trim();
+    if (!isAllowedNoteLinkProtocol(href)) {
+      anchor.removeAttribute('href');
+    }
+    anchor.setAttribute('rel', 'noopener noreferrer');
+  });
+
+  const normalized = documentNode.body.innerHTML.trim();
+  return normalized || '<p></p>';
+};
+
 const normalizeImageUrls = (raw: unknown): string[] => {
   const source = String(raw || '');
   if (!source.trim()) return [];
@@ -253,7 +315,7 @@ const mapApiLeadToLead = (row: any): Lead => ({
   email: String(row?.mail || row?.email || '').trim(),
   webLink: String(row?.link || row?.web_link || row?.webLink || '').trim(),
   quickNote: String(row?.quick_note || row?.quickNote || '').trim(),
-  note: String(row?.note || '').trim(),
+  note: sanitizeLeadNoteHtml(row?.note),
   imageUrls: normalizeImageUrls(row?.image_url || row?.imageUrl),
   status: normalizeLeadStatus(
     row?.status_text ||
@@ -647,7 +709,9 @@ function LeadDetailsModal({
   const [draftValue, setDraftValue] = useState('');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSavingField, setIsSavingField] = useState(false);
-  const [richTextDraft, setRichTextDraft] = useState(lead.note || '<p></p>');
+  const [richTextDraft, setRichTextDraft] = useState(
+    sanitizeLeadNoteHtml(lead.note)
+  );
   const [isRichTextDirty, setIsRichTextDirty] = useState(false);
   const [isSavingRichText, setIsSavingRichText] = useState(false);
   const [isDeletingLead, setIsDeletingLead] = useState(false);
@@ -671,9 +735,9 @@ function LeadDetailsModal({
         linkOnPaste: true,
       }),
     ],
-    content: lead.note || '<p></p>',
+    content: sanitizeLeadNoteHtml(lead.note),
     onUpdate: ({ editor: currentEditor }) => {
-      setRichTextDraft(currentEditor.getHTML());
+      setRichTextDraft(sanitizeLeadNoteHtml(currentEditor.getHTML()));
       setIsRichTextDirty(true);
     },
   });
@@ -684,7 +748,7 @@ function LeadDetailsModal({
     setEditingField(null);
     setDraftValue('');
     setSaveError(null);
-    const nextContent = lead.note || '<p></p>';
+    const nextContent = sanitizeLeadNoteHtml(lead.note);
     setRichTextDraft(nextContent);
     setIsRichTextDirty(false);
     setImageUrlDraft('');
@@ -725,7 +789,7 @@ function LeadDetailsModal({
 
   useEffect(() => {
     if (!editor) return;
-    const nextContent = lead.note || '<p></p>';
+    const nextContent = sanitizeLeadNoteHtml(lead.note);
     if (editor.getHTML() !== nextContent) {
       editor.commands.setContent(nextContent);
     }
@@ -834,7 +898,7 @@ function LeadDetailsModal({
   };
 
   const cancelRichText = (targetNote?: string) => {
-    const nextContent = (targetNote ?? localLead.note) || '<p></p>';
+    const nextContent = sanitizeLeadNoteHtml(targetNote ?? localLead.note);
     setRichTextDraft(nextContent);
     setIsRichTextDirty(false);
     setSaveError(null);
@@ -856,7 +920,7 @@ function LeadDetailsModal({
     const finalLead: Lead = {
       ...localLead,
       ...(activeField ? { [activeField]: draftValue.trim() } : {}),
-      note: richTextDraft.trim(),
+      note: sanitizeLeadNoteHtml(richTextDraft),
     };
     const initialLead = initialLeadRef.current;
     const updates: Partial<
@@ -908,7 +972,7 @@ function LeadDetailsModal({
 
   const handleCancelAndClose = () => {
     setLocalLead(initialLeadRef.current);
-    cancelRichText(initialLeadRef.current.note || '<p></p>');
+    cancelRichText(sanitizeLeadNoteHtml(initialLeadRef.current.note));
     setEditingField(null);
     setDraftValue('');
     onClose();
@@ -1458,9 +1522,9 @@ export default function LeadsPage() {
         linkOnPaste: true,
       }),
     ],
-    content: newLeadNote || '<p></p>',
+    content: sanitizeLeadNoteHtml(newLeadNote),
     onUpdate: ({ editor }) => {
-      setNewLeadNote(editor.getHTML());
+      setNewLeadNote(sanitizeLeadNoteHtml(editor.getHTML()));
     },
   });
   const trimmedNewLeadName = newLeadName.trim();
@@ -1512,7 +1576,7 @@ export default function LeadsPage() {
 
   useEffect(() => {
     if (!createNoteEditor) return;
-    const nextContent = newLeadNote || '<p></p>';
+    const nextContent = sanitizeLeadNoteHtml(newLeadNote);
     if (createNoteEditor.getHTML() !== nextContent) {
       createNoteEditor.commands.setContent(nextContent);
     }
@@ -1575,7 +1639,7 @@ export default function LeadsPage() {
     const email = newLeadEmail.trim();
     const webLink = newLeadWebLink.trim();
     const quickNote = newLeadQuickNote.trim();
-    const note = newLeadNote.trim();
+    const note = sanitizeLeadNoteHtml(newLeadNote);
     const imageUrl = joinImageUrlsForStorage(newLeadImageUrls);
 
     if (!name || !store) {
@@ -2328,4 +2392,3 @@ export default function LeadsPage() {
     </div>
   );
 }
-
