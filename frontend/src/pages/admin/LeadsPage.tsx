@@ -203,7 +203,14 @@ const isValidWebLinkFormat = (raw: string): boolean => {
 const toBrowserUrl = (raw: string): string => {
   const value = String(raw || '').trim();
   if (!value) return '';
-  return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+  const withProtocol = /^https?:\/\//i.test(value) ? value : `https://${value}`;
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
 };
 
 const isAllowedNoteLinkProtocol = (href: string): boolean => {
@@ -1305,42 +1312,46 @@ function LeadDetailsModal({
               </div>
               {localLead.imageUrls.length > 0 ? (
                 <div className='mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2'>
-                  {localLead.imageUrls.map(url => (
-                    <div
-                      key={url}
-                      className='overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm'
-                    >
-                      <a
-                        href={toBrowserUrl(url)}
-                        target='_blank'
-                        rel='noreferrer'
-                        className='block group'
+                  {localLead.imageUrls.map(url => {
+                    const safeUrl = toBrowserUrl(url);
+                    if (!safeUrl) return null;
+                    return (
+                      <div
+                        key={url}
+                        className='overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm'
                       >
-                        <img
-                          src={url}
-                          alt={getImageAttachmentLabel(url)}
-                          className='h-32 w-full object-cover bg-gray-50'
-                        />
-                        <div className='px-3 py-2 text-sm text-gray-800'>
-                          <p className='truncate font-medium'>
-                            {getImageAttachmentLabel(url)}
-                          </p>
-                          <p className='truncate text-xs text-indigo-600 group-hover:underline'>
-                            {url}
-                          </p>
-                        </div>
-                      </a>
-                      <div className='border-t border-gray-100 px-3 py-2'>
-                        <button
+                        <a
+                          href={safeUrl}
+                          target='_blank'
+                          rel='noreferrer'
+                          className='block group'
+                        >
+                          <img
+                            src={safeUrl}
+                            alt={getImageAttachmentLabel(url)}
+                            className='h-32 w-full object-cover bg-gray-50'
+                          />
+                          <div className='px-3 py-2 text-sm text-gray-800'>
+                            <p className='truncate font-medium'>
+                              {getImageAttachmentLabel(url)}
+                            </p>
+                            <p className='truncate text-xs text-indigo-600 group-hover:underline'>
+                              {safeUrl}
+                            </p>
+                          </div>
+                        </a>
+                        <div className='border-t border-gray-100 px-3 py-2'>
+                          <button
                           type='button'
                           onClick={() => removeImageUrl(url)}
                           className='inline-flex items-center rounded-md border border-red-300 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50'
                         >
                           Retirer
-                        </button>
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : null}
             </div>
@@ -2260,13 +2271,13 @@ export default function LeadsPage() {
                                   className='overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm'
                                 >
                                   <a
-                                    href={toBrowserUrl(url)}
+                                    href={encodeURI(toBrowserUrl(url))}
                                     target='_blank'
                                     rel='noreferrer'
                                     className='block group'
                                   >
                                     <img
-                                      src={url}
+                                      src={encodeURI(toBrowserUrl(url))}
                                       alt={getImageAttachmentLabel(url)}
                                       className='h-32 w-full object-cover bg-gray-50'
                                     />
