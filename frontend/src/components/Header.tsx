@@ -340,8 +340,14 @@ export default function Header() {
         slugFromPath
       ) {
         try {
+          const token = await getToken();
           const resp = await fetch(
-            `${apiBase}/api/stores/${encodeURIComponent(slugFromPath)}`
+            `${apiBase}/api/stores/${encodeURIComponent(slugFromPath)}`,
+            {
+              headers: {
+                Authorization: token ? `Bearer ${token}` : '',
+              },
+            }
           );
           const json = await resp.json();
           if (!resp.ok || !json?.store) {
@@ -521,9 +527,13 @@ export default function Header() {
 
   const handleDeleteItem = async (cartItemId: number) => {
     try {
+      const token = await getToken();
       const resp = await fetch(`${apiBase}/api/carts`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
         body: JSON.stringify({
           id: cartItemId,
         }),

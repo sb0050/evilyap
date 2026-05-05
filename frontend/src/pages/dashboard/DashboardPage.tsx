@@ -3849,8 +3849,14 @@ export default function DashboardPage() {
         }
 
         // 2) Charger la boutique
+        const tokenForStore = await getToken();
         const storeResp = await fetch(
-          `${apiBase}/api/stores/${encodeURIComponent(slugToUse)}`
+          `${apiBase}/api/stores/${encodeURIComponent(slugToUse)}`,
+          {
+            headers: {
+              Authorization: tokenForStore ? `Bearer ${tokenForStore}` : '',
+            },
+          }
         );
         const storeJson = await storeResp.json();
         if (!storeResp.ok) {
@@ -3962,10 +3968,15 @@ export default function DashboardPage() {
       // Uploader le logo si un nouveau fichier est sélectionné
       if (logoFile && store?.slug) {
         try {
+          const token = await getToken();
           const fd = new FormData();
           fd.append('image', logoFile);
           fd.append('slug', store.slug);
-          const uploadResp = await apiPostForm('/api/upload', fd);
+          const uploadResp = await apiPostForm('/api/upload', fd, {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+          });
           const uploadJson = await uploadResp.json();
           if (!uploadJson?.success) {
             console.warn('Upload du logo échoué:', uploadJson?.error);

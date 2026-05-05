@@ -718,7 +718,7 @@ router.post("/need-a-demo", async (req, res) => {
 });
 
 // GET /api/stores/:storeSlug - Récupérer une boutique par son slug
-router.get("/:storeSlug", async (req, res) => {
+router.get("/:storeSlug", requireAuth(), async (req, res) => {
   try {
     const { storeSlug } = req.params as { storeSlug?: string };
 
@@ -2724,7 +2724,7 @@ router.post("/:storeSlug/stock/by-stripe-product-ids", async (req, res) => {
   }
 });
 
-router.get("/:storeSlug/stock/public", async (req, res) => {
+router.get("/:storeSlug/stock", requireAuth(), async (req, res) => {
   try {
     const { storeSlug } = req.params as { storeSlug?: string };
     if (!storeSlug) {

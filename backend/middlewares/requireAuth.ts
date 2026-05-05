@@ -1,11 +1,14 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { clerkClient, getAuth } from "@clerk/express";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { supabaseForUser } from "../lib/supabase";
 
 export type AuthContext = {
   userId: string;
   sessionId?: string | null;
   stripeCustomerId?: string | null;
   role?: string | null;
+  clerkToken?: string | null;
 };
 
 const AUTH_ERROR = { error: "Unauthorized" } as const;
@@ -42,6 +45,73 @@ export function requireAuth(): RequestHandler {
       userId: auth.userId,
       sessionId: auth.sessionId || null,
     } satisfies AuthContext;
+
+    return next();
+  };
+}
+
+/**
+ * Extracts a Clerk bearer token from the incoming request.
+ *
+ * Why this helper matters:
+ * - We keep token parsing in one place to avoid subtle header parsing bugs.
+ * - RLS-backed Supabase calls require a valid JWT in `Authorization`.
+ *
+ * @param req Express request containing authentication headers.
+ * @returns The raw JWT token (without `Bearer`) when present, otherwise null.
+ */
+export function extractClerkToken(req: Request): string | null {
+  const authorizationHeader = String(req.headers.authorization || "").trim();
+  if (!authorizationHeader) return null;
+
+  const matches = authorizationHeader.match(/^Bearer\s+(.+)$/i);
+  if (!matches?.[1]) return null;
+
+  const token = String(matches[1] || "").trim();
+  return token || null;
+}
+
+/**
+ * Requires an authenticated Clerk session and prepares request-scoped Supabase
+ * access that enforces RLS.
+ *
+ * Side effects:
+ * - Populates `res.locals.auth` with normalized identity + token.
+ * - Populates `res.locals.supabase` with a user-scoped Supabase client.
+ *
+ * This middleware intentionally builds the Supabase client once per request so
+ * downstream handlers can reuse it without recreating clients repeatedly.
+ */
+export function requireAuthWithSupabase(): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const auth = getAuth(req);
+    if (!auth?.isAuthenticated || !auth.userId) {
+      return res.status(401).json(AUTH_ERROR);
+    }
+
+    const clerkToken = extractClerkToken(req);
+    if (!clerkToken) {
+      return res.status(401).json({ error: "Missing Clerk bearer token" });
+    }
+
+    let supabase: SupabaseClient;
+    try {
+      supabase = supabaseForUser(clerkToken);
+    } catch (error) {
+      console.error("requireAuthWithSupabase failed to create Supabase client", {
+        userId: auth.userId,
+        error,
+      });
+      return res.status(500).json({ error: "Supabase auth initialization failed" });
+    }
+
+    res.locals.auth = {
+      ...(res.locals.auth || {}),
+      userId: auth.userId,
+      sessionId: auth.sessionId || null,
+      clerkToken,
+    } satisfies AuthContext;
+    res.locals.supabase = supabase;
 
     return next();
   };

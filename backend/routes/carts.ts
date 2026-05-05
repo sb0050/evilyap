@@ -342,6 +342,8 @@ router.post("/", requireAuth(), async (req, res) => {
       store_id,
       product_reference,
       value: normalizedValue,
+      // Preserve Clerk ownership on cart rows for downstream filtering and audits.
+      clerk_id: auth.userId,
       customer_stripe_id: requestedStripeId,
       description: descriptionTrimmed,
       ...(paymentIdTrimmed ? { payment_id: paymentIdTrimmed } : {}),

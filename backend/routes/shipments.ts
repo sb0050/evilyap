@@ -1291,6 +1291,8 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
       store_id: storeIdNum,
       product_reference: it.product_reference,
       value: it.value,
+      // Rebuilt cart rows must keep the authenticated Clerk owner.
+      clerk_id: auth.userId,
       customer_stripe_id: stripeCustomerId,
       payment_id: paymentIdStr,
       description: it.description,
