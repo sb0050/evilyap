@@ -526,7 +526,10 @@ export default function StorePage() {
       'Client';
     const createResp = await fetch(`${apiBase}/api/stripe/create-customer`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: token ? `Bearer ${token}` : '',
+      },
       body: JSON.stringify({
         name: fullName,
         email,

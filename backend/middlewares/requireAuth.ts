@@ -13,6 +13,7 @@ export type AuthContext = {
 
 const AUTH_ERROR = { error: "Unauthorized" } as const;
 const FORBIDDEN_ERROR = { error: "Forbidden" } as const;
+const MAX_AUTHORIZATION_HEADER_LENGTH = 8192;
 
 /**
  * Returns the authenticated request context populated by auth middlewares.
@@ -63,11 +64,20 @@ export function requireAuth(): RequestHandler {
 export function extractClerkToken(req: Request): string | null {
   const authorizationHeader = String(req.headers.authorization || "").trim();
   if (!authorizationHeader) return null;
+  if (authorizationHeader.length > MAX_AUTHORIZATION_HEADER_LENGTH) return null;
 
-  const matches = authorizationHeader.match(/^Bearer\s+(.+)$/i);
-  if (!matches?.[1]) return null;
+  const bearerPrefix = "bearer";
+  if (
+    authorizationHeader.slice(0, bearerPrefix.length).toLowerCase() !==
+    bearerPrefix
+  ) {
+    return null;
+  }
 
-  const token = String(matches[1] || "").trim();
+  const separator = authorizationHeader[bearerPrefix.length] || "";
+  if (separator !== " " && separator !== "\t") return null;
+
+  const token = authorizationHeader.slice(bearerPrefix.length + 1).trim();
   return token || null;
 }
 

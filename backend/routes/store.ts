@@ -15,6 +15,7 @@ import {
   requireAuth,
   requireAuthWithStripe,
 } from "../middlewares/requireAuth";
+import { requireStoreOwner } from "../middlewares/ownership";
 
 const router = express.Router();
 
@@ -374,7 +375,11 @@ router.post("/", requireAuth(), async (req, res) => {
 
 // PUT /api/stores/:storeSlug - Mettre à jour nom/description/website
 // PUT /api/stores/:storeSlug - Mettre à jour nom/description/website/siret et éventuellement is_verified
-router.put("/:storeSlug", async (req, res) => {
+router.put(
+  "/:storeSlug",
+  requireAuth(),
+  requireStoreOwner({ source: "params", key: "storeSlug", column: "slug" }),
+  async (req, res) => {
   try {
     const { storeSlug } = req.params as { storeSlug?: string };
     const {
@@ -515,7 +520,8 @@ router.put("/:storeSlug", async (req, res) => {
     console.error("Erreur serveur:", err);
     return res.status(500).json({ error: "Erreur interne du serveur" });
   }
-});
+  },
+);
 
 router.get("/me", async (req, res) => {
   try {
@@ -718,6 +724,42 @@ router.post("/need-a-demo", async (req, res) => {
 });
 
 // GET /api/stores/:storeSlug - Récupérer une boutique par son slug
+router.get(
+  "/:storeSlug/private",
+  requireAuth(),
+  requireStoreOwner({ source: "params", key: "storeSlug", column: "slug" }),
+  async (req, res) => {
+    try {
+      const { storeSlug } = req.params as { storeSlug?: string };
+      if (!storeSlug) {
+        return res.status(400).json({ error: "Slug de boutique requis" });
+      }
+
+      const decodedSlug = decodeURIComponent(storeSlug);
+      const { data: store, error } = await supabase
+        .from("stores")
+        .select("*")
+        .eq("slug", decodedSlug)
+        .single();
+
+      if (error) {
+        if ((error as any)?.code === "PGRST116") {
+          return res.status(404).json({ error: "Boutique non trouvÃ©e" });
+        }
+        console.error("Erreur Supabase:", error);
+        return res
+          .status(500)
+          .json({ error: "Erreur lors de la rÃ©cupÃ©ration de la boutique" });
+      }
+
+      return res.json({ success: true, store });
+    } catch (err) {
+      console.error("Erreur serveur:", err);
+      return res.status(500).json({ error: "Erreur interne du serveur" });
+    }
+  },
+);
+
 router.get("/:storeSlug", requireAuth(), async (req, res) => {
   try {
     const { storeSlug } = req.params as { storeSlug?: string };
@@ -729,7 +771,9 @@ router.get("/:storeSlug", requireAuth(), async (req, res) => {
     const decodedSlug = decodeURIComponent(storeSlug);
     const { data: store, error } = await supabase
       .from("stores")
-      .select("*")
+      .select(
+        "id, name, slug, description, website, is_verified, address, tva_applicable",
+      )
       .eq("slug", decodedSlug)
       .single();
 

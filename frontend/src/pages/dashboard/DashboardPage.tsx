@@ -3851,7 +3851,7 @@ export default function DashboardPage() {
         // 2) Charger la boutique
         const tokenForStore = await getToken();
         const storeResp = await fetch(
-          `${apiBase}/api/stores/${encodeURIComponent(slugToUse)}`,
+          `${apiBase}/api/stores/${encodeURIComponent(slugToUse)}/private`,
           {
             headers: {
               Authorization: tokenForStore ? `Bearer ${tokenForStore}` : '',

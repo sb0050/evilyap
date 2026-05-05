@@ -337,16 +337,31 @@ router.post("/products/by-ids", requireAuth(), async (req, res) => {
 });
 
 // Endpoint dédié pour créer un client Stripe (sans adresse/phone/shipping)
-router.post("/create-customer", async (req, res) => {
+router.post("/create-customer", requireAuth(), async (req, res) => {
   try {
+    const auth = getAuthContext(res);
     const { name, email, clerkUserId } = req.body as {
       name?: string;
       email?: string;
       clerkUserId?: string;
     };
+    const requestedClerkUserId = String(clerkUserId || "").trim();
+    if (requestedClerkUserId && requestedClerkUserId !== auth.userId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     if (!name || !email) {
       return res.status(400).json({ error: "name et email requis" });
+    }
+    const user = await clerkClient.users.getUser(auth.userId);
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const ownsEmail = (user.emailAddresses || []).some(
+      (entry) =>
+        String(entry.emailAddress || "").trim().toLowerCase() ===
+        normalizedEmail,
+    );
+    if (!ownsEmail) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     // Idempotence: si un client existe déjà pour cet email, le réutiliser
@@ -374,7 +389,7 @@ router.post("/create-customer", async (req, res) => {
         customer = await stripe.customers.update(existingCustomer.id, {
           name,
           metadata: {
-            clerk_id: clerkUserId || existingCustomer.metadata?.clerk_id || "",
+            clerk_id: auth.userId,
           },
         });
       } catch (updErr) {
@@ -387,7 +402,7 @@ router.post("/create-customer", async (req, res) => {
         name,
         email,
         metadata: {
-          clerk_id: clerkUserId || "",
+          clerk_id: auth.userId,
         },
       });
     }
@@ -398,14 +413,10 @@ router.post("/create-customer", async (req, res) => {
       // Mettre à jour les métadonnées publiques Clerk directement côté serveur
       // en utilisant clerkClient, si l’utilisateur est authentifié
       try {
-        const auth = getAuth(req);
-        const targetUserId = clerkUserId || auth?.userId;
-        if (auth?.isAuthenticated && targetUserId) {
-          console.log("Updating Clerk user:", targetUserId);
-          await clerkClient.users.updateUser(targetUserId, {
-            publicMetadata: { stripe_id: stripeId },
-          } as any);
-        }
+        console.log("Updating Clerk user:", auth.userId);
+        await clerkClient.users.updateUser(auth.userId, {
+          publicMetadata: { stripe_id: stripeId },
+        } as any);
       } catch (updErr) {
         console.warn(
           "Mise à jour Clerk publicMetadata (stripe_id) échouée:",
