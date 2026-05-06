@@ -17,9 +17,11 @@ import supportRoutes from "./routes/support";
 import clerkRoutes from "./routes/clerk";
 import inseeBceRoutes from "./routes/insee-bce";
 import adminRoutes from "./routes/admin";
+import { resolveSupabaseJwt } from "./middlewares/requireAuth";
 import { stripeWebhookHandler } from "./routes/stripe.webhook";
 import { boxtalWebhookHandler } from "./routes/boxtal.webhook";
 import raffleRoutes from "./routes/raffle";
+import { runWithRequestSupabase, supabaseForUser } from "./lib/supabase";
 
 const app = express();
 app.use(
@@ -81,24 +83,28 @@ app.post(
 
 app.use(clerkMiddleware());
 
+const protectedVercelEnvs = new Set(["production", "preview", "prod"]);
+const shouldEnforceApiAuth = protectedVercelEnvs.has(
+  String(process.env.VERCEL_ENV || "").toLowerCase(),
+);
+const authExcludedPathPrefixes = ["/stripe/webhook", "/sendcloud/webhook"];
+
 app.use("/api", (req: Request, res: Response, next: NextFunction) => {
-  if (
-    req.path.startsWith("/stripe/webhook") ||
-    req.path.startsWith("/boxtal/webhook")
-  ) {
+  if (authExcludedPathPrefixes.some((prefix) => req.path.startsWith(prefix))) {
     return next();
   }
 
   const allowUnauthenticated =
     req.method === "GET" &&
-    (req.path.startsWith("/stores/exists") ||
+    (req.path === "/health" ||
+      req.path.startsWith("/stores/exists") ||
       /^\/stores\/[^/]+$/.test(req.path) ||
       /^\/stores\/[^/]+\/stock\/public$/.test(req.path));
   if (allowUnauthenticated) {
     return next();
   }
 
-  if (process.env.VERCEL_ENV === "prod") {
+  if (shouldEnforceApiAuth) {
     const auth = getAuth(req);
     if (!auth?.isAuthenticated || !auth.userId) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -106,6 +112,31 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
   }
 
   next();
+});
+
+app.use("/api", async (req: Request, res: Response, next: NextFunction) => {
+  const auth = getAuth(req);
+  if (!auth?.isAuthenticated || !auth.userId) {
+    return next();
+  }
+
+  try {
+    const token = await resolveSupabaseJwt(req, auth);
+    if (!token) {
+      return next();
+    }
+
+    const supabase = supabaseForUser(token);
+    res.locals.supabase = supabase;
+
+    return runWithRequestSupabase(supabase, () => next());
+  } catch (error) {
+    console.error("Failed to initialize request-scoped Supabase client", {
+      userId: auth.userId,
+      error,
+    });
+    return next();
+  }
 });
 
 const PORT = process.env.PORT || 5000;

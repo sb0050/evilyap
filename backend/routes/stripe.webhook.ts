@@ -445,7 +445,13 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
             (session.metadata?.delivery_network as any) ||
             customer.metadata?.delivery_network ||
             "N/A";
-          const clerkUserId = customer.metadata.clerk_id || null;
+          // Shipment ownership must always be linked to a Clerk user.
+          const clerkUserId = String(
+            customer.metadata?.clerk_id ||
+              session.metadata?.clerk_id ||
+              (paymentIntent?.metadata as any)?.clerk_id ||
+              "",
+          ).trim();
           let pickupPoint: any = {};
           let dropOffPoint: any = {};
           try {
@@ -2116,6 +2122,7 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
 
             const shipmentRowData: any = {
               store_id: storeId,
+              clerk_id: clerkUserId,
               customer_stripe_id: customerId || null,
               shipment_id: boxtalId ? boxtalId : null,
               status: (dataBoxtal?.content?.status as any) || null,
@@ -2140,6 +2147,12 @@ export const stripeWebhookHandler = async (req: any, res: any) => {
 
             let shipmentUpsert: any = null;
             let shipmentUpsertError: any = null;
+
+            if (!clerkUserId) {
+              throw new Error(
+                "Missing clerk_id for shipment insert (customer/session/payment metadata)",
+              );
+            }
 
             const { data, error } = await supabase
               .from("shipments")

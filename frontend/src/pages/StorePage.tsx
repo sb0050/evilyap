@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { RedirectToSignUp, useUser } from '@clerk/clerk-react';
+import { RedirectToSignUp, useAuth, useUser } from '@clerk/clerk-react';
 import {
   ArrowRight,
   BadgeCheck,
@@ -189,6 +189,7 @@ export default function StorePage() {
   const navigate = useNavigate();
   const { storeName } = useParams();
   const { user, isLoaded, isSignedIn } = useUser();
+  const { getToken } = useAuth();
 
   const storeSlug = String(storeName || '').trim();
 
@@ -361,10 +362,21 @@ export default function StorePage() {
       }
 
       try {
+        const token = await getToken();
+        const authorizationHeader = token ? `Bearer ${token}` : '';
         const [storeResp, stockResp] = await Promise.all([
-          fetch(`${apiBase}/api/stores/${encodeURIComponent(storeSlug)}`),
+          fetch(`${apiBase}/api/stores/${encodeURIComponent(storeSlug)}`, {
+            headers: {
+              Authorization: authorizationHeader,
+            },
+          }),
           fetch(
-            `${apiBase}/api/stores/${encodeURIComponent(storeSlug)}/stock/public`
+            `${apiBase}/api/stores/${encodeURIComponent(storeSlug)}/stock`,
+            {
+              headers: {
+                Authorization: authorizationHeader,
+              },
+            }
           ),
         ]);
 
@@ -406,10 +418,21 @@ export default function StorePage() {
     setReloading(true);
     setError(null);
     try {
+      const token = await getToken();
+      const authorizationHeader = token ? `Bearer ${token}` : '';
       const [storeResp, stockResp] = await Promise.all([
-        fetch(`${apiBase}/api/stores/${encodeURIComponent(storeSlug)}`),
+        fetch(`${apiBase}/api/stores/${encodeURIComponent(storeSlug)}`, {
+          headers: {
+            Authorization: authorizationHeader,
+          },
+        }),
         fetch(
-          `${apiBase}/api/stores/${encodeURIComponent(storeSlug)}/stock/public`
+          `${apiBase}/api/stores/${encodeURIComponent(storeSlug)}/stock`,
+          {
+            headers: {
+              Authorization: authorizationHeader,
+            },
+          }
         ),
       ]);
 
@@ -472,10 +495,16 @@ export default function StorePage() {
     const email = user?.primaryEmailAddress?.emailAddress;
     if (!email) throw new Error('Email manquant');
 
+    const token = await getToken();
     const detailsResp = await fetch(
       `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(
         email
-      )}`
+      )}`,
+      {
+        headers: {
+          Authorization: token ? `Bearer ${token}` : '',
+        },
+      }
     );
     if (detailsResp.ok) {
       const json = await detailsResp.json().catch(() => null as any);
@@ -497,7 +526,10 @@ export default function StorePage() {
       'Client';
     const createResp = await fetch(`${apiBase}/api/stripe/create-customer`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: token ? `Bearer ${token}` : '',
+      },
       body: JSON.stringify({
         name: fullName,
         email,
@@ -559,6 +591,8 @@ export default function StorePage() {
 
     setAddingItemId(it.stock.id);
     try {
+      const token = await getToken();
+      const authorizationHeader = token ? `Bearer ${token}` : '';
       const stripeCustomerId = await resolveStripeCustomerId();
       const productStripeId =
         String(it.stock.product_stripe_id || '').trim() ||
@@ -568,7 +602,12 @@ export default function StorePage() {
       const summaryResp = await fetch(
         `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(
           stripeCustomerId
-        )}`
+        )}`,
+        {
+          headers: {
+            Authorization: authorizationHeader,
+          },
+        }
       );
       if (summaryResp.ok) {
         const summaryJson = await summaryResp.json().catch(() => null as any);
@@ -601,7 +640,10 @@ export default function StorePage() {
             `${apiBase}/api/carts/${encodeURIComponent(String(existing.id))}`,
             {
               method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: authorizationHeader,
+              },
               body: JSON.stringify({ quantity: nextQty }),
             }
           );
@@ -625,7 +667,10 @@ export default function StorePage() {
 
       const resp = await fetch(`${apiBase}/api/carts`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: authorizationHeader,
+        },
         body: JSON.stringify({
           store_id: store.id,
           product_reference: reference,

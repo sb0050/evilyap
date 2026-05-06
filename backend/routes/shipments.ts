@@ -1,20 +1,16 @@
 import express from "express";
-import { createClient } from "@supabase/supabase-js";
 import { clerkClient, getAuth } from "@clerk/express";
+import { supabaseRls as supabase } from "../lib/supabase";
+import {
+  getAuthContext,
+  requireAuthWithStripe,
+} from "../middlewares/requireAuth";
 import Stripe from "stripe";
 import PDFDocument from "pdfkit";
 import { emailService } from "../services/emailService";
 
 const router = express.Router();
 
-const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error("Supabase credentials are not set in environment variables");
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey);
 const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
 const stripe = stripeSecret
   ? new Stripe(stripeSecret, { apiVersion: "2025-06-30.basil" as any })
@@ -1287,6 +1283,8 @@ router.post("/rebuild-carts-from-payment", async (req, res) => {
       store_id: storeIdNum,
       product_reference: it.product_reference,
       value: it.value,
+      // Rebuilt cart rows must keep the authenticated Clerk owner.
+      clerk_id: auth.userId,
       customer_stripe_id: stripeCustomerId,
       payment_id: paymentIdStr,
       description: it.description,
@@ -1953,15 +1951,18 @@ router.get("/customer", async (req, res) => {
 });
 
 // GET /api/shipments/stores-for-customer/:stripeId
-router.get("/stores-for-customer/:stripeId", async (req, res) => {
+router.get(
+  "/stores-for-customer/:stripeId",
+  requireAuthWithStripe(),
+  async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+    const auth = getAuthContext(res);
     const stripeId = req.params.stripeId;
     if (!stripeId) {
       return res.status(400).json({ error: "Missing stripeId" });
+    }
+    if (stripeId !== auth.stripeCustomerId) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     console.log("Fetching stores for customer with stripeId:", stripeId);
@@ -1998,7 +1999,8 @@ router.get("/stores-for-customer/:stripeId", async (req, res) => {
     console.error("Error fetching stores for customer:", e);
     return res.status(500).json({ error: "Internal server error" });
   }
-});
+  },
+);
 
 // GET /api/shipments/store/:storeSlug - list shipments for a store (owner/admin only)
 router.get("/store/:storeSlug", async (req, res) => {

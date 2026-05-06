@@ -258,21 +258,30 @@ export default function OnboardingPage() {
         !siretErrorMessage &&
         !!siretDetails;
 
-      const response = await apiPost('/api/stores', {
-        storeName: formData.storeName,
-        storeDescription: formData.description,
-        ownerEmail: user.primaryEmailAddress.emailAddress,
-        slug,
-        // Données de facturation pour créer le client Stripe
-        clerkUserId: user.id,
-        name: formData.name,
-        phone: formData.phone,
-        address: billingAddress,
-        website: formData.website || undefined,
-        siret: formData.siret || undefined,
-        is_verified: isSiretVerified,
-        stripeCustomerId: stripeIdToUse,
-      });
+      const token = await getToken();
+      const response = await apiPost(
+        '/api/stores',
+        {
+          storeName: formData.storeName,
+          storeDescription: formData.description,
+          ownerEmail: user.primaryEmailAddress.emailAddress,
+          slug,
+          // Données de facturation pour créer le client Stripe
+          clerkUserId: user.id,
+          name: formData.name,
+          phone: formData.phone,
+          address: billingAddress,
+          website: formData.website || undefined,
+          siret: formData.siret || undefined,
+          is_verified: isSiretVerified,
+          stripeCustomerId: stripeIdToUse,
+        },
+        {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
+      );
 
       const result = await response.json();
 
@@ -293,7 +302,11 @@ export default function OnboardingPage() {
             const fd = new FormData();
             fd.append('image', formData.logo);
             fd.append('slug', result.store.slug);
-            const uploadResp = await apiPostForm('/api/upload', fd);
+            const uploadResp = await apiPostForm('/api/upload', fd, {
+              headers: {
+                Authorization: token ? `Bearer ${token}` : '',
+              },
+            });
             const uploadJson = await uploadResp.json();
             if (!uploadJson?.success) {
               console.warn('Upload du logo échoué:', uploadJson?.error);

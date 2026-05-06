@@ -97,8 +97,14 @@ export default function Header() {
         // Essayer de récupérer le client existant
         let stripeId: string | null = null;
         try {
+          const token = await getToken();
           const resp = await fetch(
-            `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(email)}`
+            `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(email)}`,
+            {
+              headers: {
+                Authorization: token ? `Bearer ${token}` : '',
+              },
+            }
           );
           if (resp.ok) {
             const json = await resp.json();
@@ -147,10 +153,16 @@ export default function Header() {
       try {
         const clerkId = String(user?.id || '').trim();
         if (!clerkId) return;
+        const token = await getToken();
         const resp = await fetch(
           `${apiBase}/api/stores/check-owner-by-clerk/${encodeURIComponent(
             clerkId
-          )}`
+          )}`,
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+          }
         );
         const json = (await resp.json().catch(() => null)) as OwnerStoreInfo;
         if (!resp.ok) return;
@@ -160,7 +172,7 @@ export default function Header() {
       }
     };
     loadOwnerStoreInfo();
-  }, [user?.id]);
+  }, [user?.id, getToken, apiBase]);
 
   const formatEur = (value: number) =>
     new Intl.NumberFormat('fr-FR', {
@@ -214,8 +226,14 @@ export default function Header() {
     }
     try {
       setCartSummaryLoading(true);
+      const token = await getToken();
       const resp = await fetch(
-        `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(sid)}`
+        `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(sid)}`,
+        {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
       );
       if (!resp.ok) return;
       const json = await resp.json().catch(() => null as any);
@@ -229,7 +247,7 @@ export default function Header() {
 
   useEffect(() => {
     refreshCartSummary();
-  }, [stripeCustomerId]);
+  }, [stripeCustomerId, getToken, apiBase]);
 
   useEffect(() => {
     const onUpdated = () => refreshCartSummary();
@@ -322,8 +340,14 @@ export default function Header() {
         slugFromPath
       ) {
         try {
+          const token = await getToken();
           const resp = await fetch(
-            `${apiBase}/api/stores/${encodeURIComponent(slugFromPath)}`
+            `${apiBase}/api/stores/${encodeURIComponent(slugFromPath)}`,
+            {
+              headers: {
+                Authorization: token ? `Bearer ${token}` : '',
+              },
+            }
           );
           const json = await resp.json();
           if (!resp.ok || !json?.store) {
@@ -360,10 +384,16 @@ export default function Header() {
             setGuardStatus('error');
             return;
           }
+          const token = await getToken();
           const resp = await fetch(
             `${apiBase}/api/stores/check-owner-by-clerk/${encodeURIComponent(
               clerkId
-            )}`
+            )}`,
+            {
+              headers: {
+                Authorization: token ? `Bearer ${token}` : '',
+              },
+            }
           );
           const json = (await resp.json().catch(() => null)) as OwnerStoreInfo;
           if (!resp.ok) {
@@ -398,7 +428,7 @@ export default function Header() {
       setGuardStatus('ok');
     };
     checkDashboardGuard();
-  }, [user, stripeCustomerId, location.pathname]); // check si on doit pas mettre: user?.primaryEmailAddress?.emailAddress
+  }, [user, stripeCustomerId, location.pathname, getToken, apiBase]); // check si on doit pas mettre: user?.primaryEmailAddress?.emailAddress
 
   // Garde Onboarding: vérifier si l'utilisateur possède déjà une boutique
   useLayoutEffect(() => {
@@ -422,10 +452,16 @@ export default function Header() {
         if (!clerkId) {
           return;
         }
+        const token = await getToken();
         const resp = await fetch(
           `${apiBase}/api/stores/check-owner-by-clerk/${encodeURIComponent(
             clerkId
-          )}`
+          )}`,
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+          }
         );
         const json = await resp.json().catch(() => null);
         if (!resp.ok) {
@@ -458,7 +494,7 @@ export default function Header() {
       }
     };
     checkOnboardingGuard();
-  }, [user?.id, location.pathname]);
+  }, [user?.id, location.pathname, getToken, apiBase]);
 
   // Redirections centralisées selon le statut des gardes et les slugs connus
   useEffect(() => {
@@ -491,9 +527,13 @@ export default function Header() {
 
   const handleDeleteItem = async (cartItemId: number) => {
     try {
+      const token = await getToken();
       const resp = await fetch(`${apiBase}/api/carts`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
         body: JSON.stringify({
           id: cartItemId,
         }),

@@ -710,11 +710,17 @@ export default function CheckoutPage() {
           const userEmail = user?.primaryEmailAddress?.emailAddress;
           if (!userEmail) return '';
           try {
+            const token = await getToken();
             const resp = await fetch(
               `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(
                 userEmail
               )}`,
-              { cache: 'no-store' }
+              {
+                cache: 'no-store',
+                headers: {
+                  Authorization: token ? `Bearer ${token}` : '',
+                },
+              }
             );
             if (!resp.ok) return '';
             const json = await resp.json().catch(() => null as any);
@@ -729,11 +735,17 @@ export default function CheckoutPage() {
         const fetchSummaryItems = async (): Promise<CartItem[]> => {
           const sid = await resolveStripeId();
           if (!sid) return [];
+          const token = await getToken();
           const cartResp = await fetch(
             `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(
               sid
             )}&paymentId=${encodeURIComponent(String(paymentId || '').trim())}`,
-            { cache: 'no-store' }
+            {
+              cache: 'no-store',
+              headers: {
+                Authorization: token ? `Bearer ${token}` : '',
+              },
+            }
           );
           if (!cartResp.ok) return [];
           const cartJson = await cartResp.json().catch(() => null as any);
@@ -929,11 +941,17 @@ export default function CheckoutPage() {
 
       let stripeId = String(stripeCustomerId || '').trim();
       if (!stripeId) {
+        const token = await getToken();
         const resp = await fetch(
           `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(
             userEmail
           )}`,
-          { cache: 'no-store' }
+          {
+            cache: 'no-store',
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+          }
         );
         const json = await resp.json().catch(() => null as any);
         if (!resp.ok) {
@@ -959,11 +977,17 @@ export default function CheckoutPage() {
         setStripeCustomerId(stripeId);
       }
 
+      const token = await getToken();
       const cartResp = await fetch(
         `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(
           stripeId
         )}${paymentId ? `&paymentId=${encodeURIComponent(paymentId)}` : ''}`,
-        { cache: 'no-store' }
+        {
+          cache: 'no-store',
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
       );
       const cartJson = await cartResp.json().catch(() => null as any);
       if (!cartResp.ok) {
@@ -1225,10 +1249,16 @@ export default function CheckoutPage() {
       const userEmail = user?.primaryEmailAddress?.emailAddress;
       if (!userEmail) return '';
       try {
+        const token = await getToken();
         const resp = await fetch(
           `${apiBase}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(
             userEmail
-          )}`
+          )}`,
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+          }
         );
         if (!resp.ok) return '';
         const json = await resp.json().catch(() => null as any);
@@ -1243,10 +1273,16 @@ export default function CheckoutPage() {
     const stripeId = await resolveStripeId();
     if (stripeId && store?.id) {
       try {
+        const token = await getToken();
         const existingResp = await fetch(
           `${apiBase}/api/carts/summary?stripeId=${encodeURIComponent(
             stripeId
-          )}&paymentId=${encodeURIComponent(String(paymentId || '').trim())}`
+          )}&paymentId=${encodeURIComponent(String(paymentId || '').trim())}`,
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+          }
         );
         if (existingResp.ok) {
           const existingJson = await existingResp
@@ -1499,8 +1535,14 @@ export default function CheckoutPage() {
       }
 
       try {
+        const token = await getToken();
         const response = await fetch(
-          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores/${encodeURIComponent(storeName)}`
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stores/${encodeURIComponent(storeName)}`,
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+          }
         );
         const data = await response.json();
 
@@ -1539,7 +1581,7 @@ export default function CheckoutPage() {
     };
 
     fetchStore();
-  }, [storeName]);
+  }, [storeName, getToken]);
 
   useEffect(() => {
     const amountParam = searchParams.get('amount');
@@ -1560,10 +1602,16 @@ export default function CheckoutPage() {
       }
 
       try {
+        const token = await getToken();
         const response = await fetch(
           `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/stripe/get-customer-details?customerEmail=${encodeURIComponent(
             user.primaryEmailAddress.emailAddress
-          )}`
+          )}`,
+          {
+            headers: {
+              Authorization: token ? `Bearer ${token}` : '',
+            },
+          }
         );
 
         if (response.ok) {
@@ -2413,9 +2461,13 @@ export default function CheckoutPage() {
 
     try {
       const apiBase = API_BASE_URL;
+      const token = await getToken();
       const resp = await fetch(`${apiBase}/api/carts`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
         body: JSON.stringify({ id }),
       });
       if (!resp.ok) {
@@ -2441,9 +2493,13 @@ export default function CheckoutPage() {
     // Persist to backend
     try {
       const apiBase = API_BASE_URL;
+      const token = await getToken();
       const resp = await fetch(`${apiBase}/api/carts/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
         body: JSON.stringify({ quantity }),
       });
       if (!resp.ok) {
@@ -4283,9 +4339,13 @@ function CheckoutForm({
     const nextQty = currentQty + Math.max(1, Math.round(Number(deltaQty || 1)));
     try {
       const apiBase = API_BASE_URL;
+      const token = await getToken();
       const resp = await fetch(`${apiBase}/api/carts/${existing.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: token ? `Bearer ${token}` : '',
+        },
         body: JSON.stringify({ quantity: nextQty }),
       });
       if (!resp.ok) {
@@ -4383,18 +4443,27 @@ function CheckoutForm({
 
       const productStripeId = String(stock?.product_stripe_id || '').trim();
 
-      const resp = await apiPost('/api/carts', {
-        store_id: store.id,
-        product_reference: ref,
-        value: value,
-        customer_stripe_id: customerStripeId,
-        ...(isOpenShipmentMode && currentPaymentId
-          ? { payment_id: currentPaymentId }
-          : {}),
-        description: title,
-        quantity: 1,
-        weight: weightForCart === null ? undefined : weightForCart,
-      });
+      const token = await getToken();
+      const resp = await apiPost(
+        '/api/carts',
+        {
+          store_id: store.id,
+          product_reference: ref,
+          value: value,
+          customer_stripe_id: customerStripeId,
+          ...(isOpenShipmentMode && currentPaymentId
+            ? { payment_id: currentPaymentId }
+            : {}),
+          description: title,
+          quantity: 1,
+          weight: weightForCart === null ? undefined : weightForCart,
+        },
+        {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
+      );
       const json = await resp.json().catch(() => null as any);
       if (resp.status === 409) {
         const msg =
@@ -4710,17 +4779,26 @@ function CheckoutForm({
         return;
       }
 
-      const resp = await apiPost('/api/carts', {
-        store_id: store.id,
-        product_reference,
-        value: resolvedValue,
-        customer_stripe_id: customerStripeId,
-        ...(isOpenShipmentMode && currentPaymentId
-          ? { payment_id: currentPaymentId }
-          : {}),
-        description: normalizedDescription || null,
-        weight: weightForCart === null ? undefined : weightForCart,
-      });
+      const token = await getToken();
+      const resp = await apiPost(
+        '/api/carts',
+        {
+          store_id: store.id,
+          product_reference,
+          value: resolvedValue,
+          customer_stripe_id: customerStripeId,
+          ...(isOpenShipmentMode && currentPaymentId
+            ? { payment_id: currentPaymentId }
+            : {}),
+          description: normalizedDescription || null,
+          weight: weightForCart === null ? undefined : weightForCart,
+        },
+        {
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '',
+          },
+        }
+      );
       const json = await resp.json();
 
       if (resp.status === 409) {

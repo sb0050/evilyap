@@ -1,6 +1,5 @@
 import express, { NextFunction, Request, Response } from "express";
 import multer from "multer";
-import { createClient } from "@supabase/supabase-js";
 import { emailService } from "../services/emailService";
 import { clerkClient } from "@clerk/express";
 import { getAuth } from "@clerk/express";
@@ -8,6 +7,9 @@ import {
   detectFileFromMagicBytes,
   sanitizeAttachmentFilename,
 } from "../utils/fileMagicBytes";
+import { requireAuth, requireAuthWithStripe } from "../middlewares/requireAuth";
+import { requireStoreOwner } from "../middlewares/ownership";
+import { supabaseRls as supabase } from "../lib/supabase";
 
 const router = express.Router();
 
@@ -72,17 +74,13 @@ const attachmentUploadSingle = (
   });
 };
 
-const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error("Supabase credentials are not set in environment variables");
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey);
-
 // POST /api/support/contact - Store owner sends a support message to admin
-router.post("/contact", attachmentUploadSingle, async (req, res) => {
+router.post(
+  "/contact",
+  requireAuth(),
+  attachmentUploadSingle,
+  requireStoreOwner({ source: "body", key: "storeSlug", column: "slug" }),
+  async (req, res) => {
   try {
     const {
       storeSlug,
@@ -188,12 +186,13 @@ router.post("/contact", attachmentUploadSingle, async (req, res) => {
     console.error("Erreur serveur (support contact):", err);
     return res.status(500).json({ error: "Erreur interne du serveur" });
   }
-});
+  },
+);
 
-export default router;
 // Nouveau endpoint: client contacte le propriétaire du store à propos d'un shipment
 router.post(
   "/customer-contact",
+  requireAuthWithStripe(),
   attachmentUploadSingle,
   async (req, res) => {
     try {
@@ -372,3 +371,5 @@ router.post(
     }
   },
 );
+
+export default router;

@@ -1,5 +1,4 @@
 import express from "express";
-import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import PDFDocument from "pdfkit";
 import fs from "node:fs";
@@ -10,6 +9,13 @@ import { isValidIBAN, isValidBIC } from "ibantools";
 import slugify from "slugify";
 import { clerkClient, getAuth } from "@clerk/express";
 import { emailService } from "../services/emailService";
+import {
+  getAuthContext,
+  requireAuth,
+  requireAuthWithStripe,
+} from "../middlewares/requireAuth";
+import { requireStoreOwner } from "../middlewares/ownership";
+import { supabaseRls as supabase } from "../lib/supabase";
 
 const router = express.Router();
 
@@ -17,17 +23,6 @@ const router = express.Router();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
 });
-
-// Configuration Supabase
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error("Supabase environment variables are missing");
-  throw new Error("Missing Supabase environment variables");
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey);
 
 const createProspectTransporter = () => {
   const host = process.env.SMTP_HOST || "";
@@ -167,9 +162,6 @@ router.get("/check-owner/:email", async (req, res) => {
 
     return res.json({
       exists: true,
-      storeName: data.name,
-      ownerEmail: data.owner_email,
-      slug: (data as any)?.slug,
     });
   } catch (error) {
     console.error("Erreur serveur:", error);
@@ -178,12 +170,19 @@ router.get("/check-owner/:email", async (req, res) => {
 });
 
 // GET /api/stores/check-owner-by-stripe/:stripeId - Vérifier si un stripe_id existe comme propriétaire
-router.get("/check-owner-by-stripe/:stripeId", async (req, res) => {
+router.get(
+  "/check-owner-by-stripe/:stripeId",
+  requireAuthWithStripe(),
+  async (req, res) => {
   try {
+    const auth = getAuthContext(res);
     const stripeId = String(req.params?.stripeId || "").trim();
 
     if (!stripeId) {
       return res.status(400).json({ error: "stripeId requis" });
+    }
+    if (stripeId !== auth.stripeCustomerId) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     const { data, error } = await supabase
@@ -212,15 +211,20 @@ router.get("/check-owner-by-stripe/:stripeId", async (req, res) => {
     console.error("Erreur serveur:", error);
     return res.status(500).json({ error: "Erreur interne du serveur" });
   }
-});
+  },
+);
 
 // GET /api/stores/check-owner-by-clerk/:clerkId - Vérifier si un clerk_id existe comme propriétaire
-router.get("/check-owner-by-clerk/:clerkId", async (req, res) => {
+router.get("/check-owner-by-clerk/:clerkId", requireAuth(), async (req, res) => {
   try {
+    const auth = getAuthContext(res);
     const clerkId = String(req.params?.clerkId || "").trim();
 
     if (!clerkId) {
       return res.status(400).json({ error: "clerkId requis" });
+    }
+    if (clerkId !== auth.userId) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     const { data, error } = await supabase
@@ -252,8 +256,9 @@ router.get("/check-owner-by-clerk/:clerkId", async (req, res) => {
 });
 
 // POST /api/stores - Créer une nouvelle boutique
-router.post("/", async (req, res) => {
+router.post("/", requireAuth(), async (req, res) => {
   try {
+    const auth = getAuthContext(res);
     const {
       storeName,
       storeDescription,
@@ -268,6 +273,10 @@ router.post("/", async (req, res) => {
       is_verified,
       stripeCustomerId,
     } = req.body;
+    const requestedClerkUserId = String(clerkUserId || "").trim();
+    if (requestedClerkUserId && requestedClerkUserId !== auth.userId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     if (!storeName || !ownerEmail) {
       return res.status(400).json({ error: "Nom de boutique et email requis" });
@@ -328,7 +337,7 @@ router.post("/", async (req, res) => {
           stripe_id: stripeCustomerId,
           address: addressJson,
           website: website || null,
-          clerk_id: clerkUserId || null,
+          clerk_id: auth.userId,
           siret: siret || null,
           is_verified: is_verified === true ? true : false,
         },
@@ -355,7 +364,11 @@ router.post("/", async (req, res) => {
 
 // PUT /api/stores/:storeSlug - Mettre à jour nom/description/website
 // PUT /api/stores/:storeSlug - Mettre à jour nom/description/website/siret et éventuellement is_verified
-router.put("/:storeSlug", async (req, res) => {
+router.put(
+  "/:storeSlug",
+  requireAuth(),
+  requireStoreOwner({ source: "params", key: "storeSlug", column: "slug" }),
+  async (req, res) => {
   try {
     const { storeSlug } = req.params as { storeSlug?: string };
     const {
@@ -496,7 +509,8 @@ router.put("/:storeSlug", async (req, res) => {
     console.error("Erreur serveur:", err);
     return res.status(500).json({ error: "Erreur interne du serveur" });
   }
-});
+  },
+);
 
 router.get("/me", async (req, res) => {
   try {
@@ -699,7 +713,43 @@ router.post("/need-a-demo", async (req, res) => {
 });
 
 // GET /api/stores/:storeSlug - Récupérer une boutique par son slug
-router.get("/:storeSlug", async (req, res) => {
+router.get(
+  "/:storeSlug/private",
+  requireAuth(),
+  requireStoreOwner({ source: "params", key: "storeSlug", column: "slug" }),
+  async (req, res) => {
+    try {
+      const { storeSlug } = req.params as { storeSlug?: string };
+      if (!storeSlug) {
+        return res.status(400).json({ error: "Slug de boutique requis" });
+      }
+
+      const decodedSlug = decodeURIComponent(storeSlug);
+      const { data: store, error } = await supabase
+        .from("stores")
+        .select("*")
+        .eq("slug", decodedSlug)
+        .single();
+
+      if (error) {
+        if ((error as any)?.code === "PGRST116") {
+          return res.status(404).json({ error: "Boutique non trouvÃ©e" });
+        }
+        console.error("Erreur Supabase:", error);
+        return res
+          .status(500)
+          .json({ error: "Erreur lors de la rÃ©cupÃ©ration de la boutique" });
+      }
+
+      return res.json({ success: true, store });
+    } catch (err) {
+      console.error("Erreur serveur:", err);
+      return res.status(500).json({ error: "Erreur interne du serveur" });
+    }
+  },
+);
+
+router.get("/:storeSlug", requireAuth(), async (req, res) => {
   try {
     const { storeSlug } = req.params as { storeSlug?: string };
 
@@ -710,7 +760,9 @@ router.get("/:storeSlug", async (req, res) => {
     const decodedSlug = decodeURIComponent(storeSlug);
     const { data: store, error } = await supabase
       .from("stores")
-      .select("*")
+      .select(
+        "id, name, slug, description, website, is_verified, address, tva_applicable",
+      )
       .eq("slug", decodedSlug)
       .single();
 
@@ -2705,7 +2757,7 @@ router.post("/:storeSlug/stock/by-stripe-product-ids", async (req, res) => {
   }
 });
 
-router.get("/:storeSlug/stock/public", async (req, res) => {
+router.get("/:storeSlug/stock", requireAuth(), async (req, res) => {
   try {
     const { storeSlug } = req.params as { storeSlug?: string };
     if (!storeSlug) {

@@ -1,19 +1,17 @@
 import express from "express";
-import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
+import { clerkClient } from "@clerk/express";
 import { emailService } from "../services/emailService";
-import { getAuth } from "@clerk/express";
+import { supabaseRls as supabase } from "../lib/supabase";
+import {
+  getAuthContext,
+  requireAuth,
+  requireAuthWithStripe,
+} from "../middlewares/requireAuth";
+import { requireStoreOwner } from "../middlewares/ownership";
 
 const router = express.Router();
 
-// Supabase configuration
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-if (!supabaseUrl || !supabaseKey) {
-  console.error("Supabase environment variables are missing");
-  throw new Error("Missing Supabase environment variables");
-}
-const supabase = createClient(supabaseUrl, supabaseKey);
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
 });
@@ -60,25 +58,91 @@ async function deleteCartInternal(id: number) {
   return { success: true };
 }
 
+async function getCartMutationAccess(
+  cartId: number,
+  userId: string,
+  stripeCustomerId?: string | null,
+) {
+  let requesterStripeCustomerId = String(stripeCustomerId || "").trim();
+  if (!requesterStripeCustomerId) {
+    try {
+      const user = await clerkClient.users.getUser(userId);
+      requesterStripeCustomerId = String(
+        (user.publicMetadata as Record<string, unknown> | undefined)
+          ?.stripe_id || "",
+      ).trim();
+    } catch (error) {
+      console.error("Unable to resolve requester Stripe customer", {
+        userId,
+        error,
+      });
+    }
+  }
+
+  const { data: cart, error: cartErr } = await supabase
+    .from("carts")
+    .select("id, store_id, customer_stripe_id")
+    .eq("id", cartId)
+    .maybeSingle();
+
+  if (cartErr) {
+    return { allowed: false, status: 500, error: cartErr.message };
+  }
+  if (!cart) {
+    return { allowed: false, status: 404, error: "item_not_found" };
+  }
+
+  const cartCustomerStripeId = String(
+    (cart as any)?.customer_stripe_id || "",
+  ).trim();
+  if (
+    requesterStripeCustomerId &&
+    requesterStripeCustomerId === cartCustomerStripeId
+  ) {
+    return { allowed: true, cart };
+  }
+
+  const storeId = Number((cart as any)?.store_id || 0);
+  if (!Number.isFinite(storeId) || storeId <= 0) {
+    return { allowed: false, status: 403, error: "Forbidden" };
+  }
+
+  const { data: store, error: storeErr } = await supabase
+    .from("stores")
+    .select("id, clerk_id")
+    .eq("id", storeId)
+    .maybeSingle();
+
+  if (storeErr) {
+    return { allowed: false, status: 500, error: storeErr.message };
+  }
+
+  const ownsStore =
+    Boolean((store as any)?.clerk_id) &&
+    String((store as any)?.clerk_id) === userId;
+
+  if (!ownsStore) {
+    return { allowed: false, status: 403, error: "Forbidden" };
+  }
+
+  return { allowed: true, cart };
+}
+
 // POST /api/carts - Add item to cart
-router.post("/", async (req, res) => {
+router.post("/", requireAuth(), async (req, res) => {
   try {
+    const auth = getAuthContext(res);
     const {
       store_id,
       product_reference,
       value,
-      customer_stripe_id,
       payment_id,
       description,
       quantity,
       weight,
     } = req.body || {};
+    const requestedStripeId = String(req.body?.customer_stripe_id || "").trim();
 
-    if (!customer_stripe_id) {
-      return res
-        .status(400)
-        .json({ error: "customer_stripe_id requis pour le panier" });
-    }
     if (!store_id || !product_reference) {
       return res.status(400).json({
         error:
@@ -105,6 +169,55 @@ router.post("/", async (req, res) => {
         : typeof store_id === "string"
           ? Number(store_id)
           : NaN;
+    if (!requestedStripeId) {
+      return res
+        .status(400)
+        .json({ error: "customer_stripe_id requis pour le panier" });
+    }
+    if (!Number.isFinite(storeIdNum) || storeIdNum <= 0) {
+      return res.status(400).json({ error: "store_id invalide" });
+    }
+
+    const access = await (async () => {
+      let requesterStripeCustomerId = "";
+      try {
+        const user = await clerkClient.users.getUser(auth.userId);
+        requesterStripeCustomerId = String(
+          (user.publicMetadata as Record<string, unknown> | undefined)
+            ?.stripe_id || "",
+        ).trim();
+      } catch (error) {
+        console.error("Unable to resolve requester Stripe customer", {
+          userId: auth.userId,
+          error,
+        });
+      }
+
+      if (requesterStripeCustomerId === requestedStripeId) {
+        return { allowed: true };
+      }
+
+      const { data: store, error: storeErr } = await supabase
+        .from("stores")
+        .select("id, clerk_id")
+        .eq("id", storeIdNum)
+        .maybeSingle();
+      if (storeErr) {
+        return { allowed: false, status: 500, error: storeErr.message };
+      }
+
+      const ownsStore =
+        Boolean((store as any)?.clerk_id) &&
+        String((store as any)?.clerk_id) === auth.userId;
+      return ownsStore
+        ? { allowed: true }
+        : { allowed: false, status: 403, error: "Forbidden" };
+    })();
+    if (!access.allowed) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || "Forbidden" });
+    }
 
     const refTrimmed = String(product_reference || "").trim();
     const deliveryRegulationRegex = /r[ée]gularisation\s+livraison/i;
@@ -221,7 +334,9 @@ router.post("/", async (req, res) => {
       store_id,
       product_reference,
       value: normalizedValue,
-      customer_stripe_id,
+      // Preserve Clerk ownership on cart rows for downstream filtering and audits.
+      clerk_id: auth.userId,
+      customer_stripe_id: requestedStripeId,
       description: descriptionTrimmed,
       ...(paymentIdTrimmed ? { payment_id: paymentIdTrimmed } : {}),
       quantity: normalizedQuantity,
@@ -293,8 +408,9 @@ router.post("/", async (req, res) => {
 });
 
 // GET /api/carts/summary?stripeId=<id>
-router.get("/summary", async (req, res) => {
+router.get("/summary", requireAuthWithStripe(), async (req, res) => {
   try {
+    const auth = getAuthContext(res);
     const stripeId = (req.query.stripeId as string) || "";
     const paymentIdRaw = (req.query.paymentId as string) || "";
     const paymentId = String(paymentIdRaw || "").trim();
@@ -302,6 +418,9 @@ router.get("/summary", async (req, res) => {
       String((req.query.onlyPayment as string) || "").trim() === "true";
     if (!stripeId) {
       return res.status(400).json({ error: "stripeId requis" });
+    }
+    if (stripeId !== auth.stripeCustomerId) {
+      return res.status(403).json({ error: "Forbidden" });
     }
     if (paymentId && /[,()]/.test(paymentId)) {
       return res.status(400).json({ error: "paymentId invalide" });
@@ -506,14 +625,26 @@ router.get("/summary", async (req, res) => {
 });
 
 // DELETE /api/carts - Remove item by id only
-router.delete("/", async (req, res) => {
+router.delete("/", requireAuth(), async (req, res) => {
   try {
+    const auth = getAuthContext(res);
     const { id } = (req.body || {}) as {
       id?: number;
     };
 
     if (!id || typeof id !== "number") {
       return res.status(400).json({ error: "id requis pour la suppression" });
+    }
+
+    const access = await getCartMutationAccess(
+      id,
+      auth.userId,
+      auth.stripeCustomerId,
+    );
+    if (!access.allowed) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || "Forbidden" });
     }
 
     const result = await deleteCartInternal(id);
@@ -531,8 +662,9 @@ router.delete("/", async (req, res) => {
 });
 
 // PUT /api/carts/:id - Update quantity for a cart item
-router.put("/:id", async (req, res) => {
+router.put("/:id", requireAuth(), async (req, res) => {
   try {
+    const auth = getAuthContext(res);
     const id = Number(req.params.id);
     const { quantity } = req.body || {};
     if (!Number.isFinite(id) || id <= 0) {
@@ -542,6 +674,17 @@ router.put("/:id", async (req, res) => {
     if (!Number.isFinite(qty) || qty <= 0) {
       return res.status(400).json({ error: "quantity invalide" });
     }
+    const access = await getCartMutationAccess(
+      id,
+      auth.userId,
+      auth.stripeCustomerId,
+    );
+    if (!access.allowed) {
+      return res
+        .status(access.status || 403)
+        .json({ error: access.error || "Forbidden" });
+    }
+
     const { data, error } = await supabase
       .from("carts")
       .update({ quantity: qty })
@@ -575,24 +718,13 @@ router.put("/:id", async (req, res) => {
 });
 
 // GET /api/carts/store/:slug - list all carts for a given store
-router.get("/store/:slug", async (req, res) => {
+router.get(
+  "/store/:slug",
+  requireAuth(),
+  requireStoreOwner({ source: "params", key: "slug", column: "slug" }),
+  async (_req, res) => {
   try {
-    const slug = (req.params.slug || "").trim();
-    if (!slug) {
-      return res.status(400).json({ error: "slug requis" });
-    }
-    const { data: storeRow, error: storeErr } = await supabase
-      .from("stores")
-      .select("id")
-      .eq("slug", slug)
-      .maybeSingle();
-    if (storeErr) {
-      return res.status(500).json({ error: storeErr.message });
-    }
-    if (!storeRow) {
-      return res.status(404).json({ error: "Boutique introuvable" });
-    }
-    const storeId = (storeRow as any)?.id;
+    const storeId = (res.locals.store as any)?.id;
     const cartsSelectWithWeightAndPaymentId =
       "id, store_id, customer_stripe_id, product_reference, value, quantity, created_at, description, recap_sent_at, weight, payment_id";
     const cartsSelectWithPaymentId =
@@ -637,14 +769,15 @@ router.get("/store/:slug", async (req, res) => {
     console.error("Error fetching store carts:", e);
     return res.status(500).json({ error: "Erreur interne du serveur" });
   }
-});
+  },
+);
 
-router.post("/recap", async (req, res) => {
+router.post(
+  "/recap",
+  requireAuth(),
+  requireStoreOwner({ source: "body", key: "storeSlug", column: "slug" }),
+  async (req, res) => {
   try {
-    const auth = getAuth(req);
-    if (!auth?.isAuthenticated) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
     const { stripeIds, storeSlug } = req.body || {};
     if (!Array.isArray(stripeIds) || stripeIds.length === 0) {
       return res.status(400).json({ error: "Aucun panier sélectionné" });
@@ -652,17 +785,7 @@ router.post("/recap", async (req, res) => {
     if (!storeSlug || typeof storeSlug !== "string") {
       return res.status(400).json({ error: "Slug de boutique requis" });
     }
-    const { data: storeRow, error: storeErr } = await supabase
-      .from("stores")
-      .select("id, name")
-      .eq("slug", storeSlug)
-      .maybeSingle();
-    if (storeErr) {
-      return res.status(500).json({ error: storeErr.message });
-    }
-    if (!storeRow) {
-      return res.status(404).json({ error: "Boutique introuvable" });
-    }
+    const storeRow = res.locals.store as any;
     const storeId = (storeRow as any)?.id;
     const storeName = (storeRow as any)?.name;
     const cloud = (process.env.CLOUDFRONT_URL || "").replace(/\/+$/, "");
@@ -739,6 +862,7 @@ router.post("/recap", async (req, res) => {
       .status(500)
       .json({ error: "Erreur lors de l'envoi du récapitulatif" });
   }
-});
+  },
+);
 
 export default router;
