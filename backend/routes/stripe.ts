@@ -1,6 +1,6 @@
 import express from "express";
 import Stripe from "stripe";
-import { createClient } from "@supabase/supabase-js";
+import { supabaseRls as supabase } from "../lib/supabase";
 
 import slugify from "slugify";
 import { CATEGORY_BASE_WEIGHT } from "../CATEGORY_BASE_WEIGHT";
@@ -20,17 +20,6 @@ import {
 import { requireStoreOwner } from "../middlewares/ownership";
 
 const router = express.Router();
-
-// Configuration Supabase
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error("Supabase environment variables are missing");
-  throw new Error("Missing Supabase environment variables");
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey);
 
 async function userOwnsStoreSlug(userId: string, storeSlug: string) {
   const slug = String(storeSlug || "").trim();

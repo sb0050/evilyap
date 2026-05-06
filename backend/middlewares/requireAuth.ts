@@ -1,7 +1,7 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { clerkClient, getAuth } from "@clerk/express";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { supabaseForUser } from "../lib/supabase";
+import { runWithRequestSupabase, supabaseForUser } from "../lib/supabase";
 
 export type AuthContext = {
   userId: string;
@@ -14,6 +14,7 @@ export type AuthContext = {
 const AUTH_ERROR = { error: "Unauthorized" } as const;
 const FORBIDDEN_ERROR = { error: "Forbidden" } as const;
 const MAX_AUTHORIZATION_HEADER_LENGTH = 8192;
+const SUPABASE_TEMPLATE_NAME = "supabase";
 
 /**
  * Returns the authenticated request context populated by auth middlewares.
@@ -35,19 +36,40 @@ export function getAuthContext(res: Response): AuthContext {
  * `res.locals.auth` so handlers do not call `getAuth(req)` independently.
  */
 export function requireAuth(): RequestHandler {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     const auth = getAuth(req);
     if (!auth?.isAuthenticated || !auth.userId) {
       return res.status(401).json(AUTH_ERROR);
+    }
+
+    const clerkToken = await resolveSupabaseJwt(req, auth);
+    if (!clerkToken) {
+      return res.status(401).json({
+        error:
+          "Missing Supabase JWT. Configure Clerk template 'supabase' or send Authorization Bearer token.",
+      });
+    }
+
+    let supabase: SupabaseClient;
+    try {
+      supabase = supabaseForUser(clerkToken);
+    } catch (error) {
+      console.error("requireAuth failed to create Supabase client", {
+        userId: auth.userId,
+        error,
+      });
+      return res.status(500).json({ error: "Supabase auth initialization failed" });
     }
 
     res.locals.auth = {
       ...(res.locals.auth || {}),
       userId: auth.userId,
       sessionId: auth.sessionId || null,
+      clerkToken,
     } satisfies AuthContext;
+    res.locals.supabase = supabase;
 
-    return next();
+    return runWithRequestSupabase(supabase, () => next());
   };
 }
 
@@ -81,6 +103,36 @@ export function extractClerkToken(req: Request): string | null {
   return token || null;
 }
 
+function isClerkTemplateMissingError(error: unknown): boolean {
+  return Boolean((error as any)?.clerkError) && Number((error as any)?.status) === 404;
+}
+
+/**
+ * Resolves the Supabase JWT for the current request.
+ *
+ * Resolution order:
+ * 1) Clerk JWT template (`supabase`) for canonical third-party Supabase auth.
+ * 2) Authorization bearer header as fallback (mainly useful in local/dev flows).
+ */
+export async function resolveSupabaseJwt(
+  req: Request,
+  auth: { userId?: string | null; getToken: (opts?: any) => Promise<string | null> },
+): Promise<string | null> {
+  const headerToken = extractClerkToken(req);
+  try {
+    const templateToken = await auth.getToken({ template: SUPABASE_TEMPLATE_NAME });
+    return String(templateToken || "").trim() || headerToken;
+  } catch (error) {
+    if (!isClerkTemplateMissingError(error)) {
+      console.error("resolveSupabaseJwt failed to fetch Clerk template token", {
+        userId: auth.userId || null,
+        error,
+      });
+    }
+    return headerToken;
+  }
+}
+
 /**
  * Requires an authenticated Clerk session and prepares request-scoped Supabase
  * access that enforces RLS.
@@ -93,15 +145,18 @@ export function extractClerkToken(req: Request): string | null {
  * downstream handlers can reuse it without recreating clients repeatedly.
  */
 export function requireAuthWithSupabase(): RequestHandler {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     const auth = getAuth(req);
     if (!auth?.isAuthenticated || !auth.userId) {
       return res.status(401).json(AUTH_ERROR);
     }
 
-    const clerkToken = extractClerkToken(req);
+    const clerkToken = await resolveSupabaseJwt(req, auth);
     if (!clerkToken) {
-      return res.status(401).json({ error: "Missing Clerk bearer token" });
+      return res.status(401).json({
+        error:
+          "Missing Supabase JWT. Configure Clerk template 'supabase' or send Authorization Bearer token.",
+      });
     }
 
     let supabase: SupabaseClient;
@@ -123,7 +178,7 @@ export function requireAuthWithSupabase(): RequestHandler {
     } satisfies AuthContext;
     res.locals.supabase = supabase;
 
-    return next();
+    return runWithRequestSupabase(supabase, () => next());
   };
 }
 
@@ -141,6 +196,15 @@ export function requireAuthWithStripe(): RequestHandler {
     }
 
     try {
+      const clerkToken = await resolveSupabaseJwt(req, auth);
+      if (!clerkToken) {
+        return res.status(401).json({
+          error:
+            "Missing Supabase JWT. Configure Clerk template 'supabase' or send Authorization Bearer token.",
+        });
+      }
+      const supabase = supabaseForUser(clerkToken);
+
       const user = await clerkClient.users.getUser(auth.userId);
       const stripeCustomerId = String(
         (user.publicMetadata as Record<string, unknown> | undefined)
@@ -156,9 +220,11 @@ export function requireAuthWithStripe(): RequestHandler {
         userId: auth.userId,
         sessionId: auth.sessionId || null,
         stripeCustomerId,
+        clerkToken,
       } satisfies AuthContext;
+      res.locals.supabase = supabase;
 
-      return next();
+      return runWithRequestSupabase(supabase, () => next());
     } catch (error) {
       console.error("requireAuthWithStripe failed", {
         userId: auth.userId,

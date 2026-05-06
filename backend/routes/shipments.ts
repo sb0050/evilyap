@@ -1,6 +1,6 @@
 import express from "express";
-import { createClient } from "@supabase/supabase-js";
 import { clerkClient, getAuth } from "@clerk/express";
+import { supabaseRls as supabase } from "../lib/supabase";
 import {
   getAuthContext,
   requireAuthWithStripe,
@@ -11,14 +11,6 @@ import { emailService } from "../services/emailService";
 
 const router = express.Router();
 
-const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error("Supabase credentials are not set in environment variables");
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey);
 const stripeSecret = process.env.STRIPE_SECRET_KEY || "";
 const stripe = stripeSecret
   ? new Stripe(stripeSecret, { apiVersion: "2025-06-30.basil" as any })

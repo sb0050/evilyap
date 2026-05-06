@@ -1,6 +1,5 @@
 import express, { NextFunction, Request, Response } from "express";
 import multer from "multer";
-import { createClient } from "@supabase/supabase-js";
 import { emailService } from "../services/emailService";
 import { clerkClient } from "@clerk/express";
 import { getAuth } from "@clerk/express";
@@ -10,6 +9,7 @@ import {
 } from "../utils/fileMagicBytes";
 import { requireAuth, requireAuthWithStripe } from "../middlewares/requireAuth";
 import { requireStoreOwner } from "../middlewares/ownership";
+import { supabaseRls as supabase } from "../lib/supabase";
 
 const router = express.Router();
 
@@ -73,15 +73,6 @@ const attachmentUploadSingle = (
     return next(err);
   });
 };
-
-const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error("Supabase credentials are not set in environment variables");
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey);
 
 // POST /api/support/contact - Store owner sends a support message to admin
 router.post(

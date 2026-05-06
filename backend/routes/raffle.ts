@@ -1,20 +1,15 @@
 import express from "express";
 import crypto from "crypto";
 import Stripe from "stripe";
-import { createClient } from "@supabase/supabase-js";
 import { getAuth } from "@clerk/express";
 import { emailService } from "../services/emailService";
+import { supabaseRls as supabase } from "../lib/supabase";
 
 const router = express.Router();
 
-const supabaseUrl = process.env.SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
 });
-
-const supabase =
-  supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
 
 router.post("/draw", async (req, res) => {
   try {
@@ -86,7 +81,7 @@ router.post("/notify", async (req, res) => {
         ? String(storeName).trim()
         : "Votre Boutique";
     let finalStoreLogo: string | undefined = undefined;
-    if (supabase && typeof storeSlug === "string" && storeSlug.trim()) {
+    if (typeof storeSlug === "string" && storeSlug.trim()) {
       try {
         const { data, error } = await supabase
           .from("stores")

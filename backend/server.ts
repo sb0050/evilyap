@@ -17,9 +17,11 @@ import supportRoutes from "./routes/support";
 import clerkRoutes from "./routes/clerk";
 import inseeBceRoutes from "./routes/insee-bce";
 import adminRoutes from "./routes/admin";
+import { resolveSupabaseJwt } from "./middlewares/requireAuth";
 import { stripeWebhookHandler } from "./routes/stripe.webhook";
 import { boxtalWebhookHandler } from "./routes/boxtal.webhook";
 import raffleRoutes from "./routes/raffle";
+import { runWithRequestSupabase, supabaseForUser } from "./lib/supabase";
 
 const app = express();
 app.use(
@@ -110,6 +112,31 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
   }
 
   next();
+});
+
+app.use("/api", async (req: Request, res: Response, next: NextFunction) => {
+  const auth = getAuth(req);
+  if (!auth?.isAuthenticated || !auth.userId) {
+    return next();
+  }
+
+  try {
+    const token = await resolveSupabaseJwt(req, auth);
+    if (!token) {
+      return next();
+    }
+
+    const supabase = supabaseForUser(token);
+    res.locals.supabase = supabase;
+
+    return runWithRequestSupabase(supabase, () => next());
+  } catch (error) {
+    console.error("Failed to initialize request-scoped Supabase client", {
+      userId: auth.userId,
+      error,
+    });
+    return next();
+  }
 });
 
 const PORT = process.env.PORT || 5000;

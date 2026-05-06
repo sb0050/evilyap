@@ -1,7 +1,6 @@
 import express from "express";
 import multer from "multer";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { createClient } from "@supabase/supabase-js";
 import { clerkClient, getAuth } from "@clerk/express";
 import { requireAuth } from "../middlewares/requireAuth";
 import { requireStoreOwner } from "../middlewares/ownership";
@@ -10,6 +9,7 @@ import {
   CreateInvalidationCommand,
 } from "@aws-sdk/client-cloudfront";
 import { detectImageFromMagicBytes } from "../utils/fileMagicBytes";
+import { supabaseRls as supabase } from "../lib/supabase";
 
 const router = express.Router();
 
@@ -71,13 +71,6 @@ async function invalidateCloudFrontCache(filePaths: any) {
     throw error;
   }
 }
-
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-if (!supabaseUrl || !supabaseKey) {
-  console.error("Supabase environment variables are missing");
-}
-const supabase = createClient(supabaseUrl!, supabaseKey!);
 
 /**
  * Whitelist of accepted raster image MIME types for logo uploads.

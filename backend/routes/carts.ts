@@ -1,8 +1,8 @@
 import express from "express";
-import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import { clerkClient } from "@clerk/express";
 import { emailService } from "../services/emailService";
+import { supabaseRls as supabase } from "../lib/supabase";
 import {
   getAuthContext,
   requireAuth,
@@ -12,14 +12,6 @@ import { requireStoreOwner } from "../middlewares/ownership";
 
 const router = express.Router();
 
-// Supabase configuration
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-if (!supabaseUrl || !supabaseKey) {
-  console.error("Supabase environment variables are missing");
-  throw new Error("Missing Supabase environment variables");
-}
-const supabase = createClient(supabaseUrl, supabaseKey);
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
 });

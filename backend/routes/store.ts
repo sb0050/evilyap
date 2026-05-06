@@ -1,5 +1,4 @@
 import express from "express";
-import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import PDFDocument from "pdfkit";
 import fs from "node:fs";
@@ -16,6 +15,7 @@ import {
   requireAuthWithStripe,
 } from "../middlewares/requireAuth";
 import { requireStoreOwner } from "../middlewares/ownership";
+import { supabaseRls as supabase } from "../lib/supabase";
 
 const router = express.Router();
 
@@ -23,17 +23,6 @@ const router = express.Router();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2025-06-30.basil",
 });
-
-// Configuration Supabase
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error("Supabase environment variables are missing");
-  throw new Error("Missing Supabase environment variables");
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey);
 
 const createProspectTransporter = () => {
   const host = process.env.SMTP_HOST || "";

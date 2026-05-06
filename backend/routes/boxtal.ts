@@ -1,7 +1,6 @@
 import express from "express";
 import { XMLParser } from "fast-xml-parser";
 import crypto from "crypto";
-import { createClient } from "@supabase/supabase-js";
 import { clerkClient, getAuth } from "@clerk/express";
 import Stripe from "stripe";
 import {
@@ -12,6 +11,7 @@ import {
   loadFallbackCotationBoxtal,
   pickFallbackCotationBoxtal,
 } from "../services/boxtalCotationFallback";
+import { supabaseRls as supabase } from "../lib/supabase";
 
 const router = express.Router();
 
@@ -31,12 +31,6 @@ const BOXTAL_API_V1_CONFIG = {
 
 let boxtalToken: string | null = null;
 let boxtalTokenExpiry: number = 0;
-
-// Supabase Client
-const supabaseUrl = process.env.SUPABASE_URL || "";
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-const supabase =
-  supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
 
 // Stripe Client (pour rechercher le client par metadata)
 const stripeSecret = process.env.STRIPE_SECRET_KEY || "";

@@ -1,6 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { clerkClient } from "@clerk/express";
-import { createClient } from "@supabase/supabase-js";
+import { supabaseRls as supabase } from "../lib/supabase";
 import { getAuthContext } from "./requireAuth";
 
 export type StoreOwnershipRecord = {
@@ -20,15 +20,6 @@ export type RequireStoreOwnerOptions = {
   column?: StoreLookupColumn;
   allowOwnerEmailFallback?: boolean;
 };
-
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error("Missing Supabase environment variables for ownership middleware");
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey);
 
 function getRequestValue(
   req: Request,
